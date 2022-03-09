@@ -1,12 +1,12 @@
-import os
 import json
+import os
 from argparse import ArgumentParser
-from re import split
-import numpy as np
-from tqdm import tqdm
+
 import imageio
+import numpy as np
 from PIL import Image
-import jax
+from tqdm import tqdm
+
 np.random.seed(0)
 
 def get_freer_gpu():
@@ -22,183 +22,182 @@ print(f'gpu is {gpu}')
 import jax
 import jax.numpy as jnp
 import plenoxel
-from jax.ops import index, index_update, index_add
+from jax.ops import index, index_add
 from jax.lib import xla_bridge
 print(xla_bridge.get_backend().platform)
 if __name__ != "__main__":
     os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '.001'
 
 
-flags = ArgumentParser()
+def parse_args():
+    flags = ArgumentParser()
+
+    flags.add_argument(
+        "--data_dir", '-d',
+        type=str,
+        default='./nerf/data/nerf_synthetic/',
+        help="Dataset directory e.g. nerf_synthetic/"
+    )
+    flags.add_argument(
+        "--expname",
+        type=str,
+        default="experiment",
+        help="Experiment name."
+    )
+    flags.add_argument(
+        "--scene",
+        type=str,
+        default='lego',
+        help="Name of the synthetic scene."
+    )
+    flags.add_argument(
+        "--log_dir",
+        type=str,
+        default='jax_logs/',
+        help="Directory to save outputs."
+    )
+    flags.add_argument(
+        "--resolution",
+        type=int,
+        default=256,
+        help="Grid size."
+    )
+    flags.add_argument(
+        "--ini_rgb",
+        type=float,
+        default=0.0,
+        help="Initial harmonics value in grid."
+    )
+    flags.add_argument(
+        "--ini_sigma",
+        type=float,
+        default=0.1,
+        help="Initial sigma value in grid."
+    )
+    flags.add_argument(
+        "--radius",
+        type=float,
+        default=1.3,
+        help="Grid radius. 1.3 works well on most scenes, but ship requires 1.5"
+    )
+    flags.add_argument(
+        "--harmonic_degree",
+        type=int,
+        default=2,
+        help="Degree of spherical harmonics. Supports 0, 1, 2, 3, 4."
+    )
+    flags.add_argument(
+        '--num_epochs',
+        type=int,
+        default=1,
+        help='Epochs to train for.'
+    )
+    flags.add_argument(
+        '--render_interval',
+        type=int,
+        default=40,
+        help='Render images during test/val step every x images.'
+    )
+    flags.add_argument(
+        '--val_interval',
+        type=int,
+        default=2,
+        help='Run test/val step every x epochs.'
+    )
+    flags.add_argument(
+        '--lr_rgb',
+        type=float,
+        default=None,
+        help='SGD step size for rgb. Default chooses automatically based on resolution.'
+        )
+    flags.add_argument(
+        '--lr_sigma',
+        type=float,
+        default=None,
+        help='SGD step size for sigma. Default chooses automatically based on resolution.'
+        )
+    flags.add_argument(
+        '--physical_batch_size',
+        type=int,
+        default=4000,
+        help='Number of rays per batch, to avoid OOM.'
+        )
+    flags.add_argument(
+        '--logical_batch_size',
+        type=int,
+        default=4000,
+        help='Number of rays per optimization batch. Must be a multiple of physical_batch_size.'
+        )
+    flags.add_argument(
+        '--jitter',
+        type=float,
+        default=0.0,
+        help='Take samples that are jittered within each voxel, where values are computed with trilinear interpolation. Parameter controls the std dev of the jitter, as a fraction of voxel_len.'
+    )
+    flags.add_argument(
+        '--uniform',
+        type=float,
+        default=0.5,
+        help='Initialize sample locations to be uniformly spaced at this interval (as a fraction of voxel_len), rather than at voxel intersections (default if uniform=0).'
+    )
+    flags.add_argument(
+        '--occupancy_penalty',
+        type=float,
+        default=0.0,
+        help='Penalty in the loss term for occupancy; encourages a sparse grid.'
+    )
+    flags.add_argument(
+        '--reload_epoch',
+        type=int,
+        default=None,
+        help='Epoch at which to resume training from a saved model.'
+    )
+    flags.add_argument(
+        '--save_interval',
+        type=int,
+        default=1,
+        help='Save the grid checkpoints after every x epochs.'
+    )
+    flags.add_argument(
+        '--prune_epochs',
+        type=int,
+        nargs='+',
+        default=[],
+        help='List of epoch numbers when pruning should be done.'
+    )
+    flags.add_argument(
+        '--prune_method',
+        type=str,
+        default='weight',
+        help='Weight or sigma: prune based on contribution to training rays, or opacity.'
+    )
+    flags.add_argument(
+        '--prune_threshold',
+        type=float,
+        default=0.001,
+        help='Threshold for pruning voxels (either by weight or by sigma).'
+    )
+    flags.add_argument(
+        '--split_epochs',
+        type=int,
+        nargs='+',
+        default=[],
+        help='List of epoch numbers when splitting should be done.'
+    )
+    flags.add_argument(
+        '--interpolation',
+        type=str,
+        default='trilinear',
+        help='Type of interpolation to use. Options are constant, trilinear, or tricubic.'
+    )
+
+    FLAGS = flags.parse_args()
+    FLAGS.data_dir = FLAGS.data_dir + FLAGS.scene
+    FLAGS.radius = FLAGS.radius
+    return FLAGS
 
 
-flags.add_argument(
-    "--data_dir", '-d',
-    type=str,
-    default='./nerf/data/nerf_synthetic/',
-    help="Dataset directory e.g. nerf_synthetic/"
-)
-flags.add_argument(
-    "--expname",
-    type=str,
-    default="experiment",
-    help="Experiment name."
-)
-flags.add_argument(
-    "--scene",
-    type=str,
-    default='lego',
-    help="Name of the synthetic scene."
-)
-flags.add_argument(
-    "--log_dir",
-    type=str,
-    default='jax_logs/',
-    help="Directory to save outputs."
-)
-flags.add_argument(
-    "--resolution",
-    type=int,
-    default=256,
-    help="Grid size."
-)
-flags.add_argument(
-    "--ini_rgb",
-    type=float,
-    default=0.0,
-    help="Initial harmonics value in grid."
-)
-flags.add_argument(
-    "--ini_sigma",
-    type=float,
-    default=0.1,
-    help="Initial sigma value in grid."
-)
-flags.add_argument(
-    "--radius",
-    type=float,
-    default=1.3,
-    help="Grid radius. 1.3 works well on most scenes, but ship requires 1.5"
-)
-flags.add_argument(
-    "--harmonic_degree",
-    type=int,
-    default=2,
-    help="Degree of spherical harmonics. Supports 0, 1, 2, 3, 4."
-)
-flags.add_argument(
-    '--num_epochs',
-    type=int,
-    default=1,
-    help='Epochs to train for.'
-)
-flags.add_argument(
-    '--render_interval',
-    type=int,
-    default=40,
-    help='Render images during test/val step every x images.'
-)
-flags.add_argument(
-    '--val_interval',
-    type=int,
-    default=2,
-    help='Run test/val step every x epochs.'
-)
-flags.add_argument(
-    '--lr_rgb',
-    type=float,
-    default=None,
-    help='SGD step size for rgb. Default chooses automatically based on resolution.'
-    )
-flags.add_argument(
-    '--lr_sigma',
-    type=float,
-    default=None,
-    help='SGD step size for sigma. Default chooses automatically based on resolution.'
-    )
-flags.add_argument(
-    '--physical_batch_size',
-    type=int,
-    default=4000,
-    help='Number of rays per batch, to avoid OOM.'
-    )
-flags.add_argument(
-    '--logical_batch_size',
-    type=int,
-    default=4000,
-    help='Number of rays per optimization batch. Must be a multiple of physical_batch_size.'
-    )
-flags.add_argument(
-    '--jitter',
-    type=float,
-    default=0.0,
-    help='Take samples that are jittered within each voxel, where values are computed with trilinear interpolation. Parameter controls the std dev of the jitter, as a fraction of voxel_len.'
-)
-flags.add_argument(
-    '--uniform',
-    type=float,
-    default=0.5,
-    help='Initialize sample locations to be uniformly spaced at this interval (as a fraction of voxel_len), rather than at voxel intersections (default if uniform=0).'
-)
-flags.add_argument(
-    '--occupancy_penalty',
-    type=float,
-    default=0.0,
-    help='Penalty in the loss term for occupancy; encourages a sparse grid.'
-)
-flags.add_argument(
-    '--reload_epoch',
-    type=int,
-    default=None,
-    help='Epoch at which to resume training from a saved model.'
-)
-flags.add_argument(
-    '--save_interval',
-    type=int,
-    default=1,
-    help='Save the grid checkpoints after every x epochs.'
-)
-flags.add_argument(
-    '--prune_epochs',
-    type=int,
-    nargs='+',
-    default=[],
-    help='List of epoch numbers when pruning should be done.'
-)
-flags.add_argument(
-    '--prune_method',
-    type=str,
-    default='weight',
-    help='Weight or sigma: prune based on contribution to training rays, or opacity.'
-)
-flags.add_argument(
-    '--prune_threshold',
-    type=float,
-    default=0.001,
-    help='Threshold for pruning voxels (either by weight or by sigma).'
-)
-flags.add_argument(
-    '--split_epochs',
-    type=int,
-    nargs='+',
-    default=[],
-    help='List of epoch numbers when splitting should be done.'
-)
-flags.add_argument(
-    '--interpolation',
-    type=str,
-    default='trilinear',
-    help='Type of interpolation to use. Options are constant, trilinear, or tricubic.'
-)
-flags.add_argument(
-    '--nv',
-    action='store_true',
-    help='Use the Neural Volumes rendering formula instead of the Max (NeRF) rendering formula.'
-)
-
-FLAGS = flags.parse_args()
-data_dir = FLAGS.data_dir + FLAGS.scene
-radius = FLAGS.radius
+FLAGS = parse_args()
 
 
 def get_data(root, stage):
@@ -224,8 +223,8 @@ def get_data(root, stage):
 
 
 if __name__ == "__main__":
-    focal, train_c2w, train_gt = get_data(data_dir, "train")
-    test_focal, test_c2w, test_gt = get_data(data_dir, "test")
+    focal, train_c2w, train_gt = get_data(FLAGS.data_dir, "train")
+    test_focal, test_c2w, test_gt = get_data(FLAGS.data_dir, "test")
     assert focal == test_focal
     H, W = train_gt[0].shape[:2]
     n_train_imgs = len(train_c2w)
@@ -280,17 +279,17 @@ def multi_lowpass(gt, resolution):
     return clean_gt
 
 
-def get_loss(data_dict, c2w, gt, H, W, focal, resolution, radius, harmonic_degree, jitter, uniform, key, sh_dim, occupancy_penalty, interpolation, nv):
+def get_loss(data_dict, c2w, gt, H, W, focal, resolution, radius, harmonic_degree, jitter, uniform, key, sh_dim, occupancy_penalty, interpolation):
     rays = plenoxel.get_rays(H, W, focal, c2w)
-    rgb, disp, acc, weights, voxel_ids = plenoxel.render_rays(data_dict, rays, resolution, key, radius, harmonic_degree, jitter, uniform, interpolation, nv)
+    rgb, disp, acc, weights, voxel_ids = plenoxel.render_rays(data_dict, rays, resolution, key, radius, harmonic_degree, jitter, uniform, interpolation)
     mse = jnp.mean((rgb - lowpass(gt, resolution))**2)
     indices, data = data_dict
     loss = mse + occupancy_penalty * jnp.mean(jax.nn.relu(data[-1]))
     return loss
 
 
-def get_loss_rays(data_dict, rays, gt, resolution, radius, harmonic_degree, jitter, uniform, key, sh_dim, occupancy_penalty, interpolation, nv):
-    rgb, disp, acc, weights, voxel_ids = plenoxel.render_rays(data_dict, rays, resolution, key, radius, harmonic_degree, jitter, uniform, interpolation, nv)
+def get_loss_rays(data_dict, rays, gt, resolution, radius, harmonic_degree, jitter, uniform, key, sh_dim, occupancy_penalty, interpolation):
+    rgb, disp, acc, weights, voxel_ids = plenoxel.render_rays(data_dict, rays, resolution, key, radius, harmonic_degree, jitter, uniform, interpolation)
     mse = jnp.mean((rgb - gt)**2)
     indices, data = data_dict
     loss = mse + occupancy_penalty * jnp.mean(jax.nn.relu(data[-1]))
@@ -307,7 +306,7 @@ def get_rays_np(H, W, focal, c2w):
     return rays_o, rays_d
 
 
-def render_pose_rays(data_dict, c2w, H, W, focal, resolution, radius, harmonic_degree, jitter, uniform, key, sh_dim, batch_size, interpolation, nv):
+def render_pose_rays(data_dict, c2w, H, W, focal, resolution, radius, harmonic_degree, jitter, uniform, key, sh_dim, batch_size, interpolation):
     rays_o, rays_d = get_rays_np(H, W, focal, c2w)
     rays_o = np.reshape(rays_o, [-1,3])
     rays_d = np.reshape(rays_d, [-1,3])
@@ -317,9 +316,9 @@ def render_pose_rays(data_dict, c2w, H, W, focal, resolution, radius, harmonic_d
         start = i*batch_size
         stop = min(H*W, (i+1)*batch_size)
         if jitter > 0:
-            rgbi, dispi, acci, weightsi, voxel_idsi = jax.lax.stop_gradient(plenoxel.render_rays(data_dict, (rays_o[start:stop], rays_d[start:stop]), resolution, key[start:stop], radius, harmonic_degree, jitter, uniform, interpolation, nv))
+            rgbi, dispi, acci, weightsi, voxel_idsi = jax.lax.stop_gradient(plenoxel.render_rays(data_dict, (rays_o[start:stop], rays_d[start:stop]), resolution, key[start:stop], radius, harmonic_degree, jitter, uniform, interpolation))
         else:
-            rgbi, dispi, acci, weightsi, voxel_idsi = jax.lax.stop_gradient(plenoxel.render_rays(data_dict, (rays_o[start:stop], rays_d[start:stop]), resolution, None, radius, harmonic_degree, jitter, uniform, interpolation, nv))
+            rgbi, dispi, acci, weightsi, voxel_idsi = jax.lax.stop_gradient(plenoxel.render_rays(data_dict, (rays_o[start:stop], rays_d[start:stop]), resolution, None, radius, harmonic_degree, jitter, uniform, interpolation))
         rgbs.append(rgbi)
         disps.append(dispi)
     rgb = jnp.reshape(jnp.concatenate(rgbs, axis=0), (H, W, 3))
@@ -332,7 +331,7 @@ def run_test_step(i, data_dict, test_c2w, test_gt, H, W, focal, FLAGS, key, name
     sh_dim = (FLAGS.harmonic_degree + 1)**2
     tpsnr = 0.0
     for j, (c2w, gt) in tqdm(enumerate(zip(test_c2w, test_gt))):
-        rgb, disp, _, _ = render_pose_rays(data_dict, c2w, H, W, focal, FLAGS.resolution, radius, FLAGS.harmonic_degree, FLAGS.jitter, FLAGS.uniform, key, sh_dim, FLAGS.physical_batch_size, FLAGS.interpolation, FLAGS.nv)
+        rgb, disp, _, _ = render_pose_rays(data_dict, c2w, H, W, focal, FLAGS.resolution, FLAGS.radius, FLAGS.harmonic_degree, FLAGS.jitter, FLAGS.uniform, key, sh_dim, FLAGS.physical_batch_size, FLAGS.interpolation)
         mse = jnp.mean((rgb - gt)**2)
         psnr = -10.0 * np.log(mse) / np.log(10.0)
         tpsnr += psnr
@@ -381,7 +380,7 @@ if FLAGS.jitter == 0:
 
 
 def main():
-    global rays_rgb, keys, render_keys, data_dict, FLAGS, radius, train_c2w, train_gt, test_c2w, test_gt, automatic_lr
+    global rays_rgb, keys, render_keys, data_dict, FLAGS, train_c2w, train_gt, test_c2w, test_gt, automatic_lr
     start_epoch = 0
     sh_dim = (FLAGS.harmonic_degree + 1)**2
     if FLAGS.reload_epoch is not None:
@@ -416,7 +415,7 @@ def main():
                     subkeys = splitkeys[...,1,:]
                 else:
                     subkeys = None
-                mse, data_grad = jax.value_and_grad(lambda grid: get_loss((indices, grid), c2w, gt, H, W, focal, FLAGS.resolution, radius, FLAGS.harmonic_degree, FLAGS.jitter, FLAGS.uniform, subkeys, sh_dim, occupancy_penalty, FLAGS.interpolation, FLAGS.nv))(data) 
+                mse, data_grad = jax.value_and_grad(lambda grid: get_loss((indices, grid), c2w, gt, H, W, focal, FLAGS.resolution, FLAGS.radius, FLAGS.harmonic_degree, FLAGS.jitter, FLAGS.uniform, subkeys, sh_dim, occupancy_penalty, FLAGS.interpolation))(data)
         else:
             occupancy_penalty = FLAGS.occupancy_penalty / (len(rays_rgb) // FLAGS.logical_batch_size)
             for k in tqdm(range(len(rays_rgb) // FLAGS.logical_batch_size)):
@@ -431,7 +430,7 @@ def main():
                     effective_j = k*(FLAGS.logical_batch_size // FLAGS.physical_batch_size) + j
                     batch = rays_rgb[effective_j*FLAGS.physical_batch_size:(effective_j+1)*FLAGS.physical_batch_size] # [B, 2+1, 3*?]
                     batch_rays, target_s = (batch[:,0,:], batch[:,1,:]), batch[:,2,:]
-                    mse, data_grad = jax.value_and_grad(lambda grid: get_loss_rays((indices, grid), batch_rays, target_s, FLAGS.resolution, radius, FLAGS.harmonic_degree, FLAGS.jitter, FLAGS.uniform, subkeys, sh_dim, occupancy_penalty, FLAGS.interpolation, FLAGS.nv))(data) 
+                    mse, data_grad = jax.value_and_grad(lambda grid: get_loss_rays((indices, grid), batch_rays, target_s, FLAGS.resolution, FLAGS.radius, FLAGS.harmonic_degree, FLAGS.jitter, FLAGS.uniform, subkeys, sh_dim, occupancy_penalty, FLAGS.interpolation))(data)
                     if FLAGS.logical_batch_size > FLAGS.physical_batch_size:
                         if logical_grad is None:
                             logical_grad = data_grad
