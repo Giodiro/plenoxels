@@ -14,17 +14,15 @@ def get_freer_gpu():
     memory_available = [int(x.split()[2]) for x in open('tmp', 'r').readlines()]
     return np.argmax(memory_available)
 
-gpu = get_freer_gpu()
-os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
-print(f'gpu is {gpu}')
+# gpu = get_freer_gpu()
+# os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
+# print(f'gpu is {gpu}')
 
 # Import jax only after setting the visible gpu
 import jax
 import jax.numpy as jnp
 import plenoxel
 from jax.ops import index, index_add
-from jax.lib import xla_bridge
-print(xla_bridge.get_backend().platform)
 if __name__ != "__main__":
     os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '.001'
 
@@ -192,13 +190,23 @@ def parse_args():
     )
 
     FLAGS = flags.parse_args()
-    FLAGS.data_dir = FLAGS.data_dir + FLAGS.scene
+    FLAGS.data_dir = os.path.join(FLAGS.data_dir, FLAGS.scene)
     FLAGS.radius = FLAGS.radius
     return FLAGS
 
 
 FLAGS = parse_args()
 
+# 1. get_data (only __main__), gives images (gt) and c2w (??)
+# 2. data_dict = plenoxel.initialize_grid
+# 3. Precompute rays (all functions in this file)
+# 4. (main): for each epoch
+# 5. (main): loop (rays / logical_batch_size)
+# 6. (main): loop (logical_batch_size / physical_batch_size)
+# 7. (main): jax.value_and_grad (get_loss_rays=>plenoxel.render_rays). Note if batching not used
+# 8. (main): update_grids (only in case batching is used)
+# 9. (main): plenoxel.prune_grid
+# 10. (main): plenoxel.split_grid
 
 def get_data(root, stage):
     all_c2w = []
@@ -209,7 +217,7 @@ def get_data(root, stage):
     print('LOAD DATA', data_path)
     j = json.load(open(data_json, 'r'))
 
-    for frame in tqdm(j['frames']):
+    for frame in tqdm(j['frames'][:10]):
         fpath = os.path.join(data_path, os.path.basename(frame['file_path']) + '.png')
         c2w = frame['transform_matrix']
         im_gt = imageio.imread(fpath).astype(np.float32) / 255.0
@@ -219,6 +227,8 @@ def get_data(root, stage):
     focal = 0.5 * all_gt[0].shape[1] / np.tan(0.5 * j['camera_angle_x'])
     all_gt = np.asarray(all_gt)
     all_c2w = np.asarray(all_c2w)
+    print(f"all_gt: {all_gt.shape} - all_c2w: {all_c2w.shape}")
+    print(f"Focal: {focal}")
     return focal, all_c2w, all_gt
 
 
@@ -245,10 +255,13 @@ if FLAGS.lr_rgb is None or FLAGS.lr_sigma is None:
 if FLAGS.reload_epoch is not None:
     reload_dir = os.path.join(log_dir, f'epoch_{FLAGS.reload_epoch}')
     print(f'Reloading the grid from {reload_dir}')
-    data_dict = plenoxel.load_grid(dirname=reload_dir, sh_dim = (FLAGS.harmonic_degree + 1)**2)
+    data_dict = plenoxel.load_grid(dirname=reload_dir, sh_dim=(FLAGS.harmonic_degree + 1)**2)
 else:
     print(f'Initializing the grid')
-    data_dict = plenoxel.initialize_grid(resolution=FLAGS.resolution, ini_rgb=FLAGS.ini_rgb, ini_sigma=FLAGS.ini_sigma, harmonic_degree=FLAGS.harmonic_degree)
+    data_dict = plenoxel.initialize_grid(resolution=FLAGS.resolution,
+                                         ini_rgb=FLAGS.ini_rgb,
+                                         ini_sigma=FLAGS.ini_sigma,
+                                         harmonic_degree=FLAGS.harmonic_degree)
 
 
 # low-pass filter the ground truth image so the effective resolution matches twice that of the grid
@@ -265,6 +278,12 @@ def lowpass(gt, resolution):
 
 # low-pass filter a stack of images where the first dimension indexes over the images
 def multi_lowpass(gt, resolution):
+    """
+
+    :param gt:
+    :param resolution:
+    :return:
+    """
     if gt.ndim <= 3:
         print(f'multi_lowpass called on image with 3 or fewer dimensions; did you mean to use lowpass instead?')
     H = gt.shape[-3]
@@ -274,12 +293,13 @@ def multi_lowpass(gt, resolution):
         im = Image.fromarray(np.squeeze(gt[i,...] * 255).astype(np.uint8))
         im = im.resize(size=(resolution*2, resolution*2))
         im = im.resize(size=(H, W))
+        # noinspection PyTypeChecker
         im = np.asarray(im) / 255.0
-        clean_gt[i,...] = im
+        clean_gt[i, ...] = im
     return clean_gt
 
 
-def get_loss(data_dict, c2w, gt, H, W, focal, resolution, radius, harmonic_degree, jitter, uniform, key, sh_dim, occupancy_penalty, interpolation):
+def get_loss(data_dict, c2w, gt, H, W, focal, resolution, radius, harmonic_degree, jitter, uniform, key, occupancy_penalty, interpolation):
     rays = plenoxel.get_rays(H, W, focal, c2w)
     rgb, disp, acc, weights, voxel_ids = plenoxel.render_rays(data_dict, rays, resolution, key, radius, harmonic_degree, jitter, uniform, interpolation)
     mse = jnp.mean((rgb - lowpass(gt, resolution))**2)
@@ -288,8 +308,9 @@ def get_loss(data_dict, c2w, gt, H, W, focal, resolution, radius, harmonic_degre
     return loss
 
 
-def get_loss_rays(data_dict, rays, gt, resolution, radius, harmonic_degree, jitter, uniform, key, sh_dim, occupancy_penalty, interpolation):
-    rgb, disp, acc, weights, voxel_ids = plenoxel.render_rays(data_dict, rays, resolution, key, radius, harmonic_degree, jitter, uniform, interpolation)
+def get_loss_rays(data_dict, rays, gt, resolution, radius, harmonic_degree, jitter, uniform, key, occupancy_penalty, interpolation):
+    rgb, disp, acc, weights, voxel_ids = plenoxel.render_rays(
+        data_dict, rays, resolution, key, radius, harmonic_degree, jitter, uniform, interpolation)
     mse = jnp.mean((rgb - gt)**2)
     indices, data = data_dict
     loss = mse + occupancy_penalty * jnp.mean(jax.nn.relu(data[-1]))
@@ -360,9 +381,9 @@ if FLAGS.physical_batch_size is not None:
     print(f'precomputing all the training rays')
     # Precompute all the training rays and shuffle them
     rays = np.stack([get_rays_np(H, W, focal, p) for p in train_c2w[:,:3,:4]], 0) # [N, ro+rd, H, W, 3]
-    rays_rgb = np.concatenate([rays, multi_lowpass(train_gt[:,None], FLAGS.resolution).astype(np.float32)], 1) # [N, ro+rd+rgb, H, W,   3]
+    rays_rgb = np.concatenate([rays, multi_lowpass(train_gt[:, None], FLAGS.resolution).astype(np.float32)], 1) # [N, ro+rd+rgb, H, W,   3]
     rays_rgb = np.transpose(rays_rgb, [0,2,3,1,4]) # [N, H, W, ro+rd+rgb, 3]
-    rays_rgb = np.reshape(rays_rgb, [-1,3,3]) # [(N-1)*H*W, ro+rd+rgb, 3]
+    rays_rgb = np.reshape(rays_rgb, [-1,3,3]) # [N*H*W, ro+rd+rgb, 3]
     rays_rgb = rays_rgb.take(np.random.permutation(rays_rgb.shape[0]), axis=0)
 
 
@@ -385,14 +406,22 @@ def main():
     sh_dim = (FLAGS.harmonic_degree + 1)**2
     if FLAGS.reload_epoch is not None:
         start_epoch = FLAGS.reload_epoch + 1
+    # Prune at first epoch if needed
     if np.isin(FLAGS.reload_epoch, FLAGS.prune_epochs):
-        data_dict = plenoxel.prune_grid(data_dict, method=FLAGS.prune_method, threshold=FLAGS.prune_threshold, train_c2w=train_c2w, H=H, W=W, focal=focal, batch_size=FLAGS.physical_batch_size, resolution=FLAGS.resolution, key=render_keys, radius=FLAGS.radius, harmonic_degree=FLAGS.harmonic_degree, jitter=FLAGS.jitter, uniform=FLAGS.uniform, interpolation=FLAGS.interpolation)
+        data_dict = plenoxel.prune_grid(
+            data_dict, method=FLAGS.prune_method, threshold=FLAGS.prune_threshold,
+            train_c2w=train_c2w,  H=H,  W=W,  focal=focal,  batch_size=FLAGS.physical_batch_size,
+            resolution=FLAGS.resolution, key=render_keys, radius=FLAGS.radius,
+            harmonic_degree=FLAGS.harmonic_degree, jitter=FLAGS.jitter, uniform=FLAGS.uniform,
+            interpolation=FLAGS.interpolation)
+    # Split at first epoch if needed
     if np.isin(FLAGS.reload_epoch, FLAGS.split_epochs):
         data_dict = plenoxel.split_grid(data_dict)
         FLAGS.resolution = FLAGS.resolution * 2
         if automatic_lr:
             FLAGS.lr_rgb = 150 * (FLAGS.resolution ** 1.75)
             FLAGS.lr_sigma = 51.5 * (FLAGS.resolution ** 2.37)
+    # Main iteration starts here
     for i in range(start_epoch, FLAGS.num_epochs):
         # Shuffle data before each epoch
         if FLAGS.physical_batch_size is None:
@@ -404,7 +433,7 @@ def main():
             # Shuffle rays over all training images
             rays_rgb = rays_rgb.take(np.random.permutation(rays_rgb.shape[0]), axis=0)
 
-        print('epoch', i)
+        print("Starting epoch %d" % (i))
         indices, data = data_dict
         if FLAGS.physical_batch_size is None:
             occupancy_penalty = FLAGS.occupancy_penalty / len(train_c2w)
@@ -415,7 +444,11 @@ def main():
                     subkeys = splitkeys[...,1,:]
                 else:
                     subkeys = None
-                mse, data_grad = jax.value_and_grad(lambda grid: get_loss((indices, grid), c2w, gt, H, W, focal, FLAGS.resolution, FLAGS.radius, FLAGS.harmonic_degree, FLAGS.jitter, FLAGS.uniform, subkeys, sh_dim, occupancy_penalty, FLAGS.interpolation))(data)
+                mse, data_grad = jax.value_and_grad(
+                    lambda grid: get_loss(
+                        (indices, grid), c2w, gt, H, W, focal, FLAGS.resolution, FLAGS.radius,
+                        FLAGS.harmonic_degree, FLAGS.jitter, FLAGS.uniform, subkeys,
+                        occupancy_penalty, FLAGS.interpolation))(data)
         else:
             occupancy_penalty = FLAGS.occupancy_penalty / (len(rays_rgb) // FLAGS.logical_batch_size)
             for k in tqdm(range(len(rays_rgb) // FLAGS.logical_batch_size)):
@@ -428,9 +461,24 @@ def main():
                     else:
                         subkeys = None
                     effective_j = k*(FLAGS.logical_batch_size // FLAGS.physical_batch_size) + j
-                    batch = rays_rgb[effective_j*FLAGS.physical_batch_size:(effective_j+1)*FLAGS.physical_batch_size] # [B, 2+1, 3*?]
-                    batch_rays, target_s = (batch[:,0,:], batch[:,1,:]), batch[:,2,:]
-                    mse, data_grad = jax.value_and_grad(lambda grid: get_loss_rays((indices, grid), batch_rays, target_s, FLAGS.resolution, FLAGS.radius, FLAGS.harmonic_degree, FLAGS.jitter, FLAGS.uniform, subkeys, sh_dim, occupancy_penalty, FLAGS.interpolation))(data)
+                    batch = rays_rgb[effective_j*FLAGS.physical_batch_size:(effective_j+1)*FLAGS.physical_batch_size]  # [B, 2+1, 3*?]
+                    batch_rays, target_s = (batch[:, 0, :], batch[:, 1, :]), batch[:, 2, :]
+
+                    mse, data_grad = jax.value_and_grad(
+                        lambda grid: get_loss_rays(
+                            data_dict=(indices, grid),
+                            rays=batch_rays,
+                            gt=target_s,
+                            resolution=FLAGS.resolution,
+                            radius=FLAGS.radius,
+                            harmonic_degree=FLAGS.harmonic_degree,
+                            jitter=FLAGS.jitter,
+                            uniform=FLAGS.uniform,
+                            key=subkeys,
+                            occupancy_penalty=occupancy_penalty,
+                            interpolation=FLAGS.interpolation)
+                    )(data)
+
                     if FLAGS.logical_batch_size > FLAGS.physical_batch_size:
                         if logical_grad is None:
                             logical_grad = data_grad

@@ -23,6 +23,7 @@
 #  CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
 #  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 #  POSSIBILITY OF SUCH DAMAGE.
+import functools
 
 import jax.numpy as jnp
 import jax
@@ -57,7 +58,7 @@ C4 = [
     0.6258357354491761,
 ]
 
-@jax.partial(jax.jit, static_argnums=(0,))
+@functools.partial(jax.jit, static_argnums=(0,))
 def eval_sh(deg, sh, dirs):
     """
     Evaluate spherical harmonics at unit directions
