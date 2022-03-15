@@ -1,4 +1,5 @@
 import os
+import time
 import json
 from argparse import ArgumentParser
 from typing import Tuple, List, Optional
@@ -16,7 +17,7 @@ torch.manual_seed(0)
 np.random.seed(0)
 
 
-def initialize_grid(resolution, ini_rgb=0.0, ini_sigma=0.1, harmonic_degree=0, device=None) -> Grid:
+def initialize_grid(resolution, ini_rgb=0.0, ini_sigma=0.1, harmonic_degree=0, device=None, dtype=torch.float32) -> Grid:
     """
     :param resolution:
     :param ini_rgb: Initial value in the spherical harmonics
@@ -29,13 +30,11 @@ def initialize_grid(resolution, ini_rgb=0.0, ini_sigma=0.1, harmonic_degree=0, d
     sh_dim = (harmonic_degree + 1) ** 2
     total_data_channels = sh_dim * 3 + 1
 
-    data = torch.full((resolution ** 3, total_data_channels), ini_rgb, dtype=torch.float32)
+    data = torch.full((resolution ** 3, total_data_channels), ini_rgb, dtype=torch.float32, device=device)
     data[:, -1].fill_(ini_sigma)
-    data = data.to(device=device)
 
-    indices = torch.arange(resolution ** 3, dtype=torch.long).reshape(
+    indices = torch.arange(resolution ** 3, dtype=torch.long, device=device).reshape(
         (resolution, resolution, resolution))
-    indices = indices.to(device=device)
     return Grid(grid=data, indices=indices)
 
 
@@ -111,7 +110,7 @@ def multi_lowpass(gt: torch.Tensor, resolution: int) -> torch.Tensor:
     return clean_gt
 
 
-@torch.jit.script
+#@torch.jit.script
 def get_loss_rays(grid_idx: torch.Tensor,
                   grid_data: torch.Tensor,
                   rays: Tuple[torch.Tensor, torch.Tensor],
@@ -198,6 +197,13 @@ def update_grids(grid_data: torch.Tensor, lrs: List[float],
 #     return tpsnr
 
 
+def trace_handler(p):
+    output = p.key_averages().table(sort_by="self_cuda_time_total", row_limit=10)
+    print(output)
+    p.export_chrome_trace("./trace_" + str(p.step_num) + ".json")
+    prof.export_stacks("./profiler_stacks_" + str(p.step_num) + ".txt", "self_cuda_time_total")
+
+
 def run(args):
     dev = "cuda:0"
     log_dir = args.log_dir + args.expname
@@ -217,7 +223,8 @@ def run(args):
                            ini_rgb=args.ini_rgb,
                            ini_sigma=args.ini_sigma,
                            harmonic_degree=args.harmonic_degree,
-                           device=dev)
+                           device=dev,
+                           dtype=torch.float32)
 
     print(f'precomputing all the training rays')
     # Precompute all the training rays
@@ -226,37 +233,52 @@ def run(args):
     rays_rgb = torch.cat((rays, lowp_imgs.unsqueeze(1)), dim=1)    # [N, ro+rd+rgb, H, W,   3]
     rays_rgb = torch.permute(rays_rgb, (0, 2, 3, 1, 4))                              # [N, H, W, ro+rd+rgb, 3]
     rays_rgb = torch.reshape(rays_rgb, (-1, 3, 3))                                   # [N*H*W, ro+rd+rgb, 3]
+    rays_rgb = rays_rgb.to(dtype=torch.float32)
 
     start_epoch = 0
     sh_dim = (args.harmonic_degree + 1) ** 2
     # Main iteration starts here
     for i in range(start_epoch, args.num_epochs):
-        assert args.logical_batch_size % args.physical_batch_size == 0  # TODO: Move at beginning
         # Shuffle rays over all training images
         rays_rgb = rays_rgb[np.random.permutation(rays_rgb.shape[0])]
 
         print("Starting epoch %d" % (i))
         occupancy_penalty = args.occupancy_penalty / (len(rays_rgb) // args.batch_size)
-        for k in tqdm(range(len(rays_rgb) // args.batch_size)):
-            batch = rays_rgb[k * args.batch_size: (k + 1) * args.batch_size]
-            batch = batch.to(device=dev)
-            batch_rays, target_s = (batch[:, 0, :], batch[:, 1, :]), batch[:, 2, :]
-            grid.grid.requires_grad_()
-            loss = get_loss_rays(grid_idx=grid.indices, grid_data=grid.grid, rays=batch_rays,
-                                 gt=target_s, resolution=args.resolution,
-                                 radius=args.radius, harmonic_degree=args.harmonic_degree,
-                                 jitter=args.jitter, uniform=args.uniform,
-                                 occupancy_penalty=occupancy_penalty,
-                                 interpolation=args.interpolation)
-            grad = torch.autograd.grad(loss, grid.grid)
-            with torch.no_grad():
-                lrs = [args.lr_rgb] * sh_dim + [args.lr_sigma]
-                grid.grid = update_grids(grid.grid, lrs, grad[0])
 
-        # if i % args.val_interval == args.val_interval - 1 or i == args.num_epochs - 1:
-        #     validation_psnr = run_test_step(i + 1, data_dict, test_c2w, test_gt, H, W, focal, FLAGS,
-        #                                     render_keys)
-        #     print(f'at epoch {i}, test psnr is {validation_psnr}')
+        with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+                                                schedule=torch.profiler.schedule(wait=5, warmup=2, active=5),
+                                                on_trace_ready=trace_handler, with_stack=True) as p:
+            for k in tqdm(range(len(rays_rgb) // args.batch_size)):
+                t_s = time.time()
+                batch = rays_rgb[k * args.batch_size: (k + 1) * args.batch_size]
+                batch = batch.to(device=dev)
+                batch_rays, target_s = (batch[:, 0, :], batch[:, 1, :]), batch[:, 2, :]
+                grid.grid.requires_grad_()
+                t_e = time.time()
+                print(f"Data loading takes {t_e - t_s:.4f}s")
+                t_s = time.time()
+                loss = get_loss_rays(grid_idx=grid.indices, grid_data=grid.grid, rays=batch_rays,
+                                     gt=target_s, resolution=args.resolution,
+                                     radius=args.radius, harmonic_degree=args.harmonic_degree,
+                                     jitter=args.jitter, uniform=args.uniform,
+                                     occupancy_penalty=occupancy_penalty,
+                                     interpolation=args.interpolation)
+                grad = torch.autograd.grad(loss, grid.grid)
+                #torch.cuda.synchronize()
+                t_e = time.time()
+                print(f"Iteration takes {t_e - t_s:.4f}s")
+                t_s = time.time()
+                with torch.no_grad():
+                    lrs = [args.lr_rgb] * sh_dim + [args.lr_sigma]
+                    grid.grid = update_grids(grid.grid, lrs, grad[0])
+                t_e = time.time()
+                p.step()
+                print(f"Update takes {t_e - t_s:.4f}s")
+
+            # if i % args.val_interval == args.val_interval - 1 or i == args.num_epochs - 1:
+            #     validation_psnr = run_test_step(i + 1, data_dict, test_c2w, test_gt, H, W, focal, FLAGS,
+            #                                     render_keys)
+            #     print(f'at epoch {i}, test psnr is {validation_psnr}')
 
 
 def parse_args():
