@@ -14,9 +14,9 @@ def get_freer_gpu():
     memory_available = [int(x.split()[2]) for x in open('tmp', 'r').readlines()]
     return np.argmax(memory_available)
 
-# gpu = get_freer_gpu()
-# os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
-# print(f'gpu is {gpu}')
+gpu = get_freer_gpu()
+os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
+print(f'gpu is {gpu}')
 
 # Import jax only after setting the visible gpu
 import jax
@@ -392,7 +392,7 @@ split_keys_partial = jax.vmap(jax.random.split, in_axes=0, out_axes=0)
 split_keys = jax.vmap(split_keys_partial, in_axes=1, out_axes=1)
 if FLAGS.physical_batch_size is None:
     keys = jax.vmap(jax.vmap(jax.random.PRNGKey, in_axes=0, out_axes=0), in_axes=1, out_axes=1)(jnp.reshape(jnp.arange(800*800), (800,800)))
-else: 
+else:
     keys = jax.vmap(jax.random.PRNGKey, in_axes=0, out_axes=0)(jnp.arange(FLAGS.physical_batch_size))
 render_keys = jax.vmap(jax.random.PRNGKey, in_axes=0, out_axes=0)(jnp.arange(800*800))
 if FLAGS.jitter == 0:
@@ -520,7 +520,7 @@ def main():
         if i % FLAGS.val_interval == FLAGS.val_interval - 1 or i == FLAGS.num_epochs - 1:
             validation_psnr = run_test_step(i + 1, data_dict, test_c2w, test_gt, H, W, focal, FLAGS, render_keys)
             print(f'at epoch {i}, test psnr is {validation_psnr}')
-        
-    
+
+
 if __name__ == "__main__":
     main()

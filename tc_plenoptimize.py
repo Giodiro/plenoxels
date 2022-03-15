@@ -16,7 +16,7 @@ torch.manual_seed(0)
 np.random.seed(0)
 
 
-def initialize_grid(resolution, ini_rgb=0.0, ini_sigma=0.1, harmonic_degree=0) -> Grid:
+def initialize_grid(resolution, ini_rgb=0.0, ini_sigma=0.1, harmonic_degree=0, device=None) -> Grid:
     """
     :param resolution:
     :param ini_rgb: Initial value in the spherical harmonics
@@ -31,9 +31,11 @@ def initialize_grid(resolution, ini_rgb=0.0, ini_sigma=0.1, harmonic_degree=0) -
 
     data = torch.full((resolution ** 3, total_data_channels), ini_rgb, dtype=torch.float32)
     data[:, -1].fill_(ini_sigma)
+    data = data.to(device=device)
 
     indices = torch.arange(resolution ** 3, dtype=torch.long).reshape(
         (resolution, resolution, resolution))
+    indices = indices.to(device=device)
     return Grid(grid=data, indices=indices)
 
 
@@ -197,6 +199,7 @@ def update_grids(grid_data: torch.Tensor, lrs: List[float],
 
 
 def run(args):
+    dev = "cuda:0"
     log_dir = args.log_dir + args.expname
     os.makedirs(log_dir, exist_ok=True)
 
@@ -213,7 +216,8 @@ def run(args):
     grid = initialize_grid(resolution=args.resolution,
                            ini_rgb=args.ini_rgb,
                            ini_sigma=args.ini_sigma,
-                           harmonic_degree=args.harmonic_degree)
+                           harmonic_degree=args.harmonic_degree,
+                           device=dev)
 
     print(f'precomputing all the training rays')
     # Precompute all the training rays
@@ -235,6 +239,7 @@ def run(args):
         occupancy_penalty = args.occupancy_penalty / (len(rays_rgb) // args.batch_size)
         for k in tqdm(range(len(rays_rgb) // args.batch_size)):
             batch = rays_rgb[k * args.batch_size: (k + 1) * args.batch_size]
+            batch = batch.to(device=dev)
             batch_rays, target_s = (batch[:, 0, :], batch[:, 1, :]), batch[:, 2, :]
             grid.grid.requires_grad_()
             loss = get_loss_rays(grid_idx=grid.indices, grid_data=grid.grid, rays=batch_rays,
