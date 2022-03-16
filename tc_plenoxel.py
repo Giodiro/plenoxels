@@ -100,7 +100,7 @@ class TrilinearInterpolate(torch.autograd.Function):
         # out:          [batch, n_intrs, 8, n_channels]
         batch, nintrs = ctx.batch, ctx.nintrs
         weights = ctx.weights.reshape(batch, nintrs, 8, 1)
-        return grad_output.unsqueeze(2) * weights, None, None
+        return grad_output.unsqueeze(2).mul_(weights), None, None
 
         # TODO: The gradient is essentially sparse. There is no point in computing the gradient for all of data, it should be much
         #       quicker to return the gradient with respect to only the data contained in neighbor_ids. Then we can essentially avoid
@@ -119,7 +119,7 @@ if __name__ == "__main__":
     TrilinearInterpolate.test_autograd()
 
 
-#@torch.jit.script
+@torch.jit.script
 def get_intersection_ids(intersections: torch.Tensor,  # [batch, n_intersections]
                          rays_o: torch.Tensor,  # [batch, 3]
                          rays_d: torch.Tensor,  # [batch, 3]
@@ -148,8 +148,8 @@ def get_intersection_ids(intersections: torch.Tensor,  # [batch, n_intersections
     neighbors = intrs_pts.unsqueeze(2) + offsets[None, None, :, :]  # [batch, n_intersections, 8, 3]
 
     # Dividing one of the points in neighbors by voxel_len, gives us the grid coordinates (i.e. integers)
-    # TODO: why + eps?
-    neighbors_grid_coords = safe_floor(neighbors.div_(voxel_len))
+    # TODO: why + eps?0
+    neighbors_grid_coords = torch.floor_(neighbors.div_(voxel_len).add_(1e-5))
 
     # The actual voxel (at the center?)
     neighbor_centers = torch.clamp(
@@ -205,7 +205,8 @@ def volumetric_rendering(rgb: torch.Tensor,  # [batch, n_intersections-1, 3]
     # the absolute amount of light that gets stuck in each voxel
     weights = alpha * accum_prod  # [batch, n_intersections - 1]
     # Accumulated color over the samples, ignoring background
-    comp_rgb = (weights.unsqueeze(-1) * torch.sigmoid(rgb)).sum(dim=-2)  # [batch, 3]
+    comp_rgb = torch.einsum('bik, bik->bk', torch.sigmoid(rgb), weights.unsqueeze(-1))  # [batch, 3]
+    # comp_rgb = (weights.unsqueeze(-1) * torch.sigmoid(rgb)).sum(dim=-2)  # [batch, 3]
     # Weighted average of depths by contribution to final color
     depth = (weights * z_vals[:, :-1]).sum(dim=-1)  # [batch]
     # Total amount of light absorbed along the ray
