@@ -58,17 +58,16 @@ def get_interp_weights(xs, ys, zs):
     # ys: n_pts, 1
     # zs: n_pts, 1
     # out: n_pts, 8
-    weight000 = (1 - xs) * (1 - ys) * (1 - zs)  # [n_pts]
-    weight001 = (1 - xs) * (1 - ys) * zs  # [n_pts]
-    weight010 = (1 - xs) * ys * (1 - zs)  # [n_pts]
-    weight011 = (1 - xs) * ys * zs  # [n_pts]
-    weight100 = xs * (1 - ys) * (1 - zs)  # [n_pts]
-    weight101 = xs * (1 - ys) * zs  # [n_pts]
-    weight110 = xs * ys * (1 - zs)  # [n_pts]
-    weight111 = xs * ys * zs  # [n_pts]
-    return torch.stack(
-        (weight000, weight001, weight010, weight011,
-         weight100, weight101, weight110, weight111), dim=1)  # [n_pts, 8]
+    weights = torch.empty(xs.shape[0], 8, dtype=xs.dtype, device=xs.device)
+    weights[:, 0] = (1 - xs) * (1 - ys) * (1 - zs)  # [n_pts]
+    weights[:, 1] = (1 - xs) * (1 - ys) * zs  # [n_pts]
+    weights[:, 2] = (1 - xs) * ys * (1 - zs)  # [n_pts]
+    weights[:, 3] = (1 - xs) * ys * zs  # [n_pts]
+    weights[:, 4] = xs * (1 - ys) * (1 - zs)  # [n_pts]
+    weights[:, 5] = xs * (1 - ys) * zs  # [n_pts]
+    weights[:, 6] = xs * ys * (1 - zs)  # [n_pts]
+    weights[:, 7] = xs * ys * zs  # [n_pts]
+    return weights
 
 
 # noinspection PyAbstractClass,PyMethodOverriding
@@ -84,10 +83,10 @@ class TrilinearInterpolate(torch.autograd.Function):
         neighbor_data = neighbor_data.view(batch * nintrs, 8, -1)  # [n_pts, 8, channels]
         offsets = offsets.view(batch * nintrs, 3)  # [n_pts, 3]
 
-        weights = get_interp_weights(xs=offsets[:, 0:1], ys=offsets[:, 1:2], zs=offsets[:, 2:3])
+        weights = get_interp_weights(xs=offsets[:, 0], ys=offsets[:, 1], zs=offsets[:, 2]).unsqueeze(-1)  # [n_pts, 8, 1]
 
-        out = torch.sum(neighbor_data * weights,
-                        dim=1)  # sum over the 8 neighbors => [n_pts, channels]
+        out = torch.einsum('bik, bik -> bk', neighbor_data, weights)
+        #out = torch.sum(neighbor_data * weights, dim=1)  # sum over the 8 neighbors => [n_pts, channels]
         out = out.view(batch, nintrs, -1)  # [batch, n_intersections, channels]
 
         ctx.weights = weights
@@ -120,7 +119,7 @@ if __name__ == "__main__":
     TrilinearInterpolate.test_autograd()
 
 
-@torch.jit.script
+#@torch.jit.script
 def get_intersection_ids(intersections: torch.Tensor,  # [batch, n_intersections]
                          rays_o: torch.Tensor,  # [batch, 3]
                          rays_d: torch.Tensor,  # [batch, 3]
@@ -138,8 +137,7 @@ def get_intersection_ids(intersections: torch.Tensor,  # [batch, n_intersections
          [1, 1, -1],
          [1, 1, 1]], dtype=intersections.dtype, device=intersections.device)
     # Points at which the rays intersect the grid-lines.
-    intrs_pts = rays_o.unsqueeze(1) + intersections.unsqueeze(2) * rays_d.unsqueeze(
-        1)  # [batch, n_intersections, 3]
+    intrs_pts = rays_o.unsqueeze(1) + intersections.unsqueeze(2) * rays_d.unsqueeze(1)  # [batch, n_intersections, 3]
     # Offsets
     offsets = offsets_3d.mul_(voxel_len / 2)  # [8, 3]
 
@@ -151,7 +149,7 @@ def get_intersection_ids(intersections: torch.Tensor,  # [batch, n_intersections
 
     # Dividing one of the points in neighbors by voxel_len, gives us the grid coordinates (i.e. integers)
     # TODO: why + eps?
-    neighbors_grid_coords = safe_floor(neighbors / voxel_len)
+    neighbors_grid_coords = safe_floor(neighbors.div_(voxel_len))
 
     # The actual voxel (at the center?)
     neighbor_centers = torch.clamp(
@@ -159,11 +157,12 @@ def get_intersection_ids(intersections: torch.Tensor,  # [batch, n_intersections
         min=-(radius - voxel_len / 2),
         max=radius - voxel_len / 2)  # [batch, n_intersections, 8, 3]
 
-    neighbor_ids = torch.clamp(
-        (neighbors_grid_coords + resolution / 2).to(torch.long),
+    neighbor_ids = torch.clamp_(
+        neighbors_grid_coords.add_(resolution / 2).to(torch.long),
         min=0, max=resolution - 1)  # [batch, n_intersections, 8, 3]
 
-    xyzs = (intrs_pts - neighbor_centers[:, :, 0, :]) / voxel_len  # [batch, n_intersections, 3]
+    #xyzs = (intrs_pts - neighbor_centers[:, :, 0, :]) / voxel_len  # [batch, n_intersections, 3]
+    xyzs = intrs_pts.sub_(neighbor_centers[:, :, 0, :]).div_(voxel_len)
     neighbor_idxs = grid_idx[
         neighbor_ids[..., 0],
         neighbor_ids[..., 1],
@@ -196,7 +195,7 @@ def volumetric_rendering(rgb: torch.Tensor,  # [batch, n_intersections-1, 3]
     batch, n_intrs = z_vals.shape
     # Convert ray-relative distance to absolute distance (shouldn't matter if rays_d is normalized)
     # dists: [batch, n_intersections - 1]
-    dists = torch.diff(z_vals, n=1, dim=1) * torch.linalg.norm(dirs, ord=2, dim=-1, keepdim=True)
+    dists = torch.diff(z_vals, n=1, dim=1).mul_(torch.linalg.norm(dirs, ord=2, dim=-1, keepdim=True))
     omalpha = torch.exp(-torch.relu(sigma) * dists)  # [batch, n_intersections - 1]
     alpha = 1.0 - omalpha
     accum_prod = torch.cumprod(omalpha[:, :-1] + eps, dim=-1)  # [batch, n_intersections - 2]
@@ -318,7 +317,7 @@ def fetch_intersections(grid_idx: torch.Tensor,
         end=start.squeeze() + uniform * voxel_len * count,
         # difference from plenoxel.py since here endpoint=True
         steps=count)  # [batch, n_intersections]
-    intersections = torch.clamp(intersections, min=None, max=stop)
+    intersections = torch.clamp_(intersections, min=None, max=stop)
     xyzs, neighbor_ids = get_intersection_ids(intersections, rays_o, rays_d, grid_idx,
                                               voxel_len, radius, resolution)
 

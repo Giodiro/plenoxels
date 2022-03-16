@@ -7,6 +7,7 @@ from argparse import ArgumentParser
 from typing import Tuple, List, Optional
 
 import torch
+import torch.nn.functional as F
 from torchvision.transforms import transforms
 from tqdm import tqdm
 import imageio
@@ -151,32 +152,44 @@ def train_batch(grid_idx: torch.Tensor,
         Type of interpolation, should always be 'trilinear'
     :return:
     """
-    grid_data = grid_data.detach()
-    intrp_w, neighbor_ids, intersections = tc_plenoxel.fetch_intersections(
-        grid_idx, rays_o=rays[0], rays_d=rays[1], resolution=resolution, radius=radius,
-        uniform=uniform, interpolation=interpolation)
-    neighbor_data = grid_data[neighbor_ids]
-    orig_id = neighbor_data.data_ptr()
+    grid_data = grid_data.requires_grad_()
+    t_s = time.time()
+    with torch.autograd.no_grad():
+        intrp_w, neighbor_ids, intersections = tc_plenoxel.fetch_intersections(
+            grid_idx, rays_o=rays[0], rays_d=rays[1], resolution=resolution, radius=radius,
+            uniform=uniform, interpolation=interpolation)
+    t_inters = time.time() - t_s
 
-    neighbor_data.requires_grad_()
+    t_s = time.time()
+    neighbor_data = grid_data[neighbor_ids]
+    t_idx = time.time() - t_s
+
+    t_s = time.time()
     rgb, disp, acc, weights = tc_plenoxel.compute_intersection_results(
         interp_weights=intrp_w, neighbor_data=neighbor_data, rays_d=rays[1],
         intersections=intersections, harmonic_degree=harmonic_degree)
-    mse = torch.mean(torch.square(rgb - gt))
-    loss = mse + occupancy_penalty * torch.mean(torch.relu(grid_data[..., -1]))
+    t_res = time.time() - t_s
+    t_s = time.time()
+    loss = F.mse_loss(rgb, gt) + occupancy_penalty * torch.mean(torch.relu(neighbor_data[..., -1]))
+    #mse = torch.mean(torch.square(rgb - gt))
+    #loss = mse# + occupancy_penalty * torch.mean(torch.relu(grid_data[..., -1]))
+    t_loss = time.time() - t_s
 
-    neighbor_grad = torch.autograd.grad(loss, neighbor_data)[0]
     with torch.autograd.no_grad():
-        neighbor_data = update_grids(neighbor_data, lrs, neighbor_grad)
-        new_id = neighbor_grad.data_ptr()
-
-    print(f"neighbors: {orig_id} --> {new_id}")
+        t_s = time.time()
+        grad = torch.autograd.grad(loss, neighbor_data)[0]
+        t_g = time.time() - t_s
+        t_s = time.time()
+        upd_data = update_grids(neighbor_data, lrs, grad)
+        t_u = time.time() - t_s
+    print(f"Intersections {t_inters*1000:.2f}ms    neighbors {t_idx*1000:.2f}ms    diff {t_res*1000:.2f}ms    loss {t_loss*1000:.2f}ms    grad {t_g*1000:.2f}ms   update {t_u*1000:.2f}ms")
 
 
     return loss, grid_data
 
 
-def update_grids(grid_data: torch.Tensor, lrs: List[float],
+#@torch.jit.script
+def update_grids(grid_data: torch.Tensor, lrs: torch.Tensor,
                  grid_grad: torch.Tensor) -> torch.Tensor:
     """
 
@@ -189,15 +202,8 @@ def update_grids(grid_data: torch.Tensor, lrs: List[float],
     :return:
         The new grid, updated by a gradient descent step.
     """
-    lrs_per_channel = []
-    for i, lr in enumerate(lrs):
-        if i != len(lrs) - 1:
-            lrs_per_channel.extend([lr, lr, lr])
-        else:
-            lrs_per_channel.append(lr)
-    lrs_per_channel = torch.tensor(lrs_per_channel, dtype=grid_grad.dtype, device=grid_grad.device)
-    grid_grad.mul_(-lrs_per_channel.unsqueeze(0))
-    return grid_data.add_(grid_grad)
+    lrs_shape = [1] * (grid_data.dim() - 1) + [lrs.shape[0]]
+    return grid_data - grid_grad * lrs.view(lrs_shape)
 
 
 # def run_test_step(i, data_dict, test_c2w, test_gt, H, W, focal, FLAGS, key, name_appendage=''):
@@ -260,10 +266,16 @@ def run(args):
     rays_rgb = torch.cat((rays, lowp_imgs.unsqueeze(1)), dim=1)  # [N, ro+rd+rgb, H, W,   3]
     rays_rgb = torch.permute(rays_rgb, (0, 2, 3, 1, 4))  # [N, H, W, ro+rd+rgb, 3]
     rays_rgb = torch.reshape(rays_rgb, (-1, 3, 3))  # [N*H*W, ro+rd+rgb, 3]
-    rays_rgb = rays_rgb.to(dtype=torch.float32).pin_memory()
+    rays_rgb = rays_rgb.to(dtype=torch.float32)
+    if dev != "cpu":
+        rays_rgb = rays_rgb.pin_memory()
 
     start_epoch = 0
     sh_dim = (args.harmonic_degree + 1) ** 2
+
+    occupancy_penalty = args.occupancy_penalty / (len(rays_rgb) // args.batch_size)
+    lrs = [args.lr_rgb] * (sh_dim * 3) + [args.lr_sigma]
+    lrs = torch.tensor(lrs, dtype=torch.float32, device=dev)
 
     profiling_handler = functools.partial(trace_handler, exp_name=args.expname,
                                           dev="cpu" if dev == "cpu" else "cuda")
@@ -273,8 +285,6 @@ def run(args):
         rays_rgb = rays_rgb[np.random.permutation(rays_rgb.shape[0])]
 
         print("Starting epoch %d" % (i))
-        occupancy_penalty = args.occupancy_penalty / (len(rays_rgb) // args.batch_size)
-        lrs = [args.lr_rgb] * sh_dim + [args.lr_sigma]
 
         with ExitStack() as stack:
             p = None
