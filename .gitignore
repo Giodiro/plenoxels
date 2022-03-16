@@ -1,0 +1,8 @@
+*.txt
+*.json
+*.zip
+drums/
+**/__pycache__/
+.idea/
+*.pdf
+*.svg

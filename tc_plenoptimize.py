@@ -1,3 +1,4 @@
+import functools
 import os
 import time
 import json
@@ -174,7 +175,7 @@ def update_grids(grid_data: torch.Tensor, lrs: List[float],
             lrs_per_channel.append(lr)
     lrs_per_channel = torch.tensor(lrs_per_channel, dtype=grid_grad.dtype, device=grid_grad.device)
     grid_grad.mul_(-lrs_per_channel.unsqueeze(0))
-    return grid_data + grid_grad
+    return grid_data.add_(grid_grad)
 
 
 # def run_test_step(i, data_dict, test_c2w, test_gt, H, W, focal, FLAGS, key, name_appendage=''):
@@ -197,15 +198,18 @@ def update_grids(grid_data: torch.Tensor, lrs: List[float],
 #     return tpsnr
 
 
-def trace_handler(p):
-    output = p.key_averages().table(sort_by="self_cuda_time_total", row_limit=10)
-    print(output)
-    p.export_chrome_trace("./trace_" + str(p.step_num) + ".json")
-    prof.export_stacks("./profiler_stacks_" + str(p.step_num) + ".txt", "self_cuda_time_total")
+def trace_handler(p, exp_name, dev):
+    print(p.key_averages().table(sort_by=f"self_{dev}_time_total", row_limit=10))
+    print(p.key_averages().table(sort_by=f"self_{dev}_memory_usage", row_limit=10))
+    p.export_chrome_trace(f"./trace_{exp_name}_{p.step_num}.json")
+    p.export_stacks(f"./profiler_stacks_{exp_name}_{p.step_num}.txt", f"self_{dev}_time_total")
+    torch.profiler.tensorboard_trace_handler(f"tb_logs/{exp_name}")(p)
 
 
 def run(args):
-    dev = "cuda:0"
+    dev = "cpu"
+    if torch.cuda.is_available():
+        dev = "cuda:0"
     log_dir = args.log_dir + args.expname
     os.makedirs(log_dir, exist_ok=True)
 
@@ -229,14 +233,17 @@ def run(args):
     print(f'precomputing all the training rays')
     # Precompute all the training rays
     rays = torch.stack([get_rays(H, W, focal, p) for p in train_c2w[:, :3, :4]], 0)  # [N, ro+rd, H, W, 3]
-    lowp_imgs = multi_lowpass(train_gt, args.resolution)  # [N, H, W, 3]
+    lowp_imgs = multi_lowpass(train_gt, args.resolution)           # [N, H, W, 3]
     rays_rgb = torch.cat((rays, lowp_imgs.unsqueeze(1)), dim=1)    # [N, ro+rd+rgb, H, W,   3]
-    rays_rgb = torch.permute(rays_rgb, (0, 2, 3, 1, 4))                              # [N, H, W, ro+rd+rgb, 3]
-    rays_rgb = torch.reshape(rays_rgb, (-1, 3, 3))                                   # [N*H*W, ro+rd+rgb, 3]
+    rays_rgb = torch.permute(rays_rgb, (0, 2, 3, 1, 4))            # [N, H, W, ro+rd+rgb, 3]
+    rays_rgb = torch.reshape(rays_rgb, (-1, 3, 3))                 # [N*H*W, ro+rd+rgb, 3]
     rays_rgb = rays_rgb.to(dtype=torch.float32)
 
     start_epoch = 0
     sh_dim = (args.harmonic_degree + 1) ** 2
+
+    profiling_handler = functools.partial(trace_handler, exp_name=args.expname,
+                                          dev="cpu" if dev == "cpu" else "cuda")
     # Main iteration starts here
     for i in range(start_epoch, args.num_epochs):
         # Shuffle rays over all training images
@@ -245,9 +252,9 @@ def run(args):
         print("Starting epoch %d" % (i))
         occupancy_penalty = args.occupancy_penalty / (len(rays_rgb) // args.batch_size)
 
-        with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
-                                                schedule=torch.profiler.schedule(wait=5, warmup=2, active=5),
-                                                on_trace_ready=trace_handler, with_stack=True) as p:
+        with torch.profiler.profile(schedule=torch.profiler.schedule(wait=5, warmup=5, active=5),
+                                    on_trace_ready=profiling_handler,
+                                    with_stack=True, profile_memory=True, record_shapes=True) as p:
             for k in tqdm(range(len(rays_rgb) // args.batch_size)):
                 t_s = time.time()
                 batch = rays_rgb[k * args.batch_size: (k + 1) * args.batch_size]
@@ -264,7 +271,6 @@ def run(args):
                                      occupancy_penalty=occupancy_penalty,
                                      interpolation=args.interpolation)
                 grad = torch.autograd.grad(loss, grid.grid)
-                #torch.cuda.synchronize()
                 t_e = time.time()
                 print(f"Iteration takes {t_e - t_s:.4f}s")
                 t_s = time.time()
@@ -274,6 +280,7 @@ def run(args):
                 t_e = time.time()
                 p.step()
                 print(f"Update takes {t_e - t_s:.4f}s")
+                print("\n\n")
 
             # if i % args.val_interval == args.val_interval - 1 or i == args.num_epochs - 1:
             #     validation_psnr = run_test_step(i + 1, data_dict, test_c2w, test_gt, H, W, focal, FLAGS,
