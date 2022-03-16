@@ -19,7 +19,8 @@ torch.manual_seed(0)
 np.random.seed(0)
 
 
-def initialize_grid(resolution, ini_rgb=0.0, ini_sigma=0.1, harmonic_degree=0, device=None, dtype=torch.float32) -> Grid:
+def initialize_grid(resolution, ini_rgb=0.0, ini_sigma=0.1, harmonic_degree=0, device=None,
+                    dtype=torch.float32) -> Grid:
     """
     :param resolution:
     :param ini_rgb: Initial value in the spherical harmonics
@@ -32,7 +33,8 @@ def initialize_grid(resolution, ini_rgb=0.0, ini_sigma=0.1, harmonic_degree=0, d
     sh_dim = (harmonic_degree + 1) ** 2
     total_data_channels = sh_dim * 3 + 1
 
-    data = torch.full((resolution ** 3, total_data_channels), ini_rgb, dtype=torch.float32, device=device)
+    data = torch.full((resolution ** 3, total_data_channels), ini_rgb, dtype=torch.float32,
+                      device=device)
     data[:, -1].fill_(ini_sigma)
 
     indices = torch.arange(resolution ** 3, dtype=torch.long, device=device).reshape(
@@ -40,7 +42,8 @@ def initialize_grid(resolution, ini_rgb=0.0, ini_sigma=0.1, harmonic_degree=0, d
     return Grid(grid=data, indices=indices)
 
 
-def get_data(root: str, stage: str, max_frames: Optional[int] = None) -> Tuple[float, torch.Tensor, torch.Tensor]:
+def get_data(root: str, stage: str, max_frames: Optional[int] = None) -> Tuple[
+    float, torch.Tensor, torch.Tensor]:
     all_c2w = []
     all_gt = []
 
@@ -98,7 +101,8 @@ def multi_lowpass(gt: torch.Tensor, resolution: int) -> torch.Tensor:
     :return:
     """
     if gt.dim() <= 3:
-        print(f'multi_lowpass called on image with 3 or fewer dimensions; did you mean to use lowpass instead?')
+        print(
+            f'multi_lowpass called on image with 3 or fewer dimensions; did you mean to use lowpass instead?')
     H = gt.shape[1]
     W = gt.shape[2]
     clean_gt = torch.empty_like(gt)
@@ -112,17 +116,18 @@ def multi_lowpass(gt: torch.Tensor, resolution: int) -> torch.Tensor:
     return clean_gt
 
 
-#@torch.jit.script
-def get_loss_rays(grid_idx: torch.Tensor,
-                  grid_data: torch.Tensor,
-                  rays: Tuple[torch.Tensor, torch.Tensor],
-                  gt: torch.Tensor,
-                  resolution: int,
-                  radius: float,
-                  harmonic_degree: int,
-                  jitter: bool, uniform: float,
-                  occupancy_penalty: float,
-                  interpolation: str):
+# @torch.jit.script
+def train_batch(grid_idx: torch.Tensor,
+                       grid_data: torch.Tensor,
+                       rays: Tuple[torch.Tensor, torch.Tensor],
+                       gt: torch.Tensor,
+                       resolution: int,
+                       radius: float,
+                       harmonic_degree: int,
+                       jitter: bool, uniform: float,
+                       occupancy_penalty: float,
+                       interpolation: str,
+                       lrs):
     """
     Compute the rendered rays, and the loss
 
@@ -146,13 +151,29 @@ def get_loss_rays(grid_idx: torch.Tensor,
         Type of interpolation, should always be 'trilinear'
     :return:
     """
-    intrp_w, neighbor_ids, intersections = tc_plenoxel.fetch_intersections(grid_idx, rays_o=rays[0], rays_d=rays[1], resolution=resolution,
-                                    radius=radius, uniform=uniform, interpolation=interpolation)
+    grid_data = grid_data.detach()
+    intrp_w, neighbor_ids, intersections = tc_plenoxel.fetch_intersections(
+        grid_idx, rays_o=rays[0], rays_d=rays[1], resolution=resolution, radius=radius,
+        uniform=uniform, interpolation=interpolation)
     neighbor_data = grid_data[neighbor_ids]
-    rgb, disp, acc, weights = tc_plenoxel.compute_intersection_results(intrp_w, neighbor_data, rays[1], intersections, harmonic_degree)
+    orig_id = neighbor_data.data_ptr()
+
+    neighbor_data.requires_grad_()
+    rgb, disp, acc, weights = tc_plenoxel.compute_intersection_results(
+        interp_weights=intrp_w, neighbor_data=neighbor_data, rays_d=rays[1],
+        intersections=intersections, harmonic_degree=harmonic_degree)
     mse = torch.mean(torch.square(rgb - gt))
     loss = mse + occupancy_penalty * torch.mean(torch.relu(grid_data[..., -1]))
-    return loss
+
+    neighbor_grad = torch.autograd.grad(loss, neighbor_data)[0]
+    with torch.autograd.no_grad():
+        neighbor_data = update_grids(neighbor_data, lrs, neighbor_grad)
+        new_id = neighbor_grad.data_ptr()
+
+    print(f"neighbors: {orig_id} --> {new_id}")
+
+
+    return loss, grid_data
 
 
 def update_grids(grid_data: torch.Tensor, lrs: List[float],
@@ -202,8 +223,8 @@ def update_grids(grid_data: torch.Tensor, lrs: List[float],
 def trace_handler(p, exp_name, dev):
     print(p.key_averages().table(sort_by=f"self_{dev}_time_total", row_limit=10))
     print(p.key_averages().table(sort_by=f"self_{dev}_memory_usage", row_limit=10))
-    #p.export_chrome_trace(f"./trace_{exp_name}_{p.step_num}.json")
-    #p.export_stacks(f"./profiler_stacks_{exp_name}_{p.step_num}.txt", f"self_{dev}_time_total")
+    # p.export_chrome_trace(f"./trace_{exp_name}_{p.step_num}.json")
+    # p.export_stacks(f"./profiler_stacks_{exp_name}_{p.step_num}.txt", f"self_{dev}_time_total")
     torch.profiler.tensorboard_trace_handler(f"tb_logs/{exp_name}")(p)
 
 
@@ -233,11 +254,12 @@ def run(args):
 
     print(f'precomputing all the training rays')
     # Precompute all the training rays
-    rays = torch.stack([get_rays(H, W, focal, p) for p in train_c2w[:, :3, :4]], 0)  # [N, ro+rd, H, W, 3]
-    lowp_imgs = multi_lowpass(train_gt, args.resolution)           # [N, H, W, 3]
-    rays_rgb = torch.cat((rays, lowp_imgs.unsqueeze(1)), dim=1)    # [N, ro+rd+rgb, H, W,   3]
-    rays_rgb = torch.permute(rays_rgb, (0, 2, 3, 1, 4))            # [N, H, W, ro+rd+rgb, 3]
-    rays_rgb = torch.reshape(rays_rgb, (-1, 3, 3))                 # [N*H*W, ro+rd+rgb, 3]
+    rays = torch.stack([get_rays(H, W, focal, p) for p in train_c2w[:, :3, :4]],
+                       0)  # [N, ro+rd, H, W, 3]
+    lowp_imgs = multi_lowpass(train_gt, args.resolution)  # [N, H, W, 3]
+    rays_rgb = torch.cat((rays, lowp_imgs.unsqueeze(1)), dim=1)  # [N, ro+rd+rgb, H, W,   3]
+    rays_rgb = torch.permute(rays_rgb, (0, 2, 3, 1, 4))  # [N, H, W, ro+rd+rgb, 3]
+    rays_rgb = torch.reshape(rays_rgb, (-1, 3, 3))  # [N*H*W, ro+rd+rgb, 3]
     rays_rgb = rays_rgb.to(dtype=torch.float32).pin_memory()
 
     start_epoch = 0
@@ -252,41 +274,36 @@ def run(args):
 
         print("Starting epoch %d" % (i))
         occupancy_penalty = args.occupancy_penalty / (len(rays_rgb) // args.batch_size)
+        lrs = [args.lr_rgb] * sh_dim + [args.lr_sigma]
 
         with ExitStack() as stack:
             p = None
             if False:
-                p = torch.profiler.profile(schedule=torch.profiler.schedule(wait=5, warmup=5, active=5),
-                                    on_trace_ready=profiling_handler,
-                                    with_stack=False, profile_memory=True, record_shapes=True)
+                p = torch.profiler.profile(
+                    schedule=torch.profiler.schedule(wait=5, warmup=5, active=5),
+                    on_trace_ready=profiling_handler,
+                    with_stack=False, profile_memory=True, record_shapes=True)
                 stack.enter_context(p)
             for k in tqdm(range(len(rays_rgb) // args.batch_size)):
                 t_s = time.time()
                 batch = rays_rgb[k * args.batch_size: (k + 1) * args.batch_size]
                 batch = batch.to(device=dev)
                 batch_rays, target_s = (batch[:, 0, :], batch[:, 1, :]), batch[:, 2, :]
-                grid.grid.requires_grad_()
                 t_e = time.time()
                 print(f"Data loading takes {t_e - t_s:.4f}s")
                 t_s = time.time()
-                loss = get_loss_rays(grid_idx=grid.indices, grid_data=grid.grid, rays=batch_rays,
+                loss, grid_data = train_batch(grid_idx=grid.indices, grid_data=grid.grid, rays=batch_rays,
                                      gt=target_s, resolution=args.resolution,
                                      radius=args.radius, harmonic_degree=args.harmonic_degree,
                                      jitter=args.jitter, uniform=args.uniform,
                                      occupancy_penalty=occupancy_penalty,
-                                     interpolation=args.interpolation)
-                grad = torch.autograd.grad(loss, grid.grid)
+                                     interpolation=args.interpolation, lrs=lrs)
                 torch.cuda.synchronize()
                 t_e = time.time()
                 print(f"Iteration takes {t_e - t_s:.4f}s")
                 t_s = time.time()
-                with torch.no_grad():
-                    lrs = [args.lr_rgb] * sh_dim + [args.lr_sigma]
-                    grid.grid = update_grids(grid.grid, lrs, grad[0])
-                t_e = time.time()
                 if p is not None:
                     p.step()
-                print(f"Update takes {t_e - t_s:.4f}s")
                 print("\n\n")
 
             # if i % args.val_interval == args.val_interval - 1 or i == args.num_epochs - 1:
@@ -375,31 +392,31 @@ def parse_args():
         type=float,
         default=None,
         help='SGD step size for rgb. Default chooses automatically based on resolution.'
-        )
+    )
     flags.add_argument(
         '--lr_sigma',
         type=float,
         default=None,
         help='SGD step size for sigma. Default chooses automatically based on resolution.'
-        )
+    )
     flags.add_argument(
         '--physical_batch_size',
         type=int,
         default=4000,
         help='Number of rays per batch, to avoid OOM.'
-        )
+    )
     flags.add_argument(
         '--logical_batch_size',
         type=int,
         default=4000,
         help='Number of rays per optimization batch. Must be a multiple of physical_batch_size.'
-        )
+    )
     flags.add_argument(
         '--batch_size',
         type=int,
         default=4000,
         help='Number of rays per optimization batch. Must be a multiple of physical_batch_size.'
-        )
+    )
     flags.add_argument(
         '--jitter',
         type=float,
