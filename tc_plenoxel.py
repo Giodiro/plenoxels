@@ -115,7 +115,54 @@ if __name__ == "__main__":
     TrilinearInterpolate.test_autograd()
 
 
-# @torch.jit.script
+@torch.jit.script
+def get_intersection_ids(intersections: torch.Tensor,  # [batch, n_intersections]
+                         rays_o: torch.Tensor,         # [batch, 3]
+                         rays_d: torch.Tensor,         # [batch, 3]
+                         grid_idx: torch.Tensor,       # [res, res, res]
+                         voxel_len: float,
+                         radius: float,
+                         eps: float,
+                         resolution: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    offsets_3d = torch.tensor(
+        [[-1, -1, -1],
+         [-1, -1, 1],
+         [-1, 1, -1],
+         [-1, 1, 1],
+         [1, -1, -1],
+         [1, -1, 1],
+         [1, 1, -1],
+         [1, 1, 1]], dtype=intersections.dtype, device=intersections.device)
+    # Points at which the rays intersect the grid-lines.
+    intrs_pts = rays_o.unsqueeze(1) + intersections.unsqueeze(2) * rays_d.unsqueeze(1)  # [batch, n_intersections, 3]
+    # Offsets
+    offsets = offsets_3d.mul_(voxel_len / 2)  # [8, 3]
+
+    # Radius: the radius of the 'world' grid
+
+    # Go from an intersection point to its 8 neighboring voxels
+    # GIAC: Here we remove clamp(-radius, radius)
+    neighbors = intrs_pts.unsqueeze(2) + offsets[None, None, :, :]  # [batch, n_intersections, 8, 3]
+
+    # Dividing one of the points in neighbors by voxel_len, gives us the grid coordinates (i.e. integers)
+    # TODO: why + eps?
+    neighbors_grid_coords = torch.floor(neighbors / voxel_len + eps)
+
+    # The actual voxel (at the center?)
+    neighbor_centers = torch.clamp(
+        (neighbors_grid_coords + 0.5) * voxel_len,
+        min=-(radius - voxel_len / 2),
+        max=radius - voxel_len / 2)  # [batch, n_intersections, 8, 3]
+
+    neighbor_ids = torch.clamp(
+        (neighbors_grid_coords + resolution / 2).to(torch.long),
+        min=0, max=resolution - 1)  # [batch, n_intersections, 8, 3]
+
+    xyzs = (intrs_pts - neighbor_centers[:, :, 0, :]) / voxel_len  # [batch, n_intersections, 3]
+    neighbor_idxs = grid_idx[neighbor_ids[..., 0], neighbor_ids[..., 1], neighbor_ids[..., 2]]  # [batch, n_intersections, 8]
+    return xyzs, neighbor_idxs
+
+
 def values_rays(intersections: torch.Tensor,  # [batch, n_intersections]
                 rays_o: torch.Tensor,  # [batch, 3]
                 rays_d: torch.Tensor,  # [batch, 3]
@@ -129,40 +176,18 @@ def values_rays(intersections: torch.Tensor,  # [batch, n_intersections]
     voxel_len = radius * 2 / resolution
     if not jitter:
         with torch.autograd.no_grad():
-            offsets_3d = torch.tensor(
-                [[-1, -1, -1],
-                 [-1, -1, 1],
-                 [-1, 1, -1],
-                 [-1, 1, 1],
-                 [1, -1, -1],
-                 [1, -1, 1],
-                 [1, 1, -1],
-                 [1, 1, 1]], dtype=grid_data.dtype, device=grid_data.device)
-            intrs_pts = rays_o.unsqueeze(1) + intersections.unsqueeze(2) * rays_d.unsqueeze(
-                1)  # [batch, n_intersections, 3]
-            offsets = (offsets_3d * (voxel_len / 2)).to(dtype=intrs_pts.dtype,
-                                                        device=intrs_pts.device)  # [8, 3]
-            neighbors = torch.clamp(intrs_pts.unsqueeze(2) + offsets[None, None, :, :],
-                                    min=-radius, max=radius)  # [batch, n_intersections, 8, 3]
-            neighbor_centers = torch.clamp(
-                (torch.floor(neighbors / voxel_len + eps) + 0.5) * voxel_len,
-                min=-(radius - voxel_len / 2),
-                max=radius - voxel_len / 2)  # [batch, n_intersections, 8, 3]
-            neighbor_ids = torch.clamp(
-                (torch.floor(neighbor_centers / voxel_len + eps) + resolution / 2).to(torch.long),
-                min=0, max=resolution - 1)  # [batch, n_intersections, 8, 3]
-            xyzs = (intrs_pts - neighbor_centers[:, :, 0, :]) / voxel_len  # [batch, n_intersections, 3]
-            neighbor_idxs = grid_idx[neighbor_ids[..., 0], neighbor_ids[..., 1], neighbor_ids[..., 2]]  # [batch, n_intersections, 8]
-        if interpolation == 'trilinear':
-            # neighbor_data: [batch, n_intersections, 8, channels]
-            neighbor_data = grid_data[neighbor_idxs]  # [batch, n_intersections, 8, channels]
-            # NOTE: Here we ignore the last intersection! (TODO: Why?)
             t_s = time.time()
+            xyzs, neighbor_idxs = get_intersection_ids(intersections, rays_o, rays_d, grid_idx,
+                                                       voxel_len, radius, eps, resolution)
+            t_idx = time.time() - t_s
+        if interpolation == 'trilinear':
+            t_s = time.time()
+            neighbor_data = grid_data[neighbor_idxs]  # [batch, n_intersections, 8, channels]
             intr_data = TrilinearInterpolate.apply(neighbor_data, xyzs)  # [batch, n_intersections, channels]
+            # NOTE: Here we ignore the last intersection! (TODO: Why?)
             intr_data = intr_data[:, :-1, :]  # [batch, n_intersections - 1, channels]
-            # intr_data = trilinear_interpolate(neighbor_data, xyzs)[:, :-1, :]  # [batch, n_intersections - 1, channels]
             t_int = time.time() - t_s
-            print(f"Time interp: {t_int:.5f}s")
+            print(f"Time get_intersection_ids: {t_idx:.5fs} trilinear_interpolate: {t_int:.5f}s")
         else:
             raise NotImplementedError("%s interpolation not implemented" % (interpolation))
         return intr_data
