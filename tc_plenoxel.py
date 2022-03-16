@@ -100,7 +100,7 @@ class TrilinearInterpolate(torch.autograd.Function):
         # out:          [batch, n_intrs, 8, n_channels]
         batch, nintrs = ctx.batch, ctx.nintrs
         weights = ctx.weights.reshape(batch, nintrs, 8, 1)
-        return grad_output.unsqueeze(2).mul_(weights), None, None
+        return (grad_output.unsqueeze(2) * weights), None, None
 
         # TODO: The gradient is essentially sparse. There is no point in computing the gradient for all of data, it should be much
         #       quicker to return the gradient with respect to only the data contained in neighbor_ids. Then we can essentially avoid
@@ -173,7 +173,7 @@ def get_intersection_ids(intersections: torch.Tensor,  # [batch, n_intersections
 
 @torch.jit.script
 def volumetric_rendering(rgb: torch.Tensor,  # [batch, n_intersections-1, 3]
-                         sigma: torch.Tensor,  # [batch, n_intersections-1]
+                         sigma: torch.Tensor,  # [batch, n_intersections-1, 1]
                          z_vals: torch.Tensor,  # [batch, n_intersections]
                          dirs: torch.Tensor,  # [batch, 3]
                          white_bkgd: bool = True):
@@ -193,6 +193,7 @@ def volumetric_rendering(rgb: torch.Tensor,  # [batch, n_intersections-1, 3]
     """
     eps = 1e-10
     batch, n_intrs = z_vals.shape
+    sigma = sigma.squeeze()  # [batch, n_intrs]
     # Convert ray-relative distance to absolute distance (shouldn't matter if rays_d is normalized)
     # dists: [batch, n_intersections - 1]
     dists = torch.diff(z_vals, n=1, dim=1).mul_(torch.linalg.norm(dirs, ord=2, dim=-1, keepdim=True))
@@ -200,7 +201,7 @@ def volumetric_rendering(rgb: torch.Tensor,  # [batch, n_intersections-1, 3]
     alpha = 1.0 - omalpha
     accum_prod = torch.cumprod(omalpha[:, :-1] + eps, dim=-1)  # [batch, n_intersections - 2]
     accum_prod = torch.cat(
-        (torch.ones(batch, 1, dtype=rgb.dtype, device=rgb.device), accum_prod),
+        (torch.ones(batch, 1, dtype=sigma.dtype, device=sigma.device), accum_prod),
         dim=-1)  # [batch, n_intersections - 1]
     # the absolute amount of light that gets stuck in each voxel
     weights = alpha * accum_prod  # [batch, n_intersections - 1]
@@ -215,7 +216,7 @@ def volumetric_rendering(rgb: torch.Tensor,  # [batch, n_intersections-1, 3]
     # equivalent to (but slightly more efficient and stable than):
     #  disp = 1 / max(eps, where(acc > eps, depth / acc, 0))
     # disp = torch.clamp(acc / depth, min=eps, max=1 / eps)  # TODO: not sure if it's equivalent
-    inv_eps = torch.tensor(1 / eps, dtype=rgb.dtype, device=rgb.device)
+    inv_eps = torch.tensor(1 / eps, dtype=sigma.dtype, device=sigma.device)
     disp = acc / depth  # [batch]
     disp = torch.where((disp > 0) & (disp < inv_eps) & (acc > eps), disp, inv_eps)
     if white_bkgd:
@@ -252,16 +253,19 @@ def compute_intersection_results(interp_weights: torch.Tensor,
         neighbor_data, interp_weights)  # [batch, n_intersections, channels]
     # TODO: Why ignore the last intersection?
     interp_data = interp_data[:, :-1, :]  # [batch, n_intersections - 1, channels]
+    interp_data = interp_data.split(3, dim=2)  # Tuple[tensors]
     t_int = time.time() - t_s
 
     # Exclude density data from the eval_sh call
     t_s = time.time()
-    voxel_rgb = tc_harmonics.eval_sh(
-        harmonic_degree, interp_data[..., :-1], rays_d)  # [batch, n_intersections - 1, 3]
+    voxel_rgb = tc_harmonics.SphericalHarmonics.apply(
+        interp_data[:-1], rays_d, harmonic_degree)  # [batch, n_intersections - 1, 3]
+    # voxel_rgb = tc_harmonics.eval_sh(
+    #     harmonic_degree, interp_data[..., :-1], rays_d)  # [batch, n_intersections - 1, 3]
     t_sh = time.time() - t_s
     t_s = time.time()
     rgb, disp, acc, weights = volumetric_rendering(
-        voxel_rgb, interp_data[..., -1], intersections, rays_d)
+        voxel_rgb, interp_data[-1], intersections, rays_d)
     t_v = time.time() - t_s
 
     print(f"Compute results: interpolate {t_int*1000:.2f}ms    harmonics {t_sh*1000:.2f}ms    "

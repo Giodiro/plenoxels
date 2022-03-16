@@ -119,16 +119,16 @@ def multi_lowpass(gt: torch.Tensor, resolution: int) -> torch.Tensor:
 
 # @torch.jit.script
 def train_batch(grid_idx: torch.Tensor,
-                       grid_data: torch.Tensor,
-                       rays: Tuple[torch.Tensor, torch.Tensor],
-                       gt: torch.Tensor,
-                       resolution: int,
-                       radius: float,
-                       harmonic_degree: int,
-                       jitter: bool, uniform: float,
-                       occupancy_penalty: float,
-                       interpolation: str,
-                       lrs):
+               grid_data: torch.Tensor,
+               rays: Tuple[torch.Tensor, torch.Tensor],
+               gt: torch.Tensor,
+               resolution: int,
+               radius: float,
+               harmonic_degree: int,
+               jitter: bool, uniform: float,
+               occupancy_penalty: float,
+               interpolation: str,
+               lrs):
     """
     Compute the rendered rays, and the loss
 
@@ -152,17 +152,17 @@ def train_batch(grid_idx: torch.Tensor,
         Type of interpolation, should always be 'trilinear'
     :return:
     """
-    grid_data = grid_data.requires_grad_()
-    t_s = time.time()
     with torch.autograd.no_grad():
+        t_s = time.time()
         intrp_w, neighbor_ids, intersections = tc_plenoxel.fetch_intersections(
             grid_idx, rays_o=rays[0], rays_d=rays[1], resolution=resolution, radius=radius,
             uniform=uniform, interpolation=interpolation)
-    t_inters = time.time() - t_s
+        t_inters = time.time() - t_s
+        t_s = time.time()
+        neighbor_data = grid_data[neighbor_ids]
+        t_idx = time.time() - t_s
 
-    t_s = time.time()
-    neighbor_data = grid_data[neighbor_ids]
-    t_idx = time.time() - t_s
+    neighbor_data.requires_grad_()
 
     t_s = time.time()
     rgb, disp, acc, weights = tc_plenoxel.compute_intersection_results(
@@ -288,7 +288,7 @@ def run(args):
 
         with ExitStack() as stack:
             p = None
-            if False:
+            if True:
                 p = torch.profiler.profile(
                     schedule=torch.profiler.schedule(wait=5, warmup=5, active=5),
                     on_trace_ready=profiling_handler,
@@ -308,7 +308,6 @@ def run(args):
                                      jitter=args.jitter, uniform=args.uniform,
                                      occupancy_penalty=occupancy_penalty,
                                      interpolation=args.interpolation, lrs=lrs)
-                torch.cuda.synchronize()
                 t_e = time.time()
                 print(f"Iteration takes {t_e - t_s:.4f}s")
                 t_s = time.time()
