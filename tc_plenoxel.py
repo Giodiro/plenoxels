@@ -14,7 +14,7 @@ class Grid:
     grid: torch.Tensor
 
 
-# @torch.jit.script
+@torch.jit.script
 def tensor_linspace(start: torch.Tensor, end: torch.Tensor, steps: int = 10) -> torch.Tensor:
     """
     https://github.com/zhaobozb/layout2im/blob/master/models/bilinear.py#L246
@@ -48,19 +48,8 @@ def tensor_linspace(start: torch.Tensor, end: torch.Tensor, steps: int = 10) -> 
 
 
 @torch.jit.script
-def safe_ceil(vector):
-    return torch.ceil(vector - 1e-5)
-
-
-@torch.jit.script
 def safe_floor(vector):
     return torch.floor(vector + 1e-5)
-
-
-# @torch.jit.script
-def grid_lookup(x: torch.Tensor, y: torch.Tensor, z: torch.Tensor, grid_idx: torch.Tensor,
-                grid_data: torch.Tensor) -> torch.Tensor:
-    return grid_data[grid_idx[x, y, z]]
 
 
 @torch.jit.script
@@ -85,13 +74,10 @@ def get_interp_weights(xs, ys, zs):
 # noinspection PyAbstractClass,PyMethodOverriding
 class TrilinearInterpolate(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, grid_data: torch.Tensor, neighbor_ids: torch.Tensor, offsets: torch.Tensor):
-        # grid_data:    [n_voxels, n_channels]
-        # neighbor_ids: [batch, n_intrs, 8] (long)
-        # offsets:      [batch, n_intrs, 3]
-
-        # Fetch the data from voxels we care about
-        neighbor_data = grid_data[neighbor_ids]  # [batch, n_intrs, 8, channels]
+    def forward(ctx, neighbor_data: torch.Tensor, offsets: torch.Tensor):
+        # neighbor_data: [batch, n_intrs, 8, channels]
+        # offsets:       [batch, n_intrs, 3]
+        # out:           [batch, n_intrs, channels]
 
         # Coalesce all intersections into the 'batch' dimension. Call batch * n_intrs == n_pts
         batch, nintrs = offsets.shape[:2]
@@ -100,7 +86,8 @@ class TrilinearInterpolate(torch.autograd.Function):
 
         weights = get_interp_weights(xs=offsets[:, 0:1], ys=offsets[:, 1:2], zs=offsets[:, 2:3])
 
-        out = torch.sum(neighbor_data * weights, dim=1)  # sum over the 8 neighbors => [n_pts, channels]
+        out = torch.sum(neighbor_data * weights,
+                        dim=1)  # sum over the 8 neighbors => [n_pts, channels]
         out = out.view(batch, nintrs, -1)  # [batch, n_intersections, channels]
 
         ctx.weights = weights
@@ -109,19 +96,24 @@ class TrilinearInterpolate(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        # data: [batch * n_intersections, 8, channels]
-        # weights: [n_pts, 8, 1]
-        # grad_output: [batch, n_intersections, channels]
+        # weights:      [n_pts, 8, 1]
+        # grad_output:  [batch, n_intrs, n_channels]
+        # out:          [batch, n_intrs, 8, n_channels]
         batch, nintrs = ctx.batch, ctx.nintrs
         weights = ctx.weights.reshape(batch, nintrs, 8, 1)
-        return grad_output.unsqueeze(2) * weights, None
+        return grad_output.unsqueeze(2) * weights, None, None
+
+        # TODO: The gradient is essentially sparse. There is no point in computing the gradient for all of data, it should be much
+        #       quicker to return the gradient with respect to only the data contained in neighbor_ids. Then we can essentially avoid
+        #       the call to index_put!
 
     @staticmethod
     def test_autograd():
-        data = torch.randn(5, 4, 8, 5).to(dtype=torch.float64).requires_grad_()
+        data = torch.randn(5, 4, 8, 6).to(dtype=torch.float64).requires_grad_()
         weights = torch.randn(5, 4, 3).to(dtype=torch.float64)
 
-        torch.autograd.gradcheck(lambda d: TrilinearInterpolate.apply(d, weights), inputs=data)
+        torch.autograd.gradcheck(lambda d: TrilinearInterpolate.apply(d, weights),
+                                 inputs=data)
 
 
 if __name__ == "__main__":
@@ -130,12 +122,11 @@ if __name__ == "__main__":
 
 @torch.jit.script
 def get_intersection_ids(intersections: torch.Tensor,  # [batch, n_intersections]
-                         rays_o: torch.Tensor,         # [batch, 3]
-                         rays_d: torch.Tensor,         # [batch, 3]
-                         grid_idx: torch.Tensor,       # [res, res, res]
+                         rays_o: torch.Tensor,  # [batch, 3]
+                         rays_d: torch.Tensor,  # [batch, 3]
+                         grid_idx: torch.Tensor,  # [res, res, res]
                          voxel_len: float,
                          radius: float,
-                         eps: float,
                          resolution: int) -> Tuple[torch.Tensor, torch.Tensor]:
     offsets_3d = torch.tensor(
         [[-1, -1, -1],
@@ -147,7 +138,8 @@ def get_intersection_ids(intersections: torch.Tensor,  # [batch, n_intersections
          [1, 1, -1],
          [1, 1, 1]], dtype=intersections.dtype, device=intersections.device)
     # Points at which the rays intersect the grid-lines.
-    intrs_pts = rays_o.unsqueeze(1) + intersections.unsqueeze(2) * rays_d.unsqueeze(1)  # [batch, n_intersections, 3]
+    intrs_pts = rays_o.unsqueeze(1) + intersections.unsqueeze(2) * rays_d.unsqueeze(
+        1)  # [batch, n_intersections, 3]
     # Offsets
     offsets = offsets_3d.mul_(voxel_len / 2)  # [8, 3]
 
@@ -172,43 +164,15 @@ def get_intersection_ids(intersections: torch.Tensor,  # [batch, n_intersections
         min=0, max=resolution - 1)  # [batch, n_intersections, 8, 3]
 
     xyzs = (intrs_pts - neighbor_centers[:, :, 0, :]) / voxel_len  # [batch, n_intersections, 3]
-    neighbor_idxs = grid_idx[neighbor_ids[..., 0], neighbor_ids[..., 1], neighbor_ids[..., 2]]  # [batch, n_intersections, 8]
+    neighbor_idxs = grid_idx[
+        neighbor_ids[..., 0],
+        neighbor_ids[..., 1],
+        neighbor_ids[..., 2]
+    ]  # [batch, n_intersections, 8]
     return xyzs, neighbor_idxs
 
 
-def values_rays(intersections: torch.Tensor,  # [batch, n_intersections]
-                rays_o: torch.Tensor,  # [batch, 3]
-                rays_d: torch.Tensor,  # [batch, 3]
-                resolution: int,
-                radius: float,
-                jitter: bool,
-                eps: float,
-                interpolation: str,
-                grid_idx: torch.Tensor,
-                grid_data: torch.Tensor) -> torch.Tensor:  # [batch, n_intersections - 1, channels]
-    voxel_len = radius * 2 / resolution
-    if not jitter:
-        with torch.autograd.no_grad():
-            t_s = time.time()
-            xyzs, neighbor_idxs = get_intersection_ids(intersections, rays_o, rays_d, grid_idx,
-                                                       voxel_len, radius, eps, resolution)
-            t_idx = time.time() - t_s
-        if interpolation == 'trilinear':
-            t_s = time.time()
-            neighbor_data = grid_data[neighbor_idxs]  # [batch, n_intersections, 8, channels]
-            intr_data = TrilinearInterpolate.apply(neighbor_data, xyzs)  # [batch, n_intersections, channels]
-            # NOTE: Here we ignore the last intersection! (TODO: Why?)
-            intr_data = intr_data[:, :-1, :]  # [batch, n_intersections - 1, channels]
-            t_int = time.time() - t_s
-            print(f"Time get_intersection_ids: {t_idx:.5f}s trilinear_interpolate: {t_int:.5f}s")
-        else:
-            raise NotImplementedError("%s interpolation not implemented" % (interpolation))
-        return intr_data
-    else:
-        raise NotImplementedError("jitter")
-
-
-# @torch.jit.script
+@torch.jit.script
 def volumetric_rendering(rgb: torch.Tensor,  # [batch, n_intersections-1, 3]
                          sigma: torch.Tensor,  # [batch, n_intersections-1]
                          z_vals: torch.Tensor,  # [batch, n_intersections]
@@ -250,105 +214,112 @@ def volumetric_rendering(rgb: torch.Tensor,  # [batch, n_intersections-1, 3]
     # disparity: inverse depth.
     # equivalent to (but slightly more efficient and stable than):
     #  disp = 1 / max(eps, where(acc > eps, depth / acc, 0))
-    disp = torch.clamp(acc / depth, min=eps, max=1 / eps)  # TODO: not sure if it's equivalent
-    # inv_eps = torch.tensor(1 / eps, dtype=rgb.dtype, device=rgb.device)
-    # disp = acc / depth  # [batch]
-    # disp = torch.where((disp > 0) & (disp < inv_eps) & (acc > eps), disp, inv_eps)
+    # disp = torch.clamp(acc / depth, min=eps, max=1 / eps)  # TODO: not sure if it's equivalent
+    inv_eps = torch.tensor(1 / eps, dtype=rgb.dtype, device=rgb.device)
+    disp = acc / depth  # [batch]
+    disp = torch.where((disp > 0) & (disp < inv_eps) & (acc > eps), disp, inv_eps)
     if white_bkgd:
         # Including the white background in the final color
         comp_rgb = comp_rgb + (1. - acc.unsqueeze(1))
     return comp_rgb, disp, acc, weights
 
 
-# @torch.jit.script
-def intersection_distances(
-        start: torch.Tensor,  # [batch, 1]
-        stop: torch.Tensor,  # [batch, 1]
-        offset: torch.Tensor,  # [batch, 3] (only needed for uniform = 0)
-        interval: torch.Tensor,  # [batch, 3] (only needed for uniform = 0)
-        rays_o: torch.Tensor,  # [batch, 3]
-        rays_d: torch.Tensor,  # [batch, 3]
-        uniform: float,
-        interpolation: str,
-        jitter: bool,
-        radius: float,
-        resolution: int,
-        grid_idx: torch.Tensor,
-        grid_data: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+def compute_intersection_results(interp_weights: torch.Tensor,
+                                 neighbor_data: torch.Tensor,
+                                 rays_d: torch.Tensor,
+                                 intersections: torch.Tensor,
+                                 harmonic_degree: int,) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Returns:
-         - intersections [batch, n_intersections]
-         - interpolated [batch, n_intersections, channels]
-    """
+    :param interp_weights:
+        Weights for trilinear interpolation [batch, n_intrs, 3].
+    :param neighbor_data:
+        Data (rgb and density) at all neighborhoods of the intersections [batch, n_intrs, 8, n_ch]
+    :param rays_d:
+        Ray direction. Tensor of shape [batch, 3]
+    :param intersections:
+        Intersection points of the rays with the grid. [batch, n_intrs]
+    :param harmonic_degree:
+        Determines how many spherical harmonics are being used.
 
+    :return:
+        rgb     : Computed color for each ray [batch, 3]
+        disp    : disparity (inverse depth)   [batch]
+        acc     : total amount of ligght absorbed by ray [batch]
+        weights : absolute amount of light that gets stuck in each voxel [batch, n_intrs]
+    """
+    t_s = time.time()
+    interp_data = TrilinearInterpolate.apply(
+        neighbor_data, interp_weights)  # [batch, n_intersections, channels]
+    # TODO: Why ignore the last intersection?
+    interp_data = interp_data[:, :-1, :]  # [batch, n_intersections - 1, channels]
+    t_int = time.time() - t_s
+
+    # Exclude density data from the eval_sh call
+    t_s = time.time()
+    voxel_rgb = tc_harmonics.eval_sh(
+        harmonic_degree, interp_data[..., :-1], rays_d)  # [batch, n_intersections - 1, 3]
+    t_sh = time.time() - t_s
+    t_s = time.time()
+    rgb, disp, acc, weights = volumetric_rendering(
+        voxel_rgb, interp_data[..., -1], intersections, rays_d)
+    t_v = time.time() - t_s
+
+    print(f"Compute results: interpolate {t_int*1000:.2f}ms    harmonics {t_sh*1000:.2f}ms    "
+          f"volumetric {t_v*1000:.2f}ms")
+    return rgb, disp, acc, weights
+
+
+@torch.jit.script
+def fetch_intersections(grid_idx: torch.Tensor,
+                        rays_o: torch.Tensor,
+                        rays_d: torch.Tensor,
+                        resolution: int,
+                        radius: float = 1.3,
+                        uniform: float = 0.5,
+                        interpolation: str = 'trilinear'):
+    """
+    :param grid_idx:
+        Integer indices in the 3D voxel grid. The size will depend on splitting and pruning,
+        but this will always be a 3-dimensional long tensor.
+    :param rays_o:
+        Ray origin. Tensor of shape [batch, 3]
+    :param rays_d
+        Ray direction. Tensor of shape [batch, 3]
+    :param resolution:
+        Resolution of the voxel grid (maximum length of the grid in any direction)
+    :param radius:
+        Half the resolution, but in the real-world (not in integer coordinates)
+    :param uniform:
+        No idea what this is for
+    :param interpolation:
+        Always equal to 'trilinear'
+    :return:
+        weights: trilinear interpolation weights for each intersection [batch, n_intersections, 3]
+        neighbor_ids: grid-coordinate IDs of each intersections' neighbors [batch, n_intersections, 8]
+        intersections: the intersection points [batch, n_intersections]
+    """
     if uniform == 0:
-        raise NotImplementedError("uniform == 0 not implemented")
-    else:
+        raise NotImplementedError(f"uniform: {uniform}")
+    if interpolation != "trilinear":
+        raise NotImplementedError(f"interpolation: {interpolation}")
+    with torch.autograd.no_grad():
         voxel_len = radius * 2 / resolution
         count = int(resolution * 3 / uniform)
-        intersections = tensor_linspace(
-            start=start.squeeze() + uniform * voxel_len,
-            end=stop.squeeze() + uniform * voxel_len * count,
-            # difference from plenoxel.py since here endpoint=True
-            steps=count)
-    intersections = torch.clamp(intersections, min=None, max=stop)
-    interpolated = values_rays(intersections, rays_o, rays_d, resolution, radius, jitter,
-                               eps=1e-5, interpolation=interpolation, grid_idx=grid_idx,
-                               grid_data=grid_data)
-    return intersections, interpolated
 
-
-def render_rays(grid_idx: torch.Tensor,
-                grid_data: torch.Tensor,
-                rays: Tuple[torch.Tensor, torch.Tensor],
-                resolution: int,
-                radius: float = 1.3,
-                harmonic_degree: int = 0,
-                jitter: bool = False,
-                uniform: float = 0.5,
-                interpolation: str = 'trilinear'):
-    voxel_len = radius * 2.0 / resolution
-    assert resolution % 2 == 0  # Renderer assumes resolution is a multiple of 2
-    rays_o, rays_d = rays
-    # Compute when the rays enter and leave the grid
-    with torch.autograd.no_grad():
         offsets_pos = (radius - rays_o) / rays_d  # [batch, 3]
         offsets_neg = (-radius - rays_o) / rays_d  # [batch, 3]
         offsets_in = torch.minimum(offsets_pos, offsets_neg)  # [batch, 3]
         offsets_out = torch.maximum(offsets_pos, offsets_neg)  # [batch, 3]
         start = torch.amax(offsets_in, dim=-1, keepdim=True)  # [batch, 1]
         stop = torch.amin(offsets_out, dim=-1, keepdim=True)  # [batch, 1]
-        first_intersection = rays_o + start * rays_d  # [batch, 3]
 
-        # Compute locations of ray-voxel intersections along each dimension
-        interval = voxel_len / torch.abs(rays_d)
-        offset_bigger = (safe_ceil(
-            first_intersection / voxel_len) * voxel_len - first_intersection) / rays_d
-        offset_smaller = (safe_floor(
-            first_intersection / voxel_len) * voxel_len - first_intersection) / rays_d
-        offset = torch.minimum(offset_bigger, offset_smaller)
+    intersections = tensor_linspace(
+        start=start.squeeze() + uniform * voxel_len,
+        end=start.squeeze() + uniform * voxel_len * count,
+        # difference from plenoxel.py since here endpoint=True
+        steps=count)  # [batch, n_intersections]
+    intersections = torch.clamp(intersections, min=None, max=stop)
+    xyzs, neighbor_ids = get_intersection_ids(intersections, rays_o, rays_d, grid_idx,
+                                              voxel_len, radius, resolution)
 
-    t_s = time.time()
-    # intersections: [batch, n_intersections]
-    # voxel_data:    [batch, n_intersections - 1, channels]
-    intersections, voxel_data = intersection_distances(
-        start=start, stop=stop, offset=offset, interval=interval, rays_o=rays_o, rays_d=rays_d,
-        uniform=uniform, interpolation=interpolation, jitter=jitter, radius=radius,
-        resolution=resolution, grid_idx=grid_idx, grid_data=grid_data)
-    t_d = time.time() - t_s
-    # Exclude density data from the eval_sh call
-    t_s = time.time()
-    voxel_rgb = tc_harmonics.eval_sh(
-        harmonic_degree, voxel_data[..., :-1], rays_d)  # [batch, n_intersections - 1, 3]
-    t_sh = time.time() - t_s
-    t_s = time.time()
-    rgb, disp, acc, weights = volumetric_rendering(
-        voxel_rgb, voxel_data[..., -1], intersections, rays_d)
-    t_v = time.time() - t_s
-
-    intrs_pts = rays_o.unsqueeze(1) + intersections.unsqueeze(2) * rays_d.unsqueeze(1)  # [batch, n_intersections, 3]
-    neighbor_ids = torch.clamp(
-        (safe_floor(intrs_pts / voxel_len) + resolution / 2).to(torch.int32),
-        min=0, max=resolution - 1)  # [batch, n_intersections, 3]
-    print(f"dist {t_d:.4f}s sh {t_sh:.4f}s vol {t_v:.4f}s")
-    return rgb, disp, acc, weights, neighbor_ids
+    return xyzs, neighbor_ids, intersections
