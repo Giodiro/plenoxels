@@ -1,4 +1,5 @@
 import functools
+from contextlib import ExitStack
 import os
 import time
 import json
@@ -145,10 +146,10 @@ def get_loss_rays(grid_idx: torch.Tensor,
         Type of interpolation, should always be 'trilinear'
     :return:
     """
-    rgb, disp, acc, weights, voxel_ids = tc_plenoxel.render_rays(
-        grid_idx=grid_idx, grid_data=grid_data, rays=rays, resolution=resolution,
-        radius=radius, harmonic_degree=harmonic_degree, jitter=jitter, uniform=uniform,
-        interpolation=interpolation)
+    intrp_w, neighbor_ids, intersections = tc_plenoxel.fetch_intersections(grid_idx, rays_o=rays[0], rays_d=rays[1], resolution=resolution,
+                                    radius=radius, uniform=uniform, interpolation=interpolation)
+    neighbor_data = grid_data[neighbor_ids]
+    rgb, disp, acc, weights = tc_plenoxel.compute_intersection_results(intrp_w, neighbor_data, rays[1], intersections, harmonic_degree)
     mse = torch.mean(torch.square(rgb - gt))
     loss = mse + occupancy_penalty * torch.mean(torch.relu(grid_data[..., -1]))
     return loss
@@ -201,8 +202,8 @@ def update_grids(grid_data: torch.Tensor, lrs: List[float],
 def trace_handler(p, exp_name, dev):
     print(p.key_averages().table(sort_by=f"self_{dev}_time_total", row_limit=10))
     print(p.key_averages().table(sort_by=f"self_{dev}_memory_usage", row_limit=10))
-    p.export_chrome_trace(f"./trace_{exp_name}_{p.step_num}.json")
-    p.export_stacks(f"./profiler_stacks_{exp_name}_{p.step_num}.txt", f"self_{dev}_time_total")
+    #p.export_chrome_trace(f"./trace_{exp_name}_{p.step_num}.json")
+    #p.export_stacks(f"./profiler_stacks_{exp_name}_{p.step_num}.txt", f"self_{dev}_time_total")
     torch.profiler.tensorboard_trace_handler(f"tb_logs/{exp_name}")(p)
 
 
@@ -237,7 +238,7 @@ def run(args):
     rays_rgb = torch.cat((rays, lowp_imgs.unsqueeze(1)), dim=1)    # [N, ro+rd+rgb, H, W,   3]
     rays_rgb = torch.permute(rays_rgb, (0, 2, 3, 1, 4))            # [N, H, W, ro+rd+rgb, 3]
     rays_rgb = torch.reshape(rays_rgb, (-1, 3, 3))                 # [N*H*W, ro+rd+rgb, 3]
-    rays_rgb = rays_rgb.to(dtype=torch.float32)
+    rays_rgb = rays_rgb.to(dtype=torch.float32).pin_memory()
 
     start_epoch = 0
     sh_dim = (args.harmonic_degree + 1) ** 2
@@ -252,9 +253,13 @@ def run(args):
         print("Starting epoch %d" % (i))
         occupancy_penalty = args.occupancy_penalty / (len(rays_rgb) // args.batch_size)
 
-        with torch.profiler.profile(schedule=torch.profiler.schedule(wait=5, warmup=5, active=5),
+        with ExitStack() as stack:
+            p = None
+            if False:
+                p = torch.profiler.profile(schedule=torch.profiler.schedule(wait=5, warmup=5, active=5),
                                     on_trace_ready=profiling_handler,
-                                    with_stack=True, profile_memory=True, record_shapes=True) as p:
+                                    with_stack=False, profile_memory=True, record_shapes=True)
+                stack.enter_context(p)
             for k in tqdm(range(len(rays_rgb) // args.batch_size)):
                 t_s = time.time()
                 batch = rays_rgb[k * args.batch_size: (k + 1) * args.batch_size]
@@ -271,6 +276,7 @@ def run(args):
                                      occupancy_penalty=occupancy_penalty,
                                      interpolation=args.interpolation)
                 grad = torch.autograd.grad(loss, grid.grid)
+                torch.cuda.synchronize()
                 t_e = time.time()
                 print(f"Iteration takes {t_e - t_s:.4f}s")
                 t_s = time.time()
@@ -278,7 +284,8 @@ def run(args):
                     lrs = [args.lr_rgb] * sh_dim + [args.lr_sigma]
                     grid.grid = update_grids(grid.grid, lrs, grad[0])
                 t_e = time.time()
-                p.step()
+                if p is not None:
+                    p.step()
                 print(f"Update takes {t_e - t_s:.4f}s")
                 print("\n\n")
 
