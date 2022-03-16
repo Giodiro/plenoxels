@@ -47,12 +47,12 @@ def tensor_linspace(start: torch.Tensor, end: torch.Tensor, steps: int = 10) -> 
     return out
 
 
-# @torch.jit.script
+@torch.jit.script
 def safe_ceil(vector):
     return torch.ceil(vector - 1e-5)
 
 
-# @torch.jit.script
+@torch.jit.script
 def safe_floor(vector):
     return torch.floor(vector + 1e-5)
 
@@ -63,31 +63,44 @@ def grid_lookup(x: torch.Tensor, y: torch.Tensor, z: torch.Tensor, grid_idx: tor
     return grid_data[grid_idx[x, y, z]]
 
 
+@torch.jit.script
+def get_interp_weights(xs, ys, zs):
+    # xs: n_pts, 1
+    # ys: n_pts, 1
+    # zs: n_pts, 1
+    # out: n_pts, 8
+    weight000 = (1 - xs) * (1 - ys) * (1 - zs)  # [n_pts]
+    weight001 = (1 - xs) * (1 - ys) * zs  # [n_pts]
+    weight010 = (1 - xs) * ys * (1 - zs)  # [n_pts]
+    weight011 = (1 - xs) * ys * zs  # [n_pts]
+    weight100 = xs * (1 - ys) * (1 - zs)  # [n_pts]
+    weight101 = xs * (1 - ys) * zs  # [n_pts]
+    weight110 = xs * ys * (1 - zs)  # [n_pts]
+    weight111 = xs * ys * zs  # [n_pts]
+    return torch.stack(
+        (weight000, weight001, weight010, weight011,
+         weight100, weight101, weight110, weight111), dim=1)  # [n_pts, 8]
+
+
 # noinspection PyAbstractClass,PyMethodOverriding
 class TrilinearInterpolate(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, data, offsets):
+    def forward(ctx, grid_data: torch.Tensor, neighbor_ids: torch.Tensor, offsets: torch.Tensor):
+        # grid_data:    [n_voxels, n_channels]
+        # neighbor_ids: [batch, n_intrs, 8] (long)
+        # offsets:      [batch, n_intrs, 3]
+
+        # Fetch the data from voxels we care about
+        neighbor_data = grid_data[neighbor_ids]  # [batch, n_intrs, 8, channels]
+
+        # Coalesce all intersections into the 'batch' dimension. Call batch * n_intrs == n_pts
         batch, nintrs = offsets.shape[:2]
-        data = data.view(batch * nintrs, 8, -1)  # [batch * n_intersections, 8, channels]
-        offsets = offsets.view(batch * nintrs, 3)  # [batch * n_intersections, 3]
-        # Call batch * n_intersections == n_pts
-        xs = offsets[:, 0:1]  # need to keep the last dimension
-        ys = offsets[:, 1:2]
-        zs = offsets[:, 2:3]
+        neighbor_data = neighbor_data.view(batch * nintrs, 8, -1)  # [n_pts, 8, channels]
+        offsets = offsets.view(batch * nintrs, 3)  # [n_pts, 3]
 
-        weight000 = (1 - xs) * (1 - ys) * (1 - zs)  # [n_pts]
-        weight001 = (1 - xs) * (1 - ys) * zs  # [n_pts]
-        weight010 = (1 - xs) * ys * (1 - zs)  # [n_pts]
-        weight011 = (1 - xs) * ys * zs  # [n_pts]
-        weight100 = xs * (1 - ys) * (1 - zs)  # [n_pts]
-        weight101 = xs * (1 - ys) * zs  # [n_pts]
-        weight110 = xs * ys * (1 - zs)  # [n_pts]
-        weight111 = xs * ys * zs  # [n_pts]
-        weights = torch.stack(
-            [weight000, weight001, weight010, weight011,
-             weight100, weight101, weight110, weight111], dim=1)  # [n_pts, 8]
+        weights = get_interp_weights(xs=offsets[:, 0:1], ys=offsets[:, 1:2], zs=offsets[:, 2:3])
 
-        out = torch.sum(data * weights, dim=1)  # sum over the 8 neighbors => [n_pts, channels]
+        out = torch.sum(neighbor_data * weights, dim=1)  # sum over the 8 neighbors => [n_pts, channels]
         out = out.view(batch, nintrs, -1)  # [batch, n_intersections, channels]
 
         ctx.weights = weights
@@ -146,7 +159,7 @@ def get_intersection_ids(intersections: torch.Tensor,  # [batch, n_intersections
 
     # Dividing one of the points in neighbors by voxel_len, gives us the grid coordinates (i.e. integers)
     # TODO: why + eps?
-    neighbors_grid_coords = torch.floor(neighbors / voxel_len + eps)
+    neighbors_grid_coords = safe_floor(neighbors / voxel_len)
 
     # The actual voxel (at the center?)
     neighbor_centers = torch.clamp(
@@ -187,7 +200,7 @@ def values_rays(intersections: torch.Tensor,  # [batch, n_intersections]
             # NOTE: Here we ignore the last intersection! (TODO: Why?)
             intr_data = intr_data[:, :-1, :]  # [batch, n_intersections - 1, channels]
             t_int = time.time() - t_s
-            print(f"Time get_intersection_ids: {t_idx:.5fs} trilinear_interpolate: {t_int:.5f}s")
+            print(f"Time get_intersection_ids: {t_idx:.5f}s trilinear_interpolate: {t_int:.5f}s")
         else:
             raise NotImplementedError("%s interpolation not implemented" % (interpolation))
         return intr_data
