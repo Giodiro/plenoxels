@@ -76,7 +76,8 @@ class SphericalHarmonics(torch.autograd.Function):
         out = sh_data[0] * SphericalHarmonics.C0
 
         if deg > 0:
-            x, y, z = dirs[:, 0].view(-1, 1, 1), dirs[:, 1].view(-1, 1, 1), dirs[:, 2].view(-1, 1, 1)
+            x, y, z = dirs[:, 0].view(-1, 1, 1), dirs[:, 1].view(-1, 1, 1), dirs[:, 2].view(-1, 1,
+                                                                                            1)
             out = out.sub_(SphericalHarmonics.C1 * y * sh_data[1])
             out = out.add_(SphericalHarmonics.C1 * z * sh_data[2])
             out = out.sub_(SphericalHarmonics.C1 * x * sh_data[3])
@@ -92,7 +93,8 @@ class SphericalHarmonics(torch.autograd.Function):
                     out = out.add_(SphericalHarmonics.C3[0] * y * (3 * xx - yy) * sh_data[9])
                     out = out.add_(SphericalHarmonics.C3[1] * xy * z * sh_data[10])
                     out = out.add_(SphericalHarmonics.C3[2] * y * (4 * zz - xx - yy) * sh_data[11])
-                    out = out.add_(SphericalHarmonics.C3[3] * z * (2 * zz - 3 * xx - 3 * yy) * sh_data[12])
+                    out = out.add_(
+                        SphericalHarmonics.C3[3] * z * (2 * zz - 3 * xx - 3 * yy) * sh_data[12])
                     out = out.add_(SphericalHarmonics.C3[4] * x * (4 * zz - xx - yy) * sh_data[13])
                     out = out.add_(SphericalHarmonics.C3[5] * z * (xx - yy) * sh_data[14])
                     out = out.add_(SphericalHarmonics.C3[6] * x * (xx - 3 * yy) * sh_data[15])
@@ -101,11 +103,15 @@ class SphericalHarmonics(torch.autograd.Function):
                         out = out.add_(SphericalHarmonics.C4[1] * yz * (3 * xx - yy) * sh_data[17])
                         out = out.add_(SphericalHarmonics.C4[2] * xy * (7 * zz - 1) * sh_data[18])
                         out = out.add_(SphericalHarmonics.C4[3] * yz * (7 * zz - 3) * sh_data[19])
-                        out = out.add_(SphericalHarmonics.C4[4] * (zz * (35 * zz - 30) + 3) * sh_data[20])
+                        out = out.add_(
+                            SphericalHarmonics.C4[4] * (zz * (35 * zz - 30) + 3) * sh_data[20])
                         out = out.add_(SphericalHarmonics.C4[5] * xz * (7 * zz - 3) * sh_data[21])
-                        out = out.add_(SphericalHarmonics.C4[6] * (xx - yy) * (7 * zz - 1) * sh_data[22])
+                        out = out.add_(
+                            SphericalHarmonics.C4[6] * (xx - yy) * (7 * zz - 1) * sh_data[22])
                         out = out.add_(SphericalHarmonics.C4[7] * xz * (xx - 3 * yy) * sh_data[23])
-                        out = out.add_(SphericalHarmonics.C4[8] * (xx * (xx - 3 * yy) - yy * (3 * xx - yy)) * sh_data[24])
+                        out = out.add_(
+                            SphericalHarmonics.C4[8] * (xx * (xx - 3 * yy) - yy * (3 * xx - yy)) *
+                            sh_data[24])
         ctx.dirs = dirs
         ctx.deg = deg
         ctx.sh_ch = len(sh_data)
@@ -124,7 +130,8 @@ class SphericalHarmonics(torch.autograd.Function):
 
         olist[0].mul_(SphericalHarmonics.C0)
         if deg > 0:
-            x, y, z = dirs[:, 0].view(-1, 1, 1), dirs[:, 1].view(-1, 1, 1), dirs[:, 2].view(-1, 1, 1)
+            x, y, z = dirs[:, 0].view(-1, 1, 1), dirs[:, 1].view(-1, 1, 1), dirs[:, 2].view(-1, 1,
+                                                                                            1)
             olist[1].mul_((-SphericalHarmonics.C1) * y)
             olist[2].mul_(SphericalHarmonics.C1 * z)
             olist[3].mul_((-SphericalHarmonics.C1) * x)
@@ -153,23 +160,26 @@ class SphericalHarmonics(torch.autograd.Function):
                         olist[21].mul_(SphericalHarmonics.C4[5] * xz * (7 * zz - 3))
                         olist[22].mul_(SphericalHarmonics.C4[6] * (xx - yy) * (7 * zz - 1))
                         olist[23].mul_(SphericalHarmonics.C4[7] * xz * (xx - 3 * yy))
-                        olist[24].mul_(SphericalHarmonics.C4[8] * (xx * (xx - 3 * yy) - yy * (3 * xx - yy)))
+                        olist[24].mul_(
+                            SphericalHarmonics.C4[8] * (xx * (xx - 3 * yy) - yy * (3 * xx - yy)))
         return olist, None, None
 
     @staticmethod
     def test_autograd():
-        sh_data = torch.randn(5, 9, 25*3).to(dtype=torch.float64).requires_grad_()
+        sh_data = torch.randn(5, 9, 25 * 3).to(dtype=torch.float64).requires_grad_()
         dirs = torch.randn(5, 3).to(dtype=torch.float64)
         deg = 4
         torch.autograd.gradcheck(lambda d: SphericalHarmonics.apply(d, dirs, deg),
                                  inputs=sh_data)
+
 
 if __name__ == "__main__":
     SphericalHarmonics.test_autograd()
 
 
 @torch.jit.script
-def sh_fwd_apply_list(sh_data: List[torch.Tensor], dirs: torch.Tensor, out: torch.Tensor, deg: int) -> torch.Tensor:
+def sh_fwd_apply_list(sh_data: List[torch.Tensor], dirs: torch.Tensor, out: torch.Tensor,
+                      deg: int) -> torch.Tensor:
     C0 = 0.28209479177387814
     C1 = 0.4886025119029199
     C2 = (
@@ -199,44 +209,49 @@ def sh_fwd_apply_list(sh_data: List[torch.Tensor], dirs: torch.Tensor, out: torc
         -1.7701307697799304,
         0.6258357354491761,
     )
-    out = out.add_(sh_data[0] * C0)
+    out = out + (sh_data[0] * C0)
 
     if deg > 0:
         x, y, z = dirs[:, 0].view(-1, 1, 1), dirs[:, 1].view(-1, 1, 1), dirs[:, 2].view(-1, 1, 1)
-        out = out.sub_(C1 * y * sh_data[1])
-        out = out.add_(C1 * z * sh_data[2])
-        out = out.sub_(C1 * x * sh_data[3])
+        out = out                   \
+            - (C1 * y * sh_data[1]) \
+            + (C1 * z * sh_data[2]) \
+            - (C1 * x * sh_data[3])
         if deg > 1:
             xx, yy, zz = x * x, y * y, z * z
             xy, yz, xz = x * y, y * z, x * z
-            out = out.add_(C2[0] * xy * sh_data[4])
-            out = out.add_(C2[1] * yz * sh_data[5])
-            out = out.add_(C2[2] * (2 * zz - xx - yy) * sh_data[6])
-            out = out.add_(C2[3] * xz * sh_data[7])
-            out = out.add_(C2[4] * (xx - yy) * sh_data[8])
+            out = out                       \
+                + (C2[0] * xy * sh_data[4]) \
+                + (C2[1] * yz * sh_data[5]) \
+                + (C2[2] * (2 * zz - xx - yy) * sh_data[6]) \
+                + (C2[3] * xz * sh_data[7]) \
+                + (C2[4] * (xx - yy) * sh_data[8])
             if deg > 2:
-                out = out.add_(C3[0] * y * (3 * xx - yy) * sh_data[9])
-                out = out.add_(C3[1] * xy * z * sh_data[10])
-                out = out.add_(C3[2] * y * (4 * zz - xx - yy) * sh_data[11])
-                out = out.add_(C3[3] * z * (2 * zz - 3 * xx - 3 * yy) * sh_data[12])
-                out = out.add_(C3[4] * x * (4 * zz - xx - yy) * sh_data[13])
-                out = out.add_(C3[5] * z * (xx - yy) * sh_data[14])
-                out = out.add_(C3[6] * x * (xx - 3 * yy) * sh_data[15])
+                out = out \
+                    + (C3[0] * y * (3 * xx - yy) * sh_data[9]) \
+                    + (C3[1] * xy * z * sh_data[10]) \
+                    + (C3[2] * y * (4 * zz - xx - yy) * sh_data[11]) \
+                    + (C3[3] * z * (2 * zz - 3 * xx - 3 * yy) * sh_data[12]) \
+                    + (C3[4] * x * (4 * zz - xx - yy) * sh_data[13]) \
+                    + (C3[5] * z * (xx - yy) * sh_data[14]) \
+                    + (C3[6] * x * (xx - 3 * yy) * sh_data[15])
                 if deg > 3:
-                    out = out.add_(C4[0] * xy * (xx - yy) * sh_data[16])
-                    out = out.add_(C4[1] * yz * (3 * xx - yy) * sh_data[17])
-                    out = out.add_(C4[2] * xy * (7 * zz - 1) * sh_data[18])
-                    out = out.add_(C4[3] * yz * (7 * zz - 3) * sh_data[19])
-                    out = out.add_(C4[4] * (zz * (35 * zz - 30) + 3) * sh_data[20])
-                    out = out.add_(C4[5] * xz * (7 * zz - 3) * sh_data[21])
-                    out = out.add_(C4[6] * (xx - yy) * (7 * zz - 1) * sh_data[22])
-                    out = out.add_(C4[7] * xz * (xx - 3 * yy) * sh_data[23])
-                    out = out.add_(C4[8] * (xx * (xx - 3 * yy) - yy * (3 * xx - yy)) * sh_data[24])
+                    out = out \
+                        + (C4[0] * xy * (xx - yy) * sh_data[16]) \
+                        + (C4[1] * yz * (3 * xx - yy) * sh_data[17]) \
+                        + (C4[2] * xy * (7 * zz - 1) * sh_data[18]) \
+                        + (C4[3] * yz * (7 * zz - 3) * sh_data[19]) \
+                        + (C4[4] * (zz * (35 * zz - 30) + 3) * sh_data[20]) \
+                        + (C4[5] * xz * (7 * zz - 3) * sh_data[21]) \
+                        + (C4[6] * (xx - yy) * (7 * zz - 1) * sh_data[22]) \
+                        + (C4[7] * xz * (xx - 3 * yy) * sh_data[23]) \
+                        + (C4[8] * (xx * (xx - 3 * yy) - yy * (3 * xx - yy)) * sh_data[24])
     return out
 
 
 @torch.jit.script
-def sh_bwd_apply_list(grad_output: List[torch.Tensor], dirs: torch.Tensor, deg: int) -> List[torch.Tensor]:
+def sh_bwd_apply_list(grad_output: List[torch.Tensor], dirs: torch.Tensor, deg: int) -> List[
+    torch.Tensor]:
     # grad_output: [batch, n_intrs, 3]
     # out: [batch, n_intrs, sh_ch]
     C0 = 0.28209479177387814
@@ -304,12 +319,11 @@ def sh_bwd_apply_list(grad_output: List[torch.Tensor], dirs: torch.Tensor, deg: 
     return olist
 
 
-
 @torch.jit.script
 def eval_sh(deg: int,
-            sh: torch.Tensor,    # [batch, n_intersections, sh_channels]
+            sh: torch.Tensor,  # [batch, n_intersections, sh_channels]
             dirs: torch.Tensor,  # [batch, 3]
-            ) -> torch.Tensor:   # [batch, n_intersections, 3]
+            ) -> torch.Tensor:  # [batch, n_intersections, 3]
     """
     sh_channels is (deg + 1) ** 2 time 3
     """
@@ -380,5 +394,6 @@ def eval_sh(deg: int,
                               C4[5] * xz * (7 * zz - 3) * sh.narrow(2, 63, 3) +
                               C4[6] * (xx - yy) * (7 * zz - 1) * sh.narrow(2, 66, 3) +
                               C4[7] * xz * (xx - 3 * yy) * sh.narrow(2, 69, 3) +
-                              C4[8] * (xx * (xx - 3 * yy) - yy * (3 * xx - yy)) * sh.narrow(2, 72, 3))
+                              C4[8] * (xx * (xx - 3 * yy) - yy * (3 * xx - yy)) * sh.narrow(2, 72,
+                                                                                            3))
     return result
