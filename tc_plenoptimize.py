@@ -293,7 +293,7 @@ def run(args):
             p = None
             if True:
                 p = torch.profiler.profile(
-                    schedule=torch.profiler.schedule(wait=5, warmup=5, active=5),
+                    schedule=torch.profiler.schedule(wait=5, warmup=5, active=15),
                     on_trace_ready=profiling_handler,
                     with_stack=False, profile_memory=True, record_shapes=True)
                 stack.enter_context(p)
