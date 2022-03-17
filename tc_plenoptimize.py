@@ -4,7 +4,7 @@ import os
 import time
 import json
 from argparse import ArgumentParser
-from typing import Tuple, List, Optional
+from typing import Tuple, List, Optional, Sequence
 
 import torch
 import torch.nn.functional as F
@@ -157,6 +157,8 @@ def train_batch(grid_idx: torch.Tensor,
         intrp_w, neighbor_ids, intersections = tc_plenoxel.fetch_intersections(
             grid_idx, rays_o=rays[0], rays_d=rays[1], resolution=resolution, radius=radius,
             uniform=uniform, interpolation=interpolation)
+        neighbor_ids = neighbor_ids[:, :-1, :]
+        intrp_w = intrp_w[:, :-1, :].contiguous()
         t_inters = time.time() - t_s
         t_s = time.time()
         neighbor_data = grid_data[neighbor_ids]
@@ -165,9 +167,10 @@ def train_batch(grid_idx: torch.Tensor,
     neighbor_data.requires_grad_()
 
     t_s = time.time()
-    rgb, disp, acc, weights = tc_plenoxel.compute_intersection_results(
-        interp_weights=intrp_w, neighbor_data=neighbor_data, rays_d=rays[1],
-        intersections=intersections, harmonic_degree=harmonic_degree)
+    # rgb, disp, acc, weights = tc_plenoxel.compute_intersection_results(
+    #     interp_weights=intrp_w, neighbor_data=neighbor_data, rays_d=rays[1],
+    #     intersections=intersections, harmonic_degree=harmonic_degree)
+    rgb = tc_plenoxel.ComputeIntersection.apply(neighbor_data, intrp_w, rays[1], intersections, harmonic_degree)
     t_res = time.time() - t_s
     t_s = time.time()
     loss = F.mse_loss(rgb, gt) + occupancy_penalty * torch.mean(torch.relu(neighbor_data[..., -1]))
@@ -177,19 +180,19 @@ def train_batch(grid_idx: torch.Tensor,
 
     with torch.autograd.no_grad():
         t_s = time.time()
-        grad = torch.autograd.grad(loss, neighbor_data)[0]
+        grads = torch.autograd.grad(loss, neighbor_data)
         t_g = time.time() - t_s
         t_s = time.time()
-        upd_data = update_grids(neighbor_data, lrs, grad)
+        upd_data = update_grids(neighbor_data, lrs, grads[0])
         t_u = time.time() - t_s
     print(f"Intersections {t_inters*1000:.2f}ms    neighbors {t_idx*1000:.2f}ms    diff {t_res*1000:.2f}ms    loss {t_loss*1000:.2f}ms    grad {t_g*1000:.2f}ms   update {t_u*1000:.2f}ms")
-
 
     return loss, grid_data
 
 
-#@torch.jit.script
-def update_grids(grid_data: torch.Tensor, lrs: torch.Tensor,
+@torch.jit.script
+def update_grids(grid_data: torch.Tensor,
+                 lrs: torch.Tensor,
                  grid_grad: torch.Tensor) -> torch.Tensor:
     """
 
@@ -203,7 +206,7 @@ def update_grids(grid_data: torch.Tensor, lrs: torch.Tensor,
         The new grid, updated by a gradient descent step.
     """
     lrs_shape = [1] * (grid_data.dim() - 1) + [lrs.shape[0]]
-    return grid_data - grid_grad * lrs.view(lrs_shape)
+    return grid_data.sub_(grid_grad * lrs.view(lrs_shape))
 
 
 # def run_test_step(i, data_dict, test_c2w, test_gt, H, W, focal, FLAGS, key, name_appendage=''):

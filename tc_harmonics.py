@@ -23,6 +23,8 @@
 #  CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
 #  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 #  POSSIBILITY OF SUCH DAMAGE.
+from typing import Sequence, Tuple, List
+
 import torch
 
 
@@ -164,6 +166,143 @@ class SphericalHarmonics(torch.autograd.Function):
 
 if __name__ == "__main__":
     SphericalHarmonics.test_autograd()
+
+
+@torch.jit.script
+def sh_fwd_apply_list(sh_data: List[torch.Tensor], dirs: torch.Tensor, out: torch.Tensor, deg: int) -> torch.Tensor:
+    C0 = 0.28209479177387814
+    C1 = 0.4886025119029199
+    C2 = (
+        1.0925484305920792,
+        -1.0925484305920792,
+        0.31539156525252005,
+        -1.0925484305920792,
+        0.5462742152960396
+    )
+    C3 = (
+        -0.5900435899266435,
+        2.890611442640554,
+        -0.4570457994644658,
+        0.3731763325901154,
+        -0.4570457994644658,
+        1.445305721320277,
+        -0.5900435899266435
+    )
+    C4 = (
+        2.5033429417967046,
+        -1.7701307697799304,
+        0.9461746957575601,
+        -0.6690465435572892,
+        0.10578554691520431,
+        -0.6690465435572892,
+        0.47308734787878004,
+        -1.7701307697799304,
+        0.6258357354491761,
+    )
+    out = out.add_(sh_data[0] * C0)
+
+    if deg > 0:
+        x, y, z = dirs[:, 0].view(-1, 1, 1), dirs[:, 1].view(-1, 1, 1), dirs[:, 2].view(-1, 1, 1)
+        out = out.sub_(C1 * y * sh_data[1])
+        out = out.add_(C1 * z * sh_data[2])
+        out = out.sub_(C1 * x * sh_data[3])
+        if deg > 1:
+            xx, yy, zz = x * x, y * y, z * z
+            xy, yz, xz = x * y, y * z, x * z
+            out = out.add_(C2[0] * xy * sh_data[4])
+            out = out.add_(C2[1] * yz * sh_data[5])
+            out = out.add_(C2[2] * (2 * zz - xx - yy) * sh_data[6])
+            out = out.add_(C2[3] * xz * sh_data[7])
+            out = out.add_(C2[4] * (xx - yy) * sh_data[8])
+            if deg > 2:
+                out = out.add_(C3[0] * y * (3 * xx - yy) * sh_data[9])
+                out = out.add_(C3[1] * xy * z * sh_data[10])
+                out = out.add_(C3[2] * y * (4 * zz - xx - yy) * sh_data[11])
+                out = out.add_(C3[3] * z * (2 * zz - 3 * xx - 3 * yy) * sh_data[12])
+                out = out.add_(C3[4] * x * (4 * zz - xx - yy) * sh_data[13])
+                out = out.add_(C3[5] * z * (xx - yy) * sh_data[14])
+                out = out.add_(C3[6] * x * (xx - 3 * yy) * sh_data[15])
+                if deg > 3:
+                    out = out.add_(C4[0] * xy * (xx - yy) * sh_data[16])
+                    out = out.add_(C4[1] * yz * (3 * xx - yy) * sh_data[17])
+                    out = out.add_(C4[2] * xy * (7 * zz - 1) * sh_data[18])
+                    out = out.add_(C4[3] * yz * (7 * zz - 3) * sh_data[19])
+                    out = out.add_(C4[4] * (zz * (35 * zz - 30) + 3) * sh_data[20])
+                    out = out.add_(C4[5] * xz * (7 * zz - 3) * sh_data[21])
+                    out = out.add_(C4[6] * (xx - yy) * (7 * zz - 1) * sh_data[22])
+                    out = out.add_(C4[7] * xz * (xx - 3 * yy) * sh_data[23])
+                    out = out.add_(C4[8] * (xx * (xx - 3 * yy) - yy * (3 * xx - yy)) * sh_data[24])
+    return out
+
+
+@torch.jit.script
+def sh_bwd_apply_list(grad_output: List[torch.Tensor], dirs: torch.Tensor, deg: int) -> List[torch.Tensor]:
+    # grad_output: [batch, n_intrs, 3]
+    # out: [batch, n_intrs, sh_ch]
+    C0 = 0.28209479177387814
+    C1 = 0.4886025119029199
+    C2 = (
+        1.0925484305920792,
+        -1.0925484305920792,
+        0.31539156525252005,
+        -1.0925484305920792,
+        0.5462742152960396
+    )
+    C3 = (
+        -0.5900435899266435,
+        2.890611442640554,
+        -0.4570457994644658,
+        0.3731763325901154,
+        -0.4570457994644658,
+        1.445305721320277,
+        -0.5900435899266435
+    )
+    C4 = (
+        2.5033429417967046,
+        -1.7701307697799304,
+        0.9461746957575601,
+        -0.6690465435572892,
+        0.10578554691520431,
+        -0.6690465435572892,
+        0.47308734787878004,
+        -1.7701307697799304,
+        0.6258357354491761,
+    )
+    olist = grad_output
+    olist[0].mul_(C0)
+    if deg > 0:
+        x, y, z = dirs[:, 0].view(-1, 1, 1), dirs[:, 1].view(-1, 1, 1), dirs[:, 2].view(-1, 1, 1)
+        olist[1].mul_((-C1) * y)
+        olist[2].mul_(C1 * z)
+        olist[3].mul_((-C1) * x)
+        if deg > 1:
+            xx, yy, zz = x * x, y * y, z * z
+            xy, yz, xz = x * y, y * z, x * z
+            olist[4].mul_(C2[0] * xy)
+            olist[5].mul_(C2[1] * yz)
+            olist[6].mul_(C2[2] * (2 * zz - xx - yy))
+            olist[7].mul_(C2[3] * xz)
+            olist[8].mul_(C2[4] * (xx - yy))
+            if deg > 2:
+                olist[9].mul_(C3[0] * y * (3 * xx - yy))
+                olist[10].mul_(C3[1] * xy * z)
+                olist[11].mul_(C3[2] * y * (4 * zz - xx - yy))
+                olist[12].mul_(C3[3] * z * (2 * zz - 3 * xx - 3 * yy))
+                olist[13].mul_(C3[4] * x * (4 * zz - xx - yy))
+                olist[14].mul_(C3[5] * z * (xx - yy))
+                olist[15].mul_(C3[6] * x * (xx - 3 * yy))
+                if deg > 3:
+                    olist[16].mul_(C4[0] * xy * (xx - yy))
+                    olist[17].mul_(C4[1] * yz * (3 * xx - yy))
+                    olist[18].mul_(C4[2] * xy * (7 * zz - 1))
+                    olist[19].mul_(C4[3] * yz * (7 * zz - 3))
+                    olist[20].mul_(C4[4] * (zz * (35 * zz - 30) + 3))
+                    olist[21].mul_(C4[5] * xz * (7 * zz - 3))
+                    olist[22].mul_(C4[6] * (xx - yy) * (7 * zz - 1))
+                    olist[23].mul_(C4[7] * xz * (xx - 3 * yy))
+                    olist[24].mul_(C4[8] * (xx * (xx - 3 * yy) - yy * (3 * xx - yy)))
+    return olist
+
 
 
 @torch.jit.script

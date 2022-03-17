@@ -4,6 +4,7 @@ import time
 from typing import Tuple
 
 import torch
+import torch.nn.functional as F
 
 import tc_harmonics
 
@@ -50,6 +51,114 @@ def tensor_linspace(start: torch.Tensor, end: torch.Tensor, steps: int = 10) -> 
 @torch.jit.script
 def safe_floor(vector):
     return torch.floor(vector + 1e-5)
+
+
+@torch.jit.script
+def get_intersection_ids(intersections: torch.Tensor,  # [batch, n_intersections]
+                         rays_o: torch.Tensor,  # [batch, 3]
+                         rays_d: torch.Tensor,  # [batch, 3]
+                         grid_idx: torch.Tensor,  # [res, res, res]
+                         voxel_len: float,
+                         radius: float,
+                         resolution: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    offsets_3d = torch.tensor(
+        [[-1, -1, -1],
+         [-1, -1, 1],
+         [-1, 1, -1],
+         [-1, 1, 1],
+         [1, -1, -1],
+         [1, -1, 1],
+         [1, 1, -1],
+         [1, 1, 1]], dtype=intersections.dtype, device=intersections.device)
+    # Points at which the rays intersect the grid-lines.
+    intrs_pts = rays_o.unsqueeze(1) + intersections.unsqueeze(2) * rays_d.unsqueeze(1)  # [batch, n_intersections, 3]
+    # Offsets
+    offsets = offsets_3d.mul_(voxel_len / 2)  # [8, 3]
+
+    # Radius: the radius of the 'world' grid
+
+    # Go from an intersection point to its 8 neighboring voxels
+    # GIAC: Here we remove clamp(-radius, radius)
+    neighbors = intrs_pts.unsqueeze(2) + offsets[None, None, :, :]  # [batch, n_intersections, 8, 3]
+
+    # Dividing one of the points in neighbors by voxel_len, gives us the grid coordinates (i.e. integers)
+    # TODO: why + eps?0
+    neighbors_grid_coords = torch.floor_(neighbors.div_(voxel_len).add_(1e-5))
+
+    # The actual voxel (at the center?)
+    neighbor_centers = torch.clamp(
+        (neighbors_grid_coords + 0.5) * voxel_len,
+        min=-(radius - voxel_len / 2),
+        max=radius - voxel_len / 2)  # [batch, n_intersections, 8, 3]
+
+    neighbor_ids = torch.clamp_(
+        neighbors_grid_coords.add_(resolution / 2).to(torch.long),
+        min=0, max=resolution - 1)  # [batch, n_intersections, 8, 3]
+
+    #xyzs = (intrs_pts - neighbor_centers[:, :, 0, :]) / voxel_len  # [batch, n_intersections, 3]
+    xyzs = intrs_pts.sub_(neighbor_centers[:, :, 0, :]).div_(voxel_len)
+    neighbor_idxs = grid_idx[
+        neighbor_ids[..., 0],
+        neighbor_ids[..., 1],
+        neighbor_ids[..., 2]
+    ]  # [batch, n_intersections, 8]
+    return xyzs, neighbor_idxs
+
+
+@torch.jit.script
+def fetch_intersections(grid_idx: torch.Tensor,
+                        rays_o: torch.Tensor,
+                        rays_d: torch.Tensor,
+                        resolution: int,
+                        radius: float = 1.3,
+                        uniform: float = 0.5,
+                        interpolation: str = 'trilinear'):
+    """
+    :param grid_idx:
+        Integer indices in the 3D voxel grid. The size will depend on splitting and pruning,
+        but this will always be a 3-dimensional long tensor.
+    :param rays_o:
+        Ray origin. Tensor of shape [batch, 3]
+    :param rays_d
+        Ray direction. Tensor of shape [batch, 3]
+    :param resolution:
+        Resolution of the voxel grid (maximum length of the grid in any direction)
+    :param radius:
+        Half the resolution, but in the real-world (not in integer coordinates)
+    :param uniform:
+        No idea what this is for
+    :param interpolation:
+        Always equal to 'trilinear'
+    :return:
+        weights: trilinear interpolation weights for each intersection [batch, n_intersections, 3]
+        neighbor_ids: grid-coordinate IDs of each intersections' neighbors [batch, n_intersections, 8]
+        intersections: the intersection points [batch, n_intersections]
+    """
+    if uniform == 0:
+        raise NotImplementedError(f"uniform: {uniform}")
+    if interpolation != "trilinear":
+        raise NotImplementedError(f"interpolation: {interpolation}")
+    with torch.autograd.no_grad():
+        voxel_len = radius * 2 / resolution
+        count = int(resolution * 3 / uniform)
+
+        offsets_pos = (radius - rays_o) / rays_d  # [batch, 3]
+        offsets_neg = (-radius - rays_o) / rays_d  # [batch, 3]
+        offsets_in = torch.minimum(offsets_pos, offsets_neg)  # [batch, 3]
+        offsets_out = torch.maximum(offsets_pos, offsets_neg)  # [batch, 3]
+        start = torch.amax(offsets_in, dim=-1, keepdim=True)  # [batch, 1]
+        stop = torch.amin(offsets_out, dim=-1, keepdim=True)  # [batch, 1]
+
+    intersections = tensor_linspace(
+        start=start.squeeze() + uniform * voxel_len,
+        end=start.squeeze() + uniform * voxel_len * count,
+        # difference from plenoxel.py since here endpoint=True
+        steps=count)  # [batch, n_intersections]
+    intersections = torch.clamp_(intersections, min=None, max=stop)
+    xyzs, neighbor_ids = get_intersection_ids(intersections, rays_o, rays_d, grid_idx,
+                                              voxel_len, radius, resolution)
+
+    return xyzs, neighbor_ids, intersections
 
 
 @torch.jit.script
@@ -119,56 +228,147 @@ if __name__ == "__main__":
     TrilinearInterpolate.test_autograd()
 
 
-@torch.jit.script
-def get_intersection_ids(intersections: torch.Tensor,  # [batch, n_intersections]
-                         rays_o: torch.Tensor,  # [batch, 3]
-                         rays_d: torch.Tensor,  # [batch, 3]
-                         grid_idx: torch.Tensor,  # [res, res, res]
-                         voxel_len: float,
-                         radius: float,
-                         resolution: int) -> Tuple[torch.Tensor, torch.Tensor]:
-    offsets_3d = torch.tensor(
-        [[-1, -1, -1],
-         [-1, -1, 1],
-         [-1, 1, -1],
-         [-1, 1, 1],
-         [1, -1, -1],
-         [1, -1, 1],
-         [1, 1, -1],
-         [1, 1, 1]], dtype=intersections.dtype, device=intersections.device)
-    # Points at which the rays intersect the grid-lines.
-    intrs_pts = rays_o.unsqueeze(1) + intersections.unsqueeze(2) * rays_d.unsqueeze(1)  # [batch, n_intersections, 3]
-    # Offsets
-    offsets = offsets_3d.mul_(voxel_len / 2)  # [8, 3]
+# noinspection PyAbstractClass,PyMethodOverriding
+class ComputeIntersection(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, neighbor_data: torch.Tensor, offsets: torch.Tensor, rays_d: torch.Tensor, intersections: torch.Tensor, sh_deg: int):
+        # neighbor_data: [batch, n_intrs - 1, 8, channels]
+        # offsets:       [batch, n_intrs - 1, 3]
+        # rays_d:        [batch, 3]
+        # intersections: [batch, n_intrs]
 
-    # Radius: the radius of the 'world' grid
+        # Coalesce all intersections into the 'batch' dimension. Call batch * n_intrs == n_pts
+        batch, nintrs = offsets.shape[:2]
+        dt = offsets.dtype
+        dev = offsets.device
 
-    # Go from an intersection point to its 8 neighboring voxels
-    # GIAC: Here we remove clamp(-radius, radius)
-    neighbors = intrs_pts.unsqueeze(2) + offsets[None, None, :, :]  # [batch, n_intersections, 8, 3]
+        ######################################
+        # ########## Interpolation ######### #
+        ######################################
+        neighbor_data = neighbor_data.view(batch * nintrs, 8, -1)  # [n_pts, 8, channels]
+        offsets = offsets.view(batch * nintrs, 3)  # [n_pts, 3]
+        weights = get_interp_weights(xs=offsets[:, 0], ys=offsets[:, 1], zs=offsets[:, 2]).unsqueeze(-1)  # [n_pts, 8, 1]
+        interp_data = torch.einsum('bik, bik -> bk', neighbor_data, weights)
 
-    # Dividing one of the points in neighbors by voxel_len, gives us the grid coordinates (i.e. integers)
-    # TODO: why + eps?0
-    neighbors_grid_coords = torch.floor_(neighbors.div_(voxel_len).add_(1e-5))
+        interp_data = interp_data.view(batch, nintrs, -1)  # [batch, n_intersections, channels]
+        interp_datal = interp_data.split(3, dim=-1)   # Seq[batch, n_intrs, 3 or 1]
 
-    # The actual voxel (at the center?)
-    neighbor_centers = torch.clamp(
-        (neighbors_grid_coords + 0.5) * voxel_len,
-        min=-(radius - voxel_len / 2),
-        max=radius - voxel_len / 2)  # [batch, n_intersections, 8, 3]
+        ######################################
+        # ###### Spherical harmonics  ###### #
+        ######################################
+        rgb_data = torch.zeros(batch, nintrs, 3, dtype=dt, device=dev)  # [batch, n_intrs-1, 3]
+        rgb_data = tc_harmonics.sh_fwd_apply_list(interp_datal[:-1], rays_d, out=rgb_data, deg=sh_deg)
+        sigma_data = interp_datal[-1]  # [batch, n_intrs-1, 1]
 
-    neighbor_ids = torch.clamp_(
-        neighbors_grid_coords.add_(resolution / 2).to(torch.long),
-        min=0, max=resolution - 1)  # [batch, n_intersections, 8, 3]
+        ######################################
+        # ###### Volumetric rendering ###### #
+        ######################################
+        # Convert ray-relative distance to absolute distance (shouldn't matter if rays_d is normalized)
+        dists = torch.diff(intersections, n=1, dim=1) \
+                     .mul(torch.linalg.norm(rays_d, ord=2, dim=-1, keepdim=True))  # dists: [batch, n_intrs-1]
+        sigma_data = sigma_data.squeeze()  # SAVED for bwd so relu can't be inplace
+        alpha = 1 - torch.exp_(torch.relu(sigma_data).neg_().mul_(dists))     # alpha: [batch, n_intrs-1]
+        # Optimized memory copies here
+        cum_memc = torch.ones(batch, nintrs + 1, dtype=dt, device=dev)  # [batch, n_intrs]
+        cum_light = torch.cumprod(1 - alpha + 1e-10, dim=-1, out=cum_memc[:, 1:])  # [batch, n_intrs - 1]
+        cum_light_ex = cum_memc[:, :-1]  # [batch, n_intrs - 1]
 
-    #xyzs = (intrs_pts - neighbor_centers[:, :, 0, :]) / voxel_len  # [batch, n_intersections, 3]
-    xyzs = intrs_pts.sub_(neighbor_centers[:, :, 0, :]).div_(voxel_len)
-    neighbor_idxs = grid_idx[
-        neighbor_ids[..., 0],
-        neighbor_ids[..., 1],
-        neighbor_ids[..., 2]
-    ]  # [batch, n_intersections, 8]
-    return xyzs, neighbor_idxs
+        # the absolute amount of light that gets stuck in each voxel
+        abs_light = alpha * cum_light_ex  # [batch, n_intersections - 1]
+
+        # # Accumulated color over the samples, ignoring background
+        rgb_data = torch.sigmoid_(rgb_data)
+        # rgb_data  : [batch, n_intrs-1, 3]
+        # abs_light : [batch, n_intrs-1]
+        # The following 3 lines compute the same thing. TODO: test which one is fastest
+        # [batch, 3, n_intrs-1] * [batch, n_intrs-1, 1] = [batch, 3, 1]
+        comp_rgb = torch.bmm(rgb_data.permute(0, 2, 1), abs_light.unsqueeze(-1)).squeeze()  # [batch, 3]
+        # comp_rgb = torch.einsum('bik, bik->bk', rgb_data, abs_light.unsqueeze(-1))  # [batch, 3]
+        # comp_rgb = (weights.unsqueeze(-1) * torch.sigmoid(rgb)).sum(dim=-2)  # [batch, 3]
+
+        ctx.batch, ctx.n_intrs, ctx.n_ch = batch, nintrs, neighbor_data.shape[-1]
+        ctx.sh_deg = sh_deg
+
+        ctx.cum_light = cum_light
+        ctx.rgb_data = rgb_data
+        ctx.sigma_data = sigma_data
+        ctx.cum_light_ex = cum_light_ex
+        ctx.alpha = alpha
+        ctx.dists = dists
+        ctx.weights = weights
+        ctx.rays_d = rays_d
+        return comp_rgb
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        # grad_output:  [batch, n_intrs - 1]
+        # out:          [batch, n_intrs - 1, 8, channels]
+        batch, n_intrs, n_ch = ctx.batch, ctx.n_intrs, ctx.n_ch
+        dt, dev = grad_output.dtype, grad_output.device
+
+        out_data = torch.zeros(batch, n_intrs, n_ch, dtype=dt, device=dev)
+        out_datal = torch.split(out_data, 3, dim=-1)
+
+        # bmm
+        abs_light = ctx.alpha * ctx.cum_light_ex  # batch, n_intrs-1
+
+        grad_output = grad_output.unsqueeze(-1)  # [batch, 3, 1]
+        # goes into first element of out_datal. This operation is an outer product.
+        # [batch, n_intrs-1, 1] * [batch, 1, 3] => [batch, n_intrs-1, 3]
+        b_crgb_rgbdata = torch.bmm(abs_light.unsqueeze(-1), grad_output.transpose(1, 2), out=out_datal[0])
+        # b_crgb_rgbdata = torch.bmm(grad_output, abs_light.unsqueeze(1)).transpose(1, 2)
+        # [batch, n_intrs-1, 3] * [batch, 3, 1] => [batch, n_intrs-1]
+        b_crgb_alight = torch.bmm(ctx.rgb_data, grad_output).squeeze()
+
+        # Sigmoid on b_crgb_rgb_data (NOTE: aten has sigmoid_backward)
+        b_crgb_rgbdata.mul_((1 - ctx.rgb_data) * ctx.rgb_data)
+
+        # Multiply with both operands needing gradient
+        b_weights_alpha = ctx.alpha * b_crgb_alight
+        b_weights_clight = ctx.cum_light_ex * b_crgb_alight
+
+        # Random reshapings
+        grad_output = b_weights_alpha.narrow(1, 1, n_intrs - 1)  # [batch, n_intrs - 2]
+        b_cum_light_ex = torch.cat((grad_output, torch.zeros(batch, 1, dtype=dt, device=dev)), dim=-1)  # [batch, n_intrs - 1]  #
+
+        # 1. CumProd (Assume no zeros!) - cum_light -> alpha
+        w = ctx.cum_light * b_cum_light_ex               # [batch, n_intrs - 1]
+        b_alpha = w.flip(-1).cumsum(-1).flip(-1).div_(1 - ctx.alpha + 1e-10)  # [batch, n_intrs - 1]
+
+        # 2. alpha -> sigma_data
+        b_sigma_data = out_datal[-1].squeeze()
+        b_sigma_data.copy_(b_alpha)
+        b_sigma_data.sub_(b_weights_clight).mul_(1 - ctx.alpha).mul_(ctx.dists).neg_()
+        mask = ctx.sigma_data <= 0
+        b_sigma_data[mask] = 0.
+        b_sigma_data.unsqueeze_(2)  # [batch, n_intrs - 1, 1]
+
+        # 3. Spherical harmonics (from b_crgb_rgbdata: [batch, n_intrs-1, 3])
+        for out_datal_el in out_datal[1:-1]:
+            out_datal_el.copy_(b_crgb_rgbdata)
+        tc_harmonics.sh_bwd_apply_list(out_datal[:-1], dirs=ctx.rays_d, deg=ctx.sh_deg)
+
+        # 4. Interpolation
+        weights = ctx.weights.reshape(batch, n_intrs, 8, 1)
+        out = out_data.unsqueeze(2) * weights
+        # outl[-1].copy_(b_sigma_data.unsqueeze(2) * weights)
+        return out, None, None, None, None
+
+    @staticmethod
+    def test_autograd():
+        batch = 6
+        data = torch.randn(batch, 2, 8, 4).to(dtype=torch.float64).requires_grad_()
+        offsets = torch.randn(batch, 2, 3).to(dtype=torch.float64)
+        rays_d = torch.randn(batch, 3).to(dtype=torch.float64)
+        intersections = torch.randn(batch, 3).to(dtype=torch.float64)
+        deg = 0
+
+        torch.autograd.gradcheck(lambda d: ComputeIntersection.apply(d, offsets, rays_d, intersections, deg),
+                                 inputs=data)
+
+
+if __name__ == "__main__":
+    ComputeIntersection.test_autograd()
 
 
 @torch.jit.script
@@ -272,58 +472,3 @@ def compute_intersection_results(interp_weights: torch.Tensor,
           f"volumetric {t_v*1000:.2f}ms")
     return rgb, disp, acc, weights
 
-
-@torch.jit.script
-def fetch_intersections(grid_idx: torch.Tensor,
-                        rays_o: torch.Tensor,
-                        rays_d: torch.Tensor,
-                        resolution: int,
-                        radius: float = 1.3,
-                        uniform: float = 0.5,
-                        interpolation: str = 'trilinear'):
-    """
-    :param grid_idx:
-        Integer indices in the 3D voxel grid. The size will depend on splitting and pruning,
-        but this will always be a 3-dimensional long tensor.
-    :param rays_o:
-        Ray origin. Tensor of shape [batch, 3]
-    :param rays_d
-        Ray direction. Tensor of shape [batch, 3]
-    :param resolution:
-        Resolution of the voxel grid (maximum length of the grid in any direction)
-    :param radius:
-        Half the resolution, but in the real-world (not in integer coordinates)
-    :param uniform:
-        No idea what this is for
-    :param interpolation:
-        Always equal to 'trilinear'
-    :return:
-        weights: trilinear interpolation weights for each intersection [batch, n_intersections, 3]
-        neighbor_ids: grid-coordinate IDs of each intersections' neighbors [batch, n_intersections, 8]
-        intersections: the intersection points [batch, n_intersections]
-    """
-    if uniform == 0:
-        raise NotImplementedError(f"uniform: {uniform}")
-    if interpolation != "trilinear":
-        raise NotImplementedError(f"interpolation: {interpolation}")
-    with torch.autograd.no_grad():
-        voxel_len = radius * 2 / resolution
-        count = int(resolution * 3 / uniform)
-
-        offsets_pos = (radius - rays_o) / rays_d  # [batch, 3]
-        offsets_neg = (-radius - rays_o) / rays_d  # [batch, 3]
-        offsets_in = torch.minimum(offsets_pos, offsets_neg)  # [batch, 3]
-        offsets_out = torch.maximum(offsets_pos, offsets_neg)  # [batch, 3]
-        start = torch.amax(offsets_in, dim=-1, keepdim=True)  # [batch, 1]
-        stop = torch.amin(offsets_out, dim=-1, keepdim=True)  # [batch, 1]
-
-    intersections = tensor_linspace(
-        start=start.squeeze() + uniform * voxel_len,
-        end=start.squeeze() + uniform * voxel_len * count,
-        # difference from plenoxel.py since here endpoint=True
-        steps=count)  # [batch, n_intersections]
-    intersections = torch.clamp_(intersections, min=None, max=stop)
-    xyzs, neighbor_ids = get_intersection_ids(intersections, rays_o, rays_d, grid_idx,
-                                              voxel_len, radius, resolution)
-
-    return xyzs, neighbor_ids, intersections
