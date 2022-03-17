@@ -329,7 +329,7 @@ class ComputeIntersection(torch.autograd.Function):
 
         # Random reshapings
         grad_output = b_weights_alpha.narrow(1, 1, n_intrs - 1)  # [batch, n_intrs - 2]
-        b_cum_light_ex = torch.cat((grad_output, torch.zeros(batch, 1)), dim=-1)  # [batch, n_intrs - 1]  #
+        b_cum_light_ex = torch.cat((grad_output, torch.zeros(batch, 1, dtype=dt, device=dev)), dim=-1)  # [batch, n_intrs - 1]  #
 
         # 1. CumProd (Assume no zeros!) - cum_light -> alpha
         w = ctx.cum_light * b_cum_light_ex               # [batch, n_intrs - 1]
