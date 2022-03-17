@@ -335,21 +335,23 @@ class ComputeIntersection(torch.autograd.Function):
         out_data = b_crgb_rgbdata.tile((1, 1, (n_ch // 3) + 1))[:, :, :-2]
         out_datal = torch.split(out_data, 3, dim=-1)
 
-        # Multiply with both operands needing gradient
-        b_weights_alpha = ctx.alpha * b_crgb_alight
+        # Multiply with both operands needing gradient. It looks weird because of mergin this op with random reshapings
+        bwa_cont = torch.zeros(batch, n_intrs + 1, dtype=dt, device=dev)
+        torch.mul(ctx.alpha, b_crgb_alight, out=bwa_cont[:, :-1])
         b_weights_clight = ctx.cum_light_ex * b_crgb_alight
 
         # Random reshapings
-        grad_output = b_weights_alpha.narrow(1, 1, n_intrs - 1)  # [batch, n_intrs - 2]
-        b_cum_light_ex = torch.cat((grad_output, torch.zeros(batch, 1, dtype=dt, device=dev)), dim=-1)  # [batch, n_intrs - 1]  #
+        b_cum_light_ex = bwa_cont[:, 1:]  # [batch, n_intrs - 1]
 
         # 1. CumProd (Assume no zeros!) - cum_light -> alpha
-        w = ctx.cum_light * b_cum_light_ex               # [batch, n_intrs - 1]
-        b_alpha = w.flip(-1).cumsum(-1).flip(-1).div_(1 - ctx.alpha + 1e-10)  # [batch, n_intrs - 1]
+        w = b_cum_light_ex.mul_(ctx.cum_light)  # [batch, n_intrs - 1]
+        b_sigma_data = torch.div(
+            w.flip(-1).cumsum(-1).flip(-1),
+            (1 - ctx.alpha).add_(1e-10),
+            out=out_datal[-1].squeeze()
+        )  # [batch, n_intrs - 1]
 
         # 2. alpha -> sigma_data
-        b_sigma_data = out_datal[-1].squeeze()
-        b_sigma_data.copy_(b_alpha)
         b_sigma_data.sub_(b_weights_clight).mul_(1 - ctx.alpha).mul_(ctx.dists).neg_()
         mask = ctx.sigma_data <= 0
         b_sigma_data[mask] = 0.
