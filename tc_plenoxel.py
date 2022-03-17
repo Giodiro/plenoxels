@@ -306,8 +306,8 @@ class ComputeIntersection(torch.autograd.Function):
         batch, n_intrs, n_ch = ctx.batch, ctx.n_intrs, ctx.n_ch
         dt, dev = grad_output.dtype, grad_output.device
 
-        out_data = torch.zeros(batch, n_intrs, n_ch, dtype=dt, device=dev)
-        out_datal = torch.split(out_data, 3, dim=-1)
+        # out_data = torch.zeros(batch, n_intrs, n_ch, dtype=dt, device=dev)
+        # out_datal = torch.split(out_data, 3, dim=-1)
 
         # bmm
         abs_light = ctx.alpha * ctx.cum_light_ex  # batch, n_intrs-1
@@ -315,13 +315,17 @@ class ComputeIntersection(torch.autograd.Function):
         grad_output = grad_output.unsqueeze(-1)  # [batch, 3, 1]
         # goes into first element of out_datal. This operation is an outer product.
         # [batch, n_intrs-1, 1] * [batch, 1, 3] => [batch, n_intrs-1, 3]
-        b_crgb_rgbdata = torch.bmm(abs_light.unsqueeze(-1), grad_output.transpose(1, 2), out=out_datal[0])
+        b_crgb_rgbdata = torch.bmm(abs_light.unsqueeze(-1), grad_output.transpose(1, 2))
         # b_crgb_rgbdata = torch.bmm(grad_output, abs_light.unsqueeze(1)).transpose(1, 2)
         # [batch, n_intrs-1, 3] * [batch, 3, 1] => [batch, n_intrs-1]
         b_crgb_alight = torch.bmm(ctx.rgb_data, grad_output).squeeze()
 
         # Sigmoid on b_crgb_rgb_data (NOTE: aten has sigmoid_backward)
         b_crgb_rgbdata.mul_((1 - ctx.rgb_data) * ctx.rgb_data)
+
+        # We can now create the `out_data` tensor [batch, n_intrs, n_ch]
+        out_data = b_crgb_rgbdata.tile((1, 1, (n_ch // 3) + 1))[:, :, :-2]
+        out_datal = torch.split(out_data, 3, dim=-1)
 
         # Multiply with both operands needing gradient
         b_weights_alpha = ctx.alpha * b_crgb_alight
@@ -344,8 +348,8 @@ class ComputeIntersection(torch.autograd.Function):
         b_sigma_data.unsqueeze_(2)  # [batch, n_intrs - 1, 1]
 
         # 3. Spherical harmonics (from b_crgb_rgbdata: [batch, n_intrs-1, 3])
-        for out_datal_el in out_datal[1:-1]:
-            out_datal_el.copy_(b_crgb_rgbdata)
+        # for out_datal_el in out_datal[1:-1]:
+        #     out_datal_el.copy_(b_crgb_rgbdata)
         tc_harmonics.sh_bwd_apply_list(out_datal[:-1], dirs=ctx.rays_d, deg=ctx.sh_deg)
 
         # 4. Interpolation
