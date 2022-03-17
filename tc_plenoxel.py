@@ -231,16 +231,21 @@ if __name__ == "__main__":
 # noinspection PyAbstractClass,PyMethodOverriding
 class ComputeIntersection(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, neighbor_data: torch.Tensor, offsets: torch.Tensor, rays_d: torch.Tensor, intersections: torch.Tensor, sh_deg: int):
+    def forward(ctx, grid_data: torch.Tensor, neighbor_ids: torch.Tensor, offsets: torch.Tensor, rays_d: torch.Tensor, intersections: torch.Tensor, sh_deg: int):
         # neighbor_data: [batch, n_intrs - 1, 8, channels]
         # offsets:       [batch, n_intrs - 1, 3]
         # rays_d:        [batch, 3]
         # intersections: [batch, n_intrs]
-
-        # Coalesce all intersections into the 'batch' dimension. Call batch * n_intrs == n_pts
-        batch, nintrs = offsets.shape[:2]
         dt = offsets.dtype
         dev = offsets.device
+
+        # Remove last intersection
+        neighbor_ids = neighbor_ids[:, :-1, :]
+        offsets = offsets[:, :-1, :].contiguous()
+        batch, nintrs = offsets.shape[:2]
+
+        # Fetch neighbors
+        neighbor_data = grid_data[neighbor_ids]
 
         ######################################
         # ########## Interpolation ######### #
@@ -297,6 +302,9 @@ class ComputeIntersection(torch.autograd.Function):
         ctx.dists = dists
         ctx.weights = weights
         ctx.rays_d = rays_d
+        ctx.neighbor_data = neighbor_data  # Only saved for reusing the buffer
+        ctx.neighbor_ids = neighbor_ids
+        ctx.grid_data_size = grid_data.shape
         return comp_rgb
 
     @staticmethod
@@ -348,15 +356,19 @@ class ComputeIntersection(torch.autograd.Function):
         b_sigma_data.unsqueeze_(2)  # [batch, n_intrs - 1, 1]
 
         # 3. Spherical harmonics (from b_crgb_rgbdata: [batch, n_intrs-1, 3])
-        # for out_datal_el in out_datal[1:-1]:
-        #     out_datal_el.copy_(b_crgb_rgbdata)
         tc_harmonics.sh_bwd_apply_list(out_datal[:-1], dirs=ctx.rays_d, deg=ctx.sh_deg)
 
         # 4. Interpolation
-        weights = ctx.weights.reshape(batch, n_intrs, 8, 1)
-        out = out_data.unsqueeze(2) * weights
-        # outl[-1].copy_(b_sigma_data.unsqueeze(2) * weights)
-        return out, None, None, None, None
+        weights = ctx.weights.view(batch, n_intrs, 8, 1)
+        # [batch, n_intrs, 1, n_ch] * [batch, n_intrs, 8, 1]
+        neighbor_data = ctx.neighbor_data.view(batch, n_intrs, 8, n_ch)
+        torch.mul(out_data.unsqueeze(2), weights, out=neighbor_data)
+
+        # [n, n_ch]
+        grid_data_grad = torch.zeros(*ctx.grid_data_size, dtype=dt, device=dev)
+        grid_data_grad.index_put_((ctx.neighbor_ids, ), neighbor_data, accumulate=True)
+
+        return grid_data_grad, None, None, None, None, None
 
     @staticmethod
     def test_autograd():
