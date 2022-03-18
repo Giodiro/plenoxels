@@ -238,6 +238,7 @@ class ComputeIntersection(torch.autograd.Function):
         # intersections: [batch, n_intrs]
         dt = offsets.dtype
         dev = offsets.device
+        print("fwd start %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
 
         # Remove last intersection
         neighbor_ids = neighbor_ids[:, :-1, :]
@@ -246,6 +247,7 @@ class ComputeIntersection(torch.autograd.Function):
 
         # Fetch neighbors
         neighbor_data = grid_data[neighbor_ids]
+        print("neighbors fetched %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
 
         ######################################
         # ########## Interpolation ######### #
@@ -257,6 +259,7 @@ class ComputeIntersection(torch.autograd.Function):
 
         interp_data = interp_data.view(batch, nintrs, -1)  # [batch, n_intersections, channels]
         interp_datal = interp_data.split(3, dim=-1)   # Seq[batch, n_intrs, 3 or 1]
+        print("interp %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
 
         ######################################
         # ###### Spherical harmonics  ###### #
@@ -264,6 +267,7 @@ class ComputeIntersection(torch.autograd.Function):
         rgb_data = torch.zeros(batch, nintrs, 3, dtype=dt, device=dev)  # [batch, n_intrs-1, 3]
         rgb_data = tc_harmonics.sh_fwd_apply_list(interp_datal[:-1], rays_d, out=rgb_data, deg=sh_deg)
         sigma_data = interp_datal[-1]  # [batch, n_intrs-1, 1]
+        print("sh %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
 
         ######################################
         # ###### Volumetric rendering ###### #
@@ -290,6 +294,7 @@ class ComputeIntersection(torch.autograd.Function):
         comp_rgb = torch.bmm(rgb_data.permute(0, 2, 1), abs_light.unsqueeze(-1)).squeeze()  # [batch, 3]
         # comp_rgb = torch.einsum('bik, bik->bk', rgb_data, abs_light.unsqueeze(-1))  # [batch, 3]
         # comp_rgb = (weights.unsqueeze(-1) * torch.sigmoid(rgb)).sum(dim=-2)  # [batch, 3]
+        print("out %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
 
         ctx.batch, ctx.n_intrs, ctx.n_ch = batch, nintrs, neighbor_data.shape[-1]
         ctx.sh_deg = sh_deg
@@ -316,6 +321,7 @@ class ComputeIntersection(torch.autograd.Function):
 
         # out_data = torch.zeros(batch, n_intrs, n_ch, dtype=dt, device=dev)
         # out_datal = torch.split(out_data, 3, dim=-1)
+        print("BWD start %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
 
         # bmm
         abs_light = ctx.alpha * ctx.cum_light_ex  # batch, n_intrs-1
@@ -356,18 +362,22 @@ class ComputeIntersection(torch.autograd.Function):
         mask = ctx.sigma_data <= 0
         b_sigma_data[mask] = 0.
         b_sigma_data.unsqueeze_(2)  # [batch, n_intrs - 1, 1]
+        print("rendering %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
 
         # 3. Spherical harmonics (from b_crgb_rgbdata: [batch, n_intrs-1, 3])
         tc_harmonics.sh_bwd_apply_list(out_datal[:-1], dirs=ctx.rays_d, deg=ctx.sh_deg)
+        print("sh %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
 
         # 4. Interpolation
         weights = ctx.weights.view(batch, n_intrs, 8, 1)
         # [batch, n_intrs, 1, n_ch] * [batch, n_intrs, 8, 1]
         neighbor_data = ctx.neighbor_data.view(batch, n_intrs, 8, n_ch)
         torch.mul(out_data.unsqueeze(2), weights, out=neighbor_data)
+        print("interp %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
 
         # [n, n_ch]
         grid_data_grad = torch.zeros(*ctx.grid_data_size, dtype=dt, device=dev)
+        print("before fail %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
         grid_data_grad.index_put_((ctx.neighbor_ids, ), neighbor_data, accumulate=True)
 
         return grid_data_grad, None, None, None, None, None
