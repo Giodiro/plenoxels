@@ -332,6 +332,8 @@ class ComputeIntersection(torch.autograd.Function):
         # out_data = torch.zeros(batch, n_intrs, n_ch, dtype=dt, device=dev)
         # out_datal = torch.split(out_data, 3, dim=-1)
         print("BWD start %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
+        s1 = torch.cuda.Stream()
+        s2 = torch.cuda.Stream()
 
         # bmm
         abs_light = ctx.alpha * ctx.cum_light_ex  # batch, n_intrs-1
@@ -345,45 +347,42 @@ class ComputeIntersection(torch.autograd.Function):
         b_crgb_alight = torch.bmm(ctx.rgb_data, grad_output).squeeze()
 
         # Sigmoid on b_crgb_rgb_data (NOTE: aten has sigmoid_backward)
-        b_crgb_rgbdata.mul_((1 - ctx.rgb_data) * ctx.rgb_data)
+        all_data = b_crgb_rgbdata.mul_((1 - ctx.rgb_data) * ctx.rgb_data).tile(1, 1, n_ch // 3 + 1)
 
-        # We can now create the `out_data` tensor [batch, n_intrs, n_ch]
-        # out_data = b_crgb_rgbdata.tile((1, 1, (n_ch // 3) + 1))[:, :, :-2]
-        # out_datal = torch.split(out_data, 3, dim=-1)
+        with torch.cuda.stream(s2):
+            # 3. Spherical harmonics (from b_crgb_rgbdata: [batch, n_intrs-1, 3])
+            tc_harmonics.sh_bwd_apply_listinput(all_data[:, :, :-1], dirs=ctx.rays_d, deg=ctx.sh_deg)
+            print("sh %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
 
-        # Multiply with both operands needing gradient. It looks weird because of mergin this op with random reshapings
-        bwa_cont = torch.zeros(batch, n_intrs + 1, dtype=dt, device=dev)
-        torch.mul(ctx.alpha, b_crgb_alight, out=bwa_cont[:, :-1])
-        b_weights_clight = ctx.cum_light_ex * b_crgb_alight
+        with torch.cuda.stream(s1):
+            # Multiply with both operands needing gradient. It looks weird because of mergin this op with random reshapings
+            bwa_cont = torch.zeros(batch, n_intrs + 1, dtype=dt, device=dev)
+            torch.mul(ctx.alpha, b_crgb_alight, out=bwa_cont[:, :-1])
+            b_weights_clight = ctx.cum_light_ex * b_crgb_alight
 
-        # Random reshapings
-        b_cum_light_ex = bwa_cont[:, 1:]  # [batch, n_intrs - 1]
+            # Random reshapings
+            b_cum_light_ex = bwa_cont[:, 1:]  # [batch, n_intrs - 1]
 
-        # 1. CumProd (Assume no zeros!) - cum_light -> alpha
-        w = b_cum_light_ex.mul_(ctx.cum_light)  # [batch, n_intrs - 1]
-        b_sigma_data = torch.div(
-            w.flip(-1).cumsum(-1).flip(-1),
-            (1 - ctx.alpha).add_(1e-10),
-            # out=out_datal[-1].squeeze()
-        )  # [batch, n_intrs - 1]
+            # 1. CumProd (Assume no zeros!) - cum_light -> alpha
+            w = b_cum_light_ex.mul_(ctx.cum_light)  # [batch, n_intrs - 1]
+            b_sigma_data = torch.div(
+                w.flip(-1).cumsum(-1).flip(-1),
+                (1 - ctx.alpha).add_(1e-10),
+                out=all_data[:, :, -1]
+            )  # [batch, n_intrs - 1]
 
-        # 2. alpha -> sigma_data
-        b_sigma_data.sub_(b_weights_clight).mul_(1 - ctx.alpha).mul_(ctx.dists).neg_()
-        mask = ctx.sigma_data <= 0
-        b_sigma_data[mask] = 0.
-        b_sigma_data.unsqueeze_(2)  # [batch, n_intrs - 1, 1]
-        print("rendering %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
-
-        # 3. Spherical harmonics (from b_crgb_rgbdata: [batch, n_intrs-1, 3])
-        sh_data = tc_harmonics.sh_bwd_apply_list(b_crgb_rgbdata, dirs=ctx.rays_d, deg=ctx.sh_deg)
-        sh_data.append(b_sigma_data)
-        sh_data = torch.cat(sh_data, dim=-1)
-        print("sh %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
-
+            # 2. alpha -> sigma_data
+            b_sigma_data.sub_(b_weights_clight).mul_(1 - ctx.alpha).mul_(ctx.dists).neg_()
+            mask = ctx.sigma_data <= 0
+            b_sigma_data[mask] = 0.
+            b_sigma_data.unsqueeze_(2)  # [batch, n_intrs - 1, 1]
+            print("rendering %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
+        s1.synchronize()
+        s2.synchronize()
         # 4. Interpolation
         weights = ctx.weights.view(batch, n_intrs, 8, 1)
         neighbor_data = ctx.neighbor_data.view(batch, n_intrs, 8, n_ch)
-        torch.mul(sh_data.unsqueeze(2), weights, out=neighbor_data)
+        torch.mul(all_data.unsqueeze(2), weights, out=neighbor_data)
         print("interp %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
 
         #summed_data = torch.zeros(ctx.grid_data_size[0], ctx.grid_data_size[-1], dtype=dt, device=dev)

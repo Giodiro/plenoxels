@@ -250,7 +250,7 @@ def sh_fwd_apply_list(sh_data: List[torch.Tensor], dirs: torch.Tensor, out: torc
 
 
 @torch.jit.script
-def sh_bwd_apply_list(grad_output: torch.Tensor, dirs: torch.Tensor, deg: int) -> List[torch.Tensor]:
+def sh_bwd_apply_singleinput(grad_output: torch.Tensor, dirs: torch.Tensor, deg: int) -> List[torch.Tensor]:
     # grad_output: [batch, n_intrs, 3]
     # out: [batch, n_intrs, sh_ch]
     C0 = 0.28209479177387814
@@ -314,6 +314,75 @@ def sh_bwd_apply_list(grad_output: torch.Tensor, dirs: torch.Tensor, deg: int) -
                     olist.append(grad_output * (C4[6] * (xx - yy) * (7 * zz - 1)))
                     olist.append(grad_output * (C4[7] * xz * (xx - 3 * yy)))
                     olist.append(grad_output * (C4[8] * (xx * (xx - 3 * yy) - yy * (3 * xx - yy))))
+    return olist
+
+
+@torch.jit.script
+def sh_bwd_apply_listinput(grad_output: List[torch.Tensor], dirs: torch.Tensor, deg: int) -> List[torch.Tensor]:
+    # grad_output: [batch, n_intrs, 3]
+    # out: [batch, n_intrs, sh_ch]
+    C0 = 0.28209479177387814
+    C1 = 0.4886025119029199
+    C2 = (
+        1.0925484305920792,
+        -1.0925484305920792,
+        0.31539156525252005,
+        -1.0925484305920792,
+        0.5462742152960396
+    )
+    C3 = (
+        -0.5900435899266435,
+        2.890611442640554,
+        -0.4570457994644658,
+        0.3731763325901154,
+        -0.4570457994644658,
+        1.445305721320277,
+        -0.5900435899266435
+    )
+    C4 = (
+        2.5033429417967046,
+        -1.7701307697799304,
+        0.9461746957575601,
+        -0.6690465435572892,
+        0.10578554691520431,
+        -0.6690465435572892,
+        0.47308734787878004,
+        -1.7701307697799304,
+        0.6258357354491761,
+    )
+    olist = grad_output
+    olist[0].mul_(olist[0] * (C0))
+    if deg > 0:
+        x, y, z = dirs[:, 0].view(-1, 1, 1), dirs[:, 1].view(-1, 1, 1), dirs[:, 2].view(-1, 1, 1)
+        olist[1].mul_(olist[1] * ((-C1) * y))
+        olist[2].mul_(olist[2] * (C1 * z))
+        olist[3].mul_(olist[3] * ((-C1) * x))
+        if deg > 1:
+            xx, yy, zz = x * x, y * y, z * z
+            xy, yz, xz = x * y, y * z, x * z
+            olist[4].mul_(olist[4] * (C2[0] * xy))
+            olist[5].mul_(olist[5] * (C2[1] * yz))
+            olist[6].mul_(olist[6] * (C2[2] * (2 * zz - xx - yy)))
+            olist[7].mul_(olist[7] * (C2[3] * xz))
+            olist[8].mul_(olist[8] * (C2[4] * (xx - yy)))
+            if deg > 2:
+                olist[9].mul_(olist[9] * (C3[0] * y * (3 * xx - yy)))
+                olist[10].mul_(olist[10] * (C3[1] * xy * z))
+                olist[11].mul_(olist[11] * (C3[2] * y * (4 * zz - xx - yy)))
+                olist[12].mul_(olist[12] * (C3[3] * z * (2 * zz - 3 * xx - 3 * yy)))
+                olist[13].mul_(olist[13] * (C3[4] * x * (4 * zz - xx - yy)))
+                olist[14].mul_(olist[14] * (C3[5] * z * (xx - yy)))
+                olist[15].mul_(olist[15] * (C3[6] * x * (xx - 3 * yy)))
+                if deg > 3:
+                    olist[16].mul_(olist[16] * (C4[0] * xy * (xx - yy)))
+                    olist[17].mul_(olist[17] * (C4[1] * yz * (3 * xx - yy)))
+                    olist[18].mul_(olist[18] * (C4[2] * xy * (7 * zz - 1)))
+                    olist[19].mul_(olist[19] * (C4[3] * yz * (7 * zz - 3)))
+                    olist[20].mul_(olist[20] * (C4[4] * (zz * (35 * zz - 30) + 3)))
+                    olist[21].mul_(olist[21] * (C4[5] * xz * (7 * zz - 3)))
+                    olist[22].mul_(olist[22] * (C4[6] * (xx - yy) * (7 * zz - 1)))
+                    olist[23].mul_(olist[23] * (C4[7] * xz * (xx - 3 * yy)))
+                    olist[24].mul_(olist[24] * (C4[8] * (xx * (xx - 3 * yy) - yy * (3 * xx - yy))))
     return olist
 
 
