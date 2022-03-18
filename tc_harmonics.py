@@ -250,8 +250,7 @@ def sh_fwd_apply_list(sh_data: List[torch.Tensor], dirs: torch.Tensor, out: torc
 
 
 @torch.jit.script
-def sh_bwd_apply_list(grad_output: List[torch.Tensor], dirs: torch.Tensor, deg: int) -> List[
-    torch.Tensor]:
+def sh_bwd_apply_list(grad_output: torch.Tensor, dirs: torch.Tensor, deg: int) -> List[torch.Tensor]:
     # grad_output: [batch, n_intrs, 3]
     # out: [batch, n_intrs, sh_ch]
     C0 = 0.28209479177387814
@@ -283,39 +282,38 @@ def sh_bwd_apply_list(grad_output: List[torch.Tensor], dirs: torch.Tensor, deg: 
         -1.7701307697799304,
         0.6258357354491761,
     )
-    olist = grad_output
-    olist[0].mul_(C0)
+    olist = [grad_output * (C0)]
     if deg > 0:
         x, y, z = dirs[:, 0].view(-1, 1, 1), dirs[:, 1].view(-1, 1, 1), dirs[:, 2].view(-1, 1, 1)
-        olist[1].mul_((-C1) * y)
-        olist[2].mul_(C1 * z)
-        olist[3].mul_((-C1) * x)
+        olist.append(grad_output * ((-C1) * y))
+        olist.append(grad_output * (C1 * z))
+        olist.append(grad_output * ((-C1) * x))
         if deg > 1:
             xx, yy, zz = x * x, y * y, z * z
             xy, yz, xz = x * y, y * z, x * z
-            olist[4].mul_(C2[0] * xy)
-            olist[5].mul_(C2[1] * yz)
-            olist[6].mul_(C2[2] * (2 * zz - xx - yy))
-            olist[7].mul_(C2[3] * xz)
-            olist[8].mul_(C2[4] * (xx - yy))
+            olist.append(grad_output * (C2[0] * xy))
+            olist.append(grad_output * (C2[1] * yz))
+            olist.append(grad_output * (C2[2] * (2 * zz - xx - yy)))
+            olist.append(grad_output * (C2[3] * xz))
+            olist.append(grad_output * (C2[4] * (xx - yy)))
             if deg > 2:
-                olist[9].mul_(C3[0] * y * (3 * xx - yy))
-                olist[10].mul_(C3[1] * xy * z)
-                olist[11].mul_(C3[2] * y * (4 * zz - xx - yy))
-                olist[12].mul_(C3[3] * z * (2 * zz - 3 * xx - 3 * yy))
-                olist[13].mul_(C3[4] * x * (4 * zz - xx - yy))
-                olist[14].mul_(C3[5] * z * (xx - yy))
-                olist[15].mul_(C3[6] * x * (xx - 3 * yy))
+                olist.append(grad_output * (C3[0] * y * (3 * xx - yy)))
+                olist.append(grad_output * (C3[1] * xy * z))
+                olist.append(grad_output * (C3[2] * y * (4 * zz - xx - yy)))
+                olist.append(grad_output * (C3[3] * z * (2 * zz - 3 * xx - 3 * yy)))
+                olist.append(grad_output * (C3[4] * x * (4 * zz - xx - yy)))
+                olist.append(grad_output * (C3[5] * z * (xx - yy)))
+                olist.append(grad_output * (C3[6] * x * (xx - 3 * yy)))
                 if deg > 3:
-                    olist[16].mul_(C4[0] * xy * (xx - yy))
-                    olist[17].mul_(C4[1] * yz * (3 * xx - yy))
-                    olist[18].mul_(C4[2] * xy * (7 * zz - 1))
-                    olist[19].mul_(C4[3] * yz * (7 * zz - 3))
-                    olist[20].mul_(C4[4] * (zz * (35 * zz - 30) + 3))
-                    olist[21].mul_(C4[5] * xz * (7 * zz - 3))
-                    olist[22].mul_(C4[6] * (xx - yy) * (7 * zz - 1))
-                    olist[23].mul_(C4[7] * xz * (xx - 3 * yy))
-                    olist[24].mul_(C4[8] * (xx * (xx - 3 * yy) - yy * (3 * xx - yy)))
+                    olist.append(grad_output * (C4[0] * xy * (xx - yy)))
+                    olist.append(grad_output * (C4[1] * yz * (3 * xx - yy)))
+                    olist.append(grad_output * (C4[2] * xy * (7 * zz - 1)))
+                    olist.append(grad_output * (C4[3] * yz * (7 * zz - 3)))
+                    olist.append(grad_output * (C4[4] * (zz * (35 * zz - 30) + 3)))
+                    olist.append(grad_output * (C4[5] * xz * (7 * zz - 3)))
+                    olist.append(grad_output * (C4[6] * (xx - yy) * (7 * zz - 1)))
+                    olist.append(grad_output * (C4[7] * xz * (xx - 3 * yy)))
+                    olist.append(grad_output * (C4[8] * (xx * (xx - 3 * yy) - yy * (3 * xx - yy))))
     return olist
 
 

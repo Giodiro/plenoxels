@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import time
 
-from typing import Tuple
+from typing import Tuple, List
 
 import torch
 import torch.nn.functional as F
@@ -228,6 +228,16 @@ if __name__ == "__main__":
     TrilinearInterpolate.test_autograd()
 
 
+@torch.jit.script
+def interp_bwd(weights: torch.Tensor, neighbor_data: torch.Tensor, sh_data: List[torch.Tensor]) -> torch.Tensor:
+    # [batch, n_intrs, 1, n_ch] * [batch, n_intrs, 8, 1]
+    j = 0
+    for i in range(len(sh_data)):
+        torch.mul(sh_data[i].unsqueeze(2), weights, out=neighbor_data.narrow(3, j, sh_data[i].shape[-1]))
+        j += sh_data[i].shape[-1]
+    return neighbor_data
+
+
 # noinspection PyAbstractClass,PyMethodOverriding
 class ComputeIntersection(torch.autograd.Function):
     @staticmethod
@@ -338,8 +348,8 @@ class ComputeIntersection(torch.autograd.Function):
         b_crgb_rgbdata.mul_((1 - ctx.rgb_data) * ctx.rgb_data)
 
         # We can now create the `out_data` tensor [batch, n_intrs, n_ch]
-        out_data = b_crgb_rgbdata.tile((1, 1, (n_ch // 3) + 1))[:, :, :-2]
-        out_datal = torch.split(out_data, 3, dim=-1)
+        # out_data = b_crgb_rgbdata.tile((1, 1, (n_ch // 3) + 1))[:, :, :-2]
+        # out_datal = torch.split(out_data, 3, dim=-1)
 
         # Multiply with both operands needing gradient. It looks weird because of mergin this op with random reshapings
         bwa_cont = torch.zeros(batch, n_intrs + 1, dtype=dt, device=dev)
@@ -354,7 +364,7 @@ class ComputeIntersection(torch.autograd.Function):
         b_sigma_data = torch.div(
             w.flip(-1).cumsum(-1).flip(-1),
             (1 - ctx.alpha).add_(1e-10),
-            out=out_datal[-1].squeeze()
+            # out=out_datal[-1].squeeze()
         )  # [batch, n_intrs - 1]
 
         # 2. alpha -> sigma_data
@@ -365,14 +375,14 @@ class ComputeIntersection(torch.autograd.Function):
         print("rendering %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
 
         # 3. Spherical harmonics (from b_crgb_rgbdata: [batch, n_intrs-1, 3])
-        tc_harmonics.sh_bwd_apply_list(out_datal[:-1], dirs=ctx.rays_d, deg=ctx.sh_deg)
+        sh_data = tc_harmonics.sh_bwd_apply_list(b_crgb_rgbdata, dirs=ctx.rays_d, deg=ctx.sh_deg)
+        sh_data.append(b_sigma_data)
         print("sh %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
 
         # 4. Interpolation
-        weights = ctx.weights.view(batch, n_intrs, 8, 1)
-        # [batch, n_intrs, 1, n_ch] * [batch, n_intrs, 8, 1]
-        neighbor_data = ctx.neighbor_data.view(batch, n_intrs, 8, n_ch)
-        torch.mul(out_data.unsqueeze(2), weights, out=neighbor_data)
+        neighbor_data = interp_bwd(weights=ctx.weights.view(batch, n_intrs, 8, 1),
+                                   neighbor_data=ctx.neighbor_data.view(batch, n_intrs, 8, n_ch),
+                                   sh_data=sh_data)
         print("interp %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
 
         # [n, n_ch]
@@ -384,15 +394,16 @@ class ComputeIntersection(torch.autograd.Function):
 
     @staticmethod
     def test_autograd():
-        batch = 6
-        data = torch.randn(batch, 2, 8, 4).to(dtype=torch.float64).requires_grad_()
-        offsets = torch.randn(batch, 2, 3).to(dtype=torch.float64)
+        batch = 8
+        grid_data = torch.randn(30, 4).to(dtype=torch.float64).requires_grad_()
+        neighbor_ids = torch.randint(0, 29, (batch, 3, 8)).long()
+        offsets = torch.randn(batch, 3, 3).to(dtype=torch.float64)
         rays_d = torch.randn(batch, 3).to(dtype=torch.float64)
         intersections = torch.randn(batch, 3).to(dtype=torch.float64)
         deg = 0
 
-        torch.autograd.gradcheck(lambda d: ComputeIntersection.apply(d, offsets, rays_d, intersections, deg),
-                                 inputs=data)
+        torch.autograd.gradcheck(lambda d: ComputeIntersection.apply(d, neighbor_ids, offsets, rays_d, intersections, deg),
+                                 inputs=grid_data)
 
 
 if __name__ == "__main__":
