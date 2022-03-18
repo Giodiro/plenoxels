@@ -377,18 +377,24 @@ class ComputeIntersection(torch.autograd.Function):
         # 3. Spherical harmonics (from b_crgb_rgbdata: [batch, n_intrs-1, 3])
         sh_data = tc_harmonics.sh_bwd_apply_list(b_crgb_rgbdata, dirs=ctx.rays_d, deg=ctx.sh_deg)
         sh_data.append(b_sigma_data)
+        sh_data = torch.cat(sh_data, dim=-1)
         print("sh %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
 
         # 4. Interpolation
-        neighbor_data = interp_bwd(weights=ctx.weights.view(batch, n_intrs, 8, 1),
-                                   neighbor_data=ctx.neighbor_data.view(batch, n_intrs, 8, n_ch),
-                                   sh_data=sh_data)
+        weights = ctx.weights.view(batch, n_intrs, 8, 1)
+        neighbor_data = ctx.neighbor_data.view(batch, n_intrs, 8, n_ch)
+        torch.mul(sh_data.unsqueeze(2), weights, out=neighbor_data)
         print("interp %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
 
-        # [n, n_ch]
+        #summed_data = torch.zeros(ctx.grid_data_size[0], ctx.grid_data_size[-1], dtype=dt, device=dev)
         grid_data_grad = torch.zeros(*ctx.grid_data_size, dtype=dt, device=dev)
+        neighbor_data = neighbor_data.view(-1, neighbor_data.shape[-1])  # [n_pts, n_ch]
+        neighbor_ids = ctx.neighbor_ids.reshape(-1, 1).expand(-1, neighbor_data.shape[-1])
+        grid_data_grad.scatter_add_(0, neighbor_ids, neighbor_data)
+
+        # [n, n_ch]
         print("before fail %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
-        grid_data_grad.index_put_((ctx.neighbor_ids, ), neighbor_data, accumulate=True)
+        #grid_data_grad.index_put_((ctx.neighbor_ids, ), neighbor_data, accumulate=True)
 
         return grid_data_grad, None, None, None, None, None
 
