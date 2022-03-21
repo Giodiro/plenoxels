@@ -244,16 +244,16 @@ def init_params(params_type, resolution, deg, **kwargs):
         return grid_data
     elif params_type == "mr_hash_grid":
         assert deg == 2
-        n_levels = 10
+        n_levels = 14  # we need 28 channels
         base_res = 16
         per_level_scale = resolution / (n_levels * base_res)
         hg = tcnn.Encoding(3, {
             "otype": "Grid",
             "type": "Hash",
-            "n_levels": 10,
-            "n_features_per_level": 3,  # Total of 10*3 = 30 features
+            "n_levels": n_levels,
+            "n_features_per_level": 2,  # Total of 10*3 = 30 features
             "log2_hashmap_size": kwargs['log2_hashmap_size'],
-            "base_resolution": 16,      # Resolution of the coarsest level
+            "base_resolution": base_res,  # Resolution of the coarsest level
             "per_level_scale": per_level_scale,  # How much the resolution increases at each level
             "interpolation": "Linear",
         })
