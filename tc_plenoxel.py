@@ -494,6 +494,7 @@ def compute_intersection_results(grid_data: torch.Tensor,
                                  resolution: int,
                                  uniform: float,
                                  harmonic_degree: int,
+                                 sh_encoder,
                                  white_bkgd: bool) -> torch.Tensor:
     """
     :param grid_data:
@@ -570,8 +571,9 @@ def compute_intersection_results(grid_data: torch.Tensor,
     acc_map = abs_light.sum(-1)  # [batch]
 
     # Deal with RGB data
-    sh_mult = torch.empty(batch, (harmonic_degree + 1) ** 2, dtype=dt, device=dev)   # [batch, ch/3]
-    sh_mult = tc_harmonics.eval_sh_bases(harmonic_degree, rays_d, sh_mult)           # [batch, ch/3]
+    sh_mult = sh_encoder(rays_d)
+    # sh_mult = torch.empty(batch, (harmonic_degree + 1) ** 2, dtype=dt, device=dev)   # [batch, ch/3]
+    # sh_mult = tc_harmonics.eval_sh_bases(harmonic_degree, rays_d, sh_mult)           # [batch, ch/3]
     # sh_mult : [batch, ch/3] => [batch, 1, ch/3] => [batch, n_intrs, ch/3] => [batch, nintrs, 1, ch/3]
     sh_mult = sh_mult.unsqueeze(1).expand(batch, nintrs, -1).unsqueeze(2)  # [batch, nintrs, 1, ch/3]
 

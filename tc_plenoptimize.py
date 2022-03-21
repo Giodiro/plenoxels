@@ -13,6 +13,8 @@ from tqdm import tqdm
 import imageio
 import numpy as np
 
+import tinycudann as tcnn
+
 import tc_plenoxel
 from tc_plenoxel import Grid
 
@@ -128,6 +130,7 @@ def train_batch(grid_idx: torch.Tensor,
                jitter: bool, uniform: float,
                occupancy_penalty: float,
                interpolation: str,
+                sh_encoder,
                lrs):
     """
     Compute the rendered rays, and the loss
@@ -170,7 +173,7 @@ def train_batch(grid_idx: torch.Tensor,
     # rgb = tc_plenoxel.ComputeIntersection.apply(grid_data, neighbor_ids, intrp_w, rays[1], intersections, harmonic_degree)
     rgb = tc_plenoxel.compute_intersection_results(
         grid_data=grid_data, rays_d=rays[0], rays_o=rays[1], radius=radius, resolution=resolution,
-        uniform=uniform, harmonic_degree=harmonic_degree, white_bkgd=True)
+        uniform=uniform, harmonic_degree=harmonic_degree, sh_encoder=sh_encoder, white_bkgd=True)
     # t_res = time.time() - t_s
     t_s = time.time()
     loss = F.mse_loss(rgb, gt) + occupancy_penalty * torch.mean(torch.relu(grid_data[..., -1]))
@@ -282,6 +285,12 @@ def run(args):
     lrs = [args.lr_rgb] * (sh_dim * 3) + [args.lr_sigma]
     lrs = torch.tensor(lrs, dtype=torch.float32, device=dev)
 
+    # Tiny-CUDA-NN modules
+    sh_enc = tcnn.Encoding(3, {
+        "otype": "SphericalHarmonics",
+        "degree": args.harmonic_degree + 1,
+    })
+
     profiling_handler = functools.partial(trace_handler, exp_name=args.expname,
                                           dev="cpu" if dev == "cpu" else "cuda")
     # Main iteration starts here
@@ -312,7 +321,8 @@ def run(args):
                                      radius=args.radius, harmonic_degree=args.harmonic_degree,
                                      jitter=args.jitter, uniform=args.uniform,
                                      occupancy_penalty=occupancy_penalty,
-                                     interpolation=args.interpolation, lrs=lrs)
+                                     interpolation=args.interpolation, lrs=lrs,
+                                              sh_encoder=sh_enc)
                 t_e = time.time()
                 print(f"Iteration takes {t_e - t_s:.4f}s")
                 t_s = time.time()
