@@ -155,24 +155,25 @@ def train_batch(grid_idx: torch.Tensor,
     print("loss start. %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
     if not grid_data.requires_grad:
         grid_data.requires_grad_()
-    with torch.autograd.no_grad():
-        t_s = time.time()
-        intrp_w, neighbor_ids, intersections = tc_plenoxel.fetch_intersections(
-            grid_idx, rays_o=rays[0], rays_d=rays[1], resolution=resolution, radius=radius,
-            uniform=uniform, interpolation=interpolation)
-        t_inters = time.time() - t_s
-    print("intersections done. %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
+    #with torch.autograd.no_grad():
+    #    t_s = time.time()
+    #    intrp_w, neighbor_ids, intersections = tc_plenoxel.fetch_intersections(
+    #        grid_idx, rays_o=rays[0], rays_d=rays[1], resolution=resolution, radius=radius,
+    #        uniform=uniform, interpolation=interpolation)
+    #    t_inters = time.time() - t_s
+    #print("intersections done. %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
 
-    t_s = time.time()
+    #t_s = time.time()
     # rgb, disp, acc, weights = tc_plenoxel.compute_intersection_results(
     #     interp_weights=intrp_w, neighbor_data=neighbor_data, rays_d=rays[1],
     #     intersections=intersections, harmonic_degree=harmonic_degree)
-    rgb = tc_plenoxel.ComputeIntersection.apply(grid_data, neighbor_ids, intrp_w, rays[1], intersections, harmonic_degree)
-    t_res = time.time() - t_s
+    # rgb = tc_plenoxel.ComputeIntersection.apply(grid_data, neighbor_ids, intrp_w, rays[1], intersections, harmonic_degree)
+    rgb = tc_plenoxel.compute_intersection_results(
+        grid_data=grid_data, rays_d=rays[0], rays_o=rays[1], radius=radius, resolution=resolution,
+        uniform=uniform, harmonic_degree=harmonic_degree, white_bkgd=True)
+    # t_res = time.time() - t_s
     t_s = time.time()
     loss = F.mse_loss(rgb, gt) + occupancy_penalty * torch.mean(torch.relu(grid_data[..., -1]))
-    #mse = torch.mean(torch.square(rgb - gt))
-    #loss = mse# + occupancy_penalty * torch.mean(torch.relu(grid_data[..., -1]))
     t_loss = time.time() - t_s
 
     with torch.autograd.no_grad():
@@ -184,7 +185,7 @@ def train_batch(grid_idx: torch.Tensor,
         upd_data = update_grids(grid_data, lrs, grads[0])
         print("after update %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
         t_u = time.time() - t_s
-    print(f"Intersections {t_inters*1000:.2f}ms    diff {t_res*1000:.2f}ms    loss {t_loss*1000:.2f}ms    grad {t_g*1000:.2f}ms   update {t_u*1000:.2f}ms")
+    #print(f"Intersections {t_inters*1000:.2f}ms    diff {t_res*1000:.2f}ms    loss {t_loss*1000:.2f}ms    grad {t_g*1000:.2f}ms   update {t_u*1000:.2f}ms")
     del rgb, upd_data, grads, loss, gt
     print("at end %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
 
@@ -292,7 +293,7 @@ def run(args):
 
         with ExitStack() as stack:
             p = None
-            if True:
+            if False:
                 p = torch.profiler.profile(
                     schedule=torch.profiler.schedule(wait=5, warmup=5, active=15),
                     on_trace_ready=profiling_handler,
