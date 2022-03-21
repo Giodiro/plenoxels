@@ -175,14 +175,13 @@ def train_batch(params: Any, params_type: str, target: torch.Tensor, rays: torch
         del rgb, upd_data, grads, loss, target, rays
     elif params_type == "mr_hash_grid":
         hg = params
-        print("hg", hg)
-        print(hg.__dict__)
-        print(hg.parameters())
         rgb = tc_plenoxel.compute_with_hashgrid(
             hg=hg, rays_d=rays[0], rays_o=rays[1], radius=radius, resolution=resolution,
             uniform=uniform, harmonic_degree=harmonic_degree, sh_encoder=sh_encoder, white_bkgd=True)
+        # TODO: add regularization
         loss = F.mse_loss(rgb, target)# + occupancy_penalty * torch.mean(torch.relu(grid_data[..., -1]))
         grads = torch.autograd.grad(loss, hg.parameters())
+        # TODO: Update parameters
     else:
         raise ValueError(params_type)
     return None

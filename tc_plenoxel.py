@@ -521,6 +521,7 @@ def compute_with_hashgrid(hg, rays_d: torch.Tensor, rays_o: torch.Tensor, radius
     interp_data = hg(intrs_pts.view(-1, 3))  # [batch * n_intrs - 1, n_ch]
     print("Interpolated data", interp_data.shape)
     interp_data = interp_data.view(batch, nintrs, -1)
+    print("interp_data", interp_data.shape)
 
     # Split the channels in density (sigma) and RGB. Here we ignore any extra channels which
     # may be present in interp_data
@@ -552,6 +553,7 @@ def compute_with_hashgrid(hg, rays_d: torch.Tensor, rays_o: torch.Tensor, radius
     rgb_sh = interp_rgb_data.view(batch, nintrs, 3, sh_mult.shape[-1])  # [batch, nintrs, 3, ch/3]
     rgb = torch.sigmoid(torch.sum(sh_mult * rgb_sh, dim=-1))  # [batch, nintrs, 3]
     rgb_map = torch.sum(rgb * abs_light.unsqueeze(-1), dim=-2)  # [batch, 3]
+    print("RGB Map", rgb_map.shape)
 
     if white_bkgd:
         # Including the white background in the final color
