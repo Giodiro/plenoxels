@@ -308,8 +308,8 @@ class ComputeIntersection(torch.autograd.Function):
         # abs_light : [batch, n_intrs-1]
         # The following 3 lines compute the same thing. TODO: test which one is fastest
         # [batch, 3, n_intrs-1] * [batch, n_intrs-1, 1] = [batch, 3, 1]
-        comp_rgb = torch.bmm(rgb_data.permute(0, 2, 1), abs_light.unsqueeze(-1)).squeeze()  # [batch, 3]
-        # comp_rgb = torch.einsum('bik, bik->bk', rgb_data, abs_light.unsqueeze(-1))  # [batch, 3]
+        #comp_rgb = torch.bmm(rgb_data.permute(0, 2, 1), abs_light.unsqueeze(-1)).squeeze()  # [batch, 3]
+        comp_rgb = torch.einsum('bik, bik->bk', rgb_data, abs_light.unsqueeze(-1))  # [batch, 3]
         # comp_rgb = (weights.unsqueeze(-1) * torch.sigmoid(rgb)).sum(dim=-2)  # [batch, 3]
         if torch.cuda.is_available():
             print("out %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
@@ -352,7 +352,10 @@ class ComputeIntersection(torch.autograd.Function):
         grad_output = grad_output.unsqueeze(-1)  # [batch, 3, 1]
         # goes into first element of out_datal. This operation is an outer product.
         # [batch, n_intrs-1, 1] * [batch, 1, 3] => [batch, n_intrs-1, 3]
-        b_crgb_rgbdata = torch.bmm(abs_light.unsqueeze(-1), grad_output.transpose(1, 2), out=ctx.interp_datal[0])
+        #b_crgb_rgbdata = torch.bmm(abs_light.unsqueeze(-1), grad_output.transpose(1, 2), out=ctx.interp_datal[0])
+        b_crgb_rgbdata = ctx.interp_datal[0]
+        b_crgb_rgbdata.copy_(abs_light.unsqueeze(-1).expand_as(b_crgb_rgbdata))
+        b_crgb_rgbdata.mul_(grad_output.transpose(1, 2))
         # b_crgb_rgbdata = torch.bmm(grad_output, abs_light.unsqueeze(1)).transpose(1, 2)
         # [batch, n_intrs-1, 3] * [batch, 3, 1] => [batch, n_intrs-1]
         b_crgb_alight = torch.bmm(ctx.rgb_data, grad_output).squeeze()

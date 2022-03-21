@@ -152,14 +152,16 @@ def train_batch(grid_idx: torch.Tensor,
         Type of interpolation, should always be 'trilinear'
     :return:
     """
-
-    grid_data.requires_grad_()
+    print("loss start. %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
+    if not grid_data.requires_grad:
+        grid_data.requires_grad_()
     with torch.autograd.no_grad():
         t_s = time.time()
         intrp_w, neighbor_ids, intersections = tc_plenoxel.fetch_intersections(
             grid_idx, rays_o=rays[0], rays_d=rays[1], resolution=resolution, radius=radius,
             uniform=uniform, interpolation=interpolation)
         t_inters = time.time() - t_s
+    print("intersections done. %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
 
     t_s = time.time()
     # rgb, disp, acc, weights = tc_plenoxel.compute_intersection_results(
@@ -176,13 +178,17 @@ def train_batch(grid_idx: torch.Tensor,
     with torch.autograd.no_grad():
         t_s = time.time()
         grads = torch.autograd.grad(loss, grid_data)
+        print("after grad %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
         t_g = time.time() - t_s
         t_s = time.time()
         upd_data = update_grids(grid_data, lrs, grads[0])
+        print("after update %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
         t_u = time.time() - t_s
     print(f"Intersections {t_inters*1000:.2f}ms    diff {t_res*1000:.2f}ms    loss {t_loss*1000:.2f}ms    grad {t_g*1000:.2f}ms   update {t_u*1000:.2f}ms")
+    del rgb, upd_data, grads, loss, gt
+    print("at end %.2fGB" % (torch.cuda.memory_allocated() / 2**30))
 
-    return loss, grid_data
+    return None, grid_data
 
 
 @torch.jit.script
