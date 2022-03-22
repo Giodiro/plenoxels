@@ -306,10 +306,13 @@ def run(args):
     lrs = torch.tensor(lrs, dtype=torch.float32, device=dev)
 
     # Tiny-CUDA-NN modules
-    sh_enc = tcnn.Encoding(3, {
-        "otype": "SphericalHarmonics",
-        "degree": args.harmonic_degree + 1,
-    })
+    if False:
+        sh_enc = tcnn.Encoding(3, {
+            "otype": "SphericalHarmonics",
+            "degree": args.harmonic_degree + 1,
+        })
+    else:
+        sh_enc = tc_plenoxel.plenoxel_sh_encoder(args.harmonic_degree)
 
     profiling_handler = functools.partial(trace_handler, exp_name=args.expname,
                                           dev="cpu" if dev == "cpu" else "cuda")

@@ -255,20 +255,22 @@ if __name__ == "__main__":
 
 
 @torch.jit.script
-def volumetric_rendering(rgb: torch.Tensor,  # [batch, n_intersections-1, 3]
-                         sigma: torch.Tensor,  # [batch, n_intersections-1, 1]
+def volumetric_rendering(rgb: torch.Tensor,            # [batch, n_intersections-1, 3]
+                         sigma: torch.Tensor,          # [batch, n_intersections-1, 1]
                          intersections: torch.Tensor,  # [batch, n_intersections]
-                         rays_d: torch.Tensor,  # [batch, 3]
-                         white_bkgd: bool = True):
+                         rays_d: torch.Tensor,         # [batch, 3]
+                         white_bkgd: bool = True) -> torch.Tensor:
     # Volumetric rendering
     # Convert ray-relative distance to absolute distance (shouldn't matter if rays_d is normalized)
     dists = torch.diff(intersections, n=1, dim=1) \
                  .mul(torch.linalg.norm(rays_d, ord=2, dim=-1, keepdim=True))  # dists: [batch, n_intrs-1]
-    alpha = 1 - torch.exp(-torch.relu(sigma) * dists)     # alpha: [batch, n_intrs-1]
+    alpha = 1 - torch.exp(-torch.relu(sigma) * dists)                          # alpha: [batch, n_intrs-1]
     # the absolute amount of light that gets stuck in each voxel
     # This quantity can be used to threshold the intersections which must be processed (only if
     # abs_light > threshold). Often the variable is called 'weights'
-    abs_light = CumProdVolRender.apply(alpha)
+    cum_light = torch.cat((torch.ones(rgb.shape[0], 1, dtype=rgb.dtype, device=rgb.device),
+                           torch.cumprod(1 - alpha[:, :-1] + 1e-10, dim=-1)), dim=-1)  # [batch, n_intrs-1]
+    abs_light = alpha * cum_light  # [batch, n_intersections - 1]
     acc_map = abs_light.sum(-1)  # [batch]
 
     # Accumulated color over the samples, ignoring background
@@ -392,7 +394,7 @@ def compute_grid(grid_data: torch.Tensor,
         # Intersections in the real world
         intrs_pts = rays_o.unsqueeze(1) + intersections_trunc.unsqueeze(2) * rays_d.unsqueeze(1)  # [batch, n_intrs - 1, 3]
         # Normalize to -1, 1 range (this can probably be done without computing minmax) TODO: This is wrong
-        intrs_pts = (intrs_pts - intrs_pts.min()) / (radius) - 1
+        intrs_pts = (intrs_pts) / (radius) - 1
 
     # Interpolate grid-data at intersection points (trilinear)
     intrs_pts = intrs_pts.unsqueeze(0).unsqueeze(0)  # [1, 1, batch, n_intrs - 1, 3]
@@ -420,7 +422,7 @@ def compute_grid(grid_data: torch.Tensor,
     return rgb_map
 
 
-def plenoxel_shell_encoder(harmonic_degree):
+def plenoxel_sh_encoder(harmonic_degree):
     num_sh = (harmonic_degree + 1) ** 2
 
     def encode(rays_d):
