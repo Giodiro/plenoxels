@@ -195,7 +195,6 @@ class TrilinearInterpolate(torch.autograd.Function):
         weights = get_interp_weights(xs=offsets[:, 0], ys=offsets[:, 1], zs=offsets[:, 2]).unsqueeze(-1)  # [n_pts, 8, 1]
 
         out = torch.einsum('bik, bik -> bk', neighbor_data, weights)
-        #out = torch.sum(neighbor_data * weights, dim=1)  # sum over the 8 neighbors => [n_pts, channels]
         out = out.view(batch, nintrs, -1)  # [batch, n_intersections, channels]
 
         ctx.weights = weights
@@ -278,12 +277,7 @@ def compute_irregular_grid(grid_data: torch.Tensor,
     neighbor_data = neighbor_data.view(batch, nintrs, 8, n_ch)
 
     # Interpolation
-    neighbor_data = neighbor_data.view(batch * nintrs, 8, -1)  # [n_pts, 8, channels]
-    interp_dirs = interp_dirs.view(batch * nintrs, 3)  # [n_pts, 3]
-    weights = get_interp_weights(xs=interp_dirs[:, 0], ys=interp_dirs[:, 1], zs=interp_dirs[:, 2]).unsqueeze(-1)  # [n_pts, 8, 1]
-    interp_data = torch.einsum('bik, bik -> bk', neighbor_data, weights)
-
-    interp_data = interp_data.view(batch, nintrs, -1)  # [batch, n_intersections, channels]
+    interp_data = TrilinearInterpolate.apply(neighbor_data, interp_dirs)  # [batch, n_intersections, channels]
     interp_datal = interp_data.split(3, dim=-1)   # Seq[batch, n_intrs, 3 or 1]
 
     # Spherical harmonics
