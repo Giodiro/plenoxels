@@ -195,7 +195,7 @@ class TrilinearInterpolate(torch.autograd.Function):
         weights = get_interp_weights(xs=offsets[:, 0], ys=offsets[:, 1], zs=offsets[:, 2]).unsqueeze(-1)  # [n_pts, 8, 1]
 
         out = torch.einsum('bik, bik -> bk', neighbor_data, weights)
-        out = out.view(batch, nintrs, -1)  # [batch, n_intersections, channels]
+        out = out.view(batch, nintrs, -1)  # [batch, n_intrs, n_ch]
 
         ctx.weights = weights
         ctx.batch, ctx.nintrs = batch, nintrs
@@ -209,10 +209,6 @@ class TrilinearInterpolate(torch.autograd.Function):
         batch, nintrs = ctx.batch, ctx.nintrs
         weights = ctx.weights.reshape(batch, nintrs, 8, 1)
         return (grad_output.unsqueeze(2) * weights), None, None
-
-        # TODO: The gradient is essentially sparse. There is no point in computing the gradient for all of data, it should be much
-        #       quicker to return the gradient with respect to only the data contained in neighbor_ids. Then we can essentially avoid
-        #       the call to index_put!
 
     @staticmethod
     def test_autograd():
