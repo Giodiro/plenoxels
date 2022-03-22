@@ -173,7 +173,7 @@ def train_batch(params: Any, params_type: str, target: torch.Tensor, rays: torch
         del rgb, upd_data, grads, loss, target, rays
     elif params_type == "grid":
         grid_data = params
-        rgb = tc_plenoxel.compute_intersection_results(
+        rgb = tc_plenoxel.compute_grid(
             grid_data=grid_data, rays_d=rays_d, rays_o=rays_o, radius=radius, resolution=resolution,
             uniform=uniform, harmonic_degree=harmonic_degree, sh_encoder=sh_encoder, white_bkgd=True)
         loss = F.mse_loss(rgb, target) + occupancy_penalty * torch.mean(torch.relu(grid_data[..., -1]))
