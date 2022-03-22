@@ -519,9 +519,7 @@ def compute_with_hashgrid(hg, rays_d: torch.Tensor, rays_o: torch.Tensor, radius
         intrs_pts = (intrs_pts - start.min()) / (radius) - 1
 
     interp_data = hg(intrs_pts.view(-1, 3))  # [batch * n_intrs - 1, n_ch]
-    print("Interpolated data", interp_data.shape)
     interp_data = interp_data.view(batch, nintrs, -1)
-    print("interp_data", interp_data.shape)
 
     # Split the channels in density (sigma) and RGB. Here we ignore any extra channels which
     # may be present in interp_data

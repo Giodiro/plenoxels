@@ -162,21 +162,21 @@ def train_batch(params: Any, params_type: str, target: torch.Tensor, rays: torch
                                                     intersections, harmonic_degree)
         loss = F.mse_loss(rgb, target) + occupancy_penalty * torch.mean(torch.relu(grid_data[..., -1]))
         grads = torch.autograd.grad(loss, grid_data)
-        upd_data = update_grids(grid_data, lrs, grads[0])
+        upd_data = update_grids(grid_data.detach(), lrs, grads[0])
         del rgb, upd_data, grads, loss, target, rays
     elif params_type == "grid":
         grid_data = params
         rgb = tc_plenoxel.compute_intersection_results(
-            grid_data=grid_data, rays_d=rays[0], rays_o=rays[1], radius=radius, resolution=resolution,
+            grid_data=grid_data, rays_d=rays_d, rays_o=rays_o, radius=radius, resolution=resolution,
             uniform=uniform, harmonic_degree=harmonic_degree, sh_encoder=sh_encoder, white_bkgd=True)
         loss = F.mse_loss(rgb, target) + occupancy_penalty * torch.mean(torch.relu(grid_data[..., -1]))
         grads = torch.autograd.grad(loss, grid_data)
-        upd_data = update_grids(grid_data, lrs, grads[0])
+        upd_data = update_grids(grid_data.detach(), lrs, grads[0])
         del rgb, upd_data, grads, loss, target, rays
     elif params_type == "mr_hash_grid":
         hg = params
         rgb = tc_plenoxel.compute_with_hashgrid(
-            hg=hg, rays_d=rays[0], rays_o=rays[1], radius=radius, resolution=resolution,
+            hg=hg, rays_d=rays_d, rays_o=rays_o, radius=radius, resolution=resolution,
             uniform=uniform, harmonic_degree=harmonic_degree, sh_encoder=sh_encoder, white_bkgd=True)
         # TODO: add regularization
         loss = F.mse_loss(rgb, target)# + occupancy_penalty * torch.mean(torch.relu(grid_data[..., -1]))
@@ -334,7 +334,7 @@ def run(args):
                 b_rays = tr_rays[k * args.batch_size: (k + 1) * args.batch_size].to(device=dev)
                 b_rgb = tr_rgb[k * args.batch_size: (k + 1) * args.batch_size].to(device=dev)
                 t_s = time.time()
-                loss, grid_data = train_batch(params=params, params_type=args.params_type,
+                train_batch(params=params, params_type=args.params_type,
                                               target=b_rgb, rays=b_rays, resolution=args.resolution,
                                               radius=args.radius, harmonic_degree=args.harmonic_degree,
                                               jitter=args.jitter, uniform=args.uniform,
