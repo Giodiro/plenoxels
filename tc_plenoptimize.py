@@ -165,7 +165,8 @@ def train_batch(params: Any, params_type: str, target: torch.Tensor, rays: torch
             rgb = tc_plenoxel.compute_irregular_grid(
                 grid_data=grid_data, grid_idx=grid_idx, rays_d=rays_d, rays_o=rays_o,
                 resolution=resolution, radius=radius, uniform=uniform,
-                harmonic_degree=harmonic_degree, sh_encoder=sh_encoder)
+                harmonic_degree=harmonic_degree, sh_encoder=sh_encoder,
+                white_bkgd=True)
         loss = F.mse_loss(rgb, target) + occupancy_penalty * torch.mean(torch.relu(grid_data[..., -1]))
         grads = torch.autograd.grad(loss, grid_data)
         upd_data = update_grids(grid_data.detach(), lrs, grads[0])

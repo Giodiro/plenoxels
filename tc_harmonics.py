@@ -397,7 +397,6 @@ def eval_sh(deg: int,
     sh_channels is (deg + 1) ** 2 time 3
     """
     assert 4 >= deg >= 0
-    assert sh.shape[-1] == ((deg + 1) ** 2) * 3
     C0 = 0.28209479177387814
     C1 = 0.4886025119029199
     C2 = (
