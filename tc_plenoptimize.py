@@ -155,11 +155,17 @@ def train_batch(params: Any, params_type: str, target: torch.Tensor, rays: torch
     rays_o, rays_d = rays[:, 0], rays[:, 1]
     if params_type == "irregular_grid":
         grid_data, grid_idx = params
-        intrp_w, neighbor_ids, intersections = tc_plenoxel.fetch_intersections(
-           grid_idx, rays_o=rays_o, rays_d=rays_d, resolution=resolution, radius=radius,
-           uniform=uniform, interpolation=interpolation)
-        rgb = tc_plenoxel.ComputeIntersection.apply(grid_data, neighbor_ids, intrp_w, rays_d,
-                                                    intersections, harmonic_degree)
+        if False:
+            intrp_w, neighbor_ids, intersections = tc_plenoxel.fetch_intersections(
+               grid_idx, rays_o=rays_o, rays_d=rays_d, resolution=resolution, radius=radius,
+               uniform=uniform, interpolation=interpolation)
+            rgb = tc_plenoxel.ComputeIntersection.apply(grid_data, neighbor_ids, intrp_w, rays_d,
+                                                        intersections, harmonic_degree)
+        elif True:
+            rgb = tc_plenoxel.compute_irregular_grid(
+                grid_data=grid_data, grid_idx=grid_idx, rays_d=rays_d, rays_o=rays_o,
+                resolution=resolution, radius=radius, uniform=uniform,
+                harmonic_degree=harmonic_degree, sh_encoder=sh_encoder)
         loss = F.mse_loss(rgb, target) + occupancy_penalty * torch.mean(torch.relu(grid_data[..., -1]))
         grads = torch.autograd.grad(loss, grid_data)
         upd_data = update_grids(grid_data, lrs, grads[0])

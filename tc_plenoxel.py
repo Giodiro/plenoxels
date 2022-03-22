@@ -238,6 +238,98 @@ def interp_bwd(weights: torch.Tensor, neighbor_data: torch.Tensor, sh_data: List
     return neighbor_data
 
 
+def compute_irregular_grid(grid_data: torch.Tensor,
+                           grid_idx: torch.Tensor,
+                           rays_d: torch.Tensor,
+                           rays_o: torch.Tensor,
+                           radius: float,
+                           resolution: int,
+                           uniform: float,
+                           harmonic_degree: int,
+                           sh_encoder,
+                           white_bkgd: bool) -> torch.Tensor:
+    with torch.autograd.no_grad():
+        voxel_len = radius * 2 / resolution
+        count = int(resolution * 3 / uniform)
+
+        offsets_pos = (radius - rays_o) / rays_d  # [batch, 3]
+        offsets_neg = (-radius - rays_o) / rays_d  # [batch, 3]
+        offsets_in = torch.minimum(offsets_pos, offsets_neg)  # [batch, 3]
+        offsets_out = torch.maximum(offsets_pos, offsets_neg)  # [batch, 3]
+        start = torch.amax(offsets_in, dim=-1, keepdim=True)  # [batch, 1]
+        stop = torch.amin(offsets_out, dim=-1, keepdim=True)  # [batch, 1]
+
+        intersections = tensor_linspace(
+            start=start.squeeze() + uniform * voxel_len,
+            end=start.squeeze() + uniform * voxel_len * count,
+            # difference from plenoxel.py since here endpoint=True
+            steps=count)  # [batch, n_intersections]
+        intersections = torch.clamp_(intersections, min=None, max=stop)
+        intersections_trunc = intersections[:, :-1]
+        interp_dirs, neighbor_ids = get_intersection_ids(
+            intersections_trunc, rays_o, rays_d, grid_idx, voxel_len, radius, resolution)
+
+    batch, nintrs = interp_dirs.shape[:2]
+    dt, dev = interp_dirs.dtype, interp_dirs.device
+    n_ch = grid_data.shape[-1]
+
+    # Fetch neighbors
+    neighbor_data = torch.gather(grid_data, dim=0, index=neighbor_ids.view(-1, 1).expand(-1, n_ch))
+    neighbor_data = neighbor_data.view(batch, nintrs, 8, n_ch)
+
+    # Interpolation
+    neighbor_data = neighbor_data.view(batch * nintrs, 8, -1)  # [n_pts, 8, channels]
+    interp_dirs = interp_dirs.view(batch * nintrs, 3)  # [n_pts, 3]
+    weights = get_interp_weights(xs=interp_dirs[:, 0], ys=interp_dirs[:, 1], zs=interp_dirs[:, 2]).unsqueeze(-1)  # [n_pts, 8, 1]
+    interp_data = torch.einsum('bik, bik -> bk', neighbor_data, weights)
+
+    interp_data = interp_data.view(batch, nintrs, -1)  # [batch, n_intersections, channels]
+    interp_datal = interp_data.split(3, dim=-1)   # Seq[batch, n_intrs, 3 or 1]
+
+    # Spherical harmonics
+    # v1.
+    rgb_data = torch.zeros(batch, nintrs, 3, dtype=dt, device=dev)  # [batch, n_intrs-1, 3]
+    rgb_data = tc_harmonics.sh_fwd_apply_list(interp_datal[:-1], rays_d, out=rgb_data, deg=harmonic_degree)
+    # v2.
+    # sh_mult = sh_encoder(rays_d)
+    # # sh_mult : [batch, ch/3] => [batch, 1, ch/3] => [batch, n_intrs, ch/3] => [batch, nintrs, 1, ch/3]
+    # sh_mult = sh_mult.unsqueeze(1).expand(batch, nintrs, -1).unsqueeze(2)  # [batch, nintrs, 1, ch/3]
+    # interp_rgb = interp_data[..., :-1].view(batch, nintrs, 3, sh_mult.shape[-1])  # [batch, nintrs, 3, ch/3]
+    # rgb_data = torch.sum(sh_mult * interp_rgb, dim=-1)  # [batch, nintrs, 3]
+
+    sigma_data = interp_datal[-1]  # [batch, n_intrs-1, 1]
+
+    # Volumetric rendering
+    # Convert ray-relative distance to absolute distance (shouldn't matter if rays_d is normalized)
+    dists = torch.diff(intersections, n=1, dim=1) \
+                 .mul(torch.linalg.norm(rays_d, ord=2, dim=-1, keepdim=True))  # dists: [batch, n_intrs-1]
+    sigma_data = sigma_data.squeeze()  # SAVED for bwd so relu can't be inplace
+    alpha = 1 - torch.exp(-torch.relu(sigma_data) * dists)     # alpha: [batch, n_intrs-1]
+    cum_light = torch.cumprod(1 - alpha[:, :-1] + 1e-10, dim=-1)  # [batch, n_intrs - 2]
+    cum_light = torch.cat(
+        (torch.ones(batch, 1, dtype=dt, device=dev), cum_light), dim=-1)  # [batch, n_intrs - 1]
+
+    # the absolute amount of light that gets stuck in each voxel
+    abs_light = alpha * cum_light  # [batch, n_intersections - 1]
+    acc_map = abs_light.sum(-1)  # [batch]
+
+    # # Accumulated color over the samples, ignoring background
+    rgb_data = torch.sigmoid(rgb_data)
+    # rgb_data  : [batch, n_intrs-1, 3]
+    # abs_light : [batch, n_intrs-1]
+    # The following 3 lines compute the same thing. TODO: test which one is fastest
+    # [batch, 3, n_intrs-1] * [batch, n_intrs-1, 1] = [batch, 3, 1]
+    # rgb_map = torch.bmm(rgb_data.permute(0, 2, 1), abs_light.unsqueeze(-1)).squeeze()  # [batch, 3]
+    rgb_map = torch.einsum('bik, bik->bk', rgb_data, abs_light.unsqueeze(-1))  # [batch, 3]
+    # rgb_map = (weights.unsqueeze(-1) * torch.sigmoid(rgb)).sum(dim=-2)  # [batch, 3]
+
+    if white_bkgd:
+        # Including the white background in the final color
+        rgb_map = rgb_map + (1. - acc_map.unsqueeze(1))
+
+    return rgb_map
+
+
 # noinspection PyAbstractClass,PyMethodOverriding
 class ComputeIntersection(torch.autograd.Function):
     @staticmethod
