@@ -157,6 +157,7 @@ def train_irregular_grid(cfg):
         prune_threshold=cfg.irreg_grid.prune_threshold,
         count_intersections=cfg.irreg_grid.count_intersections,
     ).to(dev)
+    optim = torch.optim.Adam(params=model.parameters(), lr=0.01)
 
     # Profiling
     profiling_handler = functools.partial(trace_handler, exp_name=cfg.expname,
@@ -175,6 +176,7 @@ def train_irregular_grid(cfg):
                 stack.enter_context(p)
             model = model.train()
             for i, batch in tqdm(enumerate(tr_loader), desc=f"Epoch {epoch}"):
+                optim.zero_grad()
                 rays, imgs = batch
                 rays = rays.to(device=dev)
                 rays_o = rays[:, 0].contiguous()
@@ -183,12 +185,13 @@ def train_irregular_grid(cfg):
                 preds, _, _ = model(rays_o=rays_o, rays_d=rays_d)
                 loss = F.mse_loss(preds, imgs)
                 total_loss = loss + occupancy_penalty * model.approx_density_tv_reg()
-
+                total_loss.backward()
+                optim.step()
                 # Our own optimization procedure
-                with torch.autograd.no_grad():
-                    grad = torch.autograd.grad(total_loss, model.grid_data)[0]  # [batch, n_ch]
-                    grad.mul_(lrs.unsqueeze(0))
-                    model.grid_data.sub_(grad)
+                # with torch.autograd.no_grad():
+                #     grad = torch.autograd.grad(total_loss, model.grid_data)[0]  # [batch, n_ch]
+                #     grad.mul_(lrs.unsqueeze(0))
+                #     model.grid_data.sub_(grad)
 
                 # Reporting
                 loss = loss.detach().item()
