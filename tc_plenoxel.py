@@ -239,11 +239,16 @@ class TrilinearInterpolate(torch.autograd.Function):
         # Coalesce all intersections into the 'batch' dimension. Call batch * n_intrs == n_pts
         batch, nintrs = offsets.shape[:2]
         neighbor_data = neighbor_data.view(batch * nintrs, 8, -1)  # [n_pts, 8, channels]
-        offsets = offsets.view(batch * nintrs, 3)  # [n_pts, 3]
+        offsets = offsets.view(batch * nintrs, 3).to(dtype=neighbor_data.dtype)  # [n_pts, 3]
 
-        weights = get_interp_weights(xs=offsets[:, 0], ys=offsets[:, 1], zs=offsets[:, 2]).unsqueeze(-1)  # [n_pts, 8, 1]
+        if neighbor_data.dtype == torch.bfloat16:
+            neighbor_data = neighbor_data.transpose(1, 2)  # [n_pts, ch, 8]
+            weights = get_interp_weights(xs=offsets[:, 0], ys=offsets[:, 1], zs=offsets[:, 2]).unsqueeze(1)  # [n_pts, 1, 8]
+            out = neighbor_data.mul_(weights).sum(-1)  # [n_pts, ch]
+        else:
+            weights = get_interp_weights(xs=offsets[:, 0], ys=offsets[:, 1], zs=offsets[:, 2]).unsqueeze(-1)  # [n_pts, 8, 1]
+            out = torch.einsum('bik, bik -> bk', neighbor_data, weights)
 
-        out = torch.einsum('bik, bik -> bk', neighbor_data, weights)
         out = out.view(batch, nintrs, -1)  # [batch, n_intrs, n_ch]
 
         ctx.weights = weights
@@ -344,7 +349,7 @@ def volumetric_rendering(rgb: torch.Tensor,            # [batch, n_intersections
     cum_light = torch.cat((torch.ones(rgb.shape[0], 1, dtype=rgb.dtype, device=rgb.device),
                            torch.cumprod(1 - alpha[:, :-1] + 1e-10, dim=-1)), dim=-1)  # [batch, n_intrs-1]
     abs_light = alpha * cum_light  # [batch, n_intersections - 1]
-    acc_map = abs_light.sum(-1)  # [batch]
+    acc_map = abs_light.sum(-1)    # [batch]
 
     # Accumulated color over the samples, ignoring background
     rgb = torch.sigmoid(rgb)  # [batch, n_intrs-1, 3]

@@ -2,7 +2,7 @@ from yacs.config import CfgNode as CN
 
 _C = CN()
 
-_C.expname = "an_exp"
+_C.expname = "imp_dl"
 
 _C.sh = CN()
 _C.sh.degree = 2
@@ -21,7 +21,7 @@ _C.data = CN()
 _C.data.datadir = "/home/giacomo/plenoxels/lego"
 _C.data.resolution = 256
 _C.data.downsample = 1.0
-_C.data.max_tr_frames = 10
+_C.data.max_tr_frames = None
 _C.data.max_ts_frames = 10
 
 _C.grid = CN()
@@ -30,7 +30,7 @@ _C.grid.ini_sigma = 0.1
 
 _C.irreg_grid = CN()
 _C.irreg_grid.prune_threshold = 0.001
-_C.irreg_grid.count_intersections = "plenoxel"
+_C.irreg_grid.count_intersections = "plenoxels"
 
 
 def get_cfg_defaults():
