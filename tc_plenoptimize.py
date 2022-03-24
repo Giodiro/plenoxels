@@ -119,17 +119,18 @@ def train_irregular_grid(cfg):
     dev = "cuda:0" if torch.cuda.is_available() else "cpu"
     tr_dset = SyntheticNerfDataset(cfg.data.datadir, split='train', downsample=cfg.data.downsample,
                                    resolution=resolution, max_frames=cfg.data.max_tr_frames)
-    tr_loader = DataLoader(tr_dset, batch_size=cfg.optim.batch_size, shuffle=True,
+    tr_loader = DataLoader(tr_dset, batch_size=cfg.optim.batch_size, shuffle=True, num_workers=2, prefetch_factor=3,
                            pin_memory=dev.startswith("cuda"))
     ts_dset = SyntheticNerfDataset(cfg.data.datadir, split='test', downsample=cfg.data.downsample,
                                    resolution=resolution, max_frames=cfg.data.max_ts_frames)
 
     # Initialize learning-rate
     lr_rgb, lr_sigma = cfg.optim.lr_rgb, cfg.optim.lr_sigma
-    if lr_rgb == 0 or lr_sigma == 0:  # Can't be set to None in config but it's equivalent
+    if lr_rgb is None or lr_sigma is None:
         lr_rgb = 150 * (resolution ** 1.75)
         lr_sigma = 51.5 * (resolution ** 2.37)
     lrs = [lr_rgb] * (sh_dim * 3) + [lr_sigma]
+    print(lrs)
     lrs = torch.tensor(lrs, dtype=torch.float32, device=dev)
 
     occupancy_penalty = cfg.optim.occupancy_penalty / (len(tr_dset) // cfg.optim.batch_size)
@@ -155,7 +156,7 @@ def train_irregular_grid(cfg):
         uniform_rays=0.5,
         prune_threshold=cfg.irreg_grid.prune_threshold,
         count_intersections=cfg.irreg_grid.count_intersections,
-    )
+    ).to(dev)
 
     # Profiling
     profiling_handler = functools.partial(trace_handler, exp_name=cfg.expname,
@@ -165,6 +166,7 @@ def train_irregular_grid(cfg):
     for epoch in range(cfg.optim.num_epochs):
         psnrs, mses = [], []
         with ExitStack() as stack:
+            p = None
             if cfg.optim.profile:
                 p = torch.profiler.profile(
                     schedule=torch.profiler.schedule(wait=5, warmup=5, active=15),
@@ -175,8 +177,10 @@ def train_irregular_grid(cfg):
             for i, batch in tqdm(enumerate(tr_loader), desc=f"Epoch {epoch}"):
                 rays, imgs = batch
                 rays = rays.to(device=dev)
+                rays_o = rays[:, 0].contiguous()
+                rays_d = rays[:, 1].contiguous()
                 imgs = imgs.to(device=dev)
-                preds = model(rays_o=rays[0], rays_d=rays[1])
+                preds, _, _ = model(rays_o=rays_o, rays_d=rays_d)
                 loss = F.mse_loss(preds, imgs)
                 total_loss = loss + occupancy_penalty * model.approx_density_tv_reg()
 
@@ -193,6 +197,10 @@ def train_irregular_grid(cfg):
                 if i % cfg.optim.progress_refresh_rate == 0:
                     print(f"Epoch {epoch} - iteration {i}: MSE {np.mean(mses)} PSNR {np.mean(psnrs)}")
                     psnrs, mses = [], []
+
+                # Profiling
+                if p is not None:
+                    p.step()
 
 
 # @torch.jit.script

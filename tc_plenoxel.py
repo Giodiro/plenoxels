@@ -92,7 +92,7 @@ def get_intersection_ids(intersections: torch.Tensor,  # [batch, n_intersections
                          rays_o: torch.Tensor,  # [batch, 3]
                          rays_d: torch.Tensor,  # [batch, 3]
                          grid_idx: torch.Tensor,  # [res, res, res]
-                         voxel_len: torch.NumberType,
+                         voxel_len: float,
                          aabb: torch.Tensor,  # [2, 3]
                          resolution: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     offsets_3d = torch.tensor(
@@ -127,7 +127,7 @@ def get_intersection_ids(intersections: torch.Tensor,  # [batch, n_intersections
 
     neighbor_ids = torch.clamp_(
         neighbors_grid_coords.add_(resolution / 2).to(torch.long),
-        min=0, max=resolution - 1)  # [batch, n_intersections, 8, 3]
+        min=torch.tensor(0, dtype=resolution.dtype, device=resolution.device), max=resolution - 1)  # [batch, n_intersections, 8, 3]
 
     xyzs = intrs_pts.sub_(neighbor_centers[:, :, 0, :]).div_(voxel_len)
     neighbor_idxs = grid_idx[
@@ -332,7 +332,7 @@ def volumetric_rendering(rgb: torch.Tensor,            # [batch, n_intersections
                          sigma: torch.Tensor,          # [batch, n_intersections-1, 1]
                          intersections: torch.Tensor,  # [batch, n_intersections]
                          rays_d: torch.Tensor,         # [batch, 3]
-                         white_bkgd: bool = True) -> Tuple[torch.Tensor, ...]:
+                         white_bkgd: bool = True) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     # Volumetric rendering
     # Convert ray-relative distance to absolute distance (shouldn't matter if rays_d is normalized)
     dists = torch.diff(intersections, n=1, dim=1) \
@@ -353,16 +353,12 @@ def volumetric_rendering(rgb: torch.Tensor,            # [batch, n_intersections
     with torch.autograd.no_grad():  # Depth & Inverse Depth-map
         # Weighted average of depths by contribution to final color
         depth: torch.Tensor = (abs_light * intersections[..., :-1]).sum(dim=-1)
-        # Equivalent to (but slightly more efficient and stable than):
-        #  disp = 1 / max(eps, where(acc > eps, depth / acc, 0))
-        disp: torch.Tensor = acc_map / depth
-        disp = torch.where((disp > 0) & (disp < 1e10) & (acc_map > 1e-10), disp, 1e10)
 
     if white_bkgd:
         # Including the white background in the final color
         rgb_map = rgb_map + (1. - acc_map.unsqueeze(1))
 
-    return rgb_map, alpha, depth, disp
+    return rgb_map, alpha, depth
 
 
 # noinspection PyAttributeOutsideInit
@@ -415,7 +411,7 @@ class IrregularGrid(AbstractNerF):
                  prune_threshold: float, count_intersections: str):
         super().__init__(resolution, aabb)
 
-        grid = initialize_grid(self.resolution, harmonic_degree=deg, device=self.device,
+        grid = initialize_grid(self.resolution, harmonic_degree=deg, device=None,
                                dtype=torch.float32, init_indices=True,
                                ini_sigma=ini_sigma, ini_rgb=ini_rgb)
         self.grid_data = torch.nn.Parameter(grid.grid, requires_grad=True)
@@ -457,7 +453,7 @@ class IrregularGrid(AbstractNerF):
         with torch.autograd.no_grad():
             # noinspection PyTypeChecker
             intersections = get_intersections(
-                rays_o=rays_o, rays_d=rays_d, aabb=self.aabb, step_size=self.voxel_len, n_samples=1,
+                rays_o=rays_o, rays_d=rays_d, aabb=self.aabb, step_size=self.voxel_len, n_samples=self.n_intersections,
                 uniform=self.uniform_rays)  # [batch, n_intrs]
             intersections_trunc = intersections[:, :-1]
             # noinspection PyTypeChecker
@@ -484,8 +480,8 @@ class IrregularGrid(AbstractNerF):
 
         sigma_data = interp_data[..., -1]  # [batch, n_intrs-1, 1]
 
-        rgb_map, alpha, depth, disp = volumetric_rendering(rgb_data, sigma_data, intersections, rays_d, self.white_bkgd)
-        return rgb_map, alpha, depth, disp
+        rgb_map, alpha, depth = volumetric_rendering(rgb_data, sigma_data, intersections, rays_d, self.white_bkgd)
+        return rgb_map, alpha, depth
 
     def approx_density_tv_reg(self):
         return torch.mean(torch.relu(self.grid_data[..., -1]))

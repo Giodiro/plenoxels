@@ -81,15 +81,15 @@ class SyntheticNerfDataset(TensorDataset):
                     self.datadir, self.split, f"{os.path.basename(frame['file_path'])}.png")
                 imgs.append(self.load_image(img_path))
 
-            self.imgs = torch.cat(imgs, 0) \
+            self.imgs = torch.stack(imgs, 0) \
                              .reshape(num_frames * self.img_w * self.img_h, 3)  # [N*H*W, 3]
-            self.poses = torch.cat(poses, 0)  # [N, ????]
+            self.poses = torch.stack(poses, 0)  # [N, ????]
 
             # Rays
-            focal = 0.5 * self.img_w / np.tan(0.5 * self.meta['camera_angle_x'])
+            focal = 0.5 * self.img_w / np.tan(0.5 * meta['camera_angle_x'])
             rays = torch.stack(
                 [get_rays(self.img_h, self.img_w, focal, p)
                  for p in self.poses[:, :3, :4]], 0)  # [N, ro+rd, H, W, 3]
             # Merge N, H, W dimensions
-            rays = rays.permute(1, 0, 2, 3, 4).reshape(2, -1, 3)  # [ro+rd, N*H*W, 3]
+            rays = rays.permute(0, 2, 3, 1, 4).reshape(-1, 2, 3)  # [N*H*W, ro+rd, 3]
             self.rays = rays.to(dtype=torch.float32).contiguous()
