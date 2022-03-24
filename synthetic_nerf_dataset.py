@@ -47,7 +47,6 @@ class SyntheticNerfDataset(TensorDataset):
         self.near_far = [2.0, 6.0]
 
         self.scene_bbox = torch.tensor([[-1.3, -1.3, -1.3], [1.3, 1.3, 1.3]])
-        self.blender2opencv = np.array([[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]])
         self.pil2tensor = torchvision.transforms.ToTensor()
 
         self.imgs, self.poses, self.rays = None, None, None
@@ -74,7 +73,7 @@ class SyntheticNerfDataset(TensorDataset):
             for i in tqdm(range(num_frames), desc=f'Loading {self.split} data'):
                 frame = meta['frames'][i]
                 # Load pose
-                pose = np.array(frame['transform_matrix']) @ self.blender2opencv
+                pose = np.array(frame['transform_matrix'])
                 poses.append(torch.tensor(pose))
                 # Load image
                 img_path = os.path.join(
