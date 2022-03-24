@@ -77,7 +77,8 @@ class SyntheticNerfDataset(TensorDataset):
                 pose = np.array(frame['transform_matrix']) @ self.blender2opencv
                 poses.append(torch.tensor(pose))
                 # Load image
-                img_path = os.path.join(self.datadir, os.path.basename(frame['file_path']) + '.png')
+                img_path = os.path.join(
+                    self.datadir, self.split, f"{os.path.basename(frame['file_path'])}.png")
                 imgs.append(self.load_image(img_path))
 
             self.imgs = torch.cat(imgs, 0) \
