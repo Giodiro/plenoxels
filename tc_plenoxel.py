@@ -374,6 +374,11 @@ class AbstractNerF(torch.nn.Module):
                  uniform_rays: float,
                  count_intersections: str):
         super().__init__()
+
+        self.uniform_rays = uniform_rays
+        self.count_intersections = count_intersections
+        self.voxel_ratio = 1.
+
         self.register_buffer("resolution_", resolution)
         self.register_buffer("aabb_", aabb)
 
@@ -381,10 +386,6 @@ class AbstractNerF(torch.nn.Module):
         self.register_buffer("inv_aabb_size", None)
         self.register_buffer("voxel_len", None)
         self.update_step_sizes()
-
-        self.uniform_rays = uniform_rays
-        self.count_intersections = count_intersections
-        self.voxel_ratio = 0.5
 
     def normalize_coord(self, intersections):
         """Returns intersection coordinates between -1 and +1"""
@@ -413,6 +414,7 @@ class AbstractNerF(torch.nn.Module):
         self.inv_aabb_size = 2 / self.aabb_size
         units = self.aabb_size / (self.resolution_ - 1)
         self.voxel_len = torch.mean(units) * self.voxel_ratio
+        print("Voxel length: %.4f" % (self.voxel_len))
 
     @property
     def n_intersections(self):
@@ -429,7 +431,8 @@ class IrregularGrid(AbstractNerF):
     def __init__(self, resolution: torch.Tensor, aabb: torch.Tensor, deg: int,
                  ini_sigma: float, ini_rgb: float, sh_encoder,
                  white_bkgd: bool, uniform_rays: float,
-                 prune_threshold: float, count_intersections: str):
+                 prune_threshold: float, count_intersections: str,
+                 near_far: Tuple[float, float]):
         super().__init__(resolution, aabb, count_intersections=count_intersections,
                          uniform_rays=uniform_rays)
 
@@ -443,6 +446,8 @@ class IrregularGrid(AbstractNerF):
         self.sh_encoder = sh_encoder
         self.white_bkgd = white_bkgd
         self.prune_threshold = prune_threshold
+        self.near = near_far[0]
+        self.far = near_far[1]
 
         split_offsets = torch.tensor(
             [[-1, -1, -1], [-1, -1, 0], [-1, -1, 1], [-1, 0, -1], [-1, 0, 0], [-1, 0, 1], [-1, 1, -1], [-1, 1, 0], [-1, 1, 1],
@@ -461,6 +466,9 @@ class IrregularGrid(AbstractNerF):
 
     def forward(self, rays_d: torch.Tensor, rays_o: torch.Tensor):
         with torch.autograd.no_grad():
+            #intersections = get_intersections_tensorrf(
+            #    rays_o=rays_o, rays_d=rays_d, aabb=self.aabb, step_size=self.voxel_len, n_samples=self.n_intersections,
+            #    near=self.near, far=self.far, is_train=self.training)
             # noinspection PyTypeChecker
             intersections = get_intersections(
                 rays_o=rays_o, rays_d=rays_d, aabb=self.aabb, step_size=self.voxel_len, n_samples=self.n_intersections,

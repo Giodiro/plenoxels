@@ -16,9 +16,9 @@ _C.optim.lr_sigma = None
 _C.optim.lr_rgb = None
 _C.optim.profile = False
 _C.optim.num_epochs = 10
-_C.optim.progress_refresh_rate = 5
+_C.optim.progress_refresh_rate = 50
 _C.optim.eval_refresh_rate = 1000
-_C.optim.render_refresh_rate = 10
+_C.optim.render_refresh_rate = 5
 
 _C.data = CN()
 _C.data.datadir = "/home/giacomo/plenoxels/lego"
@@ -33,7 +33,7 @@ _C.grid.ini_sigma = 0.1
 
 _C.irreg_grid = CN()
 _C.irreg_grid.prune_threshold = 0.001
-_C.irreg_grid.count_intersections = "tensorrf"
+_C.irreg_grid.count_intersections = "plenoxels"
 
 
 def get_cfg_defaults():

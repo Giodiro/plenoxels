@@ -156,6 +156,7 @@ def train_irregular_grid(cfg):
         uniform_rays=0.5,
         prune_threshold=cfg.irreg_grid.prune_threshold,
         count_intersections=cfg.irreg_grid.count_intersections,
+        near_far=tuple(tr_dset.near_far),
     ).to(dev)
     #optim = torch.optim.Adam(params=model.parameters(), lr=0.1)
 
