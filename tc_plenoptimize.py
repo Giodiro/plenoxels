@@ -6,7 +6,7 @@ import os
 import time
 from argparse import ArgumentParser
 from contextlib import ExitStack
-from typing import Tuple, Optional, Any
+from typing import Tuple, Optional, Any, Union
 
 import imageio
 import numpy as np
@@ -47,7 +47,6 @@ def get_data(root: str, stage: str, max_frames: Optional[int] = None) -> Tuple[
     all_gt = torch.from_numpy(np.asarray(all_gt))
     all_c2w = torch.from_numpy(np.asarray(all_c2w))
     return focal, all_c2w, all_gt
-
 
 
 def get_training_set(train_gt, train_c2w, img_h, img_w, focal, resolution, device, dtype):
@@ -119,7 +118,8 @@ def train_irregular_grid(cfg):
     dev = "cuda:0" if torch.cuda.is_available() else "cpu"
     tr_dset = SyntheticNerfDataset(cfg.data.datadir, split='train', downsample=cfg.data.downsample,
                                    resolution=resolution, max_frames=cfg.data.max_tr_frames)
-    tr_loader = DataLoader(tr_dset, batch_size=cfg.optim.batch_size, shuffle=True, num_workers=2, prefetch_factor=3,
+    tr_loader = DataLoader(tr_dset, batch_size=cfg.optim.batch_size, shuffle=True, num_workers=2,
+                           prefetch_factor=3,
                            pin_memory=dev.startswith("cuda"))
     ts_dset = SyntheticNerfDataset(cfg.data.datadir, split='test', downsample=cfg.data.downsample,
                                    resolution=resolution, max_frames=cfg.data.max_ts_frames)
@@ -176,7 +176,7 @@ def train_irregular_grid(cfg):
                 stack.enter_context(p)
             model = model.train()
             for i, batch in tqdm(enumerate(tr_loader), desc=f"Epoch {epoch}"):
-                #optim.zero_grad()
+                # optim.zero_grad()
                 rays, imgs = batch
                 rays = rays.to(device=dev)
                 rays_o = rays[:, 0].contiguous()
@@ -188,10 +188,11 @@ def train_irregular_grid(cfg):
                     total_loss = loss + occupancy_penalty * model.approx_density_tv_reg()
                 else:
                     total_loss = loss
-                # Our own optimization procedure
                 with torch.autograd.no_grad():
-                    #total_loss.backward()
-                    #optim.step()
+                    # Using standard optimizer
+                    # total_loss.backward()
+                    # optim.step()
+                    # Our own optimization procedure
                     grad = torch.autograd.grad(total_loss, model.grid_data)[0]  # [batch, n_ch]
                     grad.mul_(lrs.unsqueeze(0))
                     model.grid_data.sub_(grad)
@@ -201,8 +202,16 @@ def train_irregular_grid(cfg):
                 psnrs.append(-10.0 * math.log(loss) / math.log(10.0))
                 mses.append(loss)
                 if i % cfg.optim.progress_refresh_rate == 0:
-                    print(f"Epoch {epoch} - iteration {i}: MSE {np.mean(mses)} PSNR {np.mean(psnrs)}")
+                    print(f"Epoch {epoch} - iteration {i}: "
+                          f"MSE {np.mean(mses):.4f} PSNR {np.mean(psnrs):.4f}")
                     psnrs, mses = [], []
+
+                if (i + 1) % cfg.optim.eval_refresh_rate == 0:
+                    ts_psnr = run_test_step(
+                        ts_dset, model, render_every=cfg.optim.render_refresh_rate,
+                        log_dir=cfg.logdir, epoch=epoch, batch_size=cfg.optim.batch_size,
+                        device=dev)
+                    print(f"Epoch {epoch} - iteration {i}: Test PSNR: {ts_psnr:.4f}")
 
                 # Profiling
                 if p is not None:
@@ -280,11 +289,11 @@ def update_grids(grid_data: torch.Tensor,
 
 def run_test_step(test_dset: SyntheticNerfDataset,
                   model,
-                  radius: float,
-                  resolution: int,
                   render_every: int,
                   log_dir: str,
                   epoch: int,
+                  batch_size: int,
+                  device: Union[torch.device, str],
                   **model_kwargs) -> float:
     model.eval()
     with torch.autograd.no_grad():
@@ -293,11 +302,18 @@ def run_test_step(test_dset: SyntheticNerfDataset,
             # These are rays/rgb for a full single image
             rays = test_el['rays']
             rgb = test_el['rgb'].reshape(test_dset.img_h, test_dset.img_w, 3)
-            rgb_map, _, _, disp = model(rays_o=rays[0], rays_d=rays[1], radius=radius,
-                                        resolution=resolution, **model_kwargs)
-
-            rgb_map = rgb_map.reshape(test_dset.img_h, test_dset.img_w, 3)
-            disp = disp.reshape(test_dset.img_h, test_dset.img_w)
+            # We need to do some manual batching
+            rgb_map, depth = [], []
+            for b in range(math.ceil(rays.shape[0] / batch_size)):
+                rays_o = rays[b * batch_size: (b + 1) * batch_size, 0].contiguous().to(
+                    device=device)
+                rays_d = rays[b * batch_size: (b + 1) * batch_size, 1].contiguous().to(
+                    device=device)
+                rgb_map_b, _, depth_b = model(rays_o=rays_o, rays_d=rays_d, **model_kwargs)
+                rgb_map.append(rgb_map_b.cpu())
+                depth.append(depth_b.cpu())
+            rgb_map = torch.stack(rgb_map, 0).reshape(test_dset.img_h, test_dset.img_w, 3)
+            depth = torch.stack(depth).reshape(test_dset.img_h, test_dset.img_w)
 
             # Compute loss metrics
             mse = torch.mean((rgb_map - rgb) ** 2)
@@ -306,8 +322,8 @@ def run_test_step(test_dset: SyntheticNerfDataset,
 
             # Render and save result to file
             if (i + 1) % render_every == 0:
-                disp = disp.unsqueeze(-1).repeat(1, 1, 3)
-                out_img = torch.cat((rgb, rgb_map, disp), dim=1)
+                depth = depth.unsqueeze(-1).repeat(1, 1, 3)
+                out_img = torch.cat((rgb, rgb_map, depth), dim=1)
                 out_img = (out_img * 255).to(dtype=torch.uint8).numpy()
                 imageio.imwrite(f"{log_dir}/{epoch:04}_{i:04}.png", out_img)
     return total_psnr / i

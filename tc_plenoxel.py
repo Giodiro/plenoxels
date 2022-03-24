@@ -370,7 +370,9 @@ def volumetric_rendering(rgb: torch.Tensor,            # [batch, n_intersections
 class AbstractNerF(torch.nn.Module):
     def __init__(self,
                  resolution: torch.Tensor,
-                 aabb: torch.Tensor):
+                 aabb: torch.Tensor,
+                 uniform_rays: float,
+                 count_intersections: str):
         super().__init__()
         self.register_buffer("resolution_", resolution)
         self.register_buffer("aabb_", aabb)
@@ -379,6 +381,10 @@ class AbstractNerF(torch.nn.Module):
         self.register_buffer("inv_aabb_size", None)
         self.register_buffer("voxel_len", None)
         self.update_step_sizes()
+
+        self.uniform_rays = uniform_rays
+        self.count_intersections = count_intersections
+        self.voxel_ratio = 0.5
 
     def normalize_coord(self, intersections):
         """Returns intersection coordinates between -1 and +1"""
@@ -406,7 +412,17 @@ class AbstractNerF(torch.nn.Module):
         self.aabb_size = self.aabb_[1] - self.aabb_[0]
         self.inv_aabb_size = 2 / self.aabb_size
         units = self.aabb_size / (self.resolution_ - 1)
-        self.voxel_len = torch.mean(units)
+        self.voxel_len = torch.mean(units) * self.voxel_ratio
+
+    @property
+    def n_intersections(self):
+        if self.count_intersections == "plenoxels":
+            return int(torch.mean(self.resolution * 3 / self.uniform_rays).item())
+        elif self.count_intersections == "tensorrf":
+            aabb_diag = torch.linalg.norm(self.aabb_size)
+            return int((aabb_diag / self.voxel_len).item()) + 1
+        else:
+            raise ValueError(self.count_intersections)
 
 
 class IrregularGrid(AbstractNerF):
@@ -414,10 +430,11 @@ class IrregularGrid(AbstractNerF):
                  ini_sigma: float, ini_rgb: float, sh_encoder,
                  white_bkgd: bool, uniform_rays: float,
                  prune_threshold: float, count_intersections: str):
-        super().__init__(resolution, aabb)
+        super().__init__(resolution, aabb, count_intersections=count_intersections,
+                         uniform_rays=uniform_rays)
 
         grid = initialize_grid(self.resolution, harmonic_degree=deg, device=None,
-                               dtype=torch.float32, init_indices=True,
+                               dtype=torch.bfloat16, init_indices=True,
                                ini_sigma=ini_sigma, ini_rgb=ini_rgb)
         self.grid_data = torch.nn.Parameter(grid.grid, requires_grad=True)
         self.grid_idx_ = grid.indices
@@ -425,9 +442,7 @@ class IrregularGrid(AbstractNerF):
 
         self.sh_encoder = sh_encoder
         self.white_bkgd = white_bkgd
-        self.uniform_rays = uniform_rays
         self.prune_threshold = prune_threshold
-        self.count_intersections = count_intersections
 
         split_offsets = torch.tensor(
             [[-1, -1, -1], [-1, -1, 0], [-1, -1, 1], [-1, 0, -1], [-1, 0, 0], [-1, 0, 1], [-1, 1, -1], [-1, 1, 0], [-1, 1, 1],
@@ -443,16 +458,6 @@ class IrregularGrid(AbstractNerF):
 
         split_weights = trilinear_upsampling_weights()  # [8, 27]
         self.register_buffer("split_weights", split_weights)
-
-    @property
-    def n_intersections(self):
-        if self.count_intersections == "plenoxels":
-            return int(torch.mean(self.resolution * 3 / self.uniform_rays).item())
-        elif self.count_intersections == "tensorrf":
-            aabb_diag = torch.linalg.norm(self.aabb_size)
-            return int((aabb_diag / self.voxel_len).item()) + 1
-        else:
-            raise ValueError(self.count_intersections)
 
     def forward(self, rays_d: torch.Tensor, rays_o: torch.Tensor):
         with torch.autograd.no_grad():
@@ -606,64 +611,61 @@ def compute_with_hashgrid(hg, rays_d: torch.Tensor, rays_o: torch.Tensor, radius
     return rgb_map
 
 
-def compute_grid(grid_data: torch.Tensor,
-                 rays_d: torch.Tensor,
-                 rays_o: torch.Tensor,
-                 radius: float,
-                 resolution: int,
-                 uniform: float,
-                 harmonic_degree: int,
-                 sh_encoder,
-                 white_bkgd: bool) -> torch.Tensor:
-    """
-    :param grid_data:
-        [res*res*res, ch].
-    :param rays_d:
-        Ray direction. Tensor of shape [batch, 3]
-    :param rays_o:
-        Ray origin. [batch, 3]
-    :param radius:
-        Real-world grid radius
-    :param resolution:
-    :param uniform
-    :param harmonic_degree:
-        Determines how many spherical harmonics are being used.
-    :param white_bkgd:
+class RegularGrid(AbstractNerF):
+    def __init__(self, resolution: torch.Tensor, aabb: torch.Tensor, deg: int,
+                 ini_sigma: float, ini_rgb: float, sh_encoder,
+                 white_bkgd: bool, uniform_rays: float,
+                 count_intersections: str):
+        super().__init__(resolution, aabb, count_intersections=count_intersections,
+                         uniform_rays=uniform_rays)
 
-    :return:
-        rgb     : Computed color for each ray [batch, 3]
-    """
-    with torch.autograd.no_grad():
-        intersections = get_intersections(rays_o=rays_o, rays_d=rays_d, resolution=resolution,
-                                          radius=radius, uniform=uniform)  # [batch, n_intrs]
-        intersections_trunc = intersections[:, :-1]  # [batch, n_intrs - 1]
+        grid = initialize_grid(self.resolution, harmonic_degree=deg, device=None,
+                               dtype=torch.float32, init_indices=False,
+                               ini_sigma=ini_sigma, ini_rgb=ini_rgb)
+        self.grid_data = torch.nn.Parameter(grid.grid, requires_grad=True)
 
-        # Intersections in the real world
-        intrs_pts = rays_o.unsqueeze(1) + intersections_trunc.unsqueeze(2) * rays_d.unsqueeze(1)  # [batch, n_intrs - 1, 3]
-        # Normalize to -1, 1 range (this can probably be done without computing minmax) TODO: This is wrong
-        intrs_pts = (intrs_pts) / (radius) - 1
+        self.sh_encoder = sh_encoder
+        self.white_bkgd = white_bkgd
 
-    # Interpolate grid-data at intersection points (trilinear)
-    intrs_pts = intrs_pts.unsqueeze(0).unsqueeze(0)  # [1, 1, batch, n_intrs - 1, 3]
-    grid_data = grid_data.view(resolution, resolution, resolution, -1).permute(3, 0, 1, 2)  # ch, res, res, res
-    # interp_data : [1, ch, 1, batch, n_intrs - 1]
-    interp_data = F.grid_sample(
-        grid_data.unsqueeze(0), intrs_pts,
-        mode='bilinear', align_corners=True)  # [1, ch, 1, batch, n_intrs - 1]
-    interp_data = interp_data.permute(0, 2, 3, 4, 1).squeeze()  # [batch, n_intrs - 1, ch]
+    def forward(self, rays_d: torch.Tensor, rays_o: torch.Tensor):
+        with torch.autograd.no_grad():
+            # noinspection PyTypeChecker
+            intersections = get_intersections(
+                rays_o=rays_o, rays_d=rays_d, aabb=self.aabb, step_size=self.voxel_len, n_samples=self.n_intersections,
+                uniform=self.uniform_rays)  # [batch, n_intrs]
+            intersections_trunc = intersections[:, :-1]  # [batch, n_intrs - 1]
+            # Intersections in the real world
+            intrs_pts = rays_o.unsqueeze(1) + intersections_trunc.unsqueeze(2) * rays_d.unsqueeze(1)  # [batch, n_intrs - 1, 3]
+            # Normalize to -1, 1 range
+            intrs_pts = self.normalize_coord(intrs_pts)
 
-    batch, nintrs = interp_data.shape[:2]
+        # Interpolate grid-data at intersection points (trilinear)
+        intrs_pts = intrs_pts.unsqueeze(0).unsqueeze(0)  # [1, 1, batch, n_intrs - 1, 3]
+        grid_data = self.grid_data.view(self.resolution[0], self.resolution[1], self.resolution[2], -1).permute(3, 0, 1, 2)  # ch, res, res, res
+        # interp_data : [1, ch, 1, batch, n_intrs - 1]
+        interp_data = F.grid_sample(
+            grid_data.unsqueeze(0), intrs_pts,
+            mode='bilinear', align_corners=True)  # [1, ch, 1, batch, n_intrs - 1]
+        interp_data = interp_data.permute(0, 2, 3, 4, 1).squeeze()  # [batch, n_intrs - 1, ch]
 
-    # Split the channels in density (sigma) and RGB.
-    sigma_data = interp_data[..., -1]
-    interp_rgb_data = interp_data[..., :-1]
+        batch, nintrs = interp_data.shape[:2]
 
-    # Deal with RGB data
-    sh_mult = sh_encoder(rays_d)
-    # sh_mult : [batch, ch/3] => [batch, 1, ch/3] => [batch, n_intrs, ch/3] => [batch, nintrs, 1, ch/3]
-    sh_mult = sh_mult.unsqueeze(1).expand(batch, nintrs, -1).unsqueeze(2)  # [batch, nintrs, 1, ch/3]
-    rgb_sh = interp_rgb_data.view(batch, nintrs, 3, sh_mult.shape[-1])  # [batch, nintrs, 3, ch/3]
-    rgb_data = torch.sum(sh_mult * rgb_sh, dim=-1)  # [batch, nintrs, 3]
+        # Split the channels in density (sigma) and RGB.
+        sigma_data = interp_data[..., -1]
+        interp_rgb_data = interp_data[..., :-1]
 
-    rgb_map = volumetric_rendering(rgb_data, sigma_data, intersections, rays_d, white_bkgd)
-    return rgb_map
+        # Deal with RGB data
+        sh_mult = self.sh_encoder(rays_d)
+        # sh_mult : [batch, ch/3] => [batch, 1, ch/3] => [batch, n_intrs, ch/3] => [batch, nintrs, 1, ch/3]
+        sh_mult = sh_mult.unsqueeze(1).expand(batch, nintrs, -1).unsqueeze(2)  # [batch, nintrs, 1, ch/3]
+        rgb_sh = interp_rgb_data.view(batch, nintrs, 3, sh_mult.shape[-1])  # [batch, nintrs, 3, ch/3]
+        rgb_data = torch.sum(sh_mult * rgb_sh, dim=-1)  # [batch, nintrs, 3]
+
+        rgb_map, alpha, depth = volumetric_rendering(rgb_data, sigma_data, intersections, rays_d, self.white_bkgd)
+        return rgb_map, alpha, depth
+
+    def approx_density_tv_reg(self):
+        return torch.mean(torch.relu(self.grid_data[..., -1]))
+
+    def density_l1_reg(self):
+        return torch.mean(torch.abs(self.grid_data[..., -1]))
