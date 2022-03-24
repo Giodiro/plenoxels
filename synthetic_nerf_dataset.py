@@ -8,7 +8,30 @@ from PIL import Image
 from torch.utils.data import TensorDataset
 from tqdm import tqdm
 
-from tc_plenoptimize import get_rays
+
+def get_rays(H: int, W: int, focal, c2w) -> torch.Tensor:
+    """
+
+    :param H:
+    :param W:
+    :param focal:
+    :param c2w:
+    :return:
+        Tensor of size [2, W, H, 3] where the first dimension indexes origin and direction
+        of rays
+    """
+    i, j = torch.meshgrid(torch.arange(W) + 0.5, torch.arange(H) + 0.5, indexing='xy')
+    dirs = torch.stack([
+        (i - W * 0.5) / focal,
+        -(j - H * 0.5) / focal,
+        -torch.ones_like(i)
+    ], dim=-1)
+    # Rotate ray directions from camera frame to the world frame
+    # dot product, equals to: [c2w.dot(dir) for dir in dirs]
+    rays_d = torch.sum(dirs.unsqueeze(-2) * c2w[:3, :3], dim=-1)
+    # Translate camera frame's origin to the world frame. It is the origin of all rays.
+    rays_o = torch.broadcast_to(c2w[:3, -1], rays_d.shape)
+    return torch.stack((rays_o, rays_d), dim=0)
 
 
 class SyntheticNerfDataset(TensorDataset):

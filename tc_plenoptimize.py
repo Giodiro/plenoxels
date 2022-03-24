@@ -20,40 +20,9 @@ from tqdm import tqdm
 import config
 import tc_plenoxel
 from synthetic_nerf_dataset import SyntheticNerfDataset
-from tc_plenoxel import Grid
 
 torch.manual_seed(0)
 np.random.seed(0)
-
-
-def initialize_grid(resolution: torch.Tensor,
-                    ini_rgb: float = 0.0,
-                    ini_sigma: float = 0.1,
-                    harmonic_degree: int = 0,
-                    device=None,
-                    dtype=torch.float32,
-                    init_indices=True) -> Grid:
-    """
-    :param resolution:
-    :param ini_rgb: Initial value in the spherical harmonics
-    :param ini_sigma: Initial value for density sigma
-    :param harmonic_degree:
-    :return:
-        Tuple containing the indices of each voxel in the grid, and the data contained in each voxel.
-        The data contains the RGB values of the spherical harmonics, and the value for density sigma.
-    """
-    sh_dim = (harmonic_degree + 1) ** 2
-    total_data_channels = sh_dim * 3 + 1
-
-    data = torch.full((torch.prod(resolution).item(), total_data_channels), ini_rgb, dtype=dtype, device=device)
-    data[:, -1].fill_(ini_sigma)
-
-    if not init_indices:
-        return Grid(grid=data, indices=None)
-
-    indices = torch.arange(torch.prod(resolution).item(), dtype=torch.long, device=device).reshape(
-        (resolution[0], resolution[1], resolution[2]))
-    return Grid(grid=data, indices=indices)
 
 
 def get_data(root: str, stage: str, max_frames: Optional[int] = None) -> Tuple[
@@ -79,30 +48,6 @@ def get_data(root: str, stage: str, max_frames: Optional[int] = None) -> Tuple[
     all_c2w = torch.from_numpy(np.asarray(all_c2w))
     return focal, all_c2w, all_gt
 
-
-def get_rays(H: int, W: int, focal, c2w) -> torch.Tensor:
-    """
-
-    :param H:
-    :param W:
-    :param focal:
-    :param c2w:
-    :return:
-        Tensor of size [2, W, H, 3] where the first dimension indexes origin and direction
-        of rays
-    """
-    i, j = torch.meshgrid(torch.arange(W) + 0.5, torch.arange(H) + 0.5, indexing='xy')
-    dirs = torch.stack([
-        (i - W * 0.5) / focal,
-        -(j - H * 0.5) / focal,
-        -torch.ones_like(i)
-    ], dim=-1)
-    # Rotate ray directions from camera frame to the world frame
-    # dot product, equals to: [c2w.dot(dir) for dir in dirs]
-    rays_d = torch.sum(dirs.unsqueeze(-2) * c2w[:3, :3], dim=-1)
-    # Translate camera frame's origin to the world frame. It is the origin of all rays.
-    rays_o = torch.broadcast_to(c2w[:3, -1], rays_d.shape)
-    return torch.stack((rays_o, rays_d), dim=0)
 
 
 def get_training_set(train_gt, train_c2w, img_h, img_w, focal, resolution, device, dtype):

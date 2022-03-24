@@ -6,13 +6,42 @@ import torch.nn.functional as F
 
 import tc_harmonics
 from tc_interpolate import trilinear_upsampling_weights
-from tc_plenoptimize import initialize_grid
 
 
 @dataclass
 class Grid:
     indices: torch.Tensor
     grid: torch.Tensor
+
+
+def initialize_grid(resolution: torch.Tensor,
+                    ini_rgb: float = 0.0,
+                    ini_sigma: float = 0.1,
+                    harmonic_degree: int = 0,
+                    device=None,
+                    dtype=torch.float32,
+                    init_indices=True) -> Grid:
+    """
+    :param resolution:
+    :param ini_rgb: Initial value in the spherical harmonics
+    :param ini_sigma: Initial value for density sigma
+    :param harmonic_degree:
+    :return:
+        Tuple containing the indices of each voxel in the grid, and the data contained in each voxel.
+        The data contains the RGB values of the spherical harmonics, and the value for density sigma.
+    """
+    sh_dim = (harmonic_degree + 1) ** 2
+    total_data_channels = sh_dim * 3 + 1
+
+    data = torch.full((torch.prod(resolution).item(), total_data_channels), ini_rgb, dtype=dtype, device=device)
+    data[:, -1].fill_(ini_sigma)
+
+    if not init_indices:
+        return Grid(grid=data, indices=None)
+
+    indices = torch.arange(torch.prod(resolution).item(), dtype=torch.long, device=device).reshape(
+        (resolution[0], resolution[1], resolution[2]))
+    return Grid(grid=data, indices=indices)
 
 
 @torch.jit.script
