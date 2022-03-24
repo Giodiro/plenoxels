@@ -1,29 +1,38 @@
+import argparse
 import functools
-from contextlib import ExitStack
+import json
+import math
 import os
 import time
-import json
 from argparse import ArgumentParser
-from typing import Tuple, List, Optional, Sequence, Any
+from contextlib import ExitStack
+from typing import Tuple, Optional, Any
 
-import torch
-import torch.nn.functional as F
-from torchvision.transforms import transforms
-from tqdm import tqdm
 import imageio
 import numpy as np
-
 import tinycudann as tcnn
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+from torchvision.transforms import transforms
+from tqdm import tqdm
 
+import config
 import tc_plenoxel
+from synthetic_nerf_dataset import SyntheticNerfDataset
 from tc_plenoxel import Grid
 
 torch.manual_seed(0)
 np.random.seed(0)
 
 
-def initialize_grid(resolution, ini_rgb=0.0, ini_sigma=0.1, harmonic_degree=0, device=None,
-                    dtype=torch.float32, init_indices=True) -> Grid:
+def initialize_grid(resolution: torch.Tensor,
+                    ini_rgb: float = 0.0,
+                    ini_sigma: float = 0.1,
+                    harmonic_degree: int = 0,
+                    device=None,
+                    dtype=torch.float32,
+                    init_indices=True) -> Grid:
     """
     :param resolution:
     :param ini_rgb: Initial value in the spherical harmonics
@@ -36,14 +45,14 @@ def initialize_grid(resolution, ini_rgb=0.0, ini_sigma=0.1, harmonic_degree=0, d
     sh_dim = (harmonic_degree + 1) ** 2
     total_data_channels = sh_dim * 3 + 1
 
-    data = torch.full((resolution ** 3, total_data_channels), ini_rgb, dtype=dtype, device=device)
+    data = torch.full((torch.prod(resolution).item(), total_data_channels), ini_rgb, dtype=dtype, device=device)
     data[:, -1].fill_(ini_sigma)
 
     if not init_indices:
         return Grid(grid=data, indices=None)
 
-    indices = torch.arange(resolution ** 3, dtype=torch.long, device=device).reshape(
-        (resolution, resolution, resolution))
+    indices = torch.arange(torch.prod(resolution).item(), dtype=torch.long, device=device).reshape(
+        (resolution[0], resolution[1], resolution[2]))
     return Grid(grid=data, indices=indices)
 
 
@@ -142,6 +151,105 @@ def multi_lowpass(gt: torch.Tensor, resolution: int) -> torch.Tensor:
     return clean_gt
 
 
+def parse_config():
+    # Build experiment configuration
+    parser = argparse.ArgumentParser("Train + evaluate kernel model")
+    parser.add_argument("--config", default=None)
+    parser.add_argument('--config-updates', default=[], nargs='*')
+    args = parser.parse_args()
+    cfg = config.get_cfg_defaults()
+    if args.config is not None:
+        cfg.merge_from_file(args.config)
+    cfg.merge_from_list(args.config_updates)
+    cfg.freeze()
+    print(cfg)
+    return cfg
+
+
+def train_irregular_grid(cfg):
+    h_degree = cfg.sh.degree
+    sh_dim = (h_degree + 1) ** 2
+    resolution = cfg.data.resolution
+
+    dev = "cuda:0" if torch.cuda.is_available() else "cpu"
+    tr_dset = SyntheticNerfDataset(cfg.data.datadir, split='train', downsample=cfg.data.downsample,
+                                   resolution=resolution)
+    tr_loader = DataLoader(tr_dset, batch_size=cfg.optim.batch_size, shuffle=True,
+                           pin_memory=dev.startswith("cuda"))
+    ts_dset = SyntheticNerfDataset(cfg.data.datadir, split='test', downsample=cfg.data.downsample,
+                                   resolution=resolution)
+
+    # Initialize learning-rate
+    lr_rgb, lr_sigma = cfg.optim.lr_rgb, cfg.optim.lr_sigma
+    if lr_rgb == 0 or lr_sigma == 0:  # Can't be set to None in config but it's equivalent
+        lr_rgb = 150 * (resolution ** 1.75)
+        lr_sigma = 51.5 * (resolution ** 2.37)
+    lrs = [lr_rgb] * (sh_dim * 3) + [lr_sigma]
+    lrs = torch.tensor(lrs, dtype=torch.float32, device=dev)
+
+    occupancy_penalty = cfg.optim.occupancy_penalty / (len(tr_dset) // cfg.optim.batch_size)
+
+    # Initialize spherical harmonics encoder
+    if cfg.sh.sh_encoder == "tcnn":
+        sh_enc = tcnn.Encoding(3, {
+            "otype": "SphericalHarmonics",
+            "degree": h_degree + 1,
+        })
+    else:
+        sh_enc = tc_plenoxel.plenoxel_sh_encoder(h_degree)
+
+    # Initialize model
+    model = tc_plenoxel.IrregularGrid(
+        resolution=torch.tensor([resolution, resolution, resolution], dtype=torch.int32),
+        aabb=tr_dset.scene_bbox,
+        deg=h_degree,
+        ini_sigma=cfg.grid.ini_sigma,
+        ini_rgb=cfg.grid.ini_rgb,
+        sh_encoder=sh_enc,
+        white_bkgd=tr_dset.white_bg,
+        uniform_rays=0.5,
+        prune_threshold=cfg.irreg_grid.prune_threshold,
+        count_intersections=cfg.irreg_grid.count_intersections,
+    )
+
+    # Profiling
+    profiling_handler = functools.partial(trace_handler, exp_name=cfg.expname,
+                                          dev="cpu" if dev == "cpu" else "cuda")
+
+    # Main iteration starts here
+    for epoch in range(cfg.optim.num_epochs):
+        psnrs, mses = [], []
+        with ExitStack() as stack:
+            if cfg.optim.profile:
+                p = torch.profiler.profile(
+                    schedule=torch.profiler.schedule(wait=5, warmup=5, active=15),
+                    on_trace_ready=profiling_handler,
+                    with_stack=False, profile_memory=True, record_shapes=True)
+                stack.enter_context(p)
+            model = model.train()
+            for i, batch in tqdm(enumerate(tr_loader), desc=f"Epoch {epoch}"):
+                rays, imgs = batch
+                rays = rays.to(device=dev)
+                imgs = imgs.to(device=dev)
+                preds = model(rays_o=rays[0], rays_d=rays[1])
+                loss = F.mse_loss(preds, imgs)
+                total_loss = loss + occupancy_penalty * model.approx_density_tv_reg()
+
+                # Our own optimization procedure
+                with torch.autograd.no_grad():
+                    grad = torch.autograd.grad(total_loss, model.grid_data)[0]  # [batch, n_ch]
+                    grad.mul_(lrs.unsqueeze(0))
+                    model.grid_data.sub_(grad)
+
+                # Reporting
+                loss = loss.detach().item()
+                psnrs.append(-10.0 * math.log(loss) / math.log(10.0))
+                mses.append(loss)
+                if i % cfg.optim.progress_refresh_rate == 0:
+                    print(f"Epoch {epoch} - iteration {i}: MSE {np.mean(mses)} PSNR {np.mean(psnrs)}")
+                    psnrs, mses = [], []
+
+
 # @torch.jit.script
 def train_batch(params: Any, params_type: str, target: torch.Tensor, rays: torch.Tensor,
                 resolution: int,
@@ -160,7 +268,8 @@ def train_batch(params: Any, params_type: str, target: torch.Tensor, rays: torch
             resolution=resolution, radius=radius, uniform=uniform,
             harmonic_degree=harmonic_degree, sh_encoder=sh_encoder,
             white_bkgd=True)
-        loss = F.mse_loss(rgb, target) + occupancy_penalty * torch.mean(torch.relu(grid_data[..., -1]))
+        loss = F.mse_loss(rgb, target) + occupancy_penalty * torch.mean(
+            torch.relu(grid_data[..., -1]))
         grads = torch.autograd.grad(loss, grid_data)
         upd_data = update_grids(grid_data.detach(), lrs, grads[0])
         del rgb, upd_data, grads, loss, target, rays
@@ -168,8 +277,10 @@ def train_batch(params: Any, params_type: str, target: torch.Tensor, rays: torch
         grid_data = params
         rgb = tc_plenoxel.compute_grid(
             grid_data=grid_data, rays_d=rays_d, rays_o=rays_o, radius=radius, resolution=resolution,
-            uniform=uniform, harmonic_degree=harmonic_degree, sh_encoder=sh_encoder, white_bkgd=True)
-        loss = F.mse_loss(rgb, target) + occupancy_penalty * torch.mean(torch.relu(grid_data[..., -1]))
+            uniform=uniform, harmonic_degree=harmonic_degree, sh_encoder=sh_encoder,
+            white_bkgd=True)
+        loss = F.mse_loss(rgb, target) + occupancy_penalty * torch.mean(
+            torch.relu(grid_data[..., -1]))
         grads = torch.autograd.grad(loss, grid_data)
         upd_data = update_grids(grid_data.detach(), lrs, grads[0])
         del rgb, upd_data, grads, loss, target, rays
@@ -177,9 +288,11 @@ def train_batch(params: Any, params_type: str, target: torch.Tensor, rays: torch
         hg = params
         rgb = tc_plenoxel.compute_with_hashgrid(
             hg=hg, rays_d=rays_d, rays_o=rays_o, radius=radius, resolution=resolution,
-            uniform=uniform, harmonic_degree=harmonic_degree, sh_encoder=sh_encoder, white_bkgd=True)
+            uniform=uniform, harmonic_degree=harmonic_degree, sh_encoder=sh_encoder,
+            white_bkgd=True)
         # TODO: add regularization
-        loss = F.mse_loss(rgb, target)# + occupancy_penalty * torch.mean(torch.relu(grid_data[..., -1]))
+        loss = F.mse_loss(rgb,
+                          target)  # + occupancy_penalty * torch.mean(torch.relu(grid_data[..., -1]))
         grads = torch.autograd.grad(loss, hg.parameters())
         # TODO: Update parameters
     else:
@@ -206,24 +319,39 @@ def update_grids(grid_data: torch.Tensor,
     return grid_data.sub_(grid_grad * lrs.view(lrs_shape))
 
 
-# def run_test_step(i, data_dict, test_c2w, test_gt, H, W, focal, FLAGS, key, name_appendage=''):
-#     print('Evaluating')
-#     sh_dim = (FLAGS.harmonic_degree + 1)**2
-#     tpsnr = 0.0
-#     for j, (c2w, gt) in tqdm(enumerate(zip(test_c2w, test_gt))):
-#         rgb, disp, _, _ = render_pose_rays(data_dict, c2w, H, W, focal, FLAGS.resolution, FLAGS.radius, FLAGS.harmonic_degree, FLAGS.jitter, FLAGS.uniform, key, sh_dim, FLAGS.physical_batch_size, FLAGS.interpolation)
-#         mse = jnp.mean((rgb - gt)**2)
-#         psnr = -10.0 * np.log(mse) / np.log(10.0)
-#         tpsnr += psnr
-#
-#         if FLAGS.render_interval > 0 and j % FLAGS.render_interval == 0:
-#             disp3 = jnp.concatenate((disp[...,jnp.newaxis], disp[...,jnp.newaxis], disp[...,jnp.newaxis]), axis=2)
-#             vis = jnp.concatenate((gt, rgb, disp3), axis=1)
-#             vis = np.asarray((vis * 255)).astype(np.uint8)
-#             imageio.imwrite(f"{log_dir}/{j:04}_{i:04}{name_appendage}.png", vis)
-#         del rgb, disp
-#     tpsnr /= n_test_imgs
-#     return tpsnr
+def run_test_step(test_dset: SyntheticNerfDataset,
+                  model,
+                  radius: float,
+                  resolution: int,
+                  render_every: int,
+                  log_dir: str,
+                  epoch: int,
+                  **model_kwargs) -> float:
+    model.eval()
+    with torch.autograd.no_grad():
+        total_psnr = 0.0
+        for i, test_el in tqdm(enumerate(test_dset), desc="Evaluating on test data"):
+            # These are rays/rgb for a full single image
+            rays = test_el['rays']
+            rgb = test_el['rgb'].reshape(test_dset.img_h, test_dset.img_w, 3)
+            rgb_map, _, _, disp = model(rays_o=rays[0], rays_d=rays[1], radius=radius,
+                                        resolution=resolution, **model_kwargs)
+
+            rgb_map = rgb_map.reshape(test_dset.img_h, test_dset.img_w, 3)
+            disp = disp.reshape(test_dset.img_h, test_dset.img_w)
+
+            # Compute loss metrics
+            mse = torch.mean((rgb_map - rgb) ** 2)
+            psnr = -10.0 * torch.log(mse) / math.log(10)
+            total_psnr += psnr
+
+            # Render and save result to file
+            if (i + 1) % render_every == 0:
+                disp = disp.unsqueeze(-1).repeat(1, 1, 3)
+                out_img = torch.cat((rgb, rgb_map, disp), dim=1)
+                out_img = (out_img * 255).to(dtype=torch.uint8).numpy()
+                imageio.imwrite(f"{log_dir}/{epoch:04}_{i:04}.png", out_img)
+    return total_psnr / i
 
 
 def init_params(params_type, resolution, deg, **kwargs):
@@ -314,8 +442,6 @@ def run(args):
     else:
         sh_enc = tc_plenoxel.plenoxel_sh_encoder(args.harmonic_degree)
 
-    profiling_handler = functools.partial(trace_handler, exp_name=args.expname,
-                                          dev="cpu" if dev == "cpu" else "cuda")
     # Main iteration starts here
     for i in range(args.num_epochs):
         print("Starting epoch %d" % (i))
@@ -338,12 +464,12 @@ def run(args):
                 b_rgb = tr_rgb[k * args.batch_size: (k + 1) * args.batch_size].to(device=dev)
                 t_s = time.time()
                 train_batch(params=params, params_type=args.params_type,
-                                              target=b_rgb, rays=b_rays, resolution=args.resolution,
-                                              radius=args.radius, harmonic_degree=args.harmonic_degree,
-                                              jitter=args.jitter, uniform=args.uniform,
-                                              occupancy_penalty=occupancy_penalty,
-                                              interpolation=args.interpolation, lrs=lrs,
-                                              sh_encoder=sh_enc)
+                            target=b_rgb, rays=b_rays, resolution=args.resolution,
+                            radius=args.radius, harmonic_degree=args.harmonic_degree,
+                            jitter=args.jitter, uniform=args.uniform,
+                            occupancy_penalty=occupancy_penalty,
+                            interpolation=args.interpolation, lrs=lrs,
+                            sh_encoder=sh_enc)
                 t_e = time.time()
                 print(f"Iteration takes {t_e - t_s:.4f}s")
                 t_s = time.time()
@@ -549,5 +675,7 @@ def parse_args():
 
 
 if __name__ == "__main__":
-    _cmd_args = parse_args()
-    run(_cmd_args)
+    # _cmd_args = parse_args()
+    # run(_cmd_args)
+    _cfg = parse_config()
+    train_irregular_grid(_cfg)
