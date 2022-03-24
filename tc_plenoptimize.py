@@ -118,11 +118,11 @@ def train_irregular_grid(cfg):
 
     dev = "cuda:0" if torch.cuda.is_available() else "cpu"
     tr_dset = SyntheticNerfDataset(cfg.data.datadir, split='train', downsample=cfg.data.downsample,
-                                   resolution=resolution)
+                                   resolution=resolution, max_frames=cfg.data.max_tr_frames)
     tr_loader = DataLoader(tr_dset, batch_size=cfg.optim.batch_size, shuffle=True,
                            pin_memory=dev.startswith("cuda"))
     ts_dset = SyntheticNerfDataset(cfg.data.datadir, split='test', downsample=cfg.data.downsample,
-                                   resolution=resolution)
+                                   resolution=resolution, max_frames=cfg.data.max_ts_frames)
 
     # Initialize learning-rate
     lr_rgb, lr_sigma = cfg.optim.lr_rgb, cfg.optim.lr_sigma

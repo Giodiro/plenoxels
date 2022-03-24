@@ -35,12 +35,13 @@ def get_rays(H: int, W: int, focal, c2w) -> torch.Tensor:
 
 
 class SyntheticNerfDataset(TensorDataset):
-    def __init__(self, datadir, split='train', downsample=1.0, resolution=512):
+    def __init__(self, datadir, split='train', downsample=1.0, resolution=512, max_frames=None):
         self.datadir = datadir
         self.split = split
         self.img_w: int = int(800 // downsample)
         self.img_h: int = int(800 // downsample)
         self.resolution = resolution
+        self.max_frames = max_frames
 
         self.white_bg = True
         self.near_far = [2.0, 6.0]
@@ -69,7 +70,7 @@ class SyntheticNerfDataset(TensorDataset):
         with open(os.path.join(self.datadir, f"transforms_{self.split}.json"), 'r') as f:
             meta = json.load(f)
             poses, imgs = [], []
-            num_frames = min(len(meta['frames']), self.max_frames)
+            num_frames = min(len(meta['frames']), self.max_frames or len(meta['frames']))
             for i in tqdm(range(num_frames), desc=f'Loading {self.split} data'):
                 frame = meta['frames'][i]
                 # Load pose
