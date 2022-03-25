@@ -123,7 +123,7 @@ def train_hierarchical_grid(cfg):
         harmonic_degree=h_degree,
         hg_encoder=hg,
     ).to(dev)
-    #optim = torch.optim.Adam(params=model.parameters(), lr=0.1)
+    optim = torch.optim.Adam(params=model.parameters(), lr=0.1)
 
     # Main iteration starts here
     for epoch in range(cfg.optim.num_epochs):
@@ -135,7 +135,7 @@ def train_hierarchical_grid(cfg):
                 stack.enter_context(p)
             model = model.train()
             for i, batch in tqdm(enumerate(tr_loader), desc=f"Epoch {epoch}"):
-                # optim.zero_grad()
+                optim.zero_grad()
                 rays, imgs = batch
                 rays = rays.to(device=dev)
                 rays_o = rays[:, 0].contiguous()
@@ -145,12 +145,12 @@ def train_hierarchical_grid(cfg):
                 loss = F.mse_loss(preds, imgs)
                 with torch.autograd.no_grad():
                     # Using standard optimizer
-                    # total_loss.backward()
-                    # optim.step()
+                    loss.backward()
+                    optim.step()
                     # Our own optimization procedure
-                    grad = torch.autograd.grad(loss, model.grid_data)[0]  # [batch, n_ch]
-                    grad.mul_(lrs.unsqueeze(0))
-                    model.grid_data.sub_(grad)
+                    # grad = torch.autograd.grad(loss, model.grid_data)[0]  # [batch, n_ch]
+                    # grad.mul_(lrs.unsqueeze(0))
+                    # model.grid_data.sub_(grad)
 
                 # Reporting
                 loss = loss.detach().item()

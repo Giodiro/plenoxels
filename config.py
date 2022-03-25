@@ -9,7 +9,7 @@ _C.model_type = "hash_grid"
 
 _C.sh = CN()
 _C.sh.degree = 2
-_C.sh.sh_encoder = "plenoxel"
+_C.sh.sh_encoder = "plenoxels"
 
 _C.optim = CN()
 _C.optim.batch_size = 4000
