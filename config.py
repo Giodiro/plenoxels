@@ -2,6 +2,7 @@ from yacs.config import CfgNode as CN
 
 _C = CN()
 
+_C.seed = 42
 _C.expname = "imp_dl"
 _C.logdir = "./logs/"
 
@@ -34,6 +35,9 @@ _C.grid.ini_sigma = 0.1
 _C.irreg_grid = CN()
 _C.irreg_grid.prune_threshold = 0.001
 _C.irreg_grid.count_intersections = "plenoxels"
+
+_C.hash_grid = CN()
+_C.hash_grid.log2_hashmap_size = 19
 
 
 def get_cfg_defaults():

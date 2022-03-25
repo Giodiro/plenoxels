@@ -1,12 +1,11 @@
 import argparse
 import functools
-import json
 import math
 import os
 import time
 from argparse import ArgumentParser
 from contextlib import ExitStack
-from typing import Tuple, Optional, Any, Union
+from typing import Any, Union, Optional
 
 import imageio
 import numpy as np
@@ -14,85 +13,11 @@ import tinycudann as tcnn
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from torchvision.transforms import transforms
 from tqdm import tqdm
 
 import config
 import tc_plenoxel
 from synthetic_nerf_dataset import SyntheticNerfDataset
-
-torch.manual_seed(0)
-np.random.seed(0)
-
-
-def get_data(root: str, stage: str, max_frames: Optional[int] = None) -> Tuple[
-    float, torch.Tensor, torch.Tensor]:
-    all_c2w = []
-    all_gt = []
-
-    data_path = os.path.join(root, stage)
-    data_json = os.path.join(root, 'transforms_' + stage + '.json')
-    j = json.load(open(data_json, 'r'))
-    if max_frames is None:
-        max_frames = len(j['frames'])
-
-    for frame in tqdm(j['frames'][:max_frames]):
-        fpath = os.path.join(data_path, os.path.basename(frame['file_path']) + '.png')
-        c2w = frame['transform_matrix']
-        im_gt = imageio.imread(fpath).astype(np.float32) / 255.0
-        im_gt = im_gt[..., :3] * im_gt[..., 3:] + (1.0 - im_gt[..., 3:])
-        all_c2w.append(c2w)
-        all_gt.append(im_gt)
-    focal = 0.5 * all_gt[0].shape[1] / np.tan(0.5 * j['camera_angle_x'])
-    all_gt = torch.from_numpy(np.asarray(all_gt))
-    all_c2w = torch.from_numpy(np.asarray(all_c2w))
-    return focal, all_c2w, all_gt
-
-
-def get_training_set(train_gt, train_c2w, img_h, img_w, focal, resolution, device, dtype):
-    # Generate training rays
-    rays = torch.stack(
-        [get_rays(img_h, img_w, focal, p) for p in train_c2w[:, :3, :4]], 0)  # [N, ro+rd, H, W, 3]
-    # Merge N, H, W dimensions
-    rays = rays.permute(0, 2, 3, 1, 4).reshape(-1, 2, 3)  # [N*H*W, ro+rd, 3]
-    rays = rays.to(dtype=dtype)
-
-    # Resize the training images
-    lowp_imgs = multi_lowpass(train_gt, resolution)  # [N, H, W, 3]
-    # Merge N, H, W dimensions
-    lowp_imgs = lowp_imgs.reshape(-1, 3)  # [N*H*W, 3]
-    lowp_imgs = lowp_imgs.to(dtype=dtype)
-
-    if device != "cpu":
-        rays = rays.pin_memory()
-        lowp_imgs = lowp_imgs.pin_memory()
-
-    return rays, lowp_imgs
-
-
-def multi_lowpass(gt: torch.Tensor, resolution: int) -> torch.Tensor:
-    """
-    low-pass filter a stack of images where the first dimension indexes over the images
-
-    :param gt:
-        Tensor of size: [N, H, W, 3]
-    :param resolution:
-    :return:
-    """
-    if gt.dim() <= 3:
-        print(
-            f'multi_lowpass called on image with 3 or fewer dimensions; did you mean to use lowpass instead?')
-    H = gt.shape[1]
-    W = gt.shape[2]
-    clean_gt = torch.empty_like(gt)
-    to_pil = transforms.ToPILImage()
-    to_pyt = transforms.ToTensor()
-    for i in range(len(gt)):
-        im = to_pil(gt[i].permute(2, 0, 1))  # Move channels first
-        im = im.resize(size=(resolution * 2, resolution * 2))
-        im = im.resize(size=(H, W))
-        clean_gt[i, ...] = to_pyt(im).permute(1, 2, 0)  # Move channels last
-    return clean_gt
 
 
 def parse_config():
@@ -107,15 +32,26 @@ def parse_config():
     cfg.merge_from_list(args.config_updates)
     cfg.freeze()
     print(cfg)
+    torch.manual_seed(cfg.seed)
+    np.random.seed(cfg.seed)
     return cfg
 
 
-def train_irregular_grid(cfg):
-    h_degree = cfg.sh.degree
-    sh_dim = (h_degree + 1) ** 2
+def init_plenoxel_lrs(cfg, h_degree, dev):
     resolution = cfg.data.resolution
+    sh_dim = (h_degree + 1) ** 2
+    # Initialize learning-rate
+    lr_rgb, lr_sigma = cfg.optim.lr_rgb, cfg.optim.lr_sigma
+    if lr_rgb is None or lr_sigma is None:
+        lr_rgb = 150 * (resolution ** 1.75)
+        lr_sigma = 51.5 * (resolution ** 2.37)
+    lrs = [lr_rgb] * (sh_dim * 3) + [lr_sigma]
+    print("Learning rates: ", lrs)
+    return torch.tensor(lrs, dtype=torch.float32, device=dev)
 
-    dev = "cuda:0" if torch.cuda.is_available() else "cpu"
+
+def init_datasets(cfg, dev):
+    resolution = cfg.data.resolution
     tr_dset = SyntheticNerfDataset(cfg.data.datadir, split='train', downsample=cfg.data.downsample,
                                    resolution=resolution, max_frames=cfg.data.max_tr_frames)
     tr_loader = DataLoader(tr_dset, batch_size=cfg.optim.batch_size, shuffle=True, num_workers=2,
@@ -123,26 +59,130 @@ def train_irregular_grid(cfg):
                            pin_memory=dev.startswith("cuda"))
     ts_dset = SyntheticNerfDataset(cfg.data.datadir, split='test', downsample=cfg.data.downsample,
                                    resolution=resolution, max_frames=cfg.data.max_ts_frames)
+    return tr_dset, tr_loader, ts_dset
 
-    # Initialize learning-rate
-    lr_rgb, lr_sigma = cfg.optim.lr_rgb, cfg.optim.lr_sigma
-    if lr_rgb is None or lr_sigma is None:
-        lr_rgb = 150 * (resolution ** 1.75) #* (cfg.optim.batch_size / 4000)
-        lr_sigma = 51.5 * (resolution ** 2.37) #* (cfg.optim.batch_size / 4000)
-    lrs = [lr_rgb] * (sh_dim * 3) + [lr_sigma]
-    print(lrs)
-    lrs = torch.tensor(lrs, dtype=torch.float32, device=dev)
 
-    occupancy_penalty = cfg.optim.occupancy_penalty / (len(tr_dset) // cfg.optim.batch_size)
+def init_profiler(cfg, dev) -> torch.profiler.profile:
+    profiling_handler = functools.partial(trace_handler, exp_name=cfg.expname,
+                                          dev="cpu" if dev == "cpu" else "cuda")
+    p = torch.profiler.profile(
+        schedule=torch.profiler.schedule(wait=5, warmup=5, active=15),
+        on_trace_ready=profiling_handler,
+        with_stack=False, profile_memory=True, record_shapes=True)
+    return p
 
-    # Initialize spherical harmonics encoder
+
+def init_sh_encoder(cfg, h_degree):
     if cfg.sh.sh_encoder == "tcnn":
-        sh_enc = tcnn.Encoding(3, {
+        return tcnn.Encoding(3, {
             "otype": "SphericalHarmonics",
             "degree": h_degree + 1,
         })
+    elif cfg.sh.sh_encoder == "plenoxels":
+        return tc_plenoxel.plenoxel_sh_encoder(h_degree)
     else:
-        sh_enc = tc_plenoxel.plenoxel_sh_encoder(h_degree)
+        raise ValueError(cfg.sh.sh_encoder)
+
+
+def train_hierarchical_grid(cfg):
+    h_degree = cfg.sh.degree
+    resolution = cfg.data.resolution
+    dev = "cuda:0" if torch.cuda.is_available() else "cpu"
+
+    tr_dset, tr_loader, ts_dset = init_datasets(cfg, dev)
+    lrs = init_plenoxel_lrs(cfg, h_degree, dev)
+    sh_enc = init_sh_encoder(cfg, h_degree)
+
+    n_levels = 14  # we need 28 channels
+    base_res = 16
+    per_level_scale = resolution / (n_levels * base_res)
+    hg = tcnn.Encoding(3, {
+        "otype": "Grid",
+        "type": "Hash",
+        "n_levels": n_levels,
+        "n_features_per_level": 2,  # Total of 10*3 = 30 features
+        "log2_hashmap_size": cfg.hash_grid.log2_hashmap_size,
+        "base_resolution": base_res,  # Resolution of the coarsest level
+        "per_level_scale": per_level_scale,  # How much the resolution increases at each level
+        "interpolation": "Linear",
+    })
+    for param in hg.parameters():  # Same init as in paper.
+        torch.nn.init.uniform_(param, -1e-4, 1e-4)
+
+    # Initialize model
+    model = tc_plenoxel.HashGrid(
+        resolution=torch.tensor([resolution, resolution, resolution], dtype=torch.int32),
+        aabb=tr_dset.scene_bbox,
+        deg=h_degree,
+        ini_sigma=cfg.grid.ini_sigma,
+        ini_rgb=cfg.grid.ini_rgb,
+        sh_encoder=sh_enc,
+        white_bkgd=tr_dset.white_bg,
+        uniform_rays=0.5,
+        count_intersections=cfg.irreg_grid.count_intersections,
+        harmonic_degree=h_degree,
+        hg_encoder=hg,
+    ).to(dev)
+    #optim = torch.optim.Adam(params=model.parameters(), lr=0.1)
+
+    # Main iteration starts here
+    for epoch in range(cfg.optim.num_epochs):
+        psnrs, mses = [], []
+        with ExitStack() as stack:
+            p = None
+            if cfg.optim.profile:
+                p = init_profiler(cfg, dev)
+                stack.enter_context(p)
+            model = model.train()
+            for i, batch in tqdm(enumerate(tr_loader), desc=f"Epoch {epoch}"):
+                # optim.zero_grad()
+                rays, imgs = batch
+                rays = rays.to(device=dev)
+                rays_o = rays[:, 0].contiguous()
+                rays_d = rays[:, 1].contiguous()
+                imgs = imgs.to(device=dev)
+                preds, _, _ = model(rays_o=rays_o, rays_d=rays_d)
+                loss = F.mse_loss(preds, imgs)
+                with torch.autograd.no_grad():
+                    # Using standard optimizer
+                    # total_loss.backward()
+                    # optim.step()
+                    # Our own optimization procedure
+                    grad = torch.autograd.grad(loss, model.grid_data)[0]  # [batch, n_ch]
+                    grad.mul_(lrs.unsqueeze(0))
+                    model.grid_data.sub_(grad)
+
+                # Reporting
+                loss = loss.detach().item()
+                psnrs.append(-10.0 * math.log(loss) / math.log(10.0))
+                mses.append(loss)
+                if i % cfg.optim.progress_refresh_rate == 0:
+                    print(f"Epoch {epoch} - iteration {i}: "
+                          f"MSE {np.mean(mses):.4f} PSNR {np.mean(psnrs):.4f}")
+                    psnrs, mses = [], []
+
+                if (i + 1) % cfg.optim.eval_refresh_rate == 0:
+                    ts_psnr = run_test_step(
+                        ts_dset, model, render_every=cfg.optim.render_refresh_rate,
+                        log_dir=cfg.logdir, epoch=epoch, batch_size=cfg.optim.batch_size,
+                        device=dev)
+                    print(f"Epoch {epoch} - iteration {i}: Test PSNR: {ts_psnr:.4f}")
+
+                # Profiling
+                if p is not None:
+                    p.step()
+
+
+def train_irregular_grid(cfg):
+    h_degree = cfg.sh.degree
+    resolution = cfg.data.resolution
+    dev = "cuda:0" if torch.cuda.is_available() else "cpu"
+
+    tr_dset, tr_loader, ts_dset = init_datasets(cfg, dev)
+    lrs = init_plenoxel_lrs(cfg, h_degree, dev)
+    sh_enc = init_sh_encoder(cfg, h_degree)
+
+    occupancy_penalty = cfg.optim.occupancy_penalty / (len(tr_dset) // cfg.optim.batch_size)
 
     # Initialize model
     model = tc_plenoxel.IrregularGrid(
@@ -160,20 +200,13 @@ def train_irregular_grid(cfg):
     ).to(dev)
     #optim = torch.optim.Adam(params=model.parameters(), lr=0.1)
 
-    # Profiling
-    profiling_handler = functools.partial(trace_handler, exp_name=cfg.expname,
-                                          dev="cpu" if dev == "cpu" else "cuda")
-
     # Main iteration starts here
     for epoch in range(cfg.optim.num_epochs):
         psnrs, mses = [], []
         with ExitStack() as stack:
             p = None
             if cfg.optim.profile:
-                p = torch.profiler.profile(
-                    schedule=torch.profiler.schedule(wait=5, warmup=5, active=15),
-                    on_trace_ready=profiling_handler,
-                    with_stack=False, profile_memory=True, record_shapes=True)
+                p = init_profiler(cfg, dev)
                 stack.enter_context(p)
             model = model.train()
             for i, batch in tqdm(enumerate(tr_loader), desc=f"Epoch {epoch}"):
@@ -217,56 +250,6 @@ def train_irregular_grid(cfg):
                 # Profiling
                 if p is not None:
                     p.step()
-
-
-# @torch.jit.script
-def train_batch(params: Any, params_type: str, target: torch.Tensor, rays: torch.Tensor,
-                resolution: int,
-                radius: float,
-                harmonic_degree: int,
-                jitter: bool, uniform: float,
-                occupancy_penalty: float,
-                interpolation: str,
-                sh_encoder,
-                lrs):
-    rays_o, rays_d = rays[:, 0], rays[:, 1]
-    if params_type == "irregular_grid":
-        grid_data, grid_idx = params
-        rgb = tc_plenoxel.compute_irregular_grid(
-            grid_data=grid_data, grid_idx=grid_idx, rays_d=rays_d, rays_o=rays_o,
-            resolution=resolution, radius=radius, uniform=uniform,
-            harmonic_degree=harmonic_degree, sh_encoder=sh_encoder,
-            white_bkgd=True)
-        loss = F.mse_loss(rgb, target) + occupancy_penalty * torch.mean(
-            torch.relu(grid_data[..., -1]))
-        grads = torch.autograd.grad(loss, grid_data)
-        upd_data = update_grids(grid_data.detach(), lrs, grads[0])
-        del rgb, upd_data, grads, loss, target, rays
-    elif params_type == "grid":
-        grid_data = params
-        rgb = tc_plenoxel.compute_grid(
-            grid_data=grid_data, rays_d=rays_d, rays_o=rays_o, radius=radius, resolution=resolution,
-            uniform=uniform, harmonic_degree=harmonic_degree, sh_encoder=sh_encoder,
-            white_bkgd=True)
-        loss = F.mse_loss(rgb, target) + occupancy_penalty * torch.mean(
-            torch.relu(grid_data[..., -1]))
-        grads = torch.autograd.grad(loss, grid_data)
-        upd_data = update_grids(grid_data.detach(), lrs, grads[0])
-        del rgb, upd_data, grads, loss, target, rays
-    elif params_type == "mr_hash_grid":
-        hg = params
-        rgb = tc_plenoxel.compute_with_hashgrid(
-            hg=hg, rays_d=rays_d, rays_o=rays_o, radius=radius, resolution=resolution,
-            uniform=uniform, harmonic_degree=harmonic_degree, sh_encoder=sh_encoder,
-            white_bkgd=True)
-        # TODO: add regularization
-        loss = F.mse_loss(rgb,
-                          target)  # + occupancy_penalty * torch.mean(torch.relu(grid_data[..., -1]))
-        grads = torch.autograd.grad(loss, hg.parameters())
-        # TODO: Update parameters
-    else:
-        raise ValueError(params_type)
-    return None
 
 
 @torch.jit.script
@@ -329,41 +312,6 @@ def run_test_step(test_dset: SyntheticNerfDataset,
                 imageio.imwrite(f"{log_dir}/{epoch:04}_{i:04}.png", out_img)
     return total_psnr / i
 
-
-def init_params(params_type, resolution, deg, **kwargs):
-    if params_type == "irregular_grid":
-        grid = initialize_grid(resolution, harmonic_degree=deg, device=kwargs['dev'],
-                               dtype=torch.float32, init_indices=True,
-                               ini_sigma=kwargs['ini_sigma'], ini_rgb=kwargs['ini_rgb'])
-        grid_data, grid_idx = grid.grid, grid.indices
-        grid_data.requires_grad_()
-        return grid_data, grid_idx
-    elif params_type == "grid":
-        grid = initialize_grid(resolution, harmonic_degree=deg, device=kwargs['dev'],
-                               dtype=torch.float32, init_indices=False,
-                               ini_sigma=kwargs['ini_sigma'], ini_rgb=kwargs['ini_rgb'])
-        grid_data = grid.grid
-        grid_data.requires_grad_()
-        return grid_data
-    elif params_type == "mr_hash_grid":
-        assert deg == 2
-        n_levels = 14  # we need 28 channels
-        base_res = 16
-        per_level_scale = resolution / (n_levels * base_res)
-        hg = tcnn.Encoding(3, {
-            "otype": "Grid",
-            "type": "Hash",
-            "n_levels": n_levels,
-            "n_features_per_level": 2,  # Total of 10*3 = 30 features
-            "log2_hashmap_size": kwargs['log2_hashmap_size'],
-            "base_resolution": base_res,  # Resolution of the coarsest level
-            "per_level_scale": per_level_scale,  # How much the resolution increases at each level
-            "interpolation": "Linear",
-        })
-        # TODO: Maybe initialize parameters
-        return hg
-    else:
-        raise ValueError(params_type)
 
 
 def trace_handler(p, exp_name, dev):

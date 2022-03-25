@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Tuple, Callable
+from typing import Tuple, Callable, Optional
 
 import torch
 import torch.nn.functional as F
@@ -10,7 +10,7 @@ from tc_interpolate import trilinear_upsampling_weights
 
 @dataclass
 class Grid:
-    indices: torch.Tensor
+    indices: Optional[torch.Tensor]
     grid: torch.Tensor
 
 
@@ -21,15 +21,6 @@ def initialize_grid(resolution: torch.Tensor,
                     device=None,
                     dtype=torch.float32,
                     init_indices=True) -> Grid:
-    """
-    :param resolution:
-    :param ini_rgb: Initial value in the spherical harmonics
-    :param ini_sigma: Initial value for density sigma
-    :param harmonic_degree:
-    :return:
-        Tuple containing the indices of each voxel in the grid, and the data contained in each voxel.
-        The data contains the RGB values of the spherical harmonics, and the value for density sigma.
-    """
     sh_dim = (harmonic_degree + 1) ** 2
     total_data_channels = sh_dim * 3 + 1
 
@@ -162,6 +153,7 @@ def get_intersections(rays_o: torch.Tensor,
         # voxel_len = radius * 2 / resolution
         # count = int(resolution * 3 / uniform)
 
+        dev, dt = rays_o.device, rays_o.dtype
         offsets_pos = (aabb[1] - rays_o) / rays_d  # [batch, 3]
         offsets_neg = (aabb[0] - rays_o) / rays_d  # [batch, 3]
         offsets_in = torch.minimum(offsets_pos, offsets_neg)  # [batch, 3]
@@ -169,11 +161,9 @@ def get_intersections(rays_o: torch.Tensor,
         start = torch.amax(offsets_in, dim=-1, keepdim=True)  # [batch, 1]
         stop = torch.amin(offsets_out, dim=-1, keepdim=True)  # [batch, 1]
 
-        intersections = tensor_linspace(
-            start=start.squeeze() + uniform * step_size,
-            end=start.squeeze() + uniform * step_size * n_samples,
-            # difference from plenoxel.py since here endpoint=True
-            steps=n_samples)  # [batch, n_intersections]
+        steps = torch.arange(n_samples, dtype=dt, device=dev).unsqueeze(0)  # [1, n_intrs]
+        steps = steps.repeat(rays_d.shape[0], 1)  # [batch, n_intrs]
+        intersections = start + steps * (uniform * step_size)  # [batch, n_intrs]
         intersections = torch.clamp_(intersections, min=None, max=stop)
     return intersections
 
@@ -186,19 +176,20 @@ def get_intersections_tensorrf(rays_o: torch.Tensor,
                                near: float,
                                far: float,
                                is_train: bool) -> torch.Tensor:
-    dev, dt = rays_o.device, rays_o.dtype
-    offsets_pos = (aabb[1] - rays_o) / rays_d
-    offsets_neg = (aabb[0] - rays_o) / rays_d
-    offsets_in = torch.minimum(offsets_pos, offsets_neg)
-    start = torch.amax(offsets_in, dim=-1, keepdim=True)
-    start.clamp_(min=near, max=far)  # [batch, 1]
+    with torch.autograd.no_grad():
+        dev, dt = rays_o.device, rays_o.dtype
+        offsets_pos = (aabb[1] - rays_o) / rays_d
+        offsets_neg = (aabb[0] - rays_o) / rays_d
+        offsets_in = torch.minimum(offsets_pos, offsets_neg)
+        start = torch.amax(offsets_in, dim=-1, keepdim=True)
+        start.clamp_(min=near, max=far)  # [batch, 1]
 
-    steps = torch.arange(n_samples, dtype=dt, device=dev).unsqueeze(0)  # [1, n_intrs]
-    if is_train:  # Add some randomization
-        steps = steps.repeat(rays_d.shape[0], 1)  # [batch, n_intrs]
-        steps += torch.rand_like(steps[:, [0]])   # Random is in [0, 1) range of shape [batch, 1]
+        steps = torch.arange(n_samples, dtype=dt, device=dev).unsqueeze(0)  # [1, n_intrs]
+        if is_train:  # Add some randomization
+            steps = steps.repeat(rays_d.shape[0], 1)  # [batch, n_intrs]
+            steps += torch.rand_like(steps[:, [0]])   # Random is in [0, 1) range of shape [batch, 1]
 
-    intersections = start + step_size * steps  # [batch, n_intrs]
+        intersections = start + step_size * steps  # [batch, n_intrs]
     return intersections
 
 
@@ -273,10 +264,6 @@ class TrilinearInterpolate(torch.autograd.Function):
                                  inputs=data)
 
 
-if __name__ == "__main__":
-    TrilinearInterpolate.test_autograd()
-
-
 # noinspection PyAbstractClass,PyMethodOverriding
 class CumProdVolRender(torch.autograd.Function):
     @staticmethod
@@ -328,10 +315,6 @@ class CumProdVolRender(torch.autograd.Function):
         torch.autograd.gradcheck(lambda d: CumProdVolRender.apply(d), inputs=alpha)
 
 
-if __name__ == "__main__":
-    CumProdVolRender.test_autograd()
-
-
 @torch.jit.script
 def volumetric_rendering(rgb: torch.Tensor,            # [batch, n_intersections-1, 3]
                          sigma: torch.Tensor,          # [batch, n_intersections-1, 1]
@@ -378,6 +361,7 @@ class AbstractNerF(torch.nn.Module):
         self.uniform_rays = uniform_rays
         self.count_intersections = count_intersections
         self.voxel_ratio = 1.
+        self.n_intersections = None
 
         self.register_buffer("resolution_", resolution)
         self.register_buffer("aabb_", aabb)
@@ -415,14 +399,11 @@ class AbstractNerF(torch.nn.Module):
         units = self.aabb_size / (self.resolution_ - 1)
         self.voxel_len = torch.mean(units) * self.voxel_ratio
         print("Voxel length: %.4f" % (self.voxel_len))
-
-    @property
-    def n_intersections(self):
         if self.count_intersections == "plenoxels":
-            return int(torch.mean(self.resolution * 3 / self.uniform_rays).item())
+            self.n_intersections = int(torch.mean(self.resolution * 3 / self.uniform_rays).item())
         elif self.count_intersections == "tensorrf":
             aabb_diag = torch.linalg.norm(self.aabb_size)
-            return int((aabb_diag / self.voxel_len).item()) + 1
+            self.n_intersections = int((aabb_diag / self.voxel_len).item()) + 1
         else:
             raise ValueError(self.count_intersections)
 
@@ -585,38 +566,64 @@ class IrregularGrid(AbstractNerF):
         print(f'After pruning have {pruned_data.shape[0]} non-empty indices.')
 
 
-def compute_with_hashgrid(hg, rays_d: torch.Tensor, rays_o: torch.Tensor, radius: float,
-                          resolution: int, uniform: float, harmonic_degree: int, sh_encoder,
-                          white_bkgd: bool):
-    with torch.autograd.no_grad():
-        intersections = get_intersections(rays_o=rays_o, rays_d=rays_d, resolution=resolution,
-                                          radius=radius, uniform=uniform)  # [batch, n_intrs]
-        intersections_trunc = intersections[:, :-1]  # [batch, n_intrs - 1]
+class HashGrid(AbstractNerF):
+    def __init__(self, resolution: torch.Tensor, aabb: torch.Tensor, deg: int,
+                 ini_sigma: float, ini_rgb: float, sh_encoder, hg_encoder,
+                 white_bkgd: bool, uniform_rays: float,
+                 count_intersections: str, harmonic_degree: int):
+        super().__init__(resolution, aabb, count_intersections=count_intersections,
+                         uniform_rays=uniform_rays)
 
-        # Intersections in the real world
-        intrs_pts = rays_o.unsqueeze(1) + intersections_trunc.unsqueeze(2) * rays_d.unsqueeze(1)  # [batch, n_intrs - 1, 3]
+        grid = initialize_grid(self.resolution, harmonic_degree=deg, device=None,
+                               dtype=torch.float32, init_indices=False,
+                               ini_sigma=ini_sigma, ini_rgb=ini_rgb)
+        self.grid_data = torch.nn.Parameter(grid.grid, requires_grad=True)
+
+        self.sh_encoder = sh_encoder
+        self.hg_encoder = hg_encoder
+        self.white_bkgd = white_bkgd
+        self.harmonic_degree = harmonic_degree
+
+    def forward(self, rays_d: torch.Tensor, rays_o: torch.Tensor):
+        with torch.autograd.no_grad():
+            intrs = get_intersections(
+                rays_o=rays_o, rays_d=rays_d, step_size=self.voxel_len, aabb=self.aabb,
+                uniform=self.uniform_rays, n_samples=self.n_intersections)  # [batch, n_intrs]
+            intrs_trunc = intrs[:, :-1]  # [batch, n_intrs - 1]
+            # Intersections in the real world
+            intrs_pts = (rays_o.unsqueeze(1) +
+                         intrs_trunc.unsqueeze(2) * rays_d.unsqueeze(1))  # [batch, n_intrs - 1, 3]
+            # Normalize to -1, 1 range
+            intrs_pts = self.normalize_coord(intrs_pts)
+
         batch, nintrs = intrs_pts.shape[:2]
-        # Normalize to -1, 1 range (this can probably be done without computing minmax) TODO: This is wrong, and it's unclear what HG wants
-        intrs_pts = (intrs_pts - intrs_pts.min()) / (radius) - 1
+        interp_data = self.hg_encoder(intrs_pts.view(-1, 3))  # [batch * n_intrs - 1, n_ch]
+        interp_data = interp_data.view(batch, nintrs, -1)
 
-    interp_data = hg(intrs_pts.view(-1, 3))  # [batch * n_intrs - 1, n_ch]
-    interp_data = interp_data.view(batch, nintrs, -1)
+        # Split the channels in density (sigma) and RGB. Here we ignore any extra channels which
+        # may be present in interp_data. First channel are lower resolution than the later ones.
+        sh_dim = ((self.harmonic_degree + 1) ** 2) * 3
+        interp_rgb_data = interp_data[..., :sh_dim]
+        sigma_data = interp_data[..., sh_dim]
 
-    # Split the channels in density (sigma) and RGB. Here we ignore any extra channels which
-    # may be present in interp_data
-    sh_dim = ((harmonic_degree + 1) ** 2) * 3
-    interp_rgb_data = interp_data[..., :sh_dim]
-    sigma_data = interp_data[..., sh_dim]
+        # Deal with RGB data.
+        # We flip the SH coefficients so that the lower-order are applied to higher resolution data.
+        sh_mult = torch.flip(self.sh_encoder(rays_d), (-1, ))  # [batch, ch/3]
+        # sh_mult :=> [batch, 1, ch/3] => [batch, n_intrs, ch/3] => [batch, nintrs, 1, ch/3]
+        sh_mult = sh_mult.unsqueeze(1).expand(batch, nintrs, -1).unsqueeze(2)
+        # rgb_sh : [batch, nintrs, 3, ch/3]
+        rgb_sh = interp_rgb_data.view(batch, nintrs, 3, sh_mult.shape[-1])
+        rgb_data = torch.sum(sh_mult * rgb_sh, dim=-1)  # [batch, nintrs, 3]
 
-    # Deal with RGB data
-    sh_mult = sh_encoder(rays_d)
-    # sh_mult : [batch, ch/3] => [batch, 1, ch/3] => [batch, n_intrs, ch/3] => [batch, nintrs, 1, ch/3]
-    sh_mult = sh_mult.unsqueeze(1).expand(batch, nintrs, -1).unsqueeze(2)  # [batch, nintrs, 1, ch/3]
-    rgb_sh = interp_rgb_data.view(batch, nintrs, 3, sh_mult.shape[-1])  # [batch, nintrs, 3, ch/3]
-    rgb_data = torch.sum(sh_mult * rgb_sh, dim=-1)  # [batch, nintrs, 3]
+        rgb_map, alpha, depth = volumetric_rendering(
+            rgb_data, sigma_data, intrs, rays_d, self.white_bkgd)
+        return rgb_map, alpha, depth
 
-    rgb_map = volumetric_rendering(rgb_data, sigma_data, intersections, rays_d, white_bkgd)
-    return rgb_map
+    def approx_density_tv_reg(self):
+        return 0.0
+
+    def density_l1_reg(self):
+        return 0.0
 
 
 class RegularGrid(AbstractNerF):
@@ -637,10 +644,9 @@ class RegularGrid(AbstractNerF):
 
     def forward(self, rays_d: torch.Tensor, rays_o: torch.Tensor):
         with torch.autograd.no_grad():
-            # noinspection PyTypeChecker
             intersections = get_intersections(
-                rays_o=rays_o, rays_d=rays_d, aabb=self.aabb, step_size=self.voxel_len, n_samples=self.n_intersections,
-                uniform=self.uniform_rays)  # [batch, n_intrs]
+                rays_o=rays_o, rays_d=rays_d, aabb=self.aabb, step_size=self.voxel_len,
+                n_samples=self.n_intersections, uniform=self.uniform_rays)  # [batch, n_intrs]
             intersections_trunc = intersections[:, :-1]  # [batch, n_intrs - 1]
             # Intersections in the real world
             intrs_pts = rays_o.unsqueeze(1) + intersections_trunc.unsqueeze(2) * rays_d.unsqueeze(1)  # [batch, n_intrs - 1, 3]
@@ -669,7 +675,8 @@ class RegularGrid(AbstractNerF):
         rgb_sh = interp_rgb_data.view(batch, nintrs, 3, sh_mult.shape[-1])  # [batch, nintrs, 3, ch/3]
         rgb_data = torch.sum(sh_mult * rgb_sh, dim=-1)  # [batch, nintrs, 3]
 
-        rgb_map, alpha, depth = volumetric_rendering(rgb_data, sigma_data, intersections, rays_d, self.white_bkgd)
+        rgb_map, alpha, depth = volumetric_rendering(
+            rgb_data, sigma_data, intersections, rays_d, self.white_bkgd)
         return rgb_map, alpha, depth
 
     def approx_density_tv_reg(self):
