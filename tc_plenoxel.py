@@ -150,9 +150,6 @@ def get_intersections(rays_o: torch.Tensor,
         intersections: the intersection points [batch, n_intersections]
     """
     with torch.autograd.no_grad():
-        # voxel_len = radius * 2 / resolution
-        # count = int(resolution * 3 / uniform)
-
         dev, dt = rays_o.device, rays_o.dtype
         offsets_pos = (aabb[1] - rays_o) / rays_d  # [batch, 3]
         offsets_neg = (aabb[0] - rays_o) / rays_d  # [batch, 3]
@@ -160,6 +157,8 @@ def get_intersections(rays_o: torch.Tensor,
         offsets_out = torch.maximum(offsets_pos, offsets_neg)  # [batch, 3]
         start = torch.amax(offsets_in, dim=-1, keepdim=True)  # [batch, 1]
         stop = torch.amin(offsets_out, dim=-1, keepdim=True)  # [batch, 1]
+        print(f"start min {start.min()} max {start.max()}")
+        print(f"stop min {stop.min()} max {stop.max()}")
 
         steps = torch.arange(n_samples, dtype=dt, device=dev).unsqueeze(0)  # [1, n_intrs]
         steps = steps.repeat(rays_d.shape[0], 1)  # [batch, n_intrs]
@@ -619,12 +618,6 @@ class HashGrid(AbstractNerF):
             rgb_data, sigma_data, intrs, rays_d, self.white_bkgd)
         return rgb_map, alpha, depth
 
-    def approx_density_tv_reg(self):
-        return 0.0
-
-    def density_l1_reg(self):
-        return 0.0
-
 
 class RegularGrid(AbstractNerF):
     def __init__(self, resolution: torch.Tensor, aabb: torch.Tensor, deg: int,
@@ -639,8 +632,15 @@ class RegularGrid(AbstractNerF):
                                ini_sigma=ini_sigma, ini_rgb=ini_rgb)
         self.grid_data = torch.nn.Parameter(grid.grid, requires_grad=True)
 
+        occupancy = torch.zeros(size=self.resolution, dtype=torch.uint8)
+        self.register_buffer("occupancy", occupancy)
+
         self.sh_encoder = sh_encoder
         self.white_bkgd = white_bkgd
+
+    def update_occupancy(self, num_voxels):
+        # Choose num_voxels intersections at random
+        pass
 
     def forward(self, rays_d: torch.Tensor, rays_o: torch.Tensor):
         with torch.autograd.no_grad():
@@ -649,9 +649,12 @@ class RegularGrid(AbstractNerF):
                 n_samples=self.n_intersections, uniform=self.uniform_rays)  # [batch, n_intrs]
             intersections_trunc = intersections[:, :-1]  # [batch, n_intrs - 1]
             # Intersections in the real world
+            print(f"Intersections min {intersections.min()} max {intersections.max()}")
             intrs_pts = rays_o.unsqueeze(1) + intersections_trunc.unsqueeze(2) * rays_d.unsqueeze(1)  # [batch, n_intrs - 1, 3]
+            print(f"intrs_pts min {intrs_pts.min()} max {intrs_pts.max()}")
             # Normalize to -1, 1 range
             intrs_pts = self.normalize_coord(intrs_pts)
+            print(f"intrs_pts after normalization min {intrs_pts.min()} max {intrs_pts.max()}")
 
         # Interpolate grid-data at intersection points (trilinear)
         intrs_pts = intrs_pts.unsqueeze(0).unsqueeze(0)  # [1, 1, batch, n_intrs - 1, 3]
