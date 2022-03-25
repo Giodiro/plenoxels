@@ -288,6 +288,7 @@ def train_grid(cfg):
                 stack.enter_context(p)
             model = model.train()
             for i, batch in tqdm(enumerate(tr_loader), desc=f"Epoch {epoch}"):
+                g_iter = epoch * len(tr_loader) + i + 1
                 optim.zero_grad()
                 rays, imgs = batch
                 rays = rays.to(device=dev)
@@ -301,13 +302,8 @@ def train_grid(cfg):
                 else:
                     total_loss = loss
                 with torch.autograd.no_grad():
-                    # Using standard optimizer
                     total_loss.backward()
                     optim.step()
-                    # Our own optimization procedure
-                    #grad = torch.autograd.grad(total_loss, model.grid_data)[0]  # [batch, n_ch]
-                    #grad.mul_(lrs.unsqueeze(0))
-                    #model.grid_data.sub_(grad)
 
                 # Reporting
                 loss = loss.detach().item()
@@ -321,12 +317,14 @@ def train_grid(cfg):
                 if (i + 1) % cfg.optim.eval_refresh_rate == 0:
                     ts_psnr = run_test_step(
                         ts_dset, model, render_every=cfg.optim.render_refresh_rate,
-                        log_dir=cfg.logdir, iteration=epoch * len(tr_loader) + i + 1,
+                        log_dir=cfg.logdir, iteration=g_iter,
                         batch_size=cfg.optim.batch_size, device=dev, exp_name=cfg.expname)
                     print(f"Epoch {epoch} - iteration {i}: Test PSNR: {ts_psnr:.4f}")
 
-                if (i + 1) % cfg.grid.update_occ_rate == 0:
+                if g_iter in cfg.grid.update_occ_iters == 0:
                     model.update_occupancy()
+                if g_iter in cfg.grid.shrink_iters == 0:
+                    model.shrink()
 
                 # Profiling
                 if p is not None:
