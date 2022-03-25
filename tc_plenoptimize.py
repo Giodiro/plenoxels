@@ -90,7 +90,6 @@ def train_hierarchical_grid(cfg):
     dev = "cuda:0" if torch.cuda.is_available() else "cpu"
 
     tr_dset, tr_loader, ts_dset = init_datasets(cfg, dev)
-    lrs = init_plenoxel_lrs(cfg, h_degree, dev)
     sh_enc = init_sh_encoder(cfg, h_degree)
 
     n_levels = 14  # we need 28 channels
@@ -123,7 +122,7 @@ def train_hierarchical_grid(cfg):
         harmonic_degree=h_degree,
         hg_encoder=hg,
     ).to(dev)
-    optim = torch.optim.Adam(params=model.parameters(), lr=0.1)
+    optim = torch.optim.Adam(params=model.parameters(), lr=cfg.optim.adam.lr)
 
     # Main iteration starts here
     for epoch in range(cfg.optim.num_epochs):
@@ -284,8 +283,8 @@ def run_test_step(test_dset: SyntheticNerfDataset,
         total_psnr = 0.0
         for i, test_el in tqdm(enumerate(test_dset), desc="Evaluating on test data"):
             # These are rays/rgb for a full single image
-            rays = test_el['rays']
-            rgb = test_el['rgb'].reshape(test_dset.img_h, test_dset.img_w, 3)
+            rays, rgb = test_el
+            rgb = rgb.reshape(test_dset.img_h, test_dset.img_w, 3)
             # We need to do some manual batching
             rgb_map, depth = [], []
             for b in range(math.ceil(rays.shape[0] / batch_size)):

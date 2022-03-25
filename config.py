@@ -3,7 +3,7 @@ from yacs.config import CfgNode as CN
 _C = CN()
 
 _C.seed = 42
-_C.expname = "hg_exp_1"
+_C.expname = "hg_exp_2"
 _C.logdir = "./logs/"
 _C.model_type = "hash_grid"
 
@@ -14,13 +14,16 @@ _C.sh.sh_encoder = "plenoxels"
 _C.optim = CN()
 _C.optim.batch_size = 4000
 _C.optim.occupancy_penalty = 0.0
-_C.optim.lr_sigma = None
-_C.optim.lr_rgb = None
 _C.optim.profile = False
 _C.optim.num_epochs = 10
 _C.optim.progress_refresh_rate = 50
 _C.optim.eval_refresh_rate = 1000
 _C.optim.render_refresh_rate = 5
+_C.optim.lr_sigma = None
+_C.optim.lr_rgb = None
+
+_C.optim.adam = CN()
+_C.optim.adam.lr = 0.5
 
 _C.data = CN()
 _C.data.datadir = "/home/giacomo/plenoxels/lego"
