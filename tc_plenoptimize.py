@@ -249,23 +249,81 @@ def train_irregular_grid(cfg):
                     p.step()
 
 
-@torch.jit.script
-def update_grids(grid_data: torch.Tensor,
-                 lrs: torch.Tensor,
-                 grid_grad: torch.Tensor) -> torch.Tensor:
-    """
+def train_grid(cfg):
+    h_degree = cfg.sh.degree
+    resolution = cfg.data.resolution
+    dev = "cuda:0" if torch.cuda.is_available() else "cpu"
 
-    :param grid_data:
-        The input grid: [n_voxels, n_channels]
-    :param lrs:
-        The learning rate, one per channel group (sh have 3 channels per group, density has 1)
-    :param grid_grad:
-        The gradient (same shape as grid_data)
-    :return:
-        The new grid, updated by a gradient descent step.
-    """
-    lrs_shape = [1] * (grid_data.dim() - 1) + [lrs.shape[0]]
-    return grid_data.sub_(grid_grad * lrs.view(lrs_shape))
+    tr_dset, tr_loader, ts_dset = init_datasets(cfg, dev)
+    lrs = init_plenoxel_lrs(cfg, h_degree, dev)
+    sh_enc = init_sh_encoder(cfg, h_degree)
+
+    occupancy_penalty = cfg.optim.occupancy_penalty / (len(tr_dset) // cfg.optim.batch_size)
+
+    # Initialize model
+    model = tc_plenoxel.RegularGrid(
+        resolution=torch.tensor([resolution, resolution, resolution], dtype=torch.int32),
+        aabb=tr_dset.scene_bbox,
+        deg=h_degree,
+        ini_sigma=cfg.grid.ini_sigma,
+        ini_rgb=cfg.grid.ini_rgb,
+        sh_encoder=sh_enc,
+        white_bkgd=tr_dset.white_bg,
+        uniform_rays=0.5,
+        count_intersections=cfg.irreg_grid.count_intersections,
+    ).to(dev)
+    # optim = torch.optim.Adam(params=model.parameters(), lr=0.1)
+
+    # Main iteration starts here
+    for epoch in range(cfg.optim.num_epochs):
+        psnrs, mses = [], []
+        with ExitStack() as stack:
+            p = None
+            if cfg.optim.profile:
+                p = init_profiler(cfg, dev)
+                stack.enter_context(p)
+            model = model.train()
+            for i, batch in tqdm(enumerate(tr_loader), desc=f"Epoch {epoch}"):
+                # optim.zero_grad()
+                rays, imgs = batch
+                rays = rays.to(device=dev)
+                rays_o = rays[:, 0].contiguous()
+                rays_d = rays[:, 1].contiguous()
+                imgs = imgs.to(device=dev)
+                preds, _, _ = model(rays_o=rays_o, rays_d=rays_d)
+                loss = F.mse_loss(preds, imgs)
+                if occupancy_penalty > 0:
+                    total_loss = loss + occupancy_penalty * model.approx_density_tv_reg()
+                else:
+                    total_loss = loss
+                with torch.autograd.no_grad():
+                    # Using standard optimizer
+                    # total_loss.backward()
+                    # optim.step()
+                    # Our own optimization procedure
+                    grad = torch.autograd.grad(total_loss, model.grid_data)[0]  # [batch, n_ch]
+                    grad.mul_(lrs.unsqueeze(0))
+                    model.grid_data.sub_(grad)
+
+                # Reporting
+                loss = loss.detach().item()
+                psnrs.append(-10.0 * math.log(loss) / math.log(10.0))
+                mses.append(loss)
+                if i % cfg.optim.progress_refresh_rate == 0:
+                    print(f"Epoch {epoch} - iteration {i}: "
+                          f"MSE {np.mean(mses):.4f} PSNR {np.mean(psnrs):.4f}")
+                    psnrs, mses = [], []
+
+                if (i + 1) % cfg.optim.eval_refresh_rate == 0:
+                    ts_psnr = run_test_step(
+                        ts_dset, model, render_every=cfg.optim.render_refresh_rate,
+                        log_dir=cfg.logdir, iteration=epoch * len(tr_loader) + i + 1,
+                        batch_size=cfg.optim.batch_size, device=dev, exp_name=cfg.expname)
+                    print(f"Epoch {epoch} - iteration {i}: Test PSNR: {ts_psnr:.4f}")
+
+                # Profiling
+                if p is not None:
+                    p.step()
 
 
 def run_test_step(test_dset: SyntheticNerfDataset,
@@ -325,7 +383,9 @@ if __name__ == "__main__":
     # _cmd_args = parse_args()
     # run(_cmd_args)
     _cfg = parse_config()
-    if _cfg.model_type == "irregular_grid":
+    if _cfg.model_type == "regular_grid":
+        train_grid(_cfg)
+    elif _cfg.model_type == "irregular_grid":
         train_irregular_grid(_cfg)
     elif _cfg.model_type == "hash_grid":
         train_hierarchical_grid(_cfg)
