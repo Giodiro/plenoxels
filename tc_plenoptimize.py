@@ -313,7 +313,6 @@ def run_test_step(test_dset: SyntheticNerfDataset,
     return total_psnr / i
 
 
-
 def trace_handler(p, exp_name, dev):
     print(p.key_averages().table(sort_by=f"self_{dev}_time_total", row_limit=10))
     print(p.key_averages().table(sort_by=f"self_{dev}_memory_usage", row_limit=10))
@@ -602,4 +601,10 @@ if __name__ == "__main__":
     # _cmd_args = parse_args()
     # run(_cmd_args)
     _cfg = parse_config()
-    train_irregular_grid(_cfg)
+    if _cfg.model_type == "irregular_grid":
+        train_irregular_grid(_cfg)
+    elif _cfg.model_type == "hash_grid":
+        train_hierarchical_grid(_cfg)
+    else:
+        raise ValueError(f"Model type {_cfg.model_type} unknown.")
+

@@ -3,8 +3,9 @@ from yacs.config import CfgNode as CN
 _C = CN()
 
 _C.seed = 42
-_C.expname = "imp_dl"
+_C.expname = "hg_exp_1"
 _C.logdir = "./logs/"
+_C.model_type = "hash_grid"
 
 _C.sh = CN()
 _C.sh.degree = 2
