@@ -43,39 +43,6 @@ def initialize_grid(resolution: torch.Tensor,
     return Grid(grid=data, indices=indices)
 
 
-@torch.jit.script
-def tensor_linspace(start: torch.Tensor, end: torch.Tensor, steps: int = 10) -> torch.Tensor:
-    """
-    https://github.com/zhaobozb/layout2im/blob/master/models/bilinear.py#L246
-
-    Vectorized version of torch.linspace.
-    Inputs:
-    - start: Tensor of any shape
-    - end: Tensor of the same shape as start
-    - steps: Integer
-    Returns:
-    - out: Tensor of shape start.size() + (steps,), such that
-      out.select(-1, 0) == start, out.select(-1, -1) == end,
-      and the other elements of out linearly interpolate between
-      start and end.
-    """
-    assert start.size() == end.size()
-    view_size = start.size() + (1,)
-    w_size = (1,) * start.dim() + (steps,)
-    out_size = start.size() + (steps,)
-
-    start_w = torch.linspace(1, 0, steps=steps).to(start)
-    start_w = start_w.view(w_size).expand(out_size)
-    end_w = torch.linspace(0, 1, steps=steps).to(start)
-    end_w = end_w.view(w_size).expand(out_size)
-
-    start = start.contiguous().view(view_size).expand(out_size)
-    end = end.contiguous().view(view_size).expand(out_size)
-
-    out = start_w * start + end_w * end
-    return out
-
-
 def plenoxel_sh_encoder(harmonic_degree: int) -> Callable[[torch.Tensor], torch.Tensor]:
     num_sh = (harmonic_degree + 1) ** 2
 
@@ -170,7 +137,7 @@ def get_intersections(rays_o: torch.Tensor,
 
         steps = torch.arange(n_samples, dtype=dt, device=dev).unsqueeze(0)  # [1, n_intrs]
         steps = steps.repeat(rays_d.shape[0], 1)  # [batch, n_intrs]
-        intersections = start + steps * step_size  # [batch, n_intrs]
+        intersections = start + steps * step_size # [batch, n_intrs]
         # intersections = torch.clamp_(intersections, min=None, max=stop)
     return intersections
 
@@ -690,12 +657,13 @@ class RegularGrid(AbstractNerF):
         self.near_far = near_far
 
     def update_occupancy(self):
-        aabb_diag = torch.linalg.norm(self.aabb_size)
-        # Threshold is as in instant-ngp (app. C)
-        density_threshold = self.n_intersections / aabb_diag * 1e-2
-        self.occupancy = self.sigma_data > density_threshold
-        # TODO: 3D-max-pool. But it's not implemented on bools.
-        print(f"Occupancy: {self.occupancy.float().mean() * 100:.2f}%")
+        with torch.autograd.no_grad():
+            #aabb_diag = torch.linalg.norm(self.aabb_size)
+            # Threshold is as in instant-ngp (app. C)
+            #density_threshold = self.n_intersections / aabb_diag * 1e-2
+            #self.occupancy = self.sigma_data > density_threshold
+            # TODO: 3D-max-pool. But it's not implemented on bools.
+            self.occupancy = self.sigma_data.to(dtype=torch.float32)
 
     def interp(self, grid, pts):
         # grid [1, ch, res, res, res]
@@ -715,19 +683,17 @@ class RegularGrid(AbstractNerF):
             batch, nintrs = intersections_trunc.shape
             # Intersections in the real world
             intrs_pts = rays_o.unsqueeze(1) + intersections_trunc.unsqueeze(2) * rays_d.unsqueeze(1)  # [batch, n_intrs - 1, 3]
-            if self.occupancy is not None:
-                intrs_pts_grid_coords = torch.round_(intrs_pts.div(self.voxel_len).add_(1e-5))
-                intrs_pts_grid_coords = intrs_pts_grid_coords.add_(self.resolution / 2).long()
-                intrs_pts_grid_coords.clamp_(
-                    intrs_pts_grid_coords, min=torch.tensor(0, dtype=torch.long, device=intrs_pts_grid_coords.device), max=self.resolution - 1)
-
-            # Normalize to -1, 1 range
-            intrs_pts = self.normalize_coord(intrs_pts)
             # noinspection PyTypeChecker
             intrs_pts_mask = torch.any((self.aabb[0] < intrs_pts) & (intrs_pts < self.aabb[1]), dim=-1)  # [batch, n_intrs-1]
+            # Normalize to -1, 1 range
+            intrs_pts = self.normalize_coord(intrs_pts)
             if self.occupancy is not None:
-                occupancy_mask = self.occupancy[intrs_pts_grid_coords[..., 0], intrs_pts_grid_coords[..., 1], intrs_pts_grid_coords[..., 2]]
-                intrs_pts_mask &= occupancy_mask
+                occ_interp = self.interp(self.occupancy, intrs_pts[intrs_pts_mask].view(1, -1, 1, 1, 3))
+                aabb_diag = torch.linalg.norm(self.aabb_size)
+                # Threshold as in instant-ngp (app. C)
+                density_threshold = self.n_intersections / aabb_diag * 1e-2
+                occ_interp = occ_interp > density_threshold
+                intrs_pts_mask.masked_scatter_(intrs_pts_mask, occ_interp)
 
         # 1. Process density: Un-masked sigma (batch, n_intrs-1), and compute.
         sigma_full = torch.zeros(batch, nintrs, dtype=self.sigma_data.dtype, device=self.sigma_data.device)

@@ -41,8 +41,8 @@ def init_plenoxel_lrs(cfg, h_degree, dev):
     # Initialize learning-rate
     lr_rgb, lr_sigma = cfg.optim.lr_rgb, cfg.optim.lr_sigma
     if lr_rgb is None or lr_sigma is None:
-        lr_rgb = 150 * (resolution ** 1.75)
-        lr_sigma = 51.5 * (resolution ** 2.37)
+        lr_rgb = 150 * (resolution ** 1.75) * (cfg.optim.batch_size / 4000)
+        lr_sigma = 51.5 * (resolution ** 2.37) * (cfg.optim.batch_size / 4000)
     lrs = [lr_rgb] * (sh_dim * 3) + [lr_sigma]
     print("Learning rates: ", lrs)
     return torch.tensor(lrs, dtype=torch.float32, device=dev)
@@ -326,7 +326,7 @@ def train_grid(cfg):
                     print(f"Epoch {epoch} - iteration {i}: Test PSNR: {ts_psnr:.4f}")
 
                 if (i + 1) % cfg.grid.update_occ_rate == 0:
-                    tr_dset.update_occupancy()
+                    model.update_occupancy()
 
                 # Profiling
                 if p is not None:
