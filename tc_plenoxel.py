@@ -682,7 +682,7 @@ class RegularGrid(AbstractNerF):
 
         self.sh_encoder = sh_encoder
         self.white_bkgd = white_bkgd
-        self.abs_light_thresh = 1e-3
+        self.abs_light_thresh = 1e-4
 
     def update_occupancy(self, num_voxels):
         # Choose num_voxels intersections at random
@@ -694,7 +694,7 @@ class RegularGrid(AbstractNerF):
         pts = pts.to(dtype=grid.dtype)
         interp_data = F.grid_sample(
             grid, pts, mode='bilinear', align_corners=True)  # [1, ch, mask_pts, 1, 1]
-        interp_data = interp_data.squeeze().T
+        interp_data = interp_data.squeeze()
         return interp_data
 
     def forward(self, rays_d: torch.Tensor, rays_o: torch.Tensor):
@@ -714,12 +714,14 @@ class RegularGrid(AbstractNerF):
         # 1. Process density: Un-masked sigma (batch, n_intrs-1), and compute.
         sigma_full = torch.zeros(batch, nintrs, dtype=self.sigma_data.dtype, device=self.sigma_data.device)
         sigma_interp = self.interp(
-            self.sigma_data, intrs_pts[intrs_pts_mask].view(1, -1, 1, 1, 3))  # [mask_pts, 1]
+            self.sigma_data, intrs_pts[intrs_pts_mask].view(1, -1, 1, 1, 3))  # [mask_pts]
         sigma_full[intrs_pts_mask] = sigma_interp
-        alpha, abs_light = sigma2alpha(sigma_full, intersections)  # both [batch, n_intrs-1]
+        alpha, abs_light = sigma2alpha(sigma_full, intersections, rays_d)  # both [batch, n_intrs-1]
 
         # 2. Create mask for rgb computations. This is a subset of the intrs_pts_mask.
         rgb_valid_mask = abs_light > self.abs_light_thresh  # [batch, n_intrs-1]
+        #rgb_valid_mask = intrs_pts_mask
+        #print("valid intersections: %.2f%% - valid rgb %.2f%%" % (intrs_pts_mask.float().mean() * 100, rgb_valid_mask.float().mean() * 100))
 
         # 3. Create SH coefficients and mask them
         sh_mult = self.sh_encoder(rays_d).unsqueeze(1).expand(batch, nintrs, -1)  # [batch, nintrs, ch/3]
@@ -728,7 +730,7 @@ class RegularGrid(AbstractNerF):
         # 4. Interpolate rgbdata
         rgb_full = torch.zeros(batch, nintrs, 3, dtype=self.rgb_data.dtype, device=self.rgb_data.device)
         rgb_interp = self.interp(
-            self.rgb_data, intrs_pts[rgb_valid_mask].view(1, -1, 1, 1, 3))  # [mask_pts, ch]
+            self.rgb_data, intrs_pts[rgb_valid_mask].view(1, -1, 1, 1, 3)).T  # [mask_pts, ch]
         rgb_interp = rgb_interp.view(-1, 3, sh_mult.shape[-1])  # [mask_pts, 3, ch/3]
         rgb_interp = torch.sum(sh_mult * rgb_interp, dim=-1)  # [mask_pts, 3]
         rgb_full[rgb_valid_mask] = rgb_interp

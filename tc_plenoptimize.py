@@ -272,7 +272,9 @@ def train_grid(cfg):
         uniform_rays=0.5,
         count_intersections=cfg.irreg_grid.count_intersections,
     ).to(dev)
-    # optim = torch.optim.Adam(params=model.parameters(), lr=0.1)
+    optim = torch.optim.SGD(params=[
+        {'params': model.rgb_data, 'lr': lrs[0]},
+        {'params': model.sigma_data, 'lr': lrs[-1]}])
 
     # Main iteration starts here
     for epoch in range(cfg.optim.num_epochs):
@@ -284,7 +286,7 @@ def train_grid(cfg):
                 stack.enter_context(p)
             model = model.train()
             for i, batch in tqdm(enumerate(tr_loader), desc=f"Epoch {epoch}"):
-                # optim.zero_grad()
+                optim.zero_grad()
                 rays, imgs = batch
                 rays = rays.to(device=dev)
                 rays_o = rays[:, 0].contiguous()
@@ -298,12 +300,12 @@ def train_grid(cfg):
                     total_loss = loss
                 with torch.autograd.no_grad():
                     # Using standard optimizer
-                    # total_loss.backward()
-                    # optim.step()
+                    total_loss.backward()
+                    optim.step()
                     # Our own optimization procedure
-                    grad = torch.autograd.grad(total_loss, model.grid_data)[0]  # [batch, n_ch]
-                    grad.mul_(lrs.unsqueeze(0))
-                    model.grid_data.sub_(grad)
+                    #grad = torch.autograd.grad(total_loss, model.grid_data)[0]  # [batch, n_ch]
+                    #grad.mul_(lrs.unsqueeze(0))
+                    #model.grid_data.sub_(grad)
 
                 # Reporting
                 loss = loss.detach().item()
