@@ -670,8 +670,8 @@ class RegularGrid(AbstractNerF):
                                ini_sigma=ini_sigma, ini_rgb=ini_rgb)
         self.grid_data = torch.nn.Parameter(grid.grid, requires_grad=True)
 
-        occupancy = torch.zeros(size=self.resolution, dtype=torch.uint8)
-        self.register_buffer("occupancy", occupancy)
+        # occupancy = torch.zeros(size=self.resolution, dtype=torch.uint8)
+        # self.register_buffer("occupancy", occupancy)
 
         self.sh_encoder = sh_encoder
         self.white_bkgd = white_bkgd
@@ -695,14 +695,12 @@ class RegularGrid(AbstractNerF):
             intrs_pts = self.normalize_coord(intrs_pts)
 
         # Interpolate grid-data at intersection points (trilinear)
-        intrs_pts = intrs_pts.unsqueeze(0).unsqueeze(0)  # [1, 1, batch, n_intrs - 1, 3]
+        intrs_pts = intrs_pts[intrs_pts_mask].view(1, -1, 1, 1, 3)  # [1, msk_pts, 1, 1, 3]
         grid_data = self.grid_data.T.view(
-            -1, self.resolution[0], self.resolution[1], self.resolution[2])  # ch, res, res, res
-        # interp_data : [1, ch, 1, batch, n_intrs - 1]
+            1, -1, self.resolution[0], self.resolution[1], self.resolution[2])  # [1, ch, res, res, res]
         interp_data = F.grid_sample(
-            grid_data.unsqueeze(0), intrs_pts[intrs_pts_mask],
-            mode='bilinear', align_corners=True)  # [1, ch, 1, batch, n_intrs - 1]
-        interp_data = interp_data.permute(0, 2, 3, 4, 1).squeeze()  # [batch, n_intrs - 1, ch]
+            grid_data, intrs_pts, mode='bilinear', align_corners=True)  # [1, ch, mask_pts, 1, 1]
+        interp_data = interp_data.squeeze().transpose()  # [mask_pts, ch]
 
         # Split the channels in density (sigma) and RGB.
         sigma_data = interp_data[..., -1]
@@ -715,18 +713,17 @@ class RegularGrid(AbstractNerF):
         # 2. Create mask for rgb computations. This is a subset of the intrs_pts_mask.
         rgb_valid_mask = abs_light > self.abs_light_weight_thresh  # [batch, n_intrs-1]
         # 3. Create SH coefficients and mask them
-        # sh_mult : [batch, ch/3] => [batch, 1, ch/3] => [batch, n_intrs, ch/3] => [batch, nintrs, 1, ch/3]
-        sh_mult = self.sh_encoder(rays_d).unsqueeze(1) \
-                      .expand(batch, nintrs, -1) \
-                      .unsqueeze(2)[rgb_valid_mask]  # [batch, nintrs, 1, ch/3]
+        sh_mult = self.sh_encoder(rays_d).unsqueeze(1).expand(batch, nintrs, -1)  # [batch, nintrs, ch/3]
+        sh_mult = sh_mult[rgb_valid_mask].unsqueeze(1)  # [mask_pts, 1, ch/3]
         # 4. Create un-masked rgb data, and compute RGB using sh coefficients
         rgb_data_full = torch.zeros(batch, nintrs, 3, dtype=interp_rgb_data.dtype, device=interp_rgb_data.device)
-        rgb_data_full[intrs_pts_mask] = interp_rgb_data
-        rgb_data_full[~rgb_valid_mask] = 0.0
-        rgb_data = rgb_data_full[rgb_valid_mask]
-        rgb_data = rgb_data.view(rgb_data.shape[0], rgb_data.shape[1], 3, sh_mult.shape[-1])  # [batch, nintrs, 3, ch/3]
-        rgb_data = torch.sum(sh_mult * rgb_data, dim=-1)  # [batch, nintrs, 3]
-        rgb_data = shrgb2rgb(rgb_data, abs_light[rgb_valid_mask], self.white_bkgd)
+        rgb_data_full[intrs_pts_mask] = interp_rgb_data  # this mask was used to interpolate
+        rgb_data_full[~rgb_valid_mask] = 0.0             # Eliminate data from stricter mask
+        rgb_data = rgb_data_full[rgb_valid_mask]         # [mask_pts, ch]
+        rgb_data = rgb_data.view(-1, 3, sh_mult.shape[-1])  # [mask_pts, 3, ch/3]
+        rgb_data = torch.sum(sh_mult * rgb_data, dim=-1)  # [mask_pts, 3]
+        rgb_data_full[rgb_valid_mask] = rgb_data
+        rgb_data = shrgb2rgb(rgb_data_full, abs_light, self.white_bkgd)
         depth = depth_map(abs_light, intersections)
         return rgb_data, alpha, depth
 
