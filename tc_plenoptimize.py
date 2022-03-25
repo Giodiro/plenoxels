@@ -2,10 +2,8 @@ import argparse
 import functools
 import math
 import os
-import time
-from argparse import ArgumentParser
 from contextlib import ExitStack
-from typing import Any, Union, Optional
+from typing import Union
 
 import imageio
 import numpy as np
@@ -163,8 +161,8 @@ def train_hierarchical_grid(cfg):
                 if (i + 1) % cfg.optim.eval_refresh_rate == 0:
                     ts_psnr = run_test_step(
                         ts_dset, model, render_every=cfg.optim.render_refresh_rate,
-                        log_dir=cfg.logdir, epoch=epoch, batch_size=cfg.optim.batch_size,
-                        device=dev)
+                        log_dir=cfg.logdir, iteration=epoch * len(tr_loader) + i + 1,
+                        batch_size=cfg.optim.batch_size, device=dev, exp_name=cfg.expname)
                     print(f"Epoch {epoch} - iteration {i}: Test PSNR: {ts_psnr:.4f}")
 
                 # Profiling
@@ -197,7 +195,7 @@ def train_irregular_grid(cfg):
         count_intersections=cfg.irreg_grid.count_intersections,
         near_far=tuple(tr_dset.near_far),
     ).to(dev)
-    #optim = torch.optim.Adam(params=model.parameters(), lr=0.1)
+    # optim = torch.optim.Adam(params=model.parameters(), lr=0.1)
 
     # Main iteration starts here
     for epoch in range(cfg.optim.num_epochs):
@@ -242,8 +240,8 @@ def train_irregular_grid(cfg):
                 if (i + 1) % cfg.optim.eval_refresh_rate == 0:
                     ts_psnr = run_test_step(
                         ts_dset, model, render_every=cfg.optim.render_refresh_rate,
-                        log_dir=cfg.logdir, epoch=epoch, batch_size=cfg.optim.batch_size,
-                        device=dev)
+                        log_dir=cfg.logdir, iteration=epoch * len(tr_loader) + i + 1,
+                        batch_size=cfg.optim.batch_size, device=dev, exp_name=cfg.expname)
                     print(f"Epoch {epoch} - iteration {i}: Test PSNR: {ts_psnr:.4f}")
 
                 # Profiling
@@ -274,9 +272,10 @@ def run_test_step(test_dset: SyntheticNerfDataset,
                   model,
                   render_every: int,
                   log_dir: str,
-                  epoch: int,
+                  iteration: int,
                   batch_size: int,
                   device: Union[torch.device, str],
+                  exp_name: str,
                   **model_kwargs) -> float:
     model.eval()
     with torch.autograd.no_grad():
@@ -308,7 +307,9 @@ def run_test_step(test_dset: SyntheticNerfDataset,
                 depth = depth.unsqueeze(-1).repeat(1, 1, 3)
                 out_img = torch.cat((rgb, rgb_map, depth), dim=1)
                 out_img = (out_img * 255).to(dtype=torch.uint8).numpy()
-                imageio.imwrite(f"{log_dir}/{epoch:04}_{i:04}.png", out_img)
+                out_dir = os.path.join(log_dir, exp_name)
+                os.makedirs(out_dir, exist_ok=True)
+                imageio.imwrite(os.path.join(out_dir, f"{iteration:05}_test_img_{i:04}.png"), out_img)
     return total_psnr / i
 
 
@@ -318,282 +319,6 @@ def trace_handler(p, exp_name, dev):
     # p.export_chrome_trace(f"./trace_{exp_name}_{p.step_num}.json")
     # p.export_stacks(f"./profiler_stacks_{exp_name}_{p.step_num}.txt", f"self_{dev}_time_total")
     torch.profiler.tensorboard_trace_handler(f"tb_logs/{exp_name}")(p)
-
-
-def run(args):
-    dev = "cpu"
-    if torch.cuda.is_available():
-        dev = "cuda:0"
-    log_dir = args.log_dir + args.expname
-    os.makedirs(log_dir, exist_ok=True)
-
-    focal, train_c2w, train_gt = get_data(args.data_dir, "train", max_frames=10)
-    test_focal, test_c2w, test_gt = get_data(args.data_dir, "test", max_frames=10)
-
-    H, W = train_gt[0].shape[:2]
-
-    if args.lr_rgb is None or args.lr_sigma is None:
-        args.lr_rgb = 150 * (args.resolution ** 1.75)
-        args.lr_sigma = 51.5 * (args.resolution ** 2.37)
-
-    print(f'Initializing the grid')
-    params = init_params(params_type=args.params_type,
-                         resolution=args.resolution,
-                         deg=args.harmonic_degree,
-                         ini_sigma=args.ini_sigma,
-                         ini_rgb=args.ini_rgb,
-                         dev=dev,
-                         log2_hashmap_size=args.log2_hashmap_size)
-
-    tr_rays, tr_rgb = get_training_set(train_gt=train_gt, train_c2w=train_c2w, img_h=H, img_w=W,
-                                       focal=focal, resolution=args.resolution,
-                                       dtype=torch.float32, device=dev)
-    n_samples = tr_rays.shape[0]
-
-    occupancy_penalty = args.occupancy_penalty / (n_samples // args.batch_size)
-    sh_dim = (args.harmonic_degree + 1) ** 2
-    lrs = [args.lr_rgb] * (sh_dim * 3) + [args.lr_sigma]
-    lrs = torch.tensor(lrs, dtype=torch.float32, device=dev)
-
-    # Tiny-CUDA-NN modules
-    if False:
-        sh_enc = tcnn.Encoding(3, {
-            "otype": "SphericalHarmonics",
-            "degree": args.harmonic_degree + 1,
-        })
-    else:
-        sh_enc = tc_plenoxel.plenoxel_sh_encoder(args.harmonic_degree)
-
-    # Main iteration starts here
-    for i in range(args.num_epochs):
-        print("Starting epoch %d" % (i))
-        # Shuffle rays over all training images
-        epoch_perm = np.random.permutation(n_samples)
-        tr_rays = tr_rays[epoch_perm]
-        tr_rgb = tr_rgb[epoch_perm]
-
-        with ExitStack() as stack:
-            p = None
-            if args.profile:
-                p = torch.profiler.profile(
-                    schedule=torch.profiler.schedule(wait=5, warmup=5, active=15),
-                    on_trace_ready=profiling_handler,
-                    with_stack=False, profile_memory=True, record_shapes=True)
-                stack.enter_context(p)
-            for k in tqdm(range(n_samples // args.batch_size)):
-                t_s = time.time()
-                b_rays = tr_rays[k * args.batch_size: (k + 1) * args.batch_size].to(device=dev)
-                b_rgb = tr_rgb[k * args.batch_size: (k + 1) * args.batch_size].to(device=dev)
-                t_s = time.time()
-                train_batch(params=params, params_type=args.params_type,
-                            target=b_rgb, rays=b_rays, resolution=args.resolution,
-                            radius=args.radius, harmonic_degree=args.harmonic_degree,
-                            jitter=args.jitter, uniform=args.uniform,
-                            occupancy_penalty=occupancy_penalty,
-                            interpolation=args.interpolation, lrs=lrs,
-                            sh_encoder=sh_enc)
-                t_e = time.time()
-                print(f"Iteration takes {t_e - t_s:.4f}s")
-                t_s = time.time()
-                if p is not None:
-                    p.step()
-                print("\n\n")
-
-            # if i % args.val_interval == args.val_interval - 1 or i == args.num_epochs - 1:
-            #     validation_psnr = run_test_step(i + 1, data_dict, test_c2w, test_gt, H, W, focal, FLAGS,
-            #                                     render_keys)
-            #     print(f'at epoch {i}, test psnr is {validation_psnr}')
-
-
-def parse_args():
-    flags = ArgumentParser()
-
-    flags.add_argument(
-        "--data_dir", '-d',
-        type=str,
-        default='./nerf/data/nerf_synthetic/',
-        help="Dataset directory e.g. nerf_synthetic/"
-    )
-    flags.add_argument(
-        "--expname",
-        type=str,
-        default="experiment",
-        help="Experiment name."
-    )
-    flags.add_argument(
-        "--scene",
-        type=str,
-        default='lego',
-        help="Name of the synthetic scene."
-    )
-    flags.add_argument(
-        "--log_dir",
-        type=str,
-        default='jax_logs/',
-        help="Directory to save outputs."
-    )
-    flags.add_argument(
-        "--resolution",
-        type=int,
-        default=256,
-        help="Grid size."
-    )
-    flags.add_argument(
-        "--ini_rgb",
-        type=float,
-        default=0.0,
-        help="Initial harmonics value in grid."
-    )
-    flags.add_argument(
-        "--ini_sigma",
-        type=float,
-        default=0.1,
-        help="Initial sigma value in grid."
-    )
-    flags.add_argument(
-        "--radius",
-        type=float,
-        default=1.3,
-        help="Grid radius. 1.3 works well on most scenes, but ship requires 1.5"
-    )
-    flags.add_argument(
-        "--harmonic_degree",
-        type=int,
-        default=2,
-        help="Degree of spherical harmonics. Supports 0, 1, 2, 3, 4."
-    )
-    flags.add_argument(
-        '--num_epochs',
-        type=int,
-        default=1,
-        help='Epochs to train for.'
-    )
-    flags.add_argument(
-        '--render_interval',
-        type=int,
-        default=40,
-        help='Render images during test/val step every x images.'
-    )
-    flags.add_argument(
-        '--val_interval',
-        type=int,
-        default=2,
-        help='Run test/val step every x epochs.'
-    )
-    flags.add_argument(
-        '--lr_rgb',
-        type=float,
-        default=None,
-        help='SGD step size for rgb. Default chooses automatically based on resolution.'
-    )
-    flags.add_argument(
-        '--lr_sigma',
-        type=float,
-        default=None,
-        help='SGD step size for sigma. Default chooses automatically based on resolution.'
-    )
-    flags.add_argument(
-        '--physical_batch_size',
-        type=int,
-        default=4000,
-        help='Number of rays per batch, to avoid OOM.'
-    )
-    flags.add_argument(
-        '--logical_batch_size',
-        type=int,
-        default=4000,
-        help='Number of rays per optimization batch. Must be a multiple of physical_batch_size.'
-    )
-    flags.add_argument(
-        '--batch_size',
-        type=int,
-        default=4000,
-        help='Number of rays per optimization batch. Must be a multiple of physical_batch_size.'
-    )
-    flags.add_argument(
-        '--jitter',
-        type=float,
-        default=0.0,
-        help='Take samples that are jittered within each voxel, where values are computed with trilinear interpolation. Parameter controls the std dev of the jitter, as a fraction of voxel_len.'
-    )
-    flags.add_argument(
-        '--uniform',
-        type=float,
-        default=0.5,
-        help='Initialize sample locations to be uniformly spaced at this interval (as a fraction of voxel_len), rather than at voxel intersections (default if uniform=0).'
-    )
-    flags.add_argument(
-        '--occupancy_penalty',
-        type=float,
-        default=0.0,
-        help='Penalty in the loss term for occupancy; encourages a sparse grid.'
-    )
-    flags.add_argument(
-        '--reload_epoch',
-        type=int,
-        default=None,
-        help='Epoch at which to resume training from a saved model.'
-    )
-    flags.add_argument(
-        '--save_interval',
-        type=int,
-        default=1,
-        help='Save the grid checkpoints after every x epochs.'
-    )
-    flags.add_argument(
-        '--prune_epochs',
-        type=int,
-        nargs='+',
-        default=[],
-        help='List of epoch numbers when pruning should be done.'
-    )
-    flags.add_argument(
-        '--prune_method',
-        type=str,
-        default='weight',
-        help='Weight or sigma: prune based on contribution to training rays, or opacity.'
-    )
-    flags.add_argument(
-        '--prune_threshold',
-        type=float,
-        default=0.001,
-        help='Threshold for pruning voxels (either by weight or by sigma).'
-    )
-    flags.add_argument(
-        '--split_epochs',
-        type=int,
-        nargs='+',
-        default=[],
-        help='List of epoch numbers when splitting should be done.'
-    )
-    flags.add_argument(
-        '--interpolation',
-        type=str,
-        default='trilinear',
-        help='Type of interpolation to use. Options are constant, trilinear, or tricubic.'
-    )
-    flags.add_argument(
-        '--params_type',
-        type=str,
-        default='irregular_grid',
-        help="Type of exp. Can be 'grid', 'irregular_grid', 'mr_hash_grid'"
-    )
-    flags.add_argument(
-        '--log2_hashmap_size',
-        type=int,
-        default=19,
-        help="Only relevant for mr_hash_grid experiment"
-    )
-    flags.add_argument(
-        '--profile',
-        action='store_true',
-        help='activates pytorch profiling'
-    )
-
-    args = flags.parse_args()
-    args.data_dir = os.path.join(args.data_dir, args.scene)
-    args.radius = args.radius
-    return args
 
 
 if __name__ == "__main__":
@@ -606,4 +331,3 @@ if __name__ == "__main__":
         train_hierarchical_grid(_cfg)
     else:
         raise ValueError(f"Model type {_cfg.model_type} unknown.")
-
