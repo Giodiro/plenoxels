@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Tuple, Callable, Optional
+from typing import Tuple, Callable, Optional, Union
 
 import torch
 import torch.nn.functional as F
@@ -11,7 +11,7 @@ from tc_interpolate import trilinear_upsampling_weights
 @dataclass
 class Grid:
     indices: Optional[torch.Tensor]
-    grid: torch.Tensor
+    grid: Union[torch.Tensor, Tuple[torch.Tensor]]
 
 
 def initialize_grid(resolution: torch.Tensor,
@@ -20,12 +20,20 @@ def initialize_grid(resolution: torch.Tensor,
                     harmonic_degree: int = 0,
                     device=None,
                     dtype=torch.float32,
-                    init_indices=True) -> Grid:
+                    init_indices=True,
+                    separate_grids=False,) -> Grid:
     sh_dim = (harmonic_degree + 1) ** 2
     total_data_channels = sh_dim * 3 + 1
 
-    data = torch.full((torch.prod(resolution).item(), total_data_channels), ini_rgb, dtype=dtype, device=device)
-    data[:, -1].fill_(ini_sigma)
+    if separate_grids:
+        data_rgb = torch.full((torch.prod(resolution).item(), total_data_channels - 1),
+                              ini_rgb, dtype=dtype, device=device)
+        data_sigma = torch.full((torch.prod(resolution).item(), 1),
+                                ini_sigma, dtype=dtype, device=device)
+        data = (data_rgb, data_sigma)
+    else:
+        data = torch.full((torch.prod(resolution).item(), total_data_channels), ini_rgb, dtype=dtype, device=device)
+        data[:, -1].fill_(ini_sigma)
 
     if not init_indices:
         return Grid(grid=data, indices=None)
@@ -157,8 +165,6 @@ def get_intersections(rays_o: torch.Tensor,
         offsets_out = torch.maximum(offsets_pos, offsets_neg)  # [batch, 3]
         start = torch.amax(offsets_in, dim=-1, keepdim=True)  # [batch, 1]
         stop = torch.amin(offsets_out, dim=-1, keepdim=True)  # [batch, 1]
-        print(f"start min {start.min()} max {start.max()}")
-        print(f"stop min {stop.min()} max {stop.max()}")
 
         steps = torch.arange(n_samples, dtype=dt, device=dev).unsqueeze(0)  # [1, n_intrs]
         steps = steps.repeat(rays_d.shape[0], 1)  # [batch, n_intrs]
@@ -666,19 +672,30 @@ class RegularGrid(AbstractNerF):
                          uniform_rays=uniform_rays)
 
         grid = initialize_grid(self.resolution, harmonic_degree=deg, device=None,
-                               dtype=torch.float32, init_indices=False,
+                               dtype=torch.float32, init_indices=False, separate_grids=True,
                                ini_sigma=ini_sigma, ini_rgb=ini_rgb)
-        self.grid_data = torch.nn.Parameter(grid.grid, requires_grad=True)
+        self.rgb_data = torch.nn.Parameter(grid.grid[0], requires_grad=True)
+        self.sigma_data = torch.nn.Parameter(grid.grid[1], requires_grad=True)
 
         # occupancy = torch.zeros(size=self.resolution, dtype=torch.uint8)
         # self.register_buffer("occupancy", occupancy)
 
         self.sh_encoder = sh_encoder
         self.white_bkgd = white_bkgd
+        self.abs_light_thresh = 1e-3
 
     def update_occupancy(self, num_voxels):
         # Choose num_voxels intersections at random
         pass
+
+    def interp(self, grid, pts):
+        # grid [1, ch, res, res, res]
+        grid = grid.T.view(1, -1, self.resolution[0], self.resolution[1], self.resolution[2])
+        pts = pts.to(dtype=grid.dtype)
+        interp_data = F.grid_sample(
+            grid, pts, mode='bilinear', align_corners=True)  # [1, ch, mask_pts, 1, 1]
+        interp_data = interp_data.squeeze().T
+        return interp_data
 
     def forward(self, rays_d: torch.Tensor, rays_o: torch.Tensor):
         with torch.autograd.no_grad():
@@ -694,38 +711,30 @@ class RegularGrid(AbstractNerF):
             # Normalize to -1, 1 range
             intrs_pts = self.normalize_coord(intrs_pts)
 
-        # Interpolate grid-data at intersection points (trilinear)
-        intrs_pts = intrs_pts[intrs_pts_mask].view(1, -1, 1, 1, 3)  # [1, msk_pts, 1, 1, 3]
-        grid_data = self.grid_data.T.view(
-            1, -1, self.resolution[0], self.resolution[1], self.resolution[2])  # [1, ch, res, res, res]
-        interp_data = F.grid_sample(
-            grid_data, intrs_pts, mode='bilinear', align_corners=True)  # [1, ch, mask_pts, 1, 1]
-        interp_data = interp_data.squeeze().transpose()  # [mask_pts, ch]
-
-        # Split the channels in density (sigma) and RGB.
-        sigma_data = interp_data[..., -1]
-        interp_rgb_data = interp_data[..., :-1]
-
         # 1. Process density: Un-masked sigma (batch, n_intrs-1), and compute.
-        sigma_full = torch.zeros(batch, nintrs, dtype=sigma_data.dtype, device=sigma_data.device)
-        sigma_full[intrs_pts_mask] = sigma_data
+        sigma_full = torch.zeros(batch, nintrs, dtype=self.sigma_data.dtype, device=self.sigma_data.device)
+        sigma_interp = self.interp(
+            self.sigma_data, intrs_pts[intrs_pts_mask].view(1, -1, 1, 1, 3))  # [mask_pts, 1]
+        sigma_full[intrs_pts_mask] = sigma_interp
         alpha, abs_light = sigma2alpha(sigma_full, intersections)  # both [batch, n_intrs-1]
+
         # 2. Create mask for rgb computations. This is a subset of the intrs_pts_mask.
-        rgb_valid_mask = abs_light > self.abs_light_weight_thresh  # [batch, n_intrs-1]
+        rgb_valid_mask = abs_light > self.abs_light_thresh  # [batch, n_intrs-1]
+
         # 3. Create SH coefficients and mask them
         sh_mult = self.sh_encoder(rays_d).unsqueeze(1).expand(batch, nintrs, -1)  # [batch, nintrs, ch/3]
         sh_mult = sh_mult[rgb_valid_mask].unsqueeze(1)  # [mask_pts, 1, ch/3]
-        # 4. Create un-masked rgb data, and compute RGB using sh coefficients
-        rgb_data_full = torch.zeros(batch, nintrs, 3, dtype=interp_rgb_data.dtype, device=interp_rgb_data.device)
-        rgb_data_full[intrs_pts_mask] = interp_rgb_data  # this mask was used to interpolate
-        rgb_data_full[~rgb_valid_mask] = 0.0             # Eliminate data from stricter mask
-        rgb_data = rgb_data_full[rgb_valid_mask]         # [mask_pts, ch]
-        rgb_data = rgb_data.view(-1, 3, sh_mult.shape[-1])  # [mask_pts, 3, ch/3]
-        rgb_data = torch.sum(sh_mult * rgb_data, dim=-1)  # [mask_pts, 3]
-        rgb_data_full[rgb_valid_mask] = rgb_data
-        rgb_data = shrgb2rgb(rgb_data_full, abs_light, self.white_bkgd)
+
+        # 4. Interpolate rgbdata
+        rgb_full = torch.zeros(batch, nintrs, 3, dtype=self.rgb_data.dtype, device=self.rgb_data.device)
+        rgb_interp = self.interp(
+            self.rgb_data, intrs_pts[rgb_valid_mask].view(1, -1, 1, 1, 3))  # [mask_pts, ch]
+        rgb_interp = rgb_interp.view(-1, 3, sh_mult.shape[-1])  # [mask_pts, 3, ch/3]
+        rgb_interp = torch.sum(sh_mult * rgb_interp, dim=-1)  # [mask_pts, 3]
+        rgb_full[rgb_valid_mask] = rgb_interp
+        rgb_full = shrgb2rgb(rgb_full, abs_light, self.white_bkgd)
         depth = depth_map(abs_light, intersections)
-        return rgb_data, alpha, depth
+        return rgb_full, alpha, depth
 
     def approx_density_tv_reg(self):
         return torch.mean(torch.relu(self.grid_data[..., -1]))
