@@ -163,7 +163,7 @@ def get_intersections(rays_o: torch.Tensor,
         steps = torch.arange(n_samples, dtype=dt, device=dev).unsqueeze(0)  # [1, n_intrs]
         steps = steps.repeat(rays_d.shape[0], 1)  # [batch, n_intrs]
         intersections = start + steps * (uniform * step_size)  # [batch, n_intrs]
-        intersections = torch.clamp_(intersections, min=None, max=stop)
+        # intersections = torch.clamp_(intersections, min=None, max=stop)
     return intersections
 
 
@@ -315,6 +315,44 @@ class CumProdVolRender(torch.autograd.Function):
 
 
 @torch.jit.script
+def sigma2alpha(sigma: torch.Tensor, intersections: torch.Tensor, rays_d: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    # Convert ray-relative distance to absolute distance (shouldn't matter if rays_d is normalized)
+    dists = torch.diff(intersections, n=1, dim=1) \
+                 .mul(torch.linalg.norm(rays_d, ord=2, dim=-1, keepdim=True))  # dists: [batch, n_intrs-1]
+    alpha: torch.Tensor = 1 - torch.exp(-torch.relu(sigma) * dists)            # alpha: [batch, n_intrs-1]
+
+    # the absolute amount of light that gets stuck in each voxel
+    # This quantity can be used to threshold the intersections which must be processed (only if
+    # abs_light > threshold). Often the variable is called 'weights'
+    cum_light = torch.cat((torch.ones(sigma.shape[0], 1, dtype=sigma.dtype, device=sigma.device),
+                           torch.cumprod(1 - alpha[:, :-1] + 1e-10, dim=-1)), dim=-1)  # [batch, n_intrs-1]
+    abs_light = alpha * cum_light  # [batch, n_intersections - 1]
+    return alpha, abs_light
+
+
+@torch.jit.script
+def shrgb2rgb(sh_rgb: torch.Tensor, abs_light: torch.Tensor, white_bkgd: bool) -> torch.Tensor:
+    # Accumulated color over the samples, ignoring background
+    rgb = torch.sigmoid(sh_rgb)  # [batch, n_intrs-1, 3]
+    rgb_map: torch.Tensor = (abs_light.unsqueeze(-1) * rgb).sum(dim=-2)  # [batch, 3]
+
+    if white_bkgd:
+        acc_map = abs_light.sum(-1)    # [batch]
+        # Including the white background in the final color
+        rgb_map = rgb_map + (1. - acc_map.unsqueeze(1))
+
+    return rgb_map
+
+
+@torch.jit.script
+def depth_map(abs_light: torch.Tensor, intersections: torch.Tensor) -> torch.Tensor:
+    with torch.autograd.no_grad():  # Depth & Inverse Depth-map
+        # Weighted average of depths by contribution to final color
+        depth: torch.Tensor = (abs_light * intersections[..., :-1]).sum(dim=-1)
+        return depth
+
+
+@torch.jit.script
 def volumetric_rendering(rgb: torch.Tensor,            # [batch, n_intersections-1, 3]
                          sigma: torch.Tensor,          # [batch, n_intersections-1, 1]
                          intersections: torch.Tensor,  # [batch, n_intersections]
@@ -384,7 +422,7 @@ class AbstractNerF(torch.nn.Module):
         self.update_step_sizes()
 
     @property
-    def aabb(self):
+    def aabb(self) -> torch.Tensor:
         return self.aabb_
 
     @aabb.setter
@@ -648,39 +686,49 @@ class RegularGrid(AbstractNerF):
                 rays_o=rays_o, rays_d=rays_d, aabb=self.aabb, step_size=self.voxel_len,
                 n_samples=self.n_intersections, uniform=self.uniform_rays)  # [batch, n_intrs]
             intersections_trunc = intersections[:, :-1]  # [batch, n_intrs - 1]
+            batch, nintrs = intersections_trunc.shape
             # Intersections in the real world
-            print(f"Intersections min {intersections.min()} max {intersections.max()}")
             intrs_pts = rays_o.unsqueeze(1) + intersections_trunc.unsqueeze(2) * rays_d.unsqueeze(1)  # [batch, n_intrs - 1, 3]
-            print(f"intrs_pts min {intrs_pts.min()} max {intrs_pts.max()}")
+            # noinspection PyTypeChecker
+            intrs_pts_mask = torch.any((self.aabb[0] < intrs_pts) & (intrs_pts < self.aabb[1]), dim=-1)  # [batch, n_intrs-1]
             # Normalize to -1, 1 range
             intrs_pts = self.normalize_coord(intrs_pts)
-            print(f"intrs_pts after normalization min {intrs_pts.min()} max {intrs_pts.max()}")
 
         # Interpolate grid-data at intersection points (trilinear)
         intrs_pts = intrs_pts.unsqueeze(0).unsqueeze(0)  # [1, 1, batch, n_intrs - 1, 3]
-        grid_data = self.grid_data.view(self.resolution[0], self.resolution[1], self.resolution[2], -1).permute(3, 0, 1, 2)  # ch, res, res, res
+        grid_data = self.grid_data.T.view(
+            -1, self.resolution[0], self.resolution[1], self.resolution[2])  # ch, res, res, res
         # interp_data : [1, ch, 1, batch, n_intrs - 1]
         interp_data = F.grid_sample(
-            grid_data.unsqueeze(0), intrs_pts,
+            grid_data.unsqueeze(0), intrs_pts[intrs_pts_mask],
             mode='bilinear', align_corners=True)  # [1, ch, 1, batch, n_intrs - 1]
         interp_data = interp_data.permute(0, 2, 3, 4, 1).squeeze()  # [batch, n_intrs - 1, ch]
-
-        batch, nintrs = interp_data.shape[:2]
 
         # Split the channels in density (sigma) and RGB.
         sigma_data = interp_data[..., -1]
         interp_rgb_data = interp_data[..., :-1]
 
-        # Deal with RGB data
-        sh_mult = self.sh_encoder(rays_d)
+        # 1. Process density: Un-masked sigma (batch, n_intrs-1), and compute.
+        sigma_full = torch.zeros(batch, nintrs, dtype=sigma_data.dtype, device=sigma_data.device)
+        sigma_full[intrs_pts_mask] = sigma_data
+        alpha, abs_light = sigma2alpha(sigma_full, intersections)  # both [batch, n_intrs-1]
+        # 2. Create mask for rgb computations. This is a subset of the intrs_pts_mask.
+        rgb_valid_mask = abs_light > self.abs_light_weight_thresh  # [batch, n_intrs-1]
+        # 3. Create SH coefficients and mask them
         # sh_mult : [batch, ch/3] => [batch, 1, ch/3] => [batch, n_intrs, ch/3] => [batch, nintrs, 1, ch/3]
-        sh_mult = sh_mult.unsqueeze(1).expand(batch, nintrs, -1).unsqueeze(2)  # [batch, nintrs, 1, ch/3]
-        rgb_sh = interp_rgb_data.view(batch, nintrs, 3, sh_mult.shape[-1])  # [batch, nintrs, 3, ch/3]
-        rgb_data = torch.sum(sh_mult * rgb_sh, dim=-1)  # [batch, nintrs, 3]
-
-        rgb_map, alpha, depth = volumetric_rendering(
-            rgb_data, sigma_data, intersections, rays_d, self.white_bkgd)
-        return rgb_map, alpha, depth
+        sh_mult = self.sh_encoder(rays_d).unsqueeze(1) \
+                      .expand(batch, nintrs, -1) \
+                      .unsqueeze(2)[rgb_valid_mask]  # [batch, nintrs, 1, ch/3]
+        # 4. Create un-masked rgb data, and compute RGB using sh coefficients
+        rgb_data_full = torch.zeros(batch, nintrs, 3, dtype=interp_rgb_data.dtype, device=interp_rgb_data.device)
+        rgb_data_full[intrs_pts_mask] = interp_rgb_data
+        rgb_data_full[~rgb_valid_mask] = 0.0
+        rgb_data = rgb_data_full[rgb_valid_mask]
+        rgb_data = rgb_data.view(rgb_data.shape[0], rgb_data.shape[1], 3, sh_mult.shape[-1])  # [batch, nintrs, 3, ch/3]
+        rgb_data = torch.sum(sh_mult * rgb_data, dim=-1)  # [batch, nintrs, 3]
+        rgb_data = shrgb2rgb(rgb_data, abs_light[rgb_valid_mask], self.white_bkgd)
+        depth = depth_map(abs_light, intersections)
+        return rgb_data, alpha, depth
 
     def approx_density_tv_reg(self):
         return torch.mean(torch.relu(self.grid_data[..., -1]))
