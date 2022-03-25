@@ -104,7 +104,7 @@ def train_hierarchical_grid(cfg):
         "interpolation": "Linear",
     })
     for param in hg.parameters():  # Same init as in paper.
-        torch.nn.init.uniform_(param, -1e-4, 1e-4)
+        torch.nn.init.constant_(param, 0.001)
 
     # Initialize model
     model = tc_plenoxel.HashGrid(
@@ -120,7 +120,7 @@ def train_hierarchical_grid(cfg):
         harmonic_degree=h_degree,
         hg_encoder=hg,
     ).to(dev)
-    optim = torch.optim.Adam(params=model.parameters(), lr=cfg.optim.adam.lr)
+    optim = torch.optim.Adam(params=model.parameters(), lr=cfg.optim.adam.lr, eps=1e-15, betas=(0.9, 0.99))
 
     # Main iteration starts here
     for epoch in range(cfg.optim.num_epochs):
