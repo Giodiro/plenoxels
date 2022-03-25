@@ -112,19 +112,6 @@ def get_intersections(rays_o: torch.Tensor,
                       n_samples: int,
                       near: float,
                       far: float) -> torch.Tensor:
-    """
-    :param rays_o:
-        Ray origin. Tensor of shape [batch, 3]
-    :param rays_d
-        Ray direction. Tensor of shape [batch, 3]
-    :param aabb:
-    :param step_size:
-    :param n_samples:
-    :param uniform:
-        No idea what this is for
-    :return:
-        intersections: the intersection points [batch, n_intersections]
-    """
     with torch.autograd.no_grad():
         dev, dt = rays_o.device, rays_o.dtype
         offsets_pos = (aabb[1] - rays_o) / rays_d  # [batch, 3]
@@ -136,8 +123,8 @@ def get_intersections(rays_o: torch.Tensor,
         start.clamp_(min=near, max=far)  # [batch, 1]
 
         steps = torch.arange(n_samples, dtype=dt, device=dev).unsqueeze(0)  # [1, n_intrs]
-        steps = steps.repeat(rays_d.shape[0], 1)  # [batch, n_intrs]
-        intersections = start + steps * step_size # [batch, n_intrs]
+        steps = steps.repeat(rays_d.shape[0], 1)   # [batch, n_intrs]
+        intersections = start + steps * step_size  # [batch, n_intrs]
         # intersections = torch.clamp_(intersections, min=None, max=stop)
     return intersections
 
@@ -375,6 +362,7 @@ class AbstractNerF(torch.nn.Module):
         self.voxel_mul = 1.
         self.n_intersections = None
 
+        self.s_res = (resolution[0], resolution[1], resolution[2])
         self.register_buffer("resolution_", resolution)
         self.register_buffer("aabb_", aabb)
 
@@ -394,6 +382,7 @@ class AbstractNerF(torch.nn.Module):
     @resolution.setter
     def resolution(self, val):
         self.resolution_ = val.to(dtype=self.resolution_.dtype, device=self.resolution_.device)
+        self.s_res = (val[0], val[1], val[2])
         self.update_step_sizes()
 
     @property
@@ -637,24 +626,25 @@ class RegularGrid(AbstractNerF):
     def __init__(self, resolution: torch.Tensor, aabb: torch.Tensor, deg: int,
                  ini_sigma: float, ini_rgb: float, sh_encoder,
                  white_bkgd: bool, uniform_rays: float,
-                 count_intersections: str, near_far: Tuple[float]):
+                 count_intersections: str, near_far: Tuple[float],
+                 abs_light_thresh: float, occupancy_thresh: float):
         super().__init__(resolution, aabb, count_intersections=count_intersections,
                          uniform_rays=uniform_rays)
 
         grid = initialize_grid(self.resolution, harmonic_degree=deg, device=None,
                                dtype=torch.float32, init_indices=False, separate_grids=True,
                                ini_sigma=ini_sigma, ini_rgb=ini_rgb)
-        rgb_data = grid.grid[0].T.view(1, -1, self.resolution[0], self.resolution[1], self.resolution[2])
+        rgb_data = grid.grid[0].T.view(1, -1, *self.s_res)
         self.rgb_data = torch.nn.Parameter(rgb_data, requires_grad=True)
-        sigma_data = grid.grid[1].T.view(1, -1, self.resolution[0], self.resolution[1], self.resolution[2])
+        sigma_data = grid.grid[1].T.view(1, -1, *self.s_res)
         self.sigma_data = torch.nn.Parameter(sigma_data, requires_grad=True)
 
         self.register_buffer("occupancy", None)
 
         self.sh_encoder = sh_encoder
         self.white_bkgd = white_bkgd
-        self.abs_light_thresh = 1e-4
-        self.occupancy_thresh = 0.08
+        self.abs_light_thresh = abs_light_thresh
+        self.occupancy_thresh = occupancy_thresh
         self.near_far = near_far
 
     def update_occupancy(self):
@@ -670,10 +660,9 @@ class RegularGrid(AbstractNerF):
             return
         with torch.autograd.no_grad():
             ooc_mask = self.occupancy > self.occupancy_thresh
-            print("ooc mask is True for %.2f%% cases" % (ooc_mask.float().mean()*100))
             xyz_min, xyz_max = torch.empty(3, dtype=torch.long), torch.empty(3, dtype=torch.long)
             units = self.aabb_size / (self.resolution - 1)
-            new_aabb = torch.empty_like(self.aabb, device="cpu")
+            new_aabb = torch.empty_like(self.aabb)
             ooc_mask = ooc_mask.squeeze()
             i_coord = ooc_mask.amax(0)
             ij_coord = i_coord.amax(0)
@@ -687,29 +676,38 @@ class RegularGrid(AbstractNerF):
             xyz_min[0] = torch.max(ji_coord, dim=0).indices
             xyz_max[0] = len(ji_coord) - torch.max(ji_coord.flip(0), dim=0).indices
 
-            for coord in range(3):
-                new_aabb[0][coord] = self.aabb[0, coord] + xyz_min[coord] * units[coord]
-                new_aabb[1][coord] = self.aabb[1, coord] - (self.resolution[coord] - xyz_max[coord]) * units[coord]
+            new_aabb[0] = self.aabb[0] + xyz_min * units
+            new_aabb[1] = self.aabb[1] - (self.resolution - xyz_max) * units
             new_reso = xyz_max - xyz_min
-            print(f"Shrinking. New aabb: {new_aabb} - new resolution {new_reso}")
-            print(f"XYZ-min {xyz_min} - XYZ-max {xyz_max}")
+            print(f"Shrinking. New aabb: {new_aabb} - new resolution {new_reso} "
+                  f"- XYZ-min {xyz_min} - XYZ-max {xyz_max}")
             # Now actually shrink the data
-            self.sigma_data = torch.nn.Parameter(self.sigma_data[:, :,
-                              xyz_min[0]: xyz_max[0],
-                              xyz_min[1]: xyz_max[1],
-                              xyz_min[2]: xyz_max[2]], requires_grad=True)
-            self.rgb_data = torch.nn.Parameter(self.rgb_data[:, :,
-                              xyz_min[0]: xyz_max[0],
-                              xyz_min[1]: xyz_max[1],
-                              xyz_min[2]: xyz_max[2]], requires_grad=True)
-            self.occupancy = self.occupancy[:, :,
-                              xyz_min[0]: xyz_max[0],
-                              xyz_min[1]: xyz_max[1],
-                              xyz_min[2]: xyz_max[2]]
+            self.sigma_data = torch.nn.Parameter(
+                self.sigma_data[:, :, xyz_min[0]: xyz_max[0], xyz_min[1]: xyz_max[1], xyz_min[2]: xyz_max[2]], requires_grad=True)
+            self.rgb_data = torch.nn.Parameter(
+                self.rgb_data[:, :, xyz_min[0]: xyz_max[0], xyz_min[1]: xyz_max[1], xyz_min[2]: xyz_max[2]], requires_grad=True)
+            self.occupancy = self.occupancy[
+                 :, :, xyz_min[0]: xyz_max[0], xyz_min[1]: xyz_max[1], xyz_min[2]: xyz_max[2]]
             self.resolution = new_reso
             self.aabb = new_aabb
 
-    def interp(self, grid, pts):
+    def upscale(self, new_resolution):
+        with torch.autograd.no_grad():
+            new_res_s = (new_resolution[0], new_resolution[1], new_resolution[2])
+            new_sigma = F.interpolate(
+                self.sigma_data, size=new_res_s, align_corners=True, mode='trilinear')
+            delattr(self, "sigma_data")
+            self.sigma_data = torch.nn.Parameter(new_sigma, requires_grad=True)
+
+            new_rgb = F.interpolate(
+                self.rgb_data, size=new_res_s, align_corners=True, mode='trilinear')
+            delattr(self, "rgb_data")
+            self.rgb_data = torch.nn.Parameter(new_rgb, requires_grad=True)
+
+            self.resolution = new_resolution
+
+    # noinspection PyMethodMayBeStatic
+    def _interp(self, grid, pts):
         # grid [1, ch, res, res, res]
         pts = pts.to(dtype=grid.dtype)
         interp_data = F.grid_sample(
@@ -732,7 +730,7 @@ class RegularGrid(AbstractNerF):
             # Normalize to -1, 1 range
             intrs_pts = self.normalize_coord(intrs_pts)
             if self.occupancy is not None:
-                occ_interp = self.interp(self.occupancy, intrs_pts[intrs_pts_mask].view(1, -1, 1, 1, 3))
+                occ_interp = self._interp(self.occupancy, intrs_pts[intrs_pts_mask].view(1, -1, 1, 1, 3))
                 # aabb_diag = torch.linalg.norm(self.aabb_size)
                 # Threshold as in instant-ngp (app. C)
                 # density_threshold = self.n_intersections / aabb_diag * 1e-2
@@ -741,7 +739,7 @@ class RegularGrid(AbstractNerF):
 
         # 1. Process density: Un-masked sigma (batch, n_intrs-1), and compute.
         sigma_full = torch.zeros(batch, nintrs, dtype=self.sigma_data.dtype, device=self.sigma_data.device)
-        sigma_interp = self.interp(
+        sigma_interp = self._interp(
             self.sigma_data, intrs_pts[intrs_pts_mask].view(1, -1, 1, 1, 3))  # [mask_pts]
         sigma_full[intrs_pts_mask] = sigma_interp
         alpha, abs_light = sigma2alpha(sigma_full, intersections, rays_d)  # both [batch, n_intrs-1]
@@ -756,7 +754,7 @@ class RegularGrid(AbstractNerF):
 
         # 4. Interpolate rgbdata
         rgb_full = torch.zeros(batch, nintrs, 3, dtype=self.rgb_data.dtype, device=self.rgb_data.device)
-        rgb_interp = self.interp(
+        rgb_interp = self._interp(
             self.rgb_data, intrs_pts[rgb_valid_mask].view(1, -1, 1, 1, 3)).T  # [mask_pts, ch]
         rgb_interp = rgb_interp.view(-1, 3, sh_mult.shape[-1])  # [mask_pts, 3, ch/3]
         rgb_interp = torch.sum(sh_mult * rgb_interp, dim=-1)  # [mask_pts, 3]
@@ -764,17 +762,6 @@ class RegularGrid(AbstractNerF):
         rgb_full = shrgb2rgb(rgb_full, abs_light, self.white_bkgd)
         depth = depth_map(abs_light, intersections)
         return rgb_full, alpha, depth
-
-    def upscale(self, new_resolution):
-        new_sigma = F.interpolate(self.sigma_data, size=new_resolution, align_corners=True, mode='trilinear')
-        delattr(self, "sigma_data")
-        self.sigma_data = torch.nn.Parameter(new_sigma, requires_grad=True)
-
-        new_rgb = F.interpolate(self.rgb_data, size=new_resolution, align_corners=True, mode='trilinear')
-        delattr(self, "rgb_data")
-        self.rgb_data = torch.nn.Parameter(new_rgb, requires_grad=True)
-
-        self.resolution = new_resolution
 
     def approx_density_tv_reg(self):
         return torch.mean(torch.relu(self.grid_data[..., -1]))

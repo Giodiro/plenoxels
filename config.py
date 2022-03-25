@@ -38,7 +38,8 @@ _C.grid.ini_sigma = 0.1
 _C.grid.update_occ_iters = [128, 256, 512, 1024, 1500, 2000]
 _C.grid.shrink_iters = [1024, 2048, 3096, 5000]
 _C.grid.upsample_iters = [600, 2000, 4000, 6000]
-# _C.grid.
+_C.grid.abs_light_thresh = 0.0001
+_C.grid.occupancy_thresh = 0.08
 
 _C.irreg_grid = CN()
 _C.irreg_grid.prune_threshold = 0.001

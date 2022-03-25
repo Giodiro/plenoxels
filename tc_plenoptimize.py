@@ -272,6 +272,8 @@ def train_grid(cfg):
         uniform_rays=0.5,
         count_intersections=cfg.irreg_grid.count_intersections,
         near_far=tuple(tr_dset.near_far),
+        abs_light_thresh=cfg.grid.abs_light_thresh,
+        occupancy_thresh=cfg.grid.occupancy_thresh
     ).to(dev)
     optim = torch.optim.SGD(params=[
         {'params': model.rgb_data, 'lr': lrs[0]},
