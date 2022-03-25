@@ -271,10 +271,12 @@ def train_grid(cfg):
         white_bkgd=tr_dset.white_bg,
         uniform_rays=0.5,
         count_intersections=cfg.irreg_grid.count_intersections,
+        near_far=tuple(tr_dset.near_far),
     ).to(dev)
     optim = torch.optim.SGD(params=[
         {'params': model.rgb_data, 'lr': lrs[0]},
-        {'params': model.sigma_data, 'lr': lrs[-1]}])
+        {'params': model.sigma_data, 'lr': lrs[-1]}
+    ])
 
     # Main iteration starts here
     for epoch in range(cfg.optim.num_epochs):
@@ -322,6 +324,9 @@ def train_grid(cfg):
                         log_dir=cfg.logdir, iteration=epoch * len(tr_loader) + i + 1,
                         batch_size=cfg.optim.batch_size, device=dev, exp_name=cfg.expname)
                     print(f"Epoch {epoch} - iteration {i}: Test PSNR: {ts_psnr:.4f}")
+
+                if (i + 1) % cfg.grid.update_occ_rate == 0:
+                    tr_dset.update_occupancy()
 
                 # Profiling
                 if p is not None:

@@ -35,6 +35,7 @@ _C.data.max_ts_frames = 10
 _C.grid = CN()
 _C.grid.ini_rgb = 0.0
 _C.grid.ini_sigma = 0.1
+_C.grid.update_occ_rate = 32
 
 _C.irreg_grid = CN()
 _C.irreg_grid.prune_threshold = 0.001
