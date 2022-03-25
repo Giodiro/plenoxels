@@ -278,6 +278,9 @@ def train_grid(cfg):
         {'params': model.sigma_data, 'lr': lrs[-1]}
     ])
 
+    # Initialize list of resolutions
+    reso_multiplier = 1.4
+
     # Main iteration starts here
     for epoch in range(cfg.optim.num_epochs):
         psnrs, mses = [], []
@@ -321,10 +324,12 @@ def train_grid(cfg):
                         batch_size=cfg.optim.batch_size, device=dev, exp_name=cfg.expname)
                     print(f"Epoch {epoch} - iteration {i}: Test PSNR: {ts_psnr:.4f}")
 
-                if g_iter in cfg.grid.update_occ_iters == 0:
+                if g_iter in cfg.grid.update_occ_iters:
                     model.update_occupancy()
-                if g_iter in cfg.grid.shrink_iters == 0:
+                if g_iter in cfg.grid.shrink_iters:
                     model.shrink()
+                if g_iter in cfg.grid.upsample_iters:
+                    model.upscale(new_resolution=model.resolution * reso_multiplier)
 
                 # Profiling
                 if p is not None:

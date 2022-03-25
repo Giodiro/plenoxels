@@ -654,44 +654,54 @@ class RegularGrid(AbstractNerF):
         self.sh_encoder = sh_encoder
         self.white_bkgd = white_bkgd
         self.abs_light_thresh = 1e-4
+        self.occupancy_thresh = 0.08
         self.near_far = near_far
 
     def update_occupancy(self):
         with torch.autograd.no_grad():
             sigma = self.sigma_data  # 1, 1, res, res, res
-            sigma = sigma.view(-1)
             dists = torch.linalg.norm(self.aabb)
             alpha: torch.Tensor = 1 - torch.exp(-torch.relu(sigma) * dists)
-            alpha = alpha.view(1, 1, self.resolution[0], self.resolution[1], self.resolution[2])
-            alpha = F.max_pool3d(alpha, kernel_size=3, padding=1)
+            alpha = F.max_pool3d(alpha, kernel_size=3, padding=1, stride=1)
             self.occupancy = alpha
 
     def shrink(self):
         if self.occupancy is None:
             return
         with torch.autograd.no_grad():
-            ooc_mask = self.occupancy > 0
+            ooc_mask = self.occupancy > self.occupancy_thresh
+            print("ooc mask is True for %.2f%% cases" % (ooc_mask.float().mean()*100))
             xyz_min, xyz_max = torch.empty(3, dtype=torch.long), torch.empty(3, dtype=torch.long)
-            units = self.aabb_size / (self.resolution_ - 1)
+            units = self.aabb_size / (self.resolution - 1)
             new_aabb = torch.empty_like(self.aabb, device="cpu")
+            ooc_mask = ooc_mask.squeeze()
+            i_coord = ooc_mask.amax(0)
+            ij_coord = i_coord.amax(0)
+            xyz_min[1] = torch.max(ij_coord, dim=0).indices
+            xyz_max[1] = len(ij_coord) - torch.max(ij_coord.flip(0), dim=0).indices
+            ik_coord = i_coord.amax(1)
+            xyz_min[2] = torch.max(ik_coord, dim=0).indices
+            xyz_max[2] = len(ik_coord) - torch.max(ik_coord.flip(0), dim=0).indices
+            j_coord = ooc_mask.amax(1)
+            ji_coord = j_coord.amax(1)
+            xyz_min[0] = torch.max(ji_coord, dim=0).indices
+            xyz_max[0] = len(ji_coord) - torch.max(ji_coord.flip(0), dim=0).indices
+
             for coord in range(3):
-                b_coord = ooc_mask.amax(coord)
-                xyz_min[coord] = torch.max(b_coord, dim=0).indices
-                xyz_max[coord] = len(b_coord) - torch.max(b_coord.flip(0), dim=0).indices
-                new_aabb[0][coord] = self.aabb[0][coord] + xyz_min[coord] * units
-                new_aabb[1][coord] = self.aabb[1][coord] - (len(b_coord) - xyz_max[coord]) * units
+                new_aabb[0][coord] = self.aabb[0, coord] + xyz_min[coord] * units[coord]
+                new_aabb[1][coord] = self.aabb[1, coord] - (self.resolution[coord] - xyz_max[coord]) * units[coord]
             new_reso = xyz_max - xyz_min
             print(f"Shrinking. New aabb: {new_aabb} - new resolution {new_reso}")
             print(f"XYZ-min {xyz_min} - XYZ-max {xyz_max}")
             # Now actually shrink the data
-            self.sigma_data = self.sigma_data[:, :,
+            self.sigma_data = torch.nn.Parameter(self.sigma_data[:, :,
                               xyz_min[0]: xyz_max[0],
                               xyz_min[1]: xyz_max[1],
-                              xyz_min[2]: xyz_max[2]]
-            self.rgb_data = self.rgb_data[:, :,
+                              xyz_min[2]: xyz_max[2]], requires_grad=True)
+            self.rgb_data = torch.nn.Parameter(self.rgb_data[:, :,
                               xyz_min[0]: xyz_max[0],
                               xyz_min[1]: xyz_max[1],
-                              xyz_min[2]: xyz_max[2]]
+                              xyz_min[2]: xyz_max[2]], requires_grad=True)
             self.occupancy = self.occupancy[:, :,
                               xyz_min[0]: xyz_max[0],
                               xyz_min[1]: xyz_max[1],
@@ -726,7 +736,7 @@ class RegularGrid(AbstractNerF):
                 # aabb_diag = torch.linalg.norm(self.aabb_size)
                 # Threshold as in instant-ngp (app. C)
                 # density_threshold = self.n_intersections / aabb_diag * 1e-2
-                occ_interp = occ_interp > 0
+                occ_interp = occ_interp > self.occupancy_thresh
                 intrs_pts_mask.masked_scatter_(intrs_pts_mask, occ_interp)
 
         # 1. Process density: Un-masked sigma (batch, n_intrs-1), and compute.
@@ -738,7 +748,7 @@ class RegularGrid(AbstractNerF):
 
         # 2. Create mask for rgb computations. This is a subset of the intrs_pts_mask.
         rgb_valid_mask = abs_light > self.abs_light_thresh  # [batch, n_intrs-1]
-        # print("valid intersections: %.2f%% - valid rgb %.2f%%" % (intrs_pts_mask.float().mean() * 100, rgb_valid_mask.float().mean() * 100))
+        print("valid intersections: %.2f%% - valid rgb %.2f%%" % (intrs_pts_mask.float().mean() * 100, rgb_valid_mask.float().mean() * 100))
 
         # 3. Create SH coefficients and mask them
         sh_mult = self.sh_encoder(rays_d).unsqueeze(1).expand(batch, nintrs, -1)  # [batch, nintrs, ch/3]
