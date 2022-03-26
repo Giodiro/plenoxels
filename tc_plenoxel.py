@@ -359,7 +359,7 @@ class AbstractNerF(torch.nn.Module):
 
         self.uniform_rays = uniform_rays
         self.count_intersections = count_intersections
-        self.voxel_mul = 1.
+        self.voxel_mul = 2.
         self.n_intersections = None
 
         self.s_res = (resolution[0], resolution[1], resolution[2])
@@ -405,7 +405,7 @@ class AbstractNerF(torch.nn.Module):
         elif self.count_intersections == "plenoxels":
             self.n_intersections = int(torch.mean(self.resolution * 3 * self.voxel_mul).item())
         elif self.count_intersections == "tensorrf":
-            self.n_intersections = int(aabb_diag / torch.mean(units).item()) + 1
+            self.n_intersections = int(aabb_diag / torch.mean(units).item() * self.voxel_mul) + 1
         self.voxel_len = aabb_diag / self.n_intersections
         print(f"Voxel length {self.voxel_len:.3e} - Num intersections {self.n_intersections}")
 
@@ -646,8 +646,10 @@ class RegularGrid(AbstractNerF):
         self.abs_light_thresh = abs_light_thresh
         self.occupancy_thresh = occupancy_thresh
         self.near_far = near_far
+        self.params_changed = False
 
     def update_occupancy(self):
+        print("Updating occupancy")
         with torch.autograd.no_grad():
             sigma = self.sigma_data  # 1, 1, res, res, res
             dists = torch.linalg.norm(self.aabb)
@@ -660,7 +662,8 @@ class RegularGrid(AbstractNerF):
             return
         with torch.autograd.no_grad():
             ooc_mask = self.occupancy > self.occupancy_thresh
-            xyz_min, xyz_max = torch.empty(3, dtype=torch.long), torch.empty(3, dtype=torch.long)
+            dev = ooc_mask.device
+            xyz_min, xyz_max = torch.empty(3, dtype=torch.long, device=dev), torch.empty(3, dtype=torch.long, device=dev)
             units = self.aabb_size / (self.resolution - 1)
             new_aabb = torch.empty_like(self.aabb)
             ooc_mask = ooc_mask.squeeze()
@@ -679,6 +682,9 @@ class RegularGrid(AbstractNerF):
             new_aabb[0] = self.aabb[0] + xyz_min * units
             new_aabb[1] = self.aabb[1] - (self.resolution - xyz_max) * units
             new_reso = xyz_max - xyz_min
+            if (new_reso == self.resolution).all():
+                print("No shrinkage possible.")
+                return
             print(f"Shrinking. New aabb: {new_aabb} - new resolution {new_reso} "
                   f"- XYZ-min {xyz_min} - XYZ-max {xyz_max}")
             # Now actually shrink the data
@@ -690,10 +696,12 @@ class RegularGrid(AbstractNerF):
                  :, :, xyz_min[0]: xyz_max[0], xyz_min[1]: xyz_max[1], xyz_min[2]: xyz_max[2]]
             self.resolution = new_reso
             self.aabb = new_aabb
+            self.params_changed = True
 
     def upscale(self, new_resolution):
         with torch.autograd.no_grad():
-            new_res_s = (new_resolution[0], new_resolution[1], new_resolution[2])
+            new_res_s = (new_resolution[0].item(), new_resolution[1].item(), new_resolution[2].item())
+            print("Upsampling to new resolution %s" % (new_res_s, ))
             new_sigma = F.interpolate(
                 self.sigma_data, size=new_res_s, align_corners=True, mode='trilinear')
             delattr(self, "sigma_data")
@@ -705,6 +713,7 @@ class RegularGrid(AbstractNerF):
             self.rgb_data = torch.nn.Parameter(new_rgb, requires_grad=True)
 
             self.resolution = new_resolution
+            self.params_changed = True
 
     # noinspection PyMethodMayBeStatic
     def _interp(self, grid, pts):
@@ -746,7 +755,7 @@ class RegularGrid(AbstractNerF):
 
         # 2. Create mask for rgb computations. This is a subset of the intrs_pts_mask.
         rgb_valid_mask = abs_light > self.abs_light_thresh  # [batch, n_intrs-1]
-        print("valid intersections: %.2f%% - valid rgb %.2f%%" % (intrs_pts_mask.float().mean() * 100, rgb_valid_mask.float().mean() * 100))
+        #print("valid intersections: %.2f%% - valid rgb %.2f%%" % (intrs_pts_mask.float().mean() * 100, rgb_valid_mask.float().mean() * 100))
 
         # 3. Create SH coefficients and mask them
         sh_mult = self.sh_encoder(rays_d).unsqueeze(1).expand(batch, nintrs, -1)  # [batch, nintrs, ch/3]
@@ -756,6 +765,8 @@ class RegularGrid(AbstractNerF):
         rgb_full = torch.zeros(batch, nintrs, 3, dtype=self.rgb_data.dtype, device=self.rgb_data.device)
         rgb_interp = self._interp(
             self.rgb_data, intrs_pts[rgb_valid_mask].view(1, -1, 1, 1, 3)).T  # [mask_pts, ch]
+        #print("rgb_interp", rgb_interp.shape)
+        #rgb_interp= rgb_interp.T
         rgb_interp = rgb_interp.view(-1, 3, sh_mult.shape[-1])  # [mask_pts, 3, ch/3]
         rgb_interp = torch.sum(sh_mult * rgb_interp, dim=-1)  # [mask_pts, 3]
         rgb_full[rgb_valid_mask] = rgb_interp
@@ -764,7 +775,7 @@ class RegularGrid(AbstractNerF):
         return rgb_full, alpha, depth
 
     def approx_density_tv_reg(self):
-        return torch.mean(torch.relu(self.grid_data[..., -1]))
+        return torch.mean(torch.relu(self.sigma_data))
 
     def density_l1_reg(self):
-        return torch.mean(torch.abs(self.grid_data[..., -1]))
+        return torch.mean(torch.abs(self.sigma_data))

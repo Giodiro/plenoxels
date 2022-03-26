@@ -275,10 +275,12 @@ def train_grid(cfg):
         abs_light_thresh=cfg.grid.abs_light_thresh,
         occupancy_thresh=cfg.grid.occupancy_thresh
     ).to(dev)
-    optim = torch.optim.SGD(params=[
-        {'params': model.rgb_data, 'lr': lrs[0]},
-        {'params': model.sigma_data, 'lr': lrs[-1]}
-    ])
+    def init_optim():
+        return torch.optim.SGD(params=[
+            {'params': (model.rgb_data, ), 'lr': lrs[0]},
+            {'params': (model.sigma_data, ), 'lr': lrs[-1]}
+        ])
+    optim = init_optim()
 
     # Initialize list of resolutions
     reso_multiplier = 1.4
@@ -323,7 +325,7 @@ def train_grid(cfg):
                     ts_psnr = run_test_step(
                         ts_dset, model, render_every=cfg.optim.render_refresh_rate,
                         log_dir=cfg.logdir, iteration=g_iter,
-                        batch_size=cfg.optim.batch_size, device=dev, exp_name=cfg.expname)
+                        batch_size=cfg.optim.batch_size * 4, device=dev, exp_name=cfg.expname)
                     print(f"Epoch {epoch} - iteration {i}: Test PSNR: {ts_psnr:.4f}")
 
                 if g_iter in cfg.grid.update_occ_iters:
@@ -331,7 +333,11 @@ def train_grid(cfg):
                 if g_iter in cfg.grid.shrink_iters:
                     model.shrink()
                 if g_iter in cfg.grid.upsample_iters:
-                    model.upscale(new_resolution=model.resolution * reso_multiplier)
+                    model.upscale(new_resolution=(model.resolution * reso_multiplier).long())
+                if model.params_changed:
+                    optim.param_groups[0]['params'] = (model.rgb_data, )
+                    optim.param_groups[1]['params'] = (model.sigma_data, )
+                    model.params_changed = False
 
                 # Profiling
                 if p is not None:
