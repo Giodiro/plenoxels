@@ -52,8 +52,8 @@ def init_datasets(cfg, dev):
     resolution = cfg.data.resolution
     tr_dset = SyntheticNerfDataset(cfg.data.datadir, split='train', downsample=cfg.data.downsample,
                                    resolution=resolution, max_frames=cfg.data.max_tr_frames)
-    tr_loader = DataLoader(tr_dset, batch_size=cfg.optim.batch_size, shuffle=True, num_workers=2,
-                           prefetch_factor=3,
+    tr_loader = DataLoader(tr_dset, batch_size=cfg.optim.batch_size, shuffle=True, num_workers=3,
+                           prefetch_factor=10,
                            pin_memory=dev.startswith("cuda"))
     ts_dset = SyntheticNerfDataset(cfg.data.datadir, split='test', downsample=cfg.data.downsample,
                                    resolution=resolution, max_frames=cfg.data.max_ts_frames)
@@ -275,15 +275,12 @@ def train_grid(cfg):
         abs_light_thresh=cfg.grid.abs_light_thresh,
         occupancy_thresh=cfg.grid.occupancy_thresh
     ).to(dev)
-    def init_optim():
+    def init_optim(lrs_):
         return torch.optim.SGD(params=[
-            {'params': (model.rgb_data, ), 'lr': lrs[0]},
-            {'params': (model.sigma_data, ), 'lr': lrs[-1]}
+            {'params': (model.rgb_data, ), 'lr': lrs_[0]},
+            {'params': (model.sigma_data, ), 'lr': lrs_[-1]}
         ])
-    optim = init_optim()
-
-    # Initialize list of resolutions
-    reso_multiplier = 1.4
+    optim = init_optim(lrs)
 
     # Main iteration starts here
     for epoch in range(cfg.optim.num_epochs):
@@ -333,15 +330,17 @@ def train_grid(cfg):
                 if g_iter in cfg.grid.shrink_iters:
                     model.shrink()
                 if g_iter in cfg.grid.upsample_iters:
-                    model.upscale(new_resolution=(model.resolution * reso_multiplier).long())
+                    model.upscale(new_resolution=(model.resolution * cfg.grid.reso_multiplier).long())
                 if model.params_changed:
-                    optim.param_groups[0]['params'] = (model.rgb_data, )
-                    optim.param_groups[1]['params'] = (model.sigma_data, )
+                    lrs[0] = 150 * (torch.mean(model.resolution.float()).item() ** 1.75) * (cfg.optim.batch_size / 4000)
+                    lrs[-1] = 51.5 * (torch.mean(model.resolution.float()).item() ** 2.37) * (cfg.optim.batch_size / 4000)
+                    optim = init_optim(lrs)
                     model.params_changed = False
 
                 # Profiling
                 if p is not None:
                     p.step()
+    return model
 
 
 def run_test_step(test_dset: SyntheticNerfDataset,
