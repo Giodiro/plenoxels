@@ -301,10 +301,12 @@ def train_grid(cfg):
                 imgs = imgs.to(device=dev)
                 preds, _, _ = model(rays_o=rays_o, rays_d=rays_d)
                 loss = F.mse_loss(preds, imgs)
-                if occupancy_penalty > 0:
-                    total_loss = loss + occupancy_penalty * model.approx_density_tv_reg()
-                else:
-                    total_loss = loss
+                total_loss = loss
+                if cfg.optim.regularization.type == "TV":
+                    total_loss = total_loss + model.approx_density_tv_reg(
+                            subsampling=cfg.optim.regularization.tv_subsample,
+                            sh_weight=cfg.optim.regularization.tv_sh_weight,
+                            sigma_weight=cfg.optim.regularization.tv_sigma_weight)
                 with torch.autograd.no_grad():
                     total_loss.backward()
                     optim.step()
@@ -313,8 +315,8 @@ def train_grid(cfg):
                 loss = loss.detach().item()
                 psnrs.append(-10.0 * math.log(loss) / math.log(10.0))
                 mses.append(loss)
-                if i % cfg.optim.progress_refresh_rate == 0:
-                    print(f"Epoch {epoch} - iteration {i}: "
+                if (i + 1) % cfg.optim.progress_refresh_rate == 0:
+                    print(f"Epoch {epoch} - iteration {i + 1}: "
                           f"MSE {np.mean(mses):.4f} PSNR {np.mean(psnrs):.4f}")
                     psnrs, mses = [], []
 
@@ -323,7 +325,7 @@ def train_grid(cfg):
                         ts_dset, model, render_every=cfg.optim.render_refresh_rate,
                         log_dir=cfg.logdir, iteration=g_iter,
                         batch_size=cfg.optim.batch_size * 4, device=dev, exp_name=cfg.expname)
-                    print(f"Epoch {epoch} - iteration {i}: Test PSNR: {ts_psnr:.4f}")
+                    print(f"Epoch {epoch} - iteration {i + 1}: Test PSNR: {ts_psnr:.4f}")
 
                 if g_iter in cfg.grid.update_occ_iters:
                     model.update_occupancy()

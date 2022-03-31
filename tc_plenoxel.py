@@ -1,3 +1,4 @@
+import random
 from dataclasses import dataclass
 from typing import Tuple, Callable, Optional, Union
 
@@ -32,6 +33,7 @@ def initialize_grid(resolution: torch.Tensor,
         data_sigma = torch.full((torch.prod(resolution).item(), 1),
                                 ini_sigma, dtype=dtype, device=device)
         #torch.nn.init.uniform_(data_sigma, 1e-4, 1e-1)
+        torch.nn.init.normal_(data_sigma, std=0.1)
         data = (data_rgb, data_sigma)
     else:
         data = torch.full((torch.prod(resolution).item(), total_data_channels), ini_rgb, dtype=dtype, device=device)
@@ -659,7 +661,7 @@ class RegularGrid(AbstractNerF):
             self.occupancy = sigma.detach().clone()#alpha
             print("Updated occupancy. Have %.2f%% entries full" % ((self.occupancy > self.occupancy_thresh).float().mean() * 100))
 
-    def shrink(self):
+    def shrink(self, really_shrink=True):
         if self.occupancy is None:
             return
         with torch.autograd.no_grad():
@@ -671,11 +673,11 @@ class RegularGrid(AbstractNerF):
             new_aabb = torch.empty_like(self.aabb)
             i_coord = ooc_mask.amax(0)
             ij_coord = i_coord.amax(0)
-            xyz_min[1] = torch.max(ij_coord, dim=0).indices
-            xyz_max[1] = len(ij_coord) - torch.max(ij_coord.flip(0), dim=0).indices
+            xyz_min[2] = torch.max(ij_coord, dim=0).indices
+            xyz_max[2] = len(ij_coord) - torch.max(ij_coord.flip(0), dim=0).indices
             ik_coord = i_coord.amax(1)
-            xyz_min[2] = torch.max(ik_coord, dim=0).indices
-            xyz_max[2] = len(ik_coord) - torch.max(ik_coord.flip(0), dim=0).indices
+            xyz_min[1] = torch.max(ik_coord, dim=0).indices
+            xyz_max[1] = len(ik_coord) - torch.max(ik_coord.flip(0), dim=0).indices
             j_coord = ooc_mask.amax(1)
             ji_coord = j_coord.amax(1)
             xyz_min[0] = torch.max(ji_coord, dim=0).indices
@@ -689,16 +691,18 @@ class RegularGrid(AbstractNerF):
                 return
             print(f"Shrinking. New aabb: {new_aabb} - new resolution {new_reso} "
                   f"- XYZ-min {xyz_min} - XYZ-max {xyz_max}")
-            # Now actually shrink the data
-            self.sigma_data = torch.nn.Parameter(
-                self.sigma_data[:, :, xyz_min[0]: xyz_max[0], xyz_min[1]: xyz_max[1], xyz_min[2]: xyz_max[2]], requires_grad=True)
-            self.rgb_data = torch.nn.Parameter(
-                self.rgb_data[:, :, xyz_min[0]: xyz_max[0], xyz_min[1]: xyz_max[1], xyz_min[2]: xyz_max[2]], requires_grad=True)
-            self.occupancy = self.occupancy[
-                 :, :, xyz_min[0]: xyz_max[0], xyz_min[1]: xyz_max[1], xyz_min[2]: xyz_max[2]]
-            self.resolution = new_reso
-            self.aabb = new_aabb
-            self.params_changed = False
+            if really_shrink:
+                # Now actually shrink the data
+                self.sigma_data = torch.nn.Parameter(
+                    self.sigma_data[:, :, xyz_min[2]: xyz_max[2], xyz_min[1]: xyz_max[1], xyz_min[0]: xyz_max[0]], requires_grad=True)
+                self.rgb_data = torch.nn.Parameter(
+                    self.rgb_data[:, :, xyz_min[2]: xyz_max[2], xyz_min[1]: xyz_max[1], xyz_min[0]: xyz_max[0]], requires_grad=True)
+                if self.occupancy is not None:
+                    self.occupancy = self.occupancy[
+                         :, :, xyz_min[2]: xyz_max[2], xyz_min[1]: xyz_max[1], xyz_min[0]: xyz_max[0]]
+                self.resolution = new_reso
+                self.aabb = new_aabb
+                self.params_changed = True
 
     def upscale(self, new_resolution):
         with torch.autograd.no_grad():
@@ -741,7 +745,7 @@ class RegularGrid(AbstractNerF):
             # Intersections in the real world
             intrs_pts = rays_o.unsqueeze(1) + intersections_trunc.unsqueeze(2) * rays_d.unsqueeze(1)  # [batch, n_intrs - 1, 3]
             # noinspection PyTypeChecker
-            intrs_pts_mask = torch.any((self.aabb[0] < intrs_pts) & (intrs_pts < self.aabb[1]), dim=-1)  # [batch, n_intrs-1]
+            intrs_pts_mask = torch.all((self.aabb[0] < intrs_pts) & (intrs_pts < self.aabb[1]), dim=-1)  # [batch, n_intrs-1]
             # Normalize to -1, 1 range
             intrs_pts = normalize_coord(intrs_pts, self.aabb, self.inv_aabb_size)
             if self.occupancy is not None:
@@ -750,9 +754,9 @@ class RegularGrid(AbstractNerF):
                 # Threshold as in instant-ngp (app. C)
                 # density_threshold = self.n_intersections / aabb_diag * 1e-2
                 occ_interp = occ_interp > self.occupancy_thresh
-                print("intr_pts", intrs_pts_mask.float().mean(), "occ_mask", occ_interp.float().mean())
+                #print("intr_pts", intrs_pts_mask.float().mean(), "occ_mask", occ_interp.float().mean())
                 intrs_pts_mask.masked_scatter_(intrs_pts_mask, occ_interp)
-                print("glob_mask", intrs_pts_mask.float().mean())
+                #print("glob_mask", intrs_pts_mask.float().mean())
 
         # 1. Process density: Un-masked sigma (batch, n_intrs-1), and compute.
         sigma_full = torch.zeros(batch, nintrs, dtype=self.sigma_data.dtype, device=self.sigma_data.device)
@@ -784,8 +788,24 @@ class RegularGrid(AbstractNerF):
         depth = depth_map(abs_light, intersections)
         return rgb_full, alpha, depth
 
-    def approx_density_tv_reg(self):
-        return torch.mean(torch.relu(self.sigma_data))
+    def approx_density_tv_reg(self, subsampling: float, sh_weight: float, sigma_weight: float):
+        block_res = (self.resolution / (subsampling**(1/3)) + 1).long()
+        b_len_x, b_len_y, b_len_z = block_res[0], block_res[1], block_res[2]
+        b_start_x = random.randint(0, self.s_res[0] - b_len_x - 1)
+        b_start_y = random.randint(0, self.s_res[1] - b_len_y - 1)
+        b_start_z = random.randint(0, self.s_res[2] - b_len_z - 1)
+        #print(f"TV subsampling: {b_start_x}-{b_len_x}  {b_start_y}-{b_len_y}  {b_start_z}-{b_len_z}")
+        rgb_block = self.rgb_data.narrow(2, b_start_x, b_len_x).narrow(3, b_start_y, b_len_y).narrow(4, b_start_z, b_len_z)
+        tv_x = rgb_block.diff(dim=2).div(256/self.s_res[0]).square().sum()
+        tv_y = rgb_block.diff(dim=3).div(256/self.s_res[1]).square().sum()
+        tv_z = rgb_block.diff(dim=4).div(256/self.s_res[2]).square().sum()
+        tv_rgb = sh_weight * (tv_x + tv_y + tv_z) / (b_len_x * b_len_y * b_len_z * self.rgb_data.shape[1])
+        sigma_block = self.sigma_data.narrow(2, b_start_x, b_len_x).narrow(3, b_start_y, b_len_y).narrow(4, b_start_z, b_len_z)
+        tv_x = sigma_block.diff(dim=2).div(256/self.s_res[0]).square().sum()
+        tv_y = sigma_block.diff(dim=3).div(256/self.s_res[1]).square().sum()
+        tv_z = sigma_block.diff(dim=4).div(256/self.s_res[2]).square().sum()
+        tv_sigma = sigma_weight * (tv_x + tv_y + tv_z) / (b_len_x * b_len_y * b_len_z * self.sigma_data.shape[1])
+        return tv_rgb + tv_sigma
 
     def density_l1_reg(self):
         return torch.mean(torch.abs(self.sigma_data))
