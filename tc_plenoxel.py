@@ -358,12 +358,13 @@ class AbstractNerF(torch.nn.Module):
                  resolution: torch.Tensor,
                  aabb: torch.Tensor,
                  uniform_rays: float,
-                 count_intersections: str):
+                 count_intersections: str,
+                 voxel_mul: float):
         super().__init__()
 
         self.uniform_rays = uniform_rays
         self.count_intersections = count_intersections
-        self.voxel_mul = 2.
+        self.voxel_mul = voxel_mul
         self.n_intersections = None
 
         self.s_res = (resolution[0], resolution[1], resolution[2])
@@ -631,9 +632,10 @@ class RegularGrid(AbstractNerF):
                  ini_sigma: float, ini_rgb: float, sh_encoder,
                  white_bkgd: bool, uniform_rays: float,
                  count_intersections: str, near_far: Tuple[float],
-                 abs_light_thresh: float, occupancy_thresh: float):
+                 abs_light_thresh: float, occupancy_thresh: float,
+                 voxel_mul: float):
         super().__init__(resolution, aabb, count_intersections=count_intersections,
-                         uniform_rays=uniform_rays)
+                         uniform_rays=uniform_rays, voxel_mul=voxel_mul)
 
         grid = initialize_grid(self.resolution, harmonic_degree=deg, device=None,
                                dtype=torch.float32, init_indices=False, separate_grids=True,
@@ -686,7 +688,7 @@ class RegularGrid(AbstractNerF):
             new_aabb[0] = self.aabb[0] + xyz_min * units
             new_aabb[1] = self.aabb[1] - (self.resolution - xyz_max) * units
             new_reso = xyz_max - xyz_min
-            if (new_reso == self.resolution).all():
+            if torch.all(new_reso == self.resolution):  # noqa
                 print("No shrinkage possible.")
                 return
             print(f"Shrinking. New aabb: {new_aabb} - new resolution {new_reso} "
@@ -734,7 +736,7 @@ class RegularGrid(AbstractNerF):
         interp_data = interp_data.squeeze()
         return interp_data
 
-    def forward(self, rays_d: torch.Tensor, rays_o: torch.Tensor):
+    def forward(self, rays_d: torch.Tensor, rays_o: torch.Tensor, calc_sparsity: bool = False):
         with torch.autograd.no_grad():
             intersections = get_intersections(
                 rays_o=rays_o, rays_d=rays_d, aabb=self.aabb, step_size=self.voxel_len,
@@ -742,7 +744,6 @@ class RegularGrid(AbstractNerF):
                 far=self.near_far[1])  # [batch, n_intrs]
             intersections_trunc = intersections[:, :-1]  # [batch, n_intrs - 1]
             batch, nintrs = intersections_trunc.shape
-            # Intersections in the real world
             intrs_pts = rays_o.unsqueeze(1) + intersections_trunc.unsqueeze(2) * rays_d.unsqueeze(1)  # [batch, n_intrs - 1, 3]
             # noinspection PyTypeChecker
             intrs_pts_mask = torch.all((self.aabb[0] < intrs_pts) & (intrs_pts < self.aabb[1]), dim=-1)  # [batch, n_intrs-1]
@@ -754,16 +755,13 @@ class RegularGrid(AbstractNerF):
                 # Threshold as in instant-ngp (app. C)
                 # density_threshold = self.n_intersections / aabb_diag * 1e-2
                 occ_interp = occ_interp > self.occupancy_thresh
-                #print("intr_pts", intrs_pts_mask.float().mean(), "occ_mask", occ_interp.float().mean())
                 intrs_pts_mask.masked_scatter_(intrs_pts_mask, occ_interp)
-                #print("glob_mask", intrs_pts_mask.float().mean())
 
         # 1. Process density: Un-masked sigma (batch, n_intrs-1), and compute.
         sigma_full = torch.zeros(batch, nintrs, dtype=self.sigma_data.dtype, device=self.sigma_data.device)
         sigma_interp = self._interp(
             self.sigma_data, intrs_pts[intrs_pts_mask].view(1, -1, 1, 1, 3))  # [mask_pts]
         sigma_full.masked_scatter_(intrs_pts_mask, sigma_interp)
-        #sigma_full[intrs_pts_mask] = sigma_interp
         alpha, abs_light = sigma2alpha(sigma_full, intersections, rays_d)  # both [batch, n_intrs-1]
 
         # 2. Create mask for rgb computations. This is a subset of the intrs_pts_mask.
@@ -778,15 +776,21 @@ class RegularGrid(AbstractNerF):
         rgb_full = torch.zeros(batch, nintrs, 3, dtype=self.rgb_data.dtype, device=self.rgb_data.device)
         rgb_interp = self._interp(
             self.rgb_data, intrs_pts[rgb_valid_mask].view(1, -1, 1, 1, 3)).T  # [mask_pts, ch]
-        #print("rgb_interp", rgb_interp.shape)
-        #rgb_interp= rgb_interp.T
         rgb_interp = rgb_interp.view(-1, 3, sh_mult.shape[-1])  # [mask_pts, 3, ch/3]
         rgb_interp = torch.sum(sh_mult * rgb_interp, dim=-1)  # [mask_pts, 3]
         rgb_full.masked_scatter_(rgb_valid_mask.unsqueeze(-1), rgb_interp)
-        #rgb_full[rgb_valid_mask] = rgb_interp
         rgb_full = shrgb2rgb(rgb_full, abs_light, self.white_bkgd)
         depth = depth_map(abs_light, intersections)
+
         return rgb_full, alpha, depth
+
+    def _tv_reg(self, data, b_start_x, b_len_x, b_start_y, b_len_y, b_start_z, b_len_z):
+        block = data.narrow(2, b_start_x, b_len_x).narrow(3, b_start_y, b_len_y).narrow(4, b_start_z, b_len_z)
+        tv = (block.diff(dim=2).div(256/self.s_res[0]).square().sum() +
+              block.diff(dim=3).div(256/self.s_res[1]).square().sum() +
+              block.diff(dim=4).div(256/self.s_res[2]).square().sum()) / \
+            (b_len_x * b_len_y * b_len_z * data.shape[1])
+        return tv
 
     def approx_density_tv_reg(self, subsampling: float, sh_weight: float, sigma_weight: float):
         block_res = (self.resolution / (subsampling**(1/3)) + 1).long()
@@ -794,18 +798,16 @@ class RegularGrid(AbstractNerF):
         b_start_x = random.randint(0, self.s_res[0] - b_len_x - 1)
         b_start_y = random.randint(0, self.s_res[1] - b_len_y - 1)
         b_start_z = random.randint(0, self.s_res[2] - b_len_z - 1)
-        #print(f"TV subsampling: {b_start_x}-{b_len_x}  {b_start_y}-{b_len_y}  {b_start_z}-{b_len_z}")
-        rgb_block = self.rgb_data.narrow(2, b_start_x, b_len_x).narrow(3, b_start_y, b_len_y).narrow(4, b_start_z, b_len_z)
-        tv_x = rgb_block.diff(dim=2).div(256/self.s_res[0]).square().sum()
-        tv_y = rgb_block.diff(dim=3).div(256/self.s_res[1]).square().sum()
-        tv_z = rgb_block.diff(dim=4).div(256/self.s_res[2]).square().sum()
-        tv_rgb = sh_weight * (tv_x + tv_y + tv_z) / (b_len_x * b_len_y * b_len_z * self.rgb_data.shape[1])
-        sigma_block = self.sigma_data.narrow(2, b_start_x, b_len_x).narrow(3, b_start_y, b_len_y).narrow(4, b_start_z, b_len_z)
-        tv_x = sigma_block.diff(dim=2).div(256/self.s_res[0]).square().sum()
-        tv_y = sigma_block.diff(dim=3).div(256/self.s_res[1]).square().sum()
-        tv_z = sigma_block.diff(dim=4).div(256/self.s_res[2]).square().sum()
-        tv_sigma = sigma_weight * (tv_x + tv_y + tv_z) / (b_len_x * b_len_y * b_len_z * self.sigma_data.shape[1])
+        tv_rgb = sh_weight * self._tv_reg(
+            self.rgb_data, b_start_x, b_len_x, b_start_y, b_len_y, b_start_z, b_len_z)
+        tv_sigma = sigma_weight * self._tv_reg(
+            self.sigma_data, b_start_x, b_len_x, b_start_y, b_len_y, b_start_z, b_len_z)
         return tv_rgb + tv_sigma
 
     def density_l1_reg(self):
         return torch.mean(torch.abs(self.sigma_data))
+
+    # noinspection PyMethodMayBeStatic
+    def sparsity_reg(self, alpha):
+        # See eq. 4 in plenoxel paper. Not sure it's correct to use alpha
+        return torch.log(1 + 2 * alpha.square()).sum()

@@ -255,10 +255,7 @@ def train_grid(cfg):
     dev = "cuda:0" if torch.cuda.is_available() else "cpu"
 
     tr_dset, tr_loader, ts_dset = init_datasets(cfg, dev)
-    lrs = init_plenoxel_lrs(cfg, h_degree, dev)
     sh_enc = init_sh_encoder(cfg, h_degree)
-
-    occupancy_penalty = cfg.optim.occupancy_penalty / (len(tr_dset) // cfg.optim.batch_size)
 
     # Initialize model
     model = tc_plenoxel.RegularGrid(
@@ -273,14 +270,25 @@ def train_grid(cfg):
         count_intersections=cfg.irreg_grid.count_intersections,
         near_far=tuple(tr_dset.near_far),
         abs_light_thresh=cfg.grid.abs_light_thresh,
-        occupancy_thresh=cfg.grid.occupancy_thresh
+        occupancy_thresh=cfg.grid.occupancy_thresh,
+        voxel_mul=cfg.irreg_grid.voxel_mul
     ).to(dev)
-    def init_optim(lrs_):
-        return torch.optim.SGD(params=[
-            {'params': (model.rgb_data, ), 'lr': lrs_[0]},
-            {'params': (model.sigma_data, ), 'lr': lrs_[-1]}
-        ])
-    optim = init_optim(lrs)
+
+    def init_optim(model_):
+        if cfg.optim.optimizer.lower() == "sgd":
+            lr_rgb = 150 * (model_.resolution.mean().item() ** 1.75) * (cfg.optim.batch_size / 4000)
+            lr_sigma = 51.5 * (model_.resolution.mean().item() ** 2.37) * (cfg.optim.batch_size / 4000)
+            return torch.optim.SGD(params=[
+                {'params': (model.rgb_data, ), 'lr': lr_rgb},
+                {'params': (model.sigma_data, ), 'lr': lr_sigma}
+            ])
+        elif cfg.optim.optimizer.lower() == "rmsprop":
+            return torch.optim.RMSprop(params=[
+                {'params': (model.rgb_data, ), 'lr': 0.1},
+                {'params': (model.sigma_data, ), 'lr': 1.0}
+            ])
+    optim = init_optim(model)
+    regs = set(cfg.optim.regularization.types)
 
     # Main iteration starts here
     for epoch in range(cfg.optim.num_epochs):
@@ -299,14 +307,16 @@ def train_grid(cfg):
                 rays_o = rays[:, 0].contiguous()
                 rays_d = rays[:, 1].contiguous()
                 imgs = imgs.to(device=dev)
-                preds, _, _ = model(rays_o=rays_o, rays_d=rays_d)
+                preds, alpha, _ = model(rays_o=rays_o, rays_d=rays_d)
                 loss = F.mse_loss(preds, imgs)
                 total_loss = loss
-                if cfg.optim.regularization.type == "TV":
+                if "TV" in regs:
                     total_loss = total_loss + model.approx_density_tv_reg(
                             subsampling=cfg.optim.regularization.tv_subsample,
                             sh_weight=cfg.optim.regularization.tv_sh_weight,
                             sigma_weight=cfg.optim.regularization.tv_sigma_weight)
+                if "sparsity" in regs:
+                    total_loss = total_loss + cfg.optim.regularization.sparsity_weight * model.sparsity_reg(alpha)
                 with torch.autograd.no_grad():
                     total_loss.backward()
                     optim.step()
@@ -334,9 +344,7 @@ def train_grid(cfg):
                 if g_iter in cfg.grid.upsample_iters:
                     model.upscale(new_resolution=(model.resolution * cfg.grid.reso_multiplier).long())
                 if model.params_changed:
-                    lrs[0] = 150 * (torch.mean(model.resolution.float()).item() ** 1.75) * (cfg.optim.batch_size / 4000)
-                    lrs[-1] = 51.5 * (torch.mean(model.resolution.float()).item() ** 2.37) * (cfg.optim.batch_size / 4000)
-                    optim = init_optim(lrs)
+                    optim = init_optim(model)
                     model.params_changed = False
 
                 # Profiling

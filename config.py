@@ -22,11 +22,14 @@ _C.optim.render_refresh_rate = 20
 _C.optim.lr_sigma = None
 _C.optim.lr_rgb = None
 
+_C.optim.optimizer = "sgd"
+
 _C.optim.regularization = CN()
-_C.optim.regularization.type = "TV"
+_C.optim.regularization.types = ["TV"]
 _C.optim.regularization.tv_sh_weight = 0.001
 _C.optim.regularization.tv_sigma_weight = 0.00001
 _C.optim.regularization.tv_subsample = 100
+_C.optim.regularization.sparsity_weight = 0.
 
 _C.optim.adam = CN()
 _C.optim.adam.lr = 0.5
@@ -46,11 +49,12 @@ _C.grid.shrink_iters = [1000, 2000, 3000, 4000, 8000]
 _C.grid.upsample_iters = [3000, 8000, 36000]
 _C.grid.abs_light_thresh = 0.0001
 _C.grid.occupancy_thresh = 1
-_C.grid.reso_multiplier = 1.4
+_C.grid.reso_multiplier = 1.5
 
 _C.irreg_grid = CN()
 _C.irreg_grid.prune_threshold = 0.001
 _C.irreg_grid.count_intersections = "tensorrf"
+_C.irreg_grid.voxel_mul = 2.0
 
 _C.hash_grid = CN()
 _C.hash_grid.log2_hashmap_size = 19
