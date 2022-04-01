@@ -29,12 +29,12 @@ def initialize_grid(resolution: torch.Tensor,
     if separate_grids:
         data_rgb = torch.full((torch.prod(resolution).item(), total_data_channels - 1),
                               ini_rgb, dtype=dtype, device=device)
-        torch.nn.init.normal_(data_rgb, std=0.1)
+        # torch.nn.init.normal_(data_rgb, std=0.1)
         #torch.nn.init.uniform_(data_rgb, -1e-4, 1e-4)
         data_sigma = torch.full((torch.prod(resolution).item(), 1),
                                 ini_sigma, dtype=dtype, device=device)
         #torch.nn.init.uniform_(data_sigma, 1e-4, 1e-1)
-        torch.nn.init.normal_(data_sigma, std=0.1)
+        # torch.nn.init.normal_(data_sigma, std=0.1)
         data = (data_rgb, data_sigma)
     else:
         data = torch.full((torch.prod(resolution).item(), total_data_channels), ini_rgb, dtype=dtype, device=device)
@@ -287,7 +287,7 @@ def sigma2alpha(sigma: torch.Tensor, intersections: torch.Tensor, rays_d: torch.
     # Convert ray-relative distance to absolute distance (shouldn't matter if rays_d is normalized)
     dists = torch.diff(intersections, n=1, dim=1) \
                  .mul(torch.linalg.norm(rays_d, ord=2, dim=-1, keepdim=True))  # dists: [batch, n_intrs-1]
-    alpha: torch.Tensor = 1 - torch.exp(-torch.relu(sigma) * dists)            # alpha: [batch, n_intrs-1]
+    alpha: torch.Tensor = 1 - torch.exp(-sigma * dists)            # alpha: [batch, n_intrs-1]
 
     # the absolute amount of light that gets stuck in each voxel
     # This quantity can be used to threshold the intersections which must be processed (only if
@@ -355,6 +355,11 @@ def volumetric_rendering(rgb: torch.Tensor,            # [batch, n_intersections
     return rgb_map, alpha, depth
 
 
+@torch.jit.script
+def shifted_softplus(data: torch.Tensor, offset: torch.Tensor) -> torch.Tensor:
+    return F.softplus(data + offset)
+
+
 # noinspection PyAttributeOutsideInit
 class AbstractNerF(torch.nn.Module):
     def __init__(self,
@@ -378,10 +383,6 @@ class AbstractNerF(torch.nn.Module):
         self.register_buffer("inv_aabb_size", None)
         self.register_buffer("voxel_len", None)
         self.update_step_sizes()
-
-    def normalize_coord(self, intersections):
-        """Returns intersection coordinates between -1 and +1"""
-        return (intersections - self.aabb[0]) * self.inv_aabb_size - 1
 
     @property
     def resolution(self):
@@ -656,14 +657,16 @@ class RegularGrid(AbstractNerF):
         self.occupancy_thresh = occupancy_thresh
         self.near_far = near_far
         self.params_changed = False
+        self.softplus_offset_hp = 1e-6
 
     def update_occupancy(self):
         with torch.autograd.no_grad():
             sigma = self.sigma_data  # 1, 1, res, res, res
+            act_sigma = shifted_softplus(sigma, self.shifted_softplus_offset)
             #dists = torch.linalg.norm(self.aabb)
             #alpha: torch.Tensor = 1 - torch.exp(-torch.relu(sigma) * dists)
             #alpha = F.max_pool3d(alpha, kernel_size=3, padding=1, stride=1)
-            self.occupancy = sigma.detach().clone()#alpha
+            self.occupancy = act_sigma.detach().clone()#alpha
             print("Updated occupancy. Have %.2f%% entries full" % ((self.occupancy > self.occupancy_thresh).float().mean() * 100))
 
     def shrink(self, really_shrink=True):
@@ -733,11 +736,16 @@ class RegularGrid(AbstractNerF):
     # noinspection PyMethodMayBeStatic
     def _interp(self, grid, pts):
         # grid [1, ch, res, res, res]
+        # pts  [1, n, 1, 1, 3]
         pts = pts.to(dtype=grid.dtype)
         interp_data = F.grid_sample(
-            grid, pts, mode='bilinear', align_corners=True)  # [1, ch, mask_pts, 1, 1]
-        interp_data = interp_data.squeeze()
+            grid, pts, mode='bilinear', align_corners=True)  # [1, ch, n, 1, 1]
+        interp_data = interp_data.squeeze()  # [ch, n] or [n] if ch is 1
         return interp_data
+
+    @property
+    def shifted_softplus_offset(self):
+        return torch.log((1 - self.softplus_offset_hp)**(-1/self.voxel_len) - 1)
 
     def forward(self, rays_d: torch.Tensor, rays_o: torch.Tensor, calc_sparsity: bool = False):
         with torch.autograd.no_grad():
@@ -765,11 +773,12 @@ class RegularGrid(AbstractNerF):
         sigma_interp = self._interp(
             self.sigma_data, intrs_pts[intrs_pts_mask].view(1, -1, 1, 1, 3))  # [mask_pts]
         sigma_full.masked_scatter_(intrs_pts_mask, sigma_interp)
+        # Post-activation (either shifted softplus or relu)
+        sigma_full = shifted_softplus(sigma_full, self.shifted_softplus_offset)
         alpha, abs_light = sigma2alpha(sigma_full, intersections, rays_d)  # both [batch, n_intrs-1]
 
         # 2. Create mask for rgb computations. This is a subset of the intrs_pts_mask.
         rgb_valid_mask = abs_light > self.abs_light_thresh  # [batch, n_intrs-1]
-        #print("valid intersections: %.2f%% - valid rgb %.2f%%" % (intrs_pts_mask.float().mean() * 100, rgb_valid_mask.float().mean() * 100))
 
         # 3. Create SH coefficients and mask them
         sh_mult = self.sh_encoder(rays_d).unsqueeze(1).expand(batch, nintrs, -1)  # [batch, nintrs, ch/3]

@@ -60,6 +60,15 @@ def init_datasets(cfg, dev):
     return tr_dset, tr_loader, ts_dset
 
 
+def update_dset_resolution(tr_dset: SyntheticNerfDataset, ts_dset, new_resolution, cfg, dev):
+    new_tr_dset = tr_dset.update_resolution(new_resolution)
+    new_ts_dset = ts_dset.update_resolution(new_resolution)
+    tr_loader = DataLoader(tr_dset, batch_size=cfg.optim.batch_size, shuffle=True, num_workers=3,
+                           prefetch_factor=10,
+                           pin_memory=dev.startswith("cuda"))
+    return new_tr_dset, tr_loader, new_ts_dset
+
+
 def init_profiler(cfg, dev) -> torch.profiler.profile:
     profiling_handler = functools.partial(trace_handler, exp_name=cfg.expname,
                                           dev="cpu" if dev == "cpu" else "cuda")
@@ -342,7 +351,13 @@ def train_grid(cfg):
                 if g_iter in cfg.grid.shrink_iters:
                     model.shrink()
                 if g_iter in cfg.grid.upsample_iters:
-                    model.upscale(new_resolution=(model.resolution * cfg.grid.reso_multiplier).long())
+                    new_model_reso = (model.resolution * cfg.grid.reso_multiplier).long()
+                    new_implied_reso = int(resolution * cfg.grid.reso_multiplier)
+                    model.upscale(new_resolution=new_model_reso)
+                    tr_dset, tr_loader, ts_dset = update_dset_resolution(
+                        tr_dset, ts_dset, new_implied_reso, cfg, dev)
+                    resolution = new_implied_reso
+
                 if model.params_changed:
                     optim = init_optim(model)
                     model.params_changed = False

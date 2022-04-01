@@ -1,5 +1,6 @@
 import json
 import os
+from typing import Tuple
 
 import numpy as np
 import torch
@@ -35,11 +36,12 @@ def get_rays(H: int, W: int, focal, c2w) -> torch.Tensor:
 
 
 class SyntheticNerfDataset(TensorDataset):
-    def __init__(self, datadir, split='train', downsample=1.0, resolution=512, max_frames=None):
+    def __init__(self, datadir, split='train', downsample=1.0, resolution=512, max_frames=None, init_data=None):
         self.datadir = datadir
         self.split = split
-        self.img_w: int = int(800 // downsample)
-        self.img_h: int = int(800 // downsample)
+        self.downsample = downsample
+        self.img_w: int = int(800 // self.downsample)
+        self.img_h: int = int(800 // self.downsample)
         self.resolution = resolution
         self.max_frames = max_frames
 
@@ -48,24 +50,20 @@ class SyntheticNerfDataset(TensorDataset):
 
         self.scene_bbox = torch.tensor([[-1.3, -1.3, -1.3], [1.3, 1.3, 1.3]])
         self.pil2tensor = torchvision.transforms.ToTensor()
+        self.tensor2pil = torchvision.transforms.ToPILImage()
 
-        self.imgs, self.poses, self.rays = None, None, None
-        self.read_meta()
+        if init_data is not None:
+            self.orig_imgs = init_data['orig_imgs']
+            self.poses = init_data['poses']
+            self.focal = init_data['focal']
+        else:
+            self.orig_imgs, self.poses, self.focal = self.load_from_disk()
+
+        self.imgs, self.rays = self.init_rays()
 
         super().__init__(self.rays, self.imgs)
 
-    def load_image(self, img_path: str) -> torch.Tensor:
-        img = Image.open(img_path)
-        # Low-pass filter
-        if self.resolution * 2 < self.img_w:
-            img = img.resize((self.resolution * 2, self.resolution * 2), Image.LANCZOS)
-        img = img.resize((self.img_w, self.img_h), Image.LANCZOS)
-        img = self.pil2tensor(img)       # [4, h, w] (RGBA image)
-        img = img.permute(1, 2, 0)       # [h, w, 4]
-        img = img[..., :3] * img[..., 3:] + (1.0 - img[..., 3:])  # Blend A into RGB
-        return img
-
-    def read_meta(self):
+    def load_from_disk(self):
         with open(os.path.join(self.datadir, f"transforms_{self.split}.json"), 'r') as f:
             meta = json.load(f)
             poses, imgs = [], []
@@ -78,22 +76,49 @@ class SyntheticNerfDataset(TensorDataset):
                 # Load image
                 img_path = os.path.join(
                     self.datadir, self.split, f"{os.path.basename(frame['file_path'])}.png")
-                imgs.append(self.load_image(img_path))
+                img = Image.open(img_path)
+                img = img.resize((self.img_w, self.img_h), Image.LANCZOS)
+                img = self.pil2tensor(img)
+                img = img.permute(1, 2, 0)       # [h, w, 4]
+                img = img[..., :3] * img[..., 3:] + (1.0 - img[..., 3:])  # Blend A into RGB
+                imgs.append(img)
+            focal = 0.5 * self.img_w / np.tan(0.5 * meta['camera_angle_x'])
+        orig_imgs = torch.stack(imgs, 0)  # [N, H, W, 3]
+        poses = torch.stack(poses, 0)  # [N, ????]
+        return orig_imgs, poses, focal
 
-        self.imgs = torch.stack(imgs, 0) \
-                         .reshape(num_frames * self.img_w * self.img_h, 3)  # [N*H*W, 3]
-        self.poses = torch.stack(poses, 0)  # [N, ????]
+    def low_pass(self, imgs):
+        out = torch.empty_like(imgs)
+        for i in range(imgs.shape[0]):
+            if self.resolution * 2 < self.img_w:
+                img = self.tensor2pil(imgs[i].permute(2, 0, 1))  # t2p expects C, H, W image
+                img = img.resize((self.resolution * 2, self.resolution * 2), Image.LANCZOS)
+                img = img.resize((self.img_w, self.img_h), Image.LANCZOS)
+            out[i] = self.pil2tensor(img).permute(1, 2, 0)  # [H, W, C]]
+        return out
+
+    def init_rays(self):
+        assert self.orig_imgs is not None and self.poses is not None and self.focal is not None
+        # Low-pass the images at required resolution
+        num_frames = self.orig_imgs.shape[0]
+        imgs = self.low_pass(self.orig_imgs)
+        imgs = imgs.view(-1, 3)  # [N*H*W, 3]
 
         # Rays
-        focal = 0.5 * self.img_w / np.tan(0.5 * meta['camera_angle_x'])
         rays = torch.stack(
-            [get_rays(self.img_h, self.img_w, focal, p)
+            [get_rays(self.img_h, self.img_w, self.focal, p)
              for p in self.poses[:, :3, :4]], 0)  # [N, ro+rd, H, W, 3]
         # Merge N, H, W dimensions
         rays = rays.permute(0, 2, 3, 1, 4).reshape(-1, 2, 3)  # [N*H*W, ro+rd, 3]
-        self.rays = rays.to(dtype=torch.float32).contiguous()
+        rays = rays.to(dtype=torch.float32).contiguous()
 
         if self.split == "test":
-            self.imgs = self.imgs.view(num_frames, self.img_w * self.img_h, 3)  # [N, H*W, 3]
-            self.rays = self.rays.view(num_frames, self.img_w * self.img_h, 2, 3)  # [N, H*W, 2, 3]
+            imgs = imgs.view(num_frames, self.img_w * self.img_h, 3)  # [N, H*W, 3]
+            rays = rays.view(num_frames, self.img_w * self.img_h, 2, 3)  # [N, H*W, 2, 3]
+        return imgs, rays
 
+    def update_resolution(self, new_reso):
+        init_data = {"orig_imgs": self.orig_imgs, "poses": self.poses, "focal": self.focal}
+        return SyntheticNerfDataset(datadir=self.datadir, split=self.split,
+                                    downsample=self.downsample, resolution=new_reso,
+                                    max_frames=self.max_frames, init_data=init_data)
