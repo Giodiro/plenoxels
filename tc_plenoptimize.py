@@ -276,8 +276,8 @@ def train_grid(cfg):
 
     def init_optim(model_):
         if cfg.optim.optimizer.lower() == "sgd":
-            lr_rgb = 150 * (model_.resolution.mean().item() ** 1.75) * (cfg.optim.batch_size / 4000)
-            lr_sigma = 51.5 * (model_.resolution.mean().item() ** 2.37) * (cfg.optim.batch_size / 4000)
+            lr_rgb = 150 * (model_.resolution.float().mean().item() ** 1.75) * (cfg.optim.batch_size / 4000)
+            lr_sigma = 51.5 * (model_.resolution.float().mean().item() ** 2.37) * (cfg.optim.batch_size / 4000)
             return torch.optim.SGD(params=[
                 {'params': (model.rgb_data, ), 'lr': lr_rgb},
                 {'params': (model.sigma_data, ), 'lr': lr_sigma}

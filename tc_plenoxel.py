@@ -29,6 +29,7 @@ def initialize_grid(resolution: torch.Tensor,
     if separate_grids:
         data_rgb = torch.full((torch.prod(resolution).item(), total_data_channels - 1),
                               ini_rgb, dtype=dtype, device=device)
+        torch.nn.init.normal_(data_rgb, std=0.1)
         #torch.nn.init.uniform_(data_rgb, -1e-4, 1e-4)
         data_sigma = torch.full((torch.prod(resolution).item(), 1),
                                 ini_sigma, dtype=dtype, device=device)
@@ -118,8 +119,8 @@ def get_intersections(rays_o: torch.Tensor,
                       far: float) -> torch.Tensor:
     with torch.autograd.no_grad():
         dev, dt = rays_o.device, rays_o.dtype
-        offsets_pos = (aabb[1] - rays_o) / rays_d  # [batch, 3]
-        offsets_neg = (aabb[0] - rays_o) / rays_d  # [batch, 3]
+        offsets_pos = (aabb[1].flip(0) - rays_o) / rays_d  # [batch, 3]
+        offsets_neg = (aabb[0].flip(0) - rays_o) / rays_d  # [batch, 3]
         offsets_in = torch.minimum(offsets_pos, offsets_neg)  # [batch, 3]
         # offsets_out = torch.maximum(offsets_pos, offsets_neg)  # [batch, 3]
         start = torch.amax(offsets_in, dim=-1, keepdim=True)  # [batch, 1]
@@ -163,7 +164,8 @@ def normalize_coord(intersections: torch.Tensor,
                     aabb: torch.Tensor,
                     inverse_aabb_size: torch.Tensor) -> torch.Tensor:
     """Returns intersection coordinates between -1 and +1"""
-    return (intersections - aabb[0]) * inverse_aabb_size - 1
+    out = (intersections - aabb[0].flip(0)) * inverse_aabb_size.flip(0) - 1
+    return out
 
 
 @torch.jit.script
@@ -300,6 +302,7 @@ def sigma2alpha(sigma: torch.Tensor, intersections: torch.Tensor, rays_d: torch.
 def shrgb2rgb(sh_rgb: torch.Tensor, abs_light: torch.Tensor, white_bkgd: bool) -> torch.Tensor:
     # Accumulated color over the samples, ignoring background
     rgb = torch.sigmoid(sh_rgb)  # [batch, n_intrs-1, 3]
+    #rgb = torch.relu(sh_rgb)
     rgb_map: torch.Tensor = (abs_light.unsqueeze(-1) * rgb).sum(dim=-2)  # [batch, 3]
 
     if white_bkgd:
@@ -671,8 +674,6 @@ class RegularGrid(AbstractNerF):
             ooc_mask = ooc_mask.squeeze()
             dev = ooc_mask.device
             xyz_min, xyz_max = torch.empty(3, dtype=torch.long, device=dev), torch.empty(3, dtype=torch.long, device=dev)
-            units = self.aabb_size / (self.resolution - 1)
-            new_aabb = torch.empty_like(self.aabb)
             i_coord = ooc_mask.amax(0)
             ij_coord = i_coord.amax(0)
             xyz_min[2] = torch.max(ij_coord, dim=0).indices
@@ -685,23 +686,25 @@ class RegularGrid(AbstractNerF):
             xyz_min[0] = torch.max(ji_coord, dim=0).indices
             xyz_max[0] = len(ji_coord) - torch.max(ji_coord.flip(0), dim=0).indices
 
+            units = self.aabb_size / self.resolution
+            new_aabb = torch.empty_like(self.aabb)
+
             new_aabb[0] = self.aabb[0] + xyz_min * units
             new_aabb[1] = self.aabb[1] - (self.resolution - xyz_max) * units
+
             new_reso = xyz_max - xyz_min
             if torch.all(new_reso == self.resolution):  # noqa
                 print("No shrinkage possible.")
                 return
-            print(f"Shrinking. New aabb: {new_aabb} - new resolution {new_reso} "
-                  f"- XYZ-min {xyz_min} - XYZ-max {xyz_max}")
             if really_shrink:
                 # Now actually shrink the data
                 self.sigma_data = torch.nn.Parameter(
-                    self.sigma_data[:, :, xyz_min[2]: xyz_max[2], xyz_min[1]: xyz_max[1], xyz_min[0]: xyz_max[0]], requires_grad=True)
+                    self.sigma_data[:, :, xyz_min[0]: xyz_max[0], xyz_min[1]: xyz_max[1], xyz_min[2]: xyz_max[2]], requires_grad=True)
                 self.rgb_data = torch.nn.Parameter(
-                    self.rgb_data[:, :, xyz_min[2]: xyz_max[2], xyz_min[1]: xyz_max[1], xyz_min[0]: xyz_max[0]], requires_grad=True)
+                    self.rgb_data[:, :, xyz_min[0]: xyz_max[0], xyz_min[1]: xyz_max[1], xyz_min[2]: xyz_max[2]], requires_grad=True)
                 if self.occupancy is not None:
                     self.occupancy = self.occupancy[
-                         :, :, xyz_min[2]: xyz_max[2], xyz_min[1]: xyz_max[1], xyz_min[0]: xyz_max[0]]
+                         :, :, xyz_min[0]: xyz_max[0], xyz_min[1]: xyz_max[1], xyz_min[2]: xyz_max[2]]
                 self.resolution = new_reso
                 self.aabb = new_aabb
                 self.params_changed = True
@@ -795,13 +798,19 @@ class RegularGrid(AbstractNerF):
     def approx_density_tv_reg(self, subsampling: float, sh_weight: float, sigma_weight: float):
         block_res = (self.resolution / (subsampling**(1/3)) + 1).long()
         b_len_x, b_len_y, b_len_z = block_res[0], block_res[1], block_res[2]
-        b_start_x = random.randint(0, self.s_res[0] - b_len_x - 1)
-        b_start_y = random.randint(0, self.s_res[1] - b_len_y - 1)
-        b_start_z = random.randint(0, self.s_res[2] - b_len_z - 1)
-        tv_rgb = sh_weight * self._tv_reg(
-            self.rgb_data, b_start_x, b_len_x, b_start_y, b_len_y, b_start_z, b_len_z)
-        tv_sigma = sigma_weight * self._tv_reg(
-            self.sigma_data, b_start_x, b_len_x, b_start_y, b_len_y, b_start_z, b_len_z)
+        res = self.rgb_data.shape[2:]
+        b_start_x = random.randint(0, res[0] - b_len_x - 2)
+        b_start_y = random.randint(0, res[1] - b_len_y - 2)
+        b_start_z = random.randint(0, res[2] - b_len_z - 2)
+        try:
+            tv_rgb = sh_weight * self._tv_reg(
+                self.rgb_data, b_start_x, b_len_x, b_start_y, b_len_y, b_start_z, b_len_z)
+            tv_sigma = sigma_weight * self._tv_reg(
+                self.sigma_data, b_start_x, b_len_x, b_start_y, b_len_y, b_start_z, b_len_z)
+        except:
+            print(self.rgb_data.shape)
+            print(self.resolution, self.s_res)
+            raise
         return tv_rgb + tv_sigma
 
     def density_l1_reg(self):

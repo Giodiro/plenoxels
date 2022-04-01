@@ -22,7 +22,7 @@ _C.optim.render_refresh_rate = 20
 _C.optim.lr_sigma = None
 _C.optim.lr_rgb = None
 
-_C.optim.optimizer = "sgd"
+_C.optim.optimizer = "rmsprop"
 
 _C.optim.regularization = CN()
 _C.optim.regularization.types = ["TV"]
@@ -45,7 +45,7 @@ _C.grid = CN()
 _C.grid.ini_rgb = 0.0
 _C.grid.ini_sigma = 0.1
 _C.grid.update_occ_iters = [500, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000]
-_C.grid.shrink_iters = [1000, 2000, 3000, 4000, 8000]
+_C.grid.shrink_iters = [1000, 2000, 3000, 4000, 5000, 8000, 9000]
 _C.grid.upsample_iters = [3000, 8000, 36000]
 _C.grid.abs_light_thresh = 0.0001
 _C.grid.occupancy_thresh = 1
