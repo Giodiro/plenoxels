@@ -119,8 +119,10 @@ def get_intersections(rays_o: torch.Tensor,
                       far: float) -> torch.Tensor:
     with torch.autograd.no_grad():
         dev, dt = rays_o.device, rays_o.dtype
-        offsets_pos = (aabb[1].flip(0) - rays_o) / rays_d  # [batch, 3]
-        offsets_neg = (aabb[0].flip(0) - rays_o) / rays_d  # [batch, 3]
+        #offsets_pos = (aabb[1].flip(0) - rays_o) / rays_d  # [batch, 3]
+        #offsets_neg = (aabb[0].flip(0) - rays_o) / rays_d  # [batch, 3]
+        offsets_pos = (aabb[1] - rays_o) / rays_d  # [batch, 3]
+        offsets_neg = (aabb[0] - rays_o) / rays_d  # [batch, 3]
         offsets_in = torch.minimum(offsets_pos, offsets_neg)  # [batch, 3]
         # offsets_out = torch.maximum(offsets_pos, offsets_neg)  # [batch, 3]
         start = torch.amax(offsets_in, dim=-1, keepdim=True)  # [batch, 1]
@@ -164,7 +166,8 @@ def normalize_coord(intersections: torch.Tensor,
                     aabb: torch.Tensor,
                     inverse_aabb_size: torch.Tensor) -> torch.Tensor:
     """Returns intersection coordinates between -1 and +1"""
-    out = (intersections - aabb[0].flip(0)) * inverse_aabb_size.flip(0) - 1
+    #out = (intersections - aabb[0].flip(0)) * inverse_aabb_size.flip(0) - 1
+    out = (intersections - aabb[0]) * inverse_aabb_size - 1
     return out
 
 
@@ -662,7 +665,8 @@ class RegularGrid(AbstractNerF):
     def update_occupancy(self):
         with torch.autograd.no_grad():
             sigma = self.sigma_data  # 1, 1, res, res, res
-            act_sigma = shifted_softplus(sigma, self.shifted_softplus_offset)
+            #act_sigma = shifted_softplus(sigma, self.shifted_softplus_offset)
+            act_sigma = sigma
             #dists = torch.linalg.norm(self.aabb)
             #alpha: torch.Tensor = 1 - torch.exp(-torch.relu(sigma) * dists)
             #alpha = F.max_pool3d(alpha, kernel_size=3, padding=1, stride=1)
@@ -759,7 +763,7 @@ class RegularGrid(AbstractNerF):
             # noinspection PyTypeChecker
             intrs_pts_mask = torch.all((self.aabb[0] < intrs_pts) & (intrs_pts < self.aabb[1]), dim=-1)  # [batch, n_intrs-1]
             # Normalize to -1, 1 range
-            intrs_pts = normalize_coord(intrs_pts, self.aabb, self.inv_aabb_size)
+            intrs_pts = normalize_coord(intrs_pts, self.aabb, self.inv_aabb_size).flip(-1)
             if self.occupancy is not None:
                 occ_interp = self._interp(self.occupancy, intrs_pts[intrs_pts_mask].view(1, -1, 1, 1, 3))
                 # aabb_diag = torch.linalg.norm(self.aabb_size)
@@ -774,7 +778,9 @@ class RegularGrid(AbstractNerF):
             self.sigma_data, intrs_pts[intrs_pts_mask].view(1, -1, 1, 1, 3))  # [mask_pts]
         sigma_full.masked_scatter_(intrs_pts_mask, sigma_interp)
         # Post-activation (either shifted softplus or relu)
-        sigma_full = shifted_softplus(sigma_full, self.shifted_softplus_offset)
+        #sigma_full = shifted_softplus(sigma_full, self.shifted_softplus_offset)
+        sigma_full = F.relu(sigma_full)
+        #print("sigma_full", sigma_full[0])
         alpha, abs_light = sigma2alpha(sigma_full, intersections, rays_d)  # both [batch, n_intrs-1]
 
         # 2. Create mask for rgb computations. This is a subset of the intrs_pts_mask.

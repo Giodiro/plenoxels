@@ -296,6 +296,11 @@ def train_grid(cfg):
                 {'params': (model.rgb_data, ), 'lr': 0.1},
                 {'params': (model.sigma_data, ), 'lr': 1.0}
             ])
+        elif cfg.optim.optimizer.lower() == "adam":
+            return torch.optim.Adam(params=[
+                {'params': (model.rgb_data, ), 'lr': 0.1},
+                {'params': (model.sigma_data, ), 'lr': 1.0}
+            ])
     optim = init_optim(model)
     regs = set(cfg.optim.regularization.types)
 

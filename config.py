@@ -22,14 +22,14 @@ _C.optim.render_refresh_rate = 20
 _C.optim.lr_sigma = None
 _C.optim.lr_rgb = None
 
-_C.optim.optimizer = "rmsprop"
+_C.optim.optimizer = "adam"
 
 _C.optim.regularization = CN()
 _C.optim.regularization.types = ["TV"]
 _C.optim.regularization.tv_sh_weight = 0.001
 _C.optim.regularization.tv_sigma_weight = 0.00001
 _C.optim.regularization.tv_subsample = 100
-_C.optim.regularization.sparsity_weight = 0.
+_C.optim.regularization.sparsity_weight = 0.0001
 
 _C.optim.adam = CN()
 _C.optim.adam.lr = 0.5
@@ -43,12 +43,12 @@ _C.data.max_ts_frames = None
 
 _C.grid = CN()
 _C.grid.ini_rgb = 0.0
-_C.grid.ini_sigma = 0.0
+_C.grid.ini_sigma = 0.1
 _C.grid.update_occ_iters = [500, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000]
-_C.grid.shrink_iters = [4000, 5000, 8000, 9000]
+_C.grid.shrink_iters = [2000, 8000]
 _C.grid.upsample_iters = [2000, 6000, 36000]
 _C.grid.abs_light_thresh = 0.0001
-_C.grid.occupancy_thresh = 1e-3
+_C.grid.occupancy_thresh = 0.01
 _C.grid.reso_multiplier = 1.5
 
 _C.irreg_grid = CN()
