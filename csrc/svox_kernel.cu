@@ -169,7 +169,7 @@ QueryResult query_vertical(TreeSpec& tree, torch::Tensor indices) {
                        .layout(tree.child.layout())
                        .device(tree.child.device());
     torch::Tensor node_ids = torch::empty({Q}, node_ids_options);
-    AT_DISPATCH_FLOATING_TYPES(indices.type(), __FUNCTION__, [&] {
+    AT_DISPATCH_FLOATING_TYPES(indices.scalar_type(), __FUNCTION__, [&] {
         device::query_single_kernel<scalar_t><<<blocks, CUDA_N_THREADS>>>(
                 tree,
                 indices.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
@@ -186,7 +186,7 @@ void assign_vertical(TreeSpec& tree, torch::Tensor indices, torch::Tensor values
     check_indices(values);
     DEVICE_GUARD(indices);
     const int blocks = CUDA_N_BLOCKS_NEEDED(indices.size(0), CUDA_N_THREADS);
-    AT_DISPATCH_FLOATING_TYPES(indices.type(), __FUNCTION__, [&] {
+    AT_DISPATCH_FLOATING_TYPES(indices.scalar_type(), __FUNCTION__, [&] {
         device::assign_single_kernel<scalar_t><<<blocks, CUDA_N_THREADS>>>(
                 tree,
                 indices.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
@@ -207,7 +207,7 @@ torch::Tensor query_vertical_backward(
 
     torch::Tensor grad_data = torch::zeros({M, N, N, N, K}, grad_output.options());
 
-    AT_DISPATCH_FLOATING_TYPES(indices.type(), __FUNCTION__, [&] {
+    AT_DISPATCH_FLOATING_TYPES(indices.scalar_type(), __FUNCTION__, [&] {
         device::query_single_kernel_backward<scalar_t><<<blocks, CUDA_N_THREADS>>>(
                 tree,
                 indices.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
@@ -229,7 +229,7 @@ torch::Tensor calc_corners(
 
     torch::Tensor output = torch::zeros({Q, 3}, tree.data.options());
 
-    AT_DISPATCH_FLOATING_TYPES(tree.data.type(), __FUNCTION__, [&] {
+    AT_DISPATCH_FLOATING_TYPES(tree.data.scalar_type(), __FUNCTION__, [&] {
         device::calc_corner_kernel<scalar_t><<<blocks, CUDA_N_THREADS>>>(
                 tree,
                 indexer.packed_accessor32<int64_t, 2, torch::RestrictPtrTraits>(),
