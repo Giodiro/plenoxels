@@ -21,6 +21,7 @@ _C.optim.eval_refresh_rate = 8000
 _C.optim.render_refresh_rate = 20
 _C.optim.lr_sigma = None
 _C.optim.lr_rgb = None
+_C.optim.lr_decay = 10  # 10 * 1000 steps
 
 _C.optim.optimizer = "adam"
 

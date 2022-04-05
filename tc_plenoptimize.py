@@ -351,6 +351,7 @@ def train_grid(cfg):
                         batch_size=cfg.optim.batch_size * 4, device=dev, exp_name=cfg.expname)
                     print(f"Epoch {epoch} - iteration {i + 1}: Test PSNR: {ts_psnr:.4f}")
 
+                # Updates to the grid
                 if g_iter in cfg.grid.update_occ_iters:
                     model.update_occupancy()
                 if g_iter in cfg.grid.shrink_iters:
@@ -362,10 +363,15 @@ def train_grid(cfg):
                     tr_dset, tr_loader, ts_dset = update_dset_resolution(
                         tr_dset, ts_dset, new_implied_reso, cfg, dev)
                     resolution = new_implied_reso
-
                 if model.params_changed:
                     optim = init_optim(model)
                     model.params_changed = False
+
+                # update lr
+                decay_steps = cfg.optim.lrate_decay * 1000
+                decay_factor = 0.1 ** (1 / decay_steps)
+                for i_opt_g, param_group in enumerate(optim.param_groups):
+                    param_group['lr'] = param_group['lr'] * decay_factor
 
                 # Profiling
                 if p is not None:
