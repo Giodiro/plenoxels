@@ -197,14 +197,14 @@ __device__ __inline__ void query_interp_from_root(
         if (skip == 0) {
             for (int data_idx = 0; data_idx < data.size(4); ++data_idx) {
                 interp_out[data_idx] =
-                    (1 - dist_o[0]) * (1 - dist_o[1]) * (1 - dist_o[2]) * neighbor_data_buf[0][0][0][data_idx] +
-                    (1 - dist_o[0]) * (1 - dist_o[1]) * dist_o[2]       * neighbor_data_buf[0][0][1][data_idx] +
-                    (1 - dist_o[0]) * dist_o[1]       * (1 - dist_o[2]) * neighbor_data_buf[0][1][0][data_idx] +
-                    (1 - dist_o[0]) * dist_o[1]       * dist_o[2]       * neighbor_data_buf[0][1][1][data_idx] +
-                    dist_o[0]       * (1 - dist_o[1]) * (1 - dist_o[2]) * neighbor_data_buf[1][0][0][data_idx] +
-                    dist_o[0]       * (1 - dist_o[1]) * dist_o[2]       * neighbor_data_buf[1][0][1][data_idx] +
-                    dist_o[0]       * dist_o[1]       * (1 - dist_o[2]) * neighbor_data_buf[1][1][0][data_idx] +
-                    dist_o[0]       * dist_o[1]       * dist_o[2]       * neighbor_data_buf[1][1][1][data_idx];
+                    (1 - dist_o[0]) * (1 - dist_o[1]) * (1 - dist_o[2]) * neighbor_data_buf[0 * K + data_idx] +
+                    (1 - dist_o[0]) * (1 - dist_o[1]) * dist_o[2]       * neighbor_data_buf[1 * K + data_idx] +
+                    (1 - dist_o[0]) * dist_o[1]       * (1 - dist_o[2]) * neighbor_data_buf[2 * K + data_idx] +
+                    (1 - dist_o[0]) * dist_o[1]       * dist_o[2]       * neighbor_data_buf[3 * K + data_idx] +
+                    dist_o[0]       * (1 - dist_o[1]) * (1 - dist_o[2]) * neighbor_data_buf[4 * K + data_idx] +
+                    dist_o[0]       * (1 - dist_o[1]) * dist_o[2]       * neighbor_data_buf[5 * K + data_idx] +
+                    dist_o[0]       * dist_o[1]       * (1 - dist_o[2]) * neighbor_data_buf[6 * K + data_idx] +
+                    dist_o[0]       * dist_o[1]       * dist_o[2]       * neighbor_data_buf[7 * K + data_idx];
             }
         }
         *cube_sz_out *= N;
