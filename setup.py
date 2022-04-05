@@ -9,11 +9,10 @@ INSTALL_REQUIREMENTS = []
 
 try:
     ext_modules = [
-        CUDAExtension('svox.csrc', [
+        CUDAExtension('csrc', [
             'csrc/svox.cpp',
             'csrc/svox_kernel.cu',
             'csrc/rt_kernel.cu',
-            'csrc/quantizer.cpp',
         ], include_dirs=[osp.join(ROOT_DIR, "csrc", "include")],
                       optional=True),
     ]
@@ -32,7 +31,7 @@ setup(
     long_description='Sparse voxel N^3-tree data structure PyTorch extension, using CUDA',
     ext_modules=ext_modules,
     setup_requires=['pybind11>=2.5.0'],
-    packages=['svox', 'svox.csrc'],
-    cmdclass={'build_ext': BuildExtension},
+    packages=['csrc'],
+    cmdclass={'build_ext': BuildExtension.with_options(use_ninja=False)},
     zip_safe=False,
 )

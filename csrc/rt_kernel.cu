@@ -263,14 +263,15 @@ __device__ __inline__ void _dda_unit(
 
 template <typename scalar_t>
 __device__ __inline__ scalar_t* stratified_sample_proposal(
+                                                      PackedTreeSpec<scalar_t>& __restrict__ tree,
                                                       int32_t *num_strat_samples,
                                                       scalar_t *delta_t,
-                                                      scalar_t *t,
+                                                      scalar_t *t_ptr,
                                                       scalar_t *subcube_tmin,
                                                       scalar_t *subcube_tmax,
-                                                      const __restrict__ scalar_t *invdir,
+                                                      const scalar_t *invdir,
                                                       SingleRaySpec<scalar_t> ray,
-                                                      int32_t max_samples_per_node,
+                                                      int32_t max_samples_per_node
                                                       )
 {
     /*
@@ -278,7 +279,7 @@ __device__ __inline__ scalar_t* stratified_sample_proposal(
         2. Go through the samples one by one.
         3. Once there are no more samples go to the next subcube (adding some small amount to tmax) and repeat
     */
-    scalar_t[3] pos;
+    scalar_t pos [3];
     scalar_t t = *t_ptr;
     if (*num_strat_samples == 0)
     {
@@ -295,7 +296,7 @@ __device__ __inline__ scalar_t* stratified_sample_proposal(
         // Fetch the new sub-cube size
         scalar_t cube_sz;
         query_single_from_root<scalar_t>(tree.data, tree.child, pos, &cube_sz, nullptr);  // only care about cube_sz
-        _dda_unit(subcube_start_pos, invdir, subcube_tmin, subcube_tmax);
+        _dda_unit(pos, invdir, subcube_tmin, subcube_tmax);
         // Calculate the number of samples needed in the new sub-cube
         *num_strat_samples = ceilf(max_samples_per_node * (*subcube_tmax - *subcube_tmin) / 1.7320508075688772);  // diag of unit cube
         // Compute step-size for the new sub-cube
@@ -327,7 +328,7 @@ __device__ __inline__ scalar_t* stratified_fwd_sample_proposal(
                                                       const int32_t step_size
                                                       )
 {
-    scalar_t[3] pos;
+    scalar_t pos[3];
     #pragma unroll 3
     for (int j = 0; j < 3; ++j) {
         pos[j] = ray.origin[j] + (*t) * ray.dir[j];
@@ -393,7 +394,7 @@ __device__ __inline__ void trace_ray(
 //          tree_val = stratified_fwd_sample_proposal(
 //                &delta_t, &t, &subcube_tmin, &subcube_tmax, &invdir, ray, opt.step_size);
             tree_val = stratified_sample_proposal(
-                &num_strat_samples, &delta_t, &t, &subcube_tmin, &subcube_tmax, &invdir, ray, opt.max_samples_per_node);
+                tree, &num_strat_samples, &delta_t, &t, &subcube_tmin, &subcube_tmax, invdir, ray, opt.max_samples_per_node);
 
             scalar_t sigma = tree_val[data_dim - 1];
             if (opt.density_softplus)
@@ -590,6 +591,25 @@ __device__ __inline__ void trace_ray_backward(
         }
     }
 }  // trace_ray_backward
+
+
+template <typename scalar_t>
+__global__ void render_ray_kernel(
+        PackedTreeSpec<scalar_t> tree,
+        PackedRaysSpec<scalar_t> rays,
+        RenderOptions opt,
+    torch::PackedTensorAccessor32<scalar_t, 2, torch::RestrictPtrTraits>
+        out) {
+    CUDA_GET_THREAD_ID(tid, rays.origins.size(0));
+    scalar_t origin[3] = {rays.origins[tid][0], rays.origins[tid][1], rays.origins[tid][2]};
+    transform_coord<scalar_t>(origin, tree.offset, tree.scaling);
+    scalar_t dir[3] = {rays.dirs[tid][0], rays.dirs[tid][1], rays.dirs[tid][2]};
+    trace_ray<scalar_t>(
+        tree,
+        SingleRaySpec<scalar_t>{origin, dir, &rays.vdirs[tid][0]},
+        opt,
+        out[tid]);
+}
 
 
 template <typename scalar_t>

@@ -58,14 +58,14 @@ __global__ void query_interp_kernel(
         PackedTreeSpec<scalar_t> tree,
         const torch::PackedTensorAccessor32<scalar_t, 2, torch::RestrictPtrTraits> indices,
         torch::PackedTensorAccessor32<scalar_t, 2, torch::RestrictPtrTraits> values_out,
-        torch::PackedTensorAccessor32<scalar_t, 4, torch::RestrictPtrTraits> neighbor_data_buf,
+        torch::PackedTensorAccessor32<scalar_t, 4, torch::RestrictPtrTraits> neighbor_data_buf
         ) {
     CUDA_GET_THREAD_ID(tid, indices.size(0));
     scalar_t xyz[3] = {indices[tid][0], indices[tid][1], indices[tid][2]};
     transform_coord<scalar_t>(xyz, tree.offset, tree.scaling);
 
     scalar_t _cube_sz;
-    query_interp_from_root<scalar_t>(tree.data, tree.child, neighbor_data_buf, xyz, &_cube_sz, &values_out[i][0]);
+    query_interp_from_root<scalar_t>(tree.data, tree.child, neighbor_data_buf, xyz, &_cube_sz, &values_out[tid][0]);
 }
 
 
@@ -144,7 +144,7 @@ torch::Tensor query_interp(TreeSpec& tree, torch::Tensor indices) {
     torch::Tensor values = torch::empty({Q, K}, indices.options());
     torch::Tensor neighbor_data_buf = torch::empty({2, 2, 2, K}, tree.data.options());
 
-    AT_DISPATCH_FLOATING_TYPES(neighbor_data_buf.type(), __FUNCTION__, [&] {
+    AT_DISPATCH_FLOATING_TYPES(neighbor_data_buf.scalar_type(), __FUNCTION__, [&] {
         device::query_interp_kernel<scalar_t><<<blocks, CUDA_N_THREADS>>>(
                 tree,
                 indices.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),

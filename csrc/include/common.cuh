@@ -138,6 +138,7 @@ __device__ __inline__ void query_interp_from_root(
     int32_t node_id = 0, parent_id = 0;
     int32_t u, v, w, pu, pv, pw;
     *cube_sz_out = N;
+    scalar_t dist_o[3] = {0.25, 0.25, 0.25};
 
     // initialize neighbor_data_buf as zeros (since no data in root of tree).
     for (int i = 0; i < 2; ++i) {
@@ -178,13 +179,13 @@ __device__ __inline__ void query_interp_from_root(
                     if ((pu + u + i - 1 == 0 || pu + u + i - 1 == 1) &&
                         (pv + v + j - 1 == 0 || pv + v + j - 1 == 1) &&
                         (pw + w + k - 1 == 0 || pw + w + k - 1 == 1)) {
-                        scalar_t *neighbor_data = data[parent_id][pu + u + i - 1][pv + v + j - 1][pw + w + k - 1][0];
+                        scalar_t *neighbor_data = &data[parent_id][pu + u + i - 1][pv + v + j - 1][pw + w + k - 1][0];
                         for (int data_idx = 0; data_idx < data.size(4); ++data_idx) {
                             neighbor_data_buf[i][j][k][data_idx] += neighbor_data[data_idx];
                         }
                         if (i == 0 && j == 0 && k == 0) {
                             for (int l = 0; l < 3; ++l) {
-                                dist_00[l] = (xyz_inout[l] - 0.25) * 2;
+                                dist_o[l] = (xyz_inout[l] - 0.25) * 2;
                             }
                         }
                     }
@@ -194,16 +195,15 @@ __device__ __inline__ void query_interp_from_root(
         const int32_t skip = child[node_id][u][v][w];
         if (skip == 0) {
             for (int data_idx = 0; data_idx < data.size(4); ++data_idx) {
-                interp_out[data_idx] = (
-                    (1 - dist_00[0]) * (1 - dist_00[1]) * (1 - dist_00[2]) * neighbor_data_buf[0][0][0][data_idx] +
-                    (1 - dist_00[0]) * (1 - dist_00[1]) * dist_00[2]       * neighbor_data_buf[0][0][1][data_idx] +
-                    (1 - dist_00[0]) * dist_00[1]       * (1 - dist_00[2]) * neighbor_data_buf[0][1][0][data_idx] +
-                    (1 - dist_00[0]) * dist_00[1]       * dist_00[2]       * neighbor_data_buf[0][1][1][data_idx] +
-                    dist_00[0]       * (1 - dist_00[1]) * (1 - dist_00[2]) * neighbor_data_buf[1][0][0][data_idx] +
-                    dist_00[0]       * (1 - dist_00[1]) * dist_00[2]       * neighbor_data_buf[1][0][1][data_idx] +
-                    dist_00[0]       * dist_00[1]       * (1 - dist_00[2]) * neighbor_data_buf[1][1][0][data_idx] +
-                    dist_00[0]       * dist_00[1]       * dist_00[2]       * neighbor_data_buf[1][1][1][data_idx]
-                );
+                interp_out[data_idx] =
+                    (1 - dist_o[0]) * (1 - dist_o[1]) * (1 - dist_o[2]) * neighbor_data_buf[0][0][0][data_idx] +
+                    (1 - dist_o[0]) * (1 - dist_o[1]) * dist_o[2]       * neighbor_data_buf[0][0][1][data_idx] +
+                    (1 - dist_o[0]) * dist_o[1]       * (1 - dist_o[2]) * neighbor_data_buf[0][1][0][data_idx] +
+                    (1 - dist_o[0]) * dist_o[1]       * dist_o[2]       * neighbor_data_buf[0][1][1][data_idx] +
+                    dist_o[0]       * (1 - dist_o[1]) * (1 - dist_o[2]) * neighbor_data_buf[1][0][0][data_idx] +
+                    dist_o[0]       * (1 - dist_o[1]) * dist_o[2]       * neighbor_data_buf[1][0][1][data_idx] +
+                    dist_o[0]       * dist_o[1]       * (1 - dist_o[2]) * neighbor_data_buf[1][1][0][data_idx] +
+                    dist_o[0]       * dist_o[1]       * dist_o[2]       * neighbor_data_buf[1][1][1][data_idx];
             }
         }
         *cube_sz_out *= N;
