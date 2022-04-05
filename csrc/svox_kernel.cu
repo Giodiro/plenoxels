@@ -142,18 +142,21 @@ torch::Tensor query_interp(TreeSpec& tree, torch::Tensor indices) {
     DEVICE_GUARD(indices);
 
     const auto Q = indices.size(0), K = tree.data.size(4);
-    const int blocks = CUDA_N_BLOCKS_NEEDED(Q, CUDA_N_THREADS);
+    const int threads = 512;
+    const int blocks = CUDA_N_BLOCKS_NEEDED(Q, threads);
+    printf("in query_interp launcher (host)\n");
+    printf("Q: %d, K: %d, blocks: %d, threads: %d\n", Q, K, blocks, threads);
     torch::Tensor values = torch::empty({Q, K}, indices.options());
 
-    AT_DISPATCH_FLOATING_TYPES(neighbor_data_buf.scalar_type(), __FUNCTION__, [&] {
+    AT_DISPATCH_FLOATING_TYPES(tree.data.scalar_type(), __FUNCTION__, [&] {
         auto values_acc = values.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>();
         auto indices_acc = indices.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>();
         switch (K) {
             case 3:
-                device::query_interp_kernel<scalar_t, 3><<<blocks, CUDA_N_THREADS>>>(tree, indices_acc, values_acc);
+                device::query_interp_kernel<scalar_t, 3><<<blocks, threads>>>(tree, indices_acc, values_acc);
                 break;
             case 9:
-                device::query_interp_kernel<scalar_t, 9><<<blocks, CUDA_N_THREADS>>>(tree, indices_acc, values_acc);
+                device::query_interp_kernel<scalar_t, 9><<<blocks, threads>>>(tree, indices_acc, values_acc);
                 break;
             default:
                 throw std::runtime_error{"Unsupported format / basis_dim."};

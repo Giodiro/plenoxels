@@ -686,8 +686,10 @@ class N3Tree(nn.Module):
 
                 self.child[filled:new_filled] = 0
                 self.child[sel] = new_idxs - leaf_node[:, 0].to(torch.int32)
-                self.data.data[filled:new_filled] = self.data.data[
-                        sel][:, None, None, None]
+                # GIACOMO: Change this to fill new nodes to zero
+                self.data.data[filled:new_filled].fill_(0.0)
+                #self.data.data[filled:new_filled] = self.data.data[
+                #        sel][:, None, None, None]
                 self.parent_depth[filled:new_filled, 0] = self._pack_index(leaf_node)  # parent
                 self.parent_depth[filled:new_filled, 1] = self.parent_depth[
                         leaf_node[:, 0], 1] + 1  # depth

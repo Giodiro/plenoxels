@@ -346,7 +346,7 @@ __device__ __inline__ void stratified_fwd_sample_proposal(
     const scalar_t t_subcube = (*subcube_tmax - *subcube_tmin) / cube_sz;
     *delta_t = t_subcube + step_size;
     // For next loop
-    *t += *t + *delta_t
+    *t += *t + *delta_t;
 }
 
 
@@ -364,8 +364,8 @@ __device__ __inline__ void trace_ray(
     const int tree_N = tree.child.size(1);
     const int out_data_dim = out.size(0);
 
-    scalar_t *neighbor_data_buf[8*K];
-    scalar_t *tree_val[K];
+    scalar_t neighbor_data_buf[8*K];
+    scalar_t tree_val[K];
 
     #pragma unroll 3
     for (int i = 0; i < 3; ++i) {

@@ -29,6 +29,7 @@
 #include <torch/extension.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include <stdio.h>
 
 namespace {
 namespace device {
@@ -133,7 +134,7 @@ __device__ __inline__ void query_interp_from_root(
     scalar_t* __restrict__ interp_out)
 {
     const scalar_t N = child.size(1);
-    const int32_t K = data.size(1);
+    const int32_t K = data.size(4);
     clamp_coord<scalar_t>(xyz_inout);
 
     int32_t node_id = 0, parent_id = 0;
@@ -147,6 +148,7 @@ __device__ __inline__ void query_interp_from_root(
             neighbor_data_buf[i * K + data_idx] = 0.0;
         }
     }
+    printf("input coords: %f, %f, %f\n", xyz_inout[0], xyz_inout[1], xyz_inout[2]);
     // First iteration, to initialize parent coordinates
     xyz_inout[0] *= N;
     xyz_inout[1] *= N;
@@ -157,6 +159,7 @@ __device__ __inline__ void query_interp_from_root(
     xyz_inout[0] -= pu;
     xyz_inout[1] -= pv;
     xyz_inout[2] -= pw;
+    printf("coords after root: %f, %f, %f\n", xyz_inout[0], xyz_inout[1], xyz_inout[2]);
 
     while (true) {
         xyz_inout[0] *= N;
@@ -168,7 +171,9 @@ __device__ __inline__ void query_interp_from_root(
         xyz_inout[0] -= u;
         xyz_inout[1] -= v;
         xyz_inout[2] -= w;
+        printf("coords: %f, %f, %f\n", xyz_inout[0], xyz_inout[1], xyz_inout[2]);
 
+        printf("pt = %d,%d,%d - pt+1 = %d,%d,%d\n", pu, pv, pw, u, v, w);
         // i, j, k index neighbors
         #pragma unroll 2
         for (int i = 0; i < 2; ++i) {
@@ -180,22 +185,39 @@ __device__ __inline__ void query_interp_from_root(
                         (pv + v + j - 1 == 0 || pv + v + j - 1 == 1) &&
                         (pw + w + k - 1 == 0 || pw + w + k - 1 == 1)) {
                         scalar_t *neighbor_data = &data[parent_id][pu + u + i - 1][pv + v + j - 1][pw + w + k - 1][0];
+                        printf("Found valid %d,%d,%d neighbor at node [%d][%d][%d][%d] with value [%f, %f, %f] \n", i, j, k, parent_id, pu + u + i - 1, pv + v + j - 1, pw + w + k - 1, neighbor_data[0], neighbor_data[1], neighbor_data[2]);
                         for (int data_idx = 0; data_idx < K; ++data_idx) {
-                            neighbor_data_buf[(i << 2 + j << 1 + k) * K + data_idx] += neighbor_data[data_idx];
+                            neighbor_data_buf[((i << 2) + (j << 1) + k) * K + data_idx] += neighbor_data[data_idx];
                         }
                         if (i == 0 && j == 0 && k == 0) {
-                            #pragma unroll 3
-                            for (int l = 0; l < 3; ++l) {
-                                dist_o[l] = (xyz_inout[l] - 0.25) * 2;
-                            }
+                            dist_o[0] = (xyz_inout[0] + u) / N - 0.5;
+                            dist_o[0] = dist_o[0] < 0 ? dist_o[0] + 1 : dist_o[0];
+                            dist_o[1] = (xyz_inout[1] + v) / N - 0.5;
+                            dist_o[1] = dist_o[1] < 0 ? dist_o[1] + 1 : dist_o[1];
+                            dist_o[2] = (xyz_inout[2] + w) / N - 0.5;
+                            dist_o[2] = dist_o[2] < 0 ? dist_o[2] + 1 : dist_o[2];
+                            //dist_o[0] = xyz_inout[0] / (*cube_sz_out) / 2;
+                            //dist_o[1] = xyz_inout[1] / (*cube_sz_out) / 2;
+                            //dist_o[2] = xyz_inout[2] / (*cube_sz_out) / 2;
+                            
+                            //dist_o[0] = ((xyz_inout[0] + u / N) - 0.25) * 2;
+                            //dist_o[1] = ((xyz_inout[1] + v / N) - 0.25) * 2;
+                            //dist_o[2] = ((xyz_inout[2] + w / N) - 0.25) * 2;
+                            //for (int l = 0; l < 3; ++l) {
+                                // distance to parent node
+                            //    dist_o[l] = (xyz_inout[l] 
+                            //    dist_o[l] = (xyz_inout[l] - 0.25) * 2;
+                            //}
+                            printf("Distance: %f, %f, %f\n", dist_o[0], dist_o[1], dist_o[2]);
                         }
                     }
                 }
             }
         }
-        const int32_t skip = child[node_id][u][v][w];
+        const int32_t skip = child[node_id][pu][pv][pw];
+        printf("At node %d - child %d, %d, %d - skip %d\n", node_id, pu, pv, pw, skip);
         if (skip == 0) {
-            for (int data_idx = 0; data_idx < data.size(4); ++data_idx) {
+            for (int data_idx = 0; data_idx < K; ++data_idx) {
                 interp_out[data_idx] =
                     (1 - dist_o[0]) * (1 - dist_o[1]) * (1 - dist_o[2]) * neighbor_data_buf[0 * K + data_idx] +
                     (1 - dist_o[0]) * (1 - dist_o[1]) * dist_o[2]       * neighbor_data_buf[1 * K + data_idx] +
@@ -205,13 +227,25 @@ __device__ __inline__ void query_interp_from_root(
                     dist_o[0]       * (1 - dist_o[1]) * dist_o[2]       * neighbor_data_buf[5 * K + data_idx] +
                     dist_o[0]       * dist_o[1]       * (1 - dist_o[2]) * neighbor_data_buf[6 * K + data_idx] +
                     dist_o[0]       * dist_o[1]       * dist_o[2]       * neighbor_data_buf[7 * K + data_idx];
+                //printf("dim=%d, n 0 = %f\n", data_idx, (1 - dist_o[0]) * (1 - dist_o[1]) * (1 - dist_o[2]) * neighbor_data_buf[0 * K + data_idx]);
+                //printf("dim=%d, n 1 = %f\n", data_idx, (1 - dist_o[0]) * (1 - dist_o[1]) * dist_o[2]       * neighbor_data_buf[1 * K + data_idx]);
+                //printf("dim=%d, n 2 = %f\n", data_idx, (1 - dist_o[0]) * dist_o[1]       * (1 - dist_o[2]) * neighbor_data_buf[2 * K + data_idx]);
+                //printf("dim=%d, n 3 = %f\n", data_idx, (1 - dist_o[0]) * dist_o[1]       * dist_o[2]       * neighbor_data_buf[3 * K + data_idx]);
+                //printf("dim=%d, n 4 = %f\n", data_idx, dist_o[0]       * (1 - dist_o[1]) * (1 - dist_o[2]) * neighbor_data_buf[4 * K + data_idx]);
+                //printf("dim=%d, n 5 = %f\n", data_idx, dist_o[0]       * (1 - dist_o[1]) * dist_o[2]       * neighbor_data_buf[5 * K + data_idx]);
+                //printf("dim=%d, n 6 = %f\n", data_idx, dist_o[0]       * dist_o[1]       * (1 - dist_o[2]) * neighbor_data_buf[6 * K + data_idx]);
+                //printf("dim=%d, n 7 = %f\n", data_idx, dist_o[0]       * dist_o[1]       * dist_o[2]       * neighbor_data_buf[7 * K + data_idx]);
             }
+            return;
         }
         *cube_sz_out *= N;
+        node_id += skip;
         if (node_id != 0) {
             parent_id = node_id;
         }
-        node_id += skip;
+        pu = u;
+        pv = v;
+        pw = w;
     }
 }
 
