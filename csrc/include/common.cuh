@@ -189,12 +189,20 @@ __device__ __inline__ void query_interp_from_root(
                         printf("Found valid %d,%d,%d neighbor at node [%d][%d][%d][%d] with value [%f, %f, %f] \n", i, j, k, node_id, pu + u + i - 1, pv + v + j - 1, pw + w + k - 1, neighbor_data[0], neighbor_data[1], neighbor_data[2]);
 
                         if (i == 0 && j == 0 && k == 0) {
-                            dist_o[0] = (xyz_inout[0] + u) / N - 0.5;
-                            dist_o[0] = dist_o[0] < 0 ? dist_o[0] + 1 : dist_o[0];
-                            dist_o[1] = (xyz_inout[1] + v) / N - 0.5;
-                            dist_o[1] = dist_o[1] < 0 ? dist_o[1] + 1 : dist_o[1];
-                            dist_o[2] = (xyz_inout[2] + w) / N - 0.5;
-                            dist_o[2] = dist_o[2] < 0 ? dist_o[2] + 1 : dist_o[2];
+                            dist_o[0] = (xyz_inout[0] + u) / N;
+                            dist_o[0] = dist_o[0] < 0.5 ? dist_o[0] + 0.5 : dist_o[0] - 0.5;
+                            dist_o[1] = (xyz_inout[1] + v) / N;
+                            dist_o[1] = dist_o[1] < 0.5 ? dist_o[1] + 0.5 : dist_o[1] - 0.5;
+                            dist_o[2] = (xyz_inout[2] + w) / N;
+                            dist_o[2] = dist_o[2] < 0.5 ? dist_o[2] + 0.5 : dist_o[2] - 0.5;
+                            printf("Distance: %f, %f, %f\n", dist_o[0], dist_o[1], dist_o[2]);
+                        } else if (i == 1 && j == 1 && k == 1) {
+                            dist_o[0] = (xyz_inout[0] + u) / N;
+                            dist_o[0] = dist_o[0] < 0.5 ? 1 - dist_o[0] - 0.5 : 1 - dist_o[0] + 0.5;
+                            dist_o[1] = (xyz_inout[1] + v) / N;
+                            dist_o[1] = dist_o[1] < 0.5 ? 1 - dist_o[1] - 0.5 : 1 - dist_o[1] + 0.5;
+                            dist_o[2] = (xyz_inout[2] + w) / N;
+                            dist_o[2] = dist_o[2] < 0.5 ? 1 - dist_o[2] - 0.5 : 1 - dist_o[2] + 0.5;
                             printf("Distance: %f, %f, %f\n", dist_o[0], dist_o[1], dist_o[2]);
                         }
                     }
