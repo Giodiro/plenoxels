@@ -404,7 +404,7 @@ __device__ __inline__ void trace_ray(
                 tree, &num_strat_samples, &delta_t, &t, &subcube_tmin, &subcube_tmax, invdir, ray,
                 opt.max_samples_per_node, neighbor_data_buf, tree_val);
 
-            scalar_t sigma = tree_val[data_dim - 1];
+            scalar_t sigma = tree_val[K - 1];
             if (opt.density_softplus)
             {
                 sigma = _SOFTPLUS_M1(sigma);
@@ -683,7 +683,7 @@ __host__ __device__ __inline__ static void maybe_world2ndc(
 }
 
 
-template <typename scalar_t>
+template <typename scalar_t, int K>
 __global__ void render_image_kernel(
         PackedTreeSpec<scalar_t> tree,
         PackedCameraSpec<scalar_t> cam,
@@ -698,7 +698,7 @@ __global__ void render_image_kernel(
     maybe_world2ndc(opt, dir, origin);
 
     transform_coord<scalar_t>(origin, tree.offset, tree.scaling);
-    trace_ray<scalar_t>(
+    trace_ray<scalar_t, K>(
         tree,
         SingleRaySpec<scalar_t>{origin, dir, vdir},
         opt,
@@ -889,9 +889,18 @@ torch::Tensor volume_render_image(TreeSpec& tree, CameraSpec& cam, RenderOptions
             tree.data.options());
 
     AT_DISPATCH_FLOATING_TYPES(tree.data.type(), __FUNCTION__, [&] {
-            device::render_image_kernel<scalar_t><<<blocks, cuda_n_threads>>>(
+        // TODO: The template args are random sizes. Not sure what the opt.format parameter does, nor what basis_dim is
+        if (opt.format == FORMAT_RGBA && opt.basis_dim == 1) {
+            device::render_image_kernel<scalar_t, 3><<<blocks, cuda_n_threads>>>(
                     tree, cam, opt,
                     result.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>());
+        } else if (opt.format == FORMAT_RGBA && opt.basis_dim == 2) {
+            device::render_image_kernel<scalar_t, 9><<<blocks, cuda_n_threads>>>(
+                    tree, cam, opt,
+                    result.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>());
+        } else {
+            throw std::runtime_error{"Unsupported format / basis_dim."};
+        }
     });
     CUDA_CHECK_ERRORS;
     return result;
