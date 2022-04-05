@@ -262,7 +262,7 @@ __device__ __inline__ void _dda_unit(
 ////    }
 //}
 
-template <typename scalar_t>
+template <typename scalar_t, K>
 __device__ __inline__ void stratified_sample_proposal(
                                                       PackedTreeSpec<scalar_t>& __restrict__ tree,
                                                       int32_t* __restrict__ num_strat_samples,
@@ -318,10 +318,10 @@ __device__ __inline__ void stratified_sample_proposal(
     (*num_strat_samples)--;
     *t_ptr = t;
     scalar_t cube_sz_;
-    query_interp_from_root<scalar_t>(tree.data, tree.child, neighbor_data_buf, pos, &cube_sz_, interp_out);
+    query_interp_from_root<scalar_t, K>(tree.data, tree.child, neighbor_data_buf, pos, &cube_sz_, interp_out);
 }
 
-template <typename scalar_t>
+template <typename scalar_t, K>
 __device__ __inline__ void stratified_fwd_sample_proposal(
                                                       PackedTreeSpec<scalar_t>& __restrict__ tree,
                                                       scalar_t* __restrict__ delta_t,
@@ -341,7 +341,7 @@ __device__ __inline__ void stratified_fwd_sample_proposal(
         pos[j] = ray.origin[j] + (*t) * ray.dir[j];
     }
     scalar_t cube_sz;
-    query_interp_from_root<scalar_t>(tree.data, tree.child, neighbor_data_buf, pos, &cube_sz, interp_out);
+    query_interp_from_root<scalar_t, K>(tree.data, tree.child, neighbor_data_buf, pos, &cube_sz, interp_out);
     _dda_unit(pos, invdir, subcube_tmin, subcube_tmax);
     const scalar_t t_subcube = (*subcube_tmax - *subcube_tmin) / cube_sz;
     *delta_t = t_subcube + step_size;
@@ -400,7 +400,7 @@ __device__ __inline__ void trace_ray(
 
 //          tree_val = stratified_fwd_sample_proposal(
 //                &delta_t, &t, &subcube_tmin, &subcube_tmax, &invdir, ray, opt.step_size);
-            stratified_sample_proposal(
+            stratified_sample_proposal<scalar_t, K>(
                 tree, &num_strat_samples, &delta_t, &t, &subcube_tmin, &subcube_tmax, invdir, ray,
                 opt.max_samples_per_node, neighbor_data_buf, tree_val);
 

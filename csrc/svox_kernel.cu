@@ -67,7 +67,7 @@ __global__ void query_interp_kernel(
     scalar_t neighbor_data_buf[8*K];
 
     scalar_t _cube_sz;
-    query_interp_from_root<scalar_t>(tree.data, tree.child, neighbor_data_buf, xyz, &_cube_sz, &values_out[tid][0]);
+    query_interp_from_root<scalar_t, K>(tree.data, tree.child, neighbor_data_buf, xyz, &_cube_sz, &values_out[tid][0]);
 }
 
 
