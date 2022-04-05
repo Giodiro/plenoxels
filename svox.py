@@ -30,10 +30,14 @@ import torch
 import numpy as np
 import math
 from torch import nn, autograd
-from svox.helpers import N3TreeView, DataFormat, LocalIndex, _get_c_extension
+from svox_helpers import DataFormat, N3TreeView, LocalIndex
 from warnings import warn
+try:
+    import csrc as _C
+except ImportError:
+    print("Failed to load C-extension")
+    _C = None
 
-_C = _get_c_extension()
 
 class _QueryVerticalFunction(autograd.Function):
     @staticmethod
@@ -1020,7 +1024,8 @@ class N3Tree(nn.Module):
         t = []
         for i in range(3):
             t.append(flat % self.N)
-            flat //= self.N
+            flat.div_(self.N, rounding_mode='floor')
+            # flat //= self.N
         return torch.stack((flat, t[2], t[1], t[0]), dim=-1)
 
     def _resize_add_cap(self, cap_needed):

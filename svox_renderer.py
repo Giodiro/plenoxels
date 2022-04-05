@@ -30,12 +30,16 @@ from torch import nn, autograd
 from collections import namedtuple
 from warnings import warn
 
-from svox.helpers import _get_c_extension, LocalIndex, DataFormat
+from svox_helpers import DataFormat, LocalIndex
+try:
+    import csrc as _C
+except ImportError:
+    print("Failed to load C-extension")
+    _C = None
+
 
 NDCConfig = namedtuple('NDCConfig', ["width", "height", "focal"])
 Rays = namedtuple('Rays', ["origins", "dirs", "viewdirs"])
-
-_C = _get_c_extension()
 
 
 def _rays_spec_from_rays(rays):
@@ -240,7 +244,7 @@ class VolumeRenderer(nn.Module):
 
             sh_mult = None
             if self.data_format.format == DataFormat.SH:
-                from svox import sh
+                import sh
                 sh_order = int(self.data_format.basis_dim ** 0.5) - 1
                 sh_mult = sh.eval_sh_bases(sh_order, viewdirs)[:, None]
 
@@ -286,7 +290,10 @@ class VolumeRenderer(nn.Module):
                 if sh_mult is not None:
                     sh_mult = sh_mult[mask]
                 tmax = tmax[mask]
-            out_rgb += light_intensity * self.background_brightness
+            print("light intensity", light_intensity.shape)
+            print("out_rgb", out_rgb.shape)
+            print("bg", self.background_brightness)
+            out_rgb += (light_intensity * self.background_brightness).unsqueeze(1)
             return out_rgb
         return _VolumeRenderFunction.apply(
             self.tree.data,
