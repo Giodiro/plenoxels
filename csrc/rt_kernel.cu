@@ -262,7 +262,7 @@ __device__ __inline__ void _dda_unit(
 //}
 
 template <typename scalar_t>
-__device__ __inline__ scalar_t* stratified_sample_proposal(
+__device__ __inline__ void stratified_sample_proposal(
                                                       PackedTreeSpec<scalar_t>& __restrict__ tree,
                                                       int32_t *num_strat_samples,
                                                       scalar_t *delta_t,
@@ -271,7 +271,9 @@ __device__ __inline__ scalar_t* stratified_sample_proposal(
                                                       scalar_t *subcube_tmax,
                                                       const scalar_t *invdir,
                                                       SingleRaySpec<scalar_t> ray,
-                                                      int32_t max_samples_per_node
+                                                      int32_t max_samples_per_node,
+                                                      torch::PackedTensorAccessor32<scalar_t, 4> neighbor_data_buf,
+                                                      scalar_t *interp_out
                                                       )
 {
     /*
@@ -314,18 +316,22 @@ __device__ __inline__ scalar_t* stratified_sample_proposal(
     }
     (*num_strat_samples)--;
     *t_ptr = t;
-    return query_interp_from_root<scalar_t>(tree.data, tree.child, pos, nullptr, nullptr);
+    scalar_t cube_sz_;
+    query_interp_from_root<scalar_t>(tree.data, tree.child, neighbor_data_buf, pos, &cube_sz_, interp_out);
 }
 
 template <typename scalar_t>
-__device__ __inline__ scalar_t* stratified_fwd_sample_proposal(
+__device__ __inline__ void stratified_fwd_sample_proposal(
+                                                      PackedTreeSpec<scalar_t>& __restrict__ tree,
                                                       scalar_t *delta_t,
                                                       scalar_t *t,
                                                       scalar_t *subcube_tmin,
                                                       scalar_t *subcube_tmax,
                                                       const __restrict__ scalar_t &invdir,
                                                       SingleRaySpec<scalar_t> ray,
-                                                      const int32_t step_size
+                                                      const int32_t step_size,
+                                                      torch::PackedTensorAccessor32<scalar_t, 4> neighbor_data_buf,
+                                                      scalar_t *interp_out
                                                       )
 {
     scalar_t pos[3];
@@ -334,13 +340,12 @@ __device__ __inline__ scalar_t* stratified_fwd_sample_proposal(
         pos[j] = ray.origin[j] + (*t) * ray.dir[j];
     }
     scalar_t cube_sz;
-    scalar_t *tree_val = query_interp_from_root<scalar_t>(tree.data, tree.child, pos, &cube_sz, nullptr);
+    query_interp_from_root<scalar_t>(tree.data, tree.child, neighbor_data_buf, pos, &cube_sz, interp_out);
     _dda_unit(pos, invdir, subcube_tmin, subcube_tmax);
     const scalar_t t_subcube = (*subcube_tmax - *subcube_tmin) / cube_sz;
     *delta_t = t_subcube + step_size;
     // For next loop
     *t += *t + *delta_t
-    return tree_val;
 }
 
 
@@ -358,6 +363,11 @@ __device__ __inline__ void trace_ray(
     const int tree_N = tree.child.size(1);
     const int data_dim = tree.data.size(4);
     const int out_data_dim = out.size(0);
+
+    torch::Tensor neighbor_data_buf = torch::empty({2, 2, 2, data_dim}, tree.data.options());
+    torch::PackedTensorAccessor32 neighbor_data_buf_data = neighbor_data_buf.packed_accessor32<scalar_t, 4>();
+    torch::Tensor interp_out = torch::empty({data_dim}, tree.data.options());
+    scalar_t *tree_val = interp_out.data_ptr<scalar_t>();
 
     #pragma unroll 3
     for (int i = 0; i < 3; ++i) {
@@ -385,7 +395,6 @@ __device__ __inline__ void trace_ray(
         // Helper variables for sampling
         scalar_t delta_t, subcube_tmin, subcube_tmax;
         int32_t num_strat_samples;
-        scalar_t* tree_val;
 
         const scalar_t d_rgb_pad = 1 + 2 * opt.rgb_padding;
         while (t < tmax) {
@@ -393,8 +402,9 @@ __device__ __inline__ void trace_ray(
 
 //          tree_val = stratified_fwd_sample_proposal(
 //                &delta_t, &t, &subcube_tmin, &subcube_tmax, &invdir, ray, opt.step_size);
-            tree_val = stratified_sample_proposal(
-                tree, &num_strat_samples, &delta_t, &t, &subcube_tmin, &subcube_tmax, invdir, ray, opt.max_samples_per_node);
+            stratified_sample_proposal(
+                tree, &num_strat_samples, &delta_t, &t, &subcube_tmin, &subcube_tmax, invdir, ray,
+                opt.max_samples_per_node, neighbor_data_buf, tree_val);
 
             scalar_t sigma = tree_val[data_dim - 1];
             if (opt.density_softplus)
