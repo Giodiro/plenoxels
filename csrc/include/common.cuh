@@ -127,7 +127,7 @@ template <typename scalar_t>
 __device__ __inline__ void query_interp_from_root(
     torch::PackedTensorAccessor64<scalar_t, 5, torch::RestrictPtrTraits> data,
     const torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> child,
-    torch::PackedTensorAccessor32<scalar_t, 4> neighbor_data_buf,
+    torch::PackedTensorAccessor32<scalar_t, 4, torch::RestrictPtrTraits> neighbor_data_buf,
     scalar_t* __restrict__ xyz_inout,
     scalar_t* __restrict__ cube_sz_out,
     scalar_t* __restrict__ interp_out)

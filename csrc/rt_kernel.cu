@@ -264,16 +264,16 @@ __device__ __inline__ void _dda_unit(
 template <typename scalar_t>
 __device__ __inline__ void stratified_sample_proposal(
                                                       PackedTreeSpec<scalar_t>& __restrict__ tree,
-                                                      int32_t *num_strat_samples,
-                                                      scalar_t *delta_t,
-                                                      scalar_t *t_ptr,
-                                                      scalar_t *subcube_tmin,
-                                                      scalar_t *subcube_tmax,
-                                                      const scalar_t *invdir,
+                                                      int32_t* __restrict__ num_strat_samples,
+                                                      scalar_t* __restrict__ delta_t,
+                                                      scalar_t* __restrict__ t_ptr,
+                                                      scalar_t* __restrict__ subcube_tmin,
+                                                      scalar_t* __restrict__ subcube_tmax,
+                                                      const scalar_t* __restrict__ invdir,
                                                       SingleRaySpec<scalar_t> ray,
                                                       int32_t max_samples_per_node,
-                                                      torch::PackedTensorAccessor32<scalar_t, 4> neighbor_data_buf,
-                                                      scalar_t *interp_out
+                                                      torch::PackedTensorAccessor32<scalar_t, 4, torch::RestrictPtrTraits> neighbor_data_buf,
+                                                      scalar_t* __restrict__ interp_out
                                                       )
 {
     /*
@@ -323,15 +323,15 @@ __device__ __inline__ void stratified_sample_proposal(
 template <typename scalar_t>
 __device__ __inline__ void stratified_fwd_sample_proposal(
                                                       PackedTreeSpec<scalar_t>& __restrict__ tree,
-                                                      scalar_t *delta_t,
-                                                      scalar_t *t,
-                                                      scalar_t *subcube_tmin,
-                                                      scalar_t *subcube_tmax,
-                                                      const __restrict__ scalar_t &invdir,
+                                                      scalar_t* __restrict__ delta_t,
+                                                      scalar_t* __restrict__ t,
+                                                      scalar_t* __restrict__ subcube_tmin,
+                                                      scalar_t* __restrict__ subcube_tmax,
+                                                      const scalar_t* __restrict__ invdir,
                                                       SingleRaySpec<scalar_t> ray,
                                                       const int32_t step_size,
-                                                      torch::PackedTensorAccessor32<scalar_t, 4> neighbor_data_buf,
-                                                      scalar_t *interp_out
+                                                      torch::PackedTensorAccessor32<scalar_t, 4, torch::RestrictPtrTraits> neighbor_data_buf,
+                                                      scalar_t* __restrict__ interp_out
                                                       )
 {
     scalar_t pos[3];
@@ -365,7 +365,7 @@ __device__ __inline__ void trace_ray(
     const int out_data_dim = out.size(0);
 
     torch::Tensor neighbor_data_buf = torch::empty({2, 2, 2, data_dim}, tree.data.options());
-    torch::PackedTensorAccessor32 neighbor_data_buf_data = neighbor_data_buf.packed_accessor32<scalar_t, 4>();
+    torch::PackedTensorAccessor32 neighbor_data_buf_data = neighbor_data_buf.packed_accessor32<scalar_t, 4, torch::RestrictPtrTraits>();
     torch::Tensor interp_out = torch::empty({data_dim}, tree.data.options());
     scalar_t *tree_val = interp_out.data_ptr<scalar_t>();
 
