@@ -24,6 +24,7 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <stdexcept>
 #include <cstdint>
 #include "common.cuh"
 #include "data_spec_packed.cuh"
@@ -53,16 +54,17 @@ __device__ __inline__ scalar_t* get_tree_leaf_ptr(
 }
 
 
-template <typename scalar_t>
+template <typename scalar_t, int K>
 __global__ void query_interp_kernel(
         PackedTreeSpec<scalar_t> tree,
         const torch::PackedTensorAccessor32<scalar_t, 2, torch::RestrictPtrTraits> indices,
-        torch::PackedTensorAccessor32<scalar_t, 2, torch::RestrictPtrTraits> values_out,
-        scalar_t* __restrict__ neighbor_data_buf
+        torch::PackedTensorAccessor32<scalar_t, 2, torch::RestrictPtrTraits> values_out
         ) {
     CUDA_GET_THREAD_ID(tid, indices.size(0));
     scalar_t xyz[3] = {indices[tid][0], indices[tid][1], indices[tid][2]};
     transform_coord<scalar_t>(xyz, tree.offset, tree.scaling);
+
+    scalar_t neighbor_data_buf[8*K];
 
     scalar_t _cube_sz;
     query_interp_from_root<scalar_t>(tree.data, tree.child, neighbor_data_buf, xyz, &_cube_sz, &values_out[tid][0]);
@@ -142,14 +144,20 @@ torch::Tensor query_interp(TreeSpec& tree, torch::Tensor indices) {
     const auto Q = indices.size(0), K = tree.data.size(4);
     const int blocks = CUDA_N_BLOCKS_NEEDED(Q, CUDA_N_THREADS);
     torch::Tensor values = torch::empty({Q, K}, indices.options());
-    torch::Tensor neighbor_data_buf = torch::empty({2 * 2 * 2 * K}, tree.data.options());
 
     AT_DISPATCH_FLOATING_TYPES(neighbor_data_buf.scalar_type(), __FUNCTION__, [&] {
-        device::query_interp_kernel<scalar_t><<<blocks, CUDA_N_THREADS>>>(
-                tree,
-                indices.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                values.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                neighbor_data_buf.data_ptr<scalar_t>());
+        auto values_acc = values.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>();
+        auto indices_acc = indices.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>();
+        switch (K) {
+            case 3:
+                device::query_interp_kernel<scalar_t, 3><<<blocks, CUDA_N_THREADS>>>(tree, indices_acc, values_acc);
+                break;
+            case 9:
+                device::query_interp_kernel<scalar_t, 9><<<blocks, CUDA_N_THREADS>>>(tree, indices_acc, values_acc);
+                break;
+            default:
+                throw std::runtime_error{"Unsupported format / basis_dim."};
+        }
     });
     CUDA_CHECK_ERRORS;
     return values;

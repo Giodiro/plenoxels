@@ -978,8 +978,8 @@ std::vector<torch::Tensor> grid_weight_render(
                 data.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
                 cam,
                 opt,
-                offset.data<scalar_t>(),
-                scaling.data<scalar_t>(),
+                offset.data_ptr<scalar_t>(),
+                scaling.data_ptr<scalar_t>(),
                 grid_weight.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
                 grid_hit.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>());
     });
