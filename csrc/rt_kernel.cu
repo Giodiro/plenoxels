@@ -24,6 +24,7 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <stdexcept>
 #include <cstdint>
 #include <vector>
 #include "common.cuh"
@@ -857,9 +858,18 @@ torch::Tensor volume_render(TreeSpec& tree, RaysSpec& rays, RenderOptions& opt)
     const int out_data_dim = get_out_data_dim(opt.format, opt.basis_dim, tree.data.size(4));
     torch::Tensor result = torch::zeros({Q, out_data_dim}, rays.origins.options());
     AT_DISPATCH_FLOATING_TYPES(rays.origins.type(), __FUNCTION__, [&] {
-            device::render_ray_kernel<scalar_t, tree.data.size(4)><<<blocks, cuda_n_threads>>>(
+        // TODO: The template args are random sizes. Not sure what the opt.format parameter does, nor what basis_dim is
+        if (opt.format == FORMAT_RGBA && opt.basis_dim == 1) {
+            device::render_ray_kernel<scalar_t, 3><<<blocks, cuda_n_threads>>>(
                     tree, rays, opt,
                     result.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>());
+        } else if (opt.format == FORMAT_RGBA && opt.basis_dim == 2) {
+            device::render_ray_kernel<scalar_t, 9><<<blocks, cuda_n_threads>>>(
+                    tree, rays, opt,
+                    result.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>());
+        } else {
+            throw std::runtime_error{"Unsupported format / basis_dim."};
+        }
     });
     CUDA_CHECK_ERRORS;
     return result;

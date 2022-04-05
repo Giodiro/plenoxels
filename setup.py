@@ -32,6 +32,6 @@ setup(
     ext_modules=ext_modules,
     setup_requires=['pybind11>=2.5.0'],
     packages=['csrc'],
-    cmdclass={'build_ext': BuildExtension.with_options(use_ninja=False)},
+    cmdclass={'build_ext': BuildExtension.with_options(use_ninja=True)},
     zip_safe=False,
 )
