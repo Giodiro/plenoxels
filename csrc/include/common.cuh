@@ -127,12 +127,13 @@ template <typename scalar_t>
 __device__ __inline__ void query_interp_from_root(
     torch::PackedTensorAccessor64<scalar_t, 5, torch::RestrictPtrTraits> data,
     const torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> child,
-    torch::PackedTensorAccessor32<scalar_t, 4, torch::RestrictPtrTraits> neighbor_data_buf,
+    scalar_t* __restrict__ neighbor_data_buf,
     scalar_t* __restrict__ xyz_inout,
     scalar_t* __restrict__ cube_sz_out,
     scalar_t* __restrict__ interp_out)
 {
     const scalar_t N = child.size(1);
+    const int32_t K = data.size(1);
     clamp_coord<scalar_t>(xyz_inout);
 
     int32_t node_id = 0, parent_id = 0;
@@ -141,13 +142,9 @@ __device__ __inline__ void query_interp_from_root(
     scalar_t dist_o[3] = {0.25, 0.25, 0.25};
 
     // initialize neighbor_data_buf as zeros (since no data in root of tree).
-    for (int i = 0; i < 2; ++i) {
-        for (int j = 0; j < 2; ++j) {
-            for (int k = 0; k < 2; ++k) {
-                for (int data_idx = 0; data_idx < data.size(4); ++data_idx) {
-                    neighbor_data_buf[i][j][k][data_idx] = 0.0;
-                }
-            }
+    for (int i = 0; i < 8; ++i) {
+        for (int data_idx = 0; data_idx < K; ++data_idx) {
+            neighbor_data_buf[i * K + data_idx] = 0.0;
         }
     }
     // First iteration, to initialize parent coordinates
@@ -173,17 +170,21 @@ __device__ __inline__ void query_interp_from_root(
         xyz_inout[2] -= w;
 
         // i, j, k index neighbors
+        #pragma unroll 2
         for (int i = 0; i < 2; ++i) {
+            #pragma unroll 2
             for (int j = 0; j < 2; ++j) {
+                #pragma unroll 2
                 for (int k = 0; k < 2; ++k) {
                     if ((pu + u + i - 1 == 0 || pu + u + i - 1 == 1) &&
                         (pv + v + j - 1 == 0 || pv + v + j - 1 == 1) &&
                         (pw + w + k - 1 == 0 || pw + w + k - 1 == 1)) {
                         scalar_t *neighbor_data = &data[parent_id][pu + u + i - 1][pv + v + j - 1][pw + w + k - 1][0];
-                        for (int data_idx = 0; data_idx < data.size(4); ++data_idx) {
-                            neighbor_data_buf[i][j][k][data_idx] += neighbor_data[data_idx];
+                        for (int data_idx = 0; data_idx < K; ++data_idx) {
+                            neighbor_data_buf[(i << 2 + j << 1 + k) * K + data_idx] += neighbor_data[data_idx];
                         }
                         if (i == 0 && j == 0 && k == 0) {
+                            #pragma unroll 3
                             for (int l = 0; l < 3; ++l) {
                                 dist_o[l] = (xyz_inout[l] - 0.25) * 2;
                             }

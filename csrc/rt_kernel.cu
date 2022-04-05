@@ -272,7 +272,7 @@ __device__ __inline__ void stratified_sample_proposal(
                                                       const scalar_t* __restrict__ invdir,
                                                       SingleRaySpec<scalar_t> ray,
                                                       int32_t max_samples_per_node,
-                                                      torch::PackedTensorAccessor32<scalar_t, 4, torch::RestrictPtrTraits> neighbor_data_buf,
+                                                      scalar_t* __restrict__ neighbor_data_buf,
                                                       scalar_t* __restrict__ interp_out
                                                       )
 {
@@ -330,7 +330,7 @@ __device__ __inline__ void stratified_fwd_sample_proposal(
                                                       const scalar_t* __restrict__ invdir,
                                                       SingleRaySpec<scalar_t> ray,
                                                       const int32_t step_size,
-                                                      torch::PackedTensorAccessor32<scalar_t, 4, torch::RestrictPtrTraits> neighbor_data_buf,
+                                                      scalar_t* __restrict__ neighbor_data_buf,
                                                       scalar_t* __restrict__ interp_out
                                                       )
 {
@@ -349,7 +349,7 @@ __device__ __inline__ void stratified_fwd_sample_proposal(
 }
 
 
-template <typename scalar_t>
+template <typename scalar_t, int K>
 __device__ __inline__ void trace_ray(
         PackedTreeSpec<scalar_t>& __restrict__ tree,
         SingleRaySpec<scalar_t> ray,
@@ -361,13 +361,10 @@ __device__ __inline__ void trace_ray(
     scalar_t tmin, tmax;
     scalar_t invdir[3];
     const int tree_N = tree.child.size(1);
-    const int data_dim = tree.data.size(4);
     const int out_data_dim = out.size(0);
 
-    torch::Tensor neighbor_data_buf = torch::empty({2, 2, 2, data_dim}, tree.data.options());
-    torch::PackedTensorAccessor32 neighbor_data_buf_data = neighbor_data_buf.packed_accessor32<scalar_t, 4, torch::RestrictPtrTraits>();
-    torch::Tensor interp_out = torch::empty({data_dim}, tree.data.options());
-    scalar_t *tree_val = interp_out.data_ptr<scalar_t>();
+    scalar_t *neighbor_data_buf[8*K];
+    scalar_t *tree_val[K];
 
     #pragma unroll 3
     for (int i = 0; i < 3; ++i) {
@@ -603,18 +600,18 @@ __device__ __inline__ void trace_ray_backward(
 }  // trace_ray_backward
 
 
-template <typename scalar_t>
+template <typename scalar_t, int K>
 __global__ void render_ray_kernel(
         PackedTreeSpec<scalar_t> tree,
         PackedRaysSpec<scalar_t> rays,
         RenderOptions opt,
-    torch::PackedTensorAccessor32<scalar_t, 2, torch::RestrictPtrTraits>
-        out) {
+        torch::PackedTensorAccessor32<scalar_t, 2, torch::RestrictPtrTraits> out)
+{
     CUDA_GET_THREAD_ID(tid, rays.origins.size(0));
     scalar_t origin[3] = {rays.origins[tid][0], rays.origins[tid][1], rays.origins[tid][2]};
     transform_coord<scalar_t>(origin, tree.offset, tree.scaling);
     scalar_t dir[3] = {rays.dirs[tid][0], rays.dirs[tid][1], rays.dirs[tid][2]};
-    trace_ray<scalar_t>(
+    trace_ray<scalar_t, K>(
         tree,
         SingleRaySpec<scalar_t>{origin, dir, &rays.vdirs[tid][0]},
         opt,
@@ -857,10 +854,10 @@ torch::Tensor volume_render(TreeSpec& tree, RaysSpec& rays, RenderOptions& opt)
 
     auto_cuda_threads();
     const int blocks = CUDA_N_BLOCKS_NEEDED(Q, cuda_n_threads);
-    int out_data_dim = get_out_data_dim(opt.format, opt.basis_dim, tree.data.size(4));
+    const int out_data_dim = get_out_data_dim(opt.format, opt.basis_dim, tree.data.size(4));
     torch::Tensor result = torch::zeros({Q, out_data_dim}, rays.origins.options());
     AT_DISPATCH_FLOATING_TYPES(rays.origins.type(), __FUNCTION__, [&] {
-            device::render_ray_kernel<scalar_t><<<blocks, cuda_n_threads>>>(
+            device::render_ray_kernel<scalar_t, tree.data.size(4)><<<blocks, cuda_n_threads>>>(
                     tree, rays, opt,
                     result.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>());
     });

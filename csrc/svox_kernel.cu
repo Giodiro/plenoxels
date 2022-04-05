@@ -58,7 +58,7 @@ __global__ void query_interp_kernel(
         PackedTreeSpec<scalar_t> tree,
         const torch::PackedTensorAccessor32<scalar_t, 2, torch::RestrictPtrTraits> indices,
         torch::PackedTensorAccessor32<scalar_t, 2, torch::RestrictPtrTraits> values_out,
-        torch::PackedTensorAccessor32<scalar_t, 4, torch::RestrictPtrTraits> neighbor_data_buf
+        scalar_t* __restrict__ neighbor_data_buf
         ) {
     CUDA_GET_THREAD_ID(tid, indices.size(0));
     scalar_t xyz[3] = {indices[tid][0], indices[tid][1], indices[tid][2]};
@@ -142,14 +142,14 @@ torch::Tensor query_interp(TreeSpec& tree, torch::Tensor indices) {
     const auto Q = indices.size(0), K = tree.data.size(4);
     const int blocks = CUDA_N_BLOCKS_NEEDED(Q, CUDA_N_THREADS);
     torch::Tensor values = torch::empty({Q, K}, indices.options());
-    torch::Tensor neighbor_data_buf = torch::empty({2, 2, 2, K}, tree.data.options());
+    torch::Tensor neighbor_data_buf = torch::empty({2 * 2 * 2 * K}, tree.data.options());
 
     AT_DISPATCH_FLOATING_TYPES(neighbor_data_buf.scalar_type(), __FUNCTION__, [&] {
         device::query_interp_kernel<scalar_t><<<blocks, CUDA_N_THREADS>>>(
                 tree,
                 indices.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
                 values.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                neighbor_data_buf.packed_accessor32<scalar_t, 4, torch::RestrictPtrTraits>());
+                neighbor_data_buf.data_ptr<scalar_t>());
     });
     CUDA_CHECK_ERRORS;
     return values;
