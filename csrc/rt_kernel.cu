@@ -392,10 +392,10 @@ __device__ __inline__ void trace_ray(
 
         // Helper variables for sampling
         scalar_t delta_t, subcube_tmin, subcube_tmax;
-        int32_t num_strat_samples;
+        int32_t num_strat_samples = 0;
 
         const scalar_t d_rgb_pad = 1 + 2 * opt.rgb_padding;
-        while (t < tmax) {
+        while (true) {
             scalar_t att;
 
 //          tree_val = stratified_fwd_sample_proposal(
@@ -403,6 +403,9 @@ __device__ __inline__ void trace_ray(
             stratified_sample_proposal<scalar_t, K>(
                 tree, &num_strat_samples, &delta_t, &t, &subcube_tmin, &subcube_tmax, invdir, ray,
                 opt.max_samples_per_node, neighbor_data_buf, tree_val);
+            if (t >= tmax) {
+                break;
+            }
 
             scalar_t sigma = tree_val[K - 1];
             if (opt.density_softplus)
@@ -445,7 +448,7 @@ __device__ __inline__ void trace_ray(
     }
 }
 
-template <typename scalar_t>
+template <typename scalar_t, int K>
 __device__ __inline__ void trace_ray_backward(
         PackedTreeSpec<scalar_t>& __restrict__ tree,
         const torch::TensorAccessor<scalar_t, 1, torch::RestrictPtrTraits, int32_t> grad_output,
@@ -458,8 +461,11 @@ __device__ __inline__ void trace_ray_backward(
     scalar_t tmin, tmax;
     scalar_t invdir[3];
     const int tree_N = tree.child.size(1);
-    const int data_dim = tree.data.size(4);
     const int out_data_dim = grad_output.size(0);
+
+    scalar_t neighbor_data_buf[8*K];
+    scalar_t tree_val[K];
+
 
     #pragma unroll 3
     for (int i = 0; i < 3; ++i) {
@@ -481,22 +487,24 @@ __device__ __inline__ void trace_ray_backward(
         // PASS 1
         {
             scalar_t light_intensity = 1.f, t = tmin, cube_sz;
-            while (t < tmax) {
-                for (int j = 0; j < 3; ++j) pos[j] = ray.origin[j] + t * ray.dir[j];
-
-                const scalar_t* tree_val = query_single_from_root<scalar_t>(
-                        tree.data, tree.child, pos, &cube_sz);
+            // Helper variables for sampling
+            scalar_t delta_t, subcube_tmin, subcube_tmax;
+            int32_t num_strat_samples = 0;
+            while (true) {
+//                const scalar_t* tree_val = query_single_from_root<scalar_t>(
+//                        tree.data, tree.child, pos, &cube_sz);
+                stratified_sample_proposal<scalar_t, K>(
+                    tree, &num_strat_samples, &delta_t, &t, &subcube_tmin, &subcube_tmax, invdir, ray,
+                    opt.max_samples_per_node, neighbor_data_buf, tree_val);
+                if (t >= tmax) {
+                    break;
+                }
                 // Reuse offset on gradient
                 const int64_t curr_leaf_offset = tree_val - tree.data.data();
                 scalar_t* grad_tree_val = grad_data_out.data() + curr_leaf_offset;
 
                 scalar_t att;
-                scalar_t subcube_tmin, subcube_tmax;
-                _dda_unit(pos, invdir, &subcube_tmin, &subcube_tmax);
-
-                const scalar_t t_subcube = (subcube_tmax - subcube_tmin) / cube_sz;
-                const scalar_t delta_t = t_subcube + opt.step_size;
-                scalar_t sigma = tree_val[data_dim - 1];
+                scalar_t sigma = tree_val[K - 1];
                 if (opt.density_softplus) sigma = _SOFTPLUS_M1(sigma);
                 if (sigma > 0.0) {
                     att = expf(-delta_t * sigma * delta_scale);
@@ -534,7 +542,6 @@ __device__ __inline__ void trace_ray_backward(
                     light_intensity *= att;
                     accum += weight * total_color;
                 }
-                t += delta_t;
             }
             scalar_t total_grad = 0.f;
             for (int j = 0; j < out_data_dim; ++j)
@@ -545,21 +552,24 @@ __device__ __inline__ void trace_ray_backward(
         {
             // scalar_t accum_lo = 0.0;
             scalar_t light_intensity = 1.f, t = tmin, cube_sz;
-            while (t < tmax) {
-                for (int j = 0; j < 3; ++j) pos[j] = ray.origin[j] + t * ray.dir[j];
-                const scalar_t* tree_val = query_single_from_root<scalar_t>(tree.data,
-                        tree.child, pos, &cube_sz);
+            // Helper variables for sampling
+            scalar_t delta_t, subcube_tmin, subcube_tmax;
+            int32_t num_strat_samples = 0;
+            while (true) {
+//                const scalar_t* tree_val = query_single_from_root<scalar_t>(tree.data,
+//                        tree.child, pos, &cube_sz);
+                stratified_sample_proposal<scalar_t, K>(
+                    tree, &num_strat_samples, &delta_t, &t, &subcube_tmin, &subcube_tmax, invdir, ray,
+                    opt.max_samples_per_node, neighbor_data_buf, tree_val);
+                if (t >= tmax) {
+                    break;
+                }
                 // Reuse offset on gradient
                 const int64_t curr_leaf_offset = tree_val - tree.data.data();
                 scalar_t* grad_tree_val = grad_data_out.data() + curr_leaf_offset;
 
                 scalar_t att;
-                scalar_t subcube_tmin, subcube_tmax;
-                _dda_unit(pos, invdir, &subcube_tmin, &subcube_tmax);
-
-                const scalar_t t_subcube = (subcube_tmax - subcube_tmin) / cube_sz;
-                const scalar_t delta_t = t_subcube + opt.step_size;
-                scalar_t sigma = tree_val[data_dim - 1];
+                scalar_t sigma = tree_val[K - 1];
                 const scalar_t raw_sigma = sigma;
                 if (opt.density_softplus) sigma = _SOFTPLUS_M1(sigma);
                 if (sigma > 0.0) {
@@ -586,7 +596,7 @@ __device__ __inline__ void trace_ray_backward(
                     light_intensity *= att;
                     accum -= weight * total_color;
                     atomicAdd(
-                            &grad_tree_val[data_dim - 1],
+                            &grad_tree_val[K - 1],
                             delta_t * delta_scale * (
                                 total_color * light_intensity - accum)
                                 *  (opt.density_softplus ?
@@ -594,7 +604,6 @@ __device__ __inline__ void trace_ray_backward(
                                     : 1)
                             );
                 }
-                t += delta_t;
             }
         }
     }
@@ -620,7 +629,7 @@ __global__ void render_ray_kernel(
 }
 
 
-template <typename scalar_t>
+template <typename scalar_t, int K>
 __global__ void render_ray_backward_kernel(
         PackedTreeSpec<scalar_t> tree,
         const torch::PackedTensorAccessor32<scalar_t, 2, torch::RestrictPtrTraits> grad_output,
@@ -632,7 +641,7 @@ __global__ void render_ray_backward_kernel(
     scalar_t origin[3] = {rays.origins[tid][0], rays.origins[tid][1], rays.origins[tid][2]};
     transform_coord<scalar_t>(origin, tree.offset, tree.scaling);
     scalar_t dir[3] = {rays.dirs[tid][0], rays.dirs[tid][1], rays.dirs[tid][2]};
-    trace_ray_backward<scalar_t>(
+    trace_ray_backward<scalar_t, K>(
         tree,
         grad_output[tid],
         SingleRaySpec<scalar_t>{origin, dir, &rays.vdirs[tid][0]},
@@ -705,7 +714,7 @@ __global__ void render_image_kernel(
         out[iy][ix]);
 }
 
-template <typename scalar_t>
+template <typename scalar_t, int K>
 __global__ void render_image_backward_kernel(
         PackedTreeSpec<scalar_t> tree,
         const torch::PackedTensorAccessor32<scalar_t, 3, torch::RestrictPtrTraits> grad_output,
@@ -721,7 +730,7 @@ __global__ void render_image_backward_kernel(
     maybe_world2ndc(opt, dir, origin);
 
     transform_coord<scalar_t>(origin, tree.offset, tree.scaling);
-    trace_ray_backward<scalar_t>(
+    trace_ray_backward<scalar_t, K>(
         tree,
         grad_output[iy][ix],
         SingleRaySpec<scalar_t>{origin, dir, vdir},
@@ -853,12 +862,12 @@ torch::Tensor volume_render(TreeSpec& tree, RaysSpec& rays, RenderOptions& opt)
     DEVICE_GUARD(tree.data);
     const auto Q = rays.origins.size(0);
 
-    auto_cuda_threads();
+//    auto_cuda_threads();
+    const int cuda_n_threads = 256;
     const int blocks = CUDA_N_BLOCKS_NEEDED(Q, cuda_n_threads);
     const int out_data_dim = get_out_data_dim(opt.format, opt.basis_dim, tree.data.size(4));
     torch::Tensor result = torch::zeros({Q, out_data_dim}, rays.origins.options());
     AT_DISPATCH_FLOATING_TYPES(rays.origins.scalar_type(), __FUNCTION__, [&] {
-        // TODO: The template args are random sizes. Not sure what the opt.format parameter does, nor what basis_dim is
         if (opt.format == FORMAT_RGBA && opt.basis_dim == 1) {
             device::render_ray_kernel<scalar_t, 3><<<blocks, cuda_n_threads>>>(
                     tree, rays, opt,
@@ -917,17 +926,22 @@ torch::Tensor volume_render_backward(
 
     const int Q = rays.origins.size(0);
 
-    auto_cuda_threads();
+//    auto_cuda_threads();
+    const int cuda_n_threads = 256;
     const int blocks = CUDA_N_BLOCKS_NEEDED(Q, cuda_n_threads);
     int out_data_dim = get_out_data_dim(opt.format, opt.basis_dim, tree.data.size(4));
     torch::Tensor result = torch::zeros_like(tree.data);
     AT_DISPATCH_FLOATING_TYPES(rays.origins.scalar_type(), __FUNCTION__, [&] {
-            device::render_ray_backward_kernel<scalar_t><<<blocks, cuda_n_threads>>>(
+        if (opt.format == FORMAT_SH && opt.basis_dim == 9) {
+            device::render_ray_backward_kernel<scalar_t, 28><<<blocks, cuda_n_threads>>>(
                 tree,
                 grad_output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
                 rays,
                 opt,
                 result.packed_accessor64<scalar_t, 5, torch::RestrictPtrTraits>());
+        } else {
+            throw std::runtime_error{"Unsupported format / basis_dim."};
+        }
     });
     CUDA_CHECK_ERRORS;
     return result;
@@ -949,12 +963,16 @@ torch::Tensor volume_render_image_backward(TreeSpec& tree, CameraSpec& cam,
     torch::Tensor result = torch::zeros_like(tree.data);
 
     AT_DISPATCH_FLOATING_TYPES(tree.data.scalar_type(), __FUNCTION__, [&] {
-            device::render_image_backward_kernel<scalar_t><<<blocks, cuda_n_threads>>>(
+        if (opt.format == FORMAT_SH && opt.basis_dim == 9) {
+            device::render_image_backward_kernel<scalar_t, 28><<<blocks, cuda_n_threads>>>(
                 tree,
                 grad_output.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
                 cam,
                 opt,
                 result.packed_accessor64<scalar_t, 5, torch::RestrictPtrTraits>());
+        } else {
+            throw std::runtime_error{"Unsupported format / basis_dim."};
+        }
     });
     CUDA_CHECK_ERRORS;
     return result;
