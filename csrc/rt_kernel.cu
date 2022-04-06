@@ -262,7 +262,7 @@ __device__ __inline__ void _dda_unit(
 ////    }
 //}
 
-template <typename scalar_t, K>
+template <typename scalar_t, int K>
 __device__ __inline__ void stratified_sample_proposal(
                                                       PackedTreeSpec<scalar_t>& __restrict__ tree,
                                                       int32_t* __restrict__ num_strat_samples,
@@ -321,7 +321,7 @@ __device__ __inline__ void stratified_sample_proposal(
     query_interp_from_root<scalar_t, K>(tree.data, tree.child, neighbor_data_buf, pos, &cube_sz_, interp_out);
 }
 
-template <typename scalar_t, K>
+template <typename scalar_t, int K>
 __device__ __inline__ void stratified_fwd_sample_proposal(
                                                       PackedTreeSpec<scalar_t>& __restrict__ tree,
                                                       scalar_t* __restrict__ delta_t,

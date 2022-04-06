@@ -134,6 +134,7 @@ __device__ __inline__ void query_interp_from_root(
     scalar_t* __restrict__ interp_out)
 {
     const scalar_t N = child.size(1);
+    scalar_t *neighbor_data;
     clamp_coord<scalar_t>(xyz_inout);
 
     int32_t node_id = 0;
@@ -174,7 +175,6 @@ __device__ __inline__ void query_interp_from_root(
         printf("coords: %f, %f, %f\n", xyz_inout[0], xyz_inout[1], xyz_inout[2]);
 
         printf("pt = %d,%d,%d - pt+1 = %d,%d,%d\n", pu, pv, pw, u, v, w);
-        scalar_t *neighbor_data;
         // i, j, k index neighbors
         #pragma unroll 2
         for (int i = 0; i < 2; ++i) {

@@ -142,7 +142,7 @@ torch::Tensor query_interp(TreeSpec& tree, torch::Tensor indices) {
     DEVICE_GUARD(indices);
 
     const auto Q = indices.size(0), K = tree.data.size(4);
-    const int threads = 512;
+    const int threads = 256;
     const int blocks = CUDA_N_BLOCKS_NEEDED(Q, threads);
     printf("in query_interp launcher (host)\n");
     printf("Q: %d, K: %d, blocks: %d, threads: %d\n", Q, K, blocks, threads);
