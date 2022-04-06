@@ -272,7 +272,7 @@ class N3Tree(nn.Module):
             return result
         else:
             result, node_ids = _QueryVerticalFunction.apply(
-                                self.data, self._spec(world), indices);
+                                self.data, self._spec(world), indices)
             return (result, node_ids) if want_node_ids else result
 
     # Special features
