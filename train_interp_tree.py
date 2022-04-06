@@ -20,7 +20,7 @@ def train_interp_tree(cfg):
     # Initialize model
     model = svox.N3Tree(
         N=2,
-        data_dim=(h_degree + 1) ** 2 + 1,
+        data_dim=3 * (h_degree + 1) ** 2 + 1,
         depth_limit=8,
         init_reserve=64**3,
         init_refine=5,
@@ -29,7 +29,7 @@ def train_interp_tree(cfg):
         center=(tr_dset.scene_bbox[1] + tr_dset.scene_bbox[0]) / 2,
         device="cpu",
         dtype=torch.float32,
-        data_format=DataFormat("SH%d" % (h_degree)),
+        data_format="SH%d" % ((h_degree + 1) ** 2),
     ).to(dev)
     renderer = svox_renderer.VolumeRenderer(
         tree=model,
@@ -62,9 +62,7 @@ def train_interp_tree(cfg):
                 rays_d = rays[:, 1].contiguous()
                 imgs = imgs.to(device=dev)
 
-                renderer.forward(rays=svox_renderer.Rays(origins=rays_o, dirs=rays_d, viewdirs=rays_d))
-
-                preds, _, _ = model(rays_o=rays_o, rays_d=rays_d)
+                preds = renderer.forward(rays=svox_renderer.Rays(origins=rays_o, dirs=rays_d, viewdirs=rays_d))
                 loss = F.mse_loss(preds, imgs)
                 loss.backward()
                 optim.step()

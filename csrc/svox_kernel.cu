@@ -155,8 +155,8 @@ torch::Tensor query_interp(TreeSpec& tree, torch::Tensor indices) {
             case 3:
                 device::query_interp_kernel<scalar_t, 3><<<blocks, threads>>>(tree, indices_acc, values_acc);
                 break;
-            case 9:
-                device::query_interp_kernel<scalar_t, 9><<<blocks, threads>>>(tree, indices_acc, values_acc);
+            case 28:
+                device::query_interp_kernel<scalar_t, 28><<<blocks, threads>>>(tree, indices_acc, values_acc);
                 break;
             default:
                 throw std::runtime_error{"Unsupported format / basis_dim."};

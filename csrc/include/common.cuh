@@ -201,11 +201,11 @@ __device__ __inline__ void query_interp_from_root(
                             printf("Distance: %f, %f, %f\n", dist_o[0], dist_o[1], dist_o[2]);
                         } else if (i == 1 && j == 1 && k == 1) {
                             dist_o[0] = (xyz_inout[0] + u) / N;
-                            dist_o[0] = dist_o[0] < 0.5 ? 1 - dist_o[0] - 0.5 : 1 - dist_o[0] + 0.5;
+                            dist_o[0] = dist_o[0] < 0.5 ? dist_o[0] + 0.5 : dist_o[0] - 0.5;
                             dist_o[1] = (xyz_inout[1] + v) / N;
-                            dist_o[1] = dist_o[1] < 0.5 ? 1 - dist_o[1] - 0.5 : 1 - dist_o[1] + 0.5;
+                            dist_o[1] = dist_o[1] < 0.5 ? dist_o[1] + 0.5 : dist_o[1] - 0.5;
                             dist_o[2] = (xyz_inout[2] + w) / N;
-                            dist_o[2] = dist_o[2] < 0.5 ? 1 - dist_o[2] - 0.5 : 1 - dist_o[2] + 0.5;
+                            dist_o[2] = dist_o[2] < 0.5 ? dist_o[2] + 0.5 : dist_o[2] - 0.5;
                             printf("Distance: %f, %f, %f\n", dist_o[0], dist_o[1], dist_o[2]);
                         }
 //                        neighbor_valid[(i << 2) + (j << 1) + k] = true;
@@ -220,15 +220,15 @@ __device__ __inline__ void query_interp_from_root(
             }
         }
         for (int data_idx = 0; data_idx < K; ++data_idx) {
-            parent_sum[data_idx] += data[node_i][pu][pv][pw][data_idx];
+            parent_sum[data_idx] += data[node_id][pu][pv][pw][data_idx];
         }
-        for (int i = 0; i < 8; ++i) {
+        //for (int i = 0; i < 8; ++i) {
 //            if (!neighbor_valid[i]) {
-            for (int data_idx = 0; data_idx < K; ++data_idx) {
-                neighbor_data_buf[i * K + data_idx] = 0.0;
-            }
+          //  for (int data_idx = 0; data_idx < K; ++data_idx) {
+          //      neighbor_data_buf[i * K + data_idx] = 0.0;
+         //   }
 //            }
-        }
+       // }
         const int32_t skip = child[node_id][pu][pv][pw];
         printf("At node %d - child %d, %d, %d - skip %d\n", node_id, pu, pv, pw, skip);
         if (skip == 0) {

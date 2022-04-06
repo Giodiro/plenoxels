@@ -863,8 +863,8 @@ torch::Tensor volume_render(TreeSpec& tree, RaysSpec& rays, RenderOptions& opt)
             device::render_ray_kernel<scalar_t, 3><<<blocks, cuda_n_threads>>>(
                     tree, rays, opt,
                     result.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>());
-        } else if (opt.format == FORMAT_RGBA && opt.basis_dim == 2) {
-            device::render_ray_kernel<scalar_t, 9><<<blocks, cuda_n_threads>>>(
+        } else if (opt.format == FORMAT_SH && opt.basis_dim == 9) {
+            device::render_ray_kernel<scalar_t, 28><<<blocks, cuda_n_threads>>>(
                     tree, rays, opt,
                     result.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>());
         } else {
@@ -894,8 +894,8 @@ torch::Tensor volume_render_image(TreeSpec& tree, CameraSpec& cam, RenderOptions
             device::render_image_kernel<scalar_t, 3><<<blocks, cuda_n_threads>>>(
                     tree, cam, opt,
                     result.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>());
-        } else if (opt.format == FORMAT_RGBA && opt.basis_dim == 2) {
-            device::render_image_kernel<scalar_t, 9><<<blocks, cuda_n_threads>>>(
+        } else if (opt.format == FORMAT_SH && opt.basis_dim == 9) {
+            device::render_image_kernel<scalar_t, 28><<<blocks, cuda_n_threads>>>(
                     tree, cam, opt,
                     result.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>());
         } else {

@@ -23,7 +23,7 @@ _C.optim.lr_sigma = None
 _C.optim.lr_rgb = None
 _C.optim.lr_decay = 10  # 10 * 1000 steps
 
-_C.optim.optimizer = "adam"
+_C.optim.optimizer = "sgd"
 
 _C.optim.regularization = CN()
 _C.optim.regularization.types = ["TV"]
@@ -39,8 +39,8 @@ _C.data = CN()
 _C.data.datadir = "/home/giacomo/plenoxels/lego"
 _C.data.resolution = 128
 _C.data.downsample = 1.0
-_C.data.max_tr_frames = None
-_C.data.max_ts_frames = None
+_C.data.max_tr_frames = 10#None
+_C.data.max_ts_frames = 2#None
 
 _C.grid = CN()
 _C.grid.ini_rgb = 0.0
