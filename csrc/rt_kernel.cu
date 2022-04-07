@@ -268,8 +268,6 @@ __device__ __inline__ void stratified_sample_proposal(
                                                       int32_t* __restrict__ num_strat_samples,
                                                       scalar_t* __restrict__ delta_t,
                                                       scalar_t* __restrict__ t_ptr,
-                                                      scalar_t* __restrict__ subcube_tmin,
-                                                      scalar_t* __restrict__ subcube_tmax,
                                                       const scalar_t* __restrict__ invdir,
                                                       SingleRaySpec<scalar_t> ray,
                                                       int32_t max_samples_per_node,
@@ -285,7 +283,7 @@ __device__ __inline__ void stratified_sample_proposal(
     scalar_t pos[3];
     scalar_t relpos[3];
     scalar_t t = *t_ptr;
-    scalar_t t1, t2;
+    scalar_t t1, t2, subcube_tmin, subcube_tmax;
     if (*num_strat_samples == 0)
     {
         // advance to new sub-cube
@@ -302,9 +300,10 @@ __device__ __inline__ void stratified_sample_proposal(
         query_node_info_from_root<scalar_t>(tree.child, relpos, &cube_sz, &node_id);
         //printf("New subcube offset: %f %f %f - node id %ld - size %f\n", relpos[0], relpos[1], relpos[2], node_id, cube_sz);
 
-        *subcube_tmin = 0.0f;
-        *subcube_tmax = 1e9f;
-        for (int j = 0; j < 3; ++j) {
+        subcube_tmin = 0.0f;
+        subcube_tmax = 1e9f;
+        for (int j = 0; j < 3; ++j)
+        {
             t1 = (-relpos[j] + 1.0) / cube_sz * invdir[j];
             t2 = (-relpos[j] - 1.0) / cube_sz * invdir[j];
             // first part gets the center of the cube, then go to its edges.
@@ -405,19 +404,14 @@ __device__ __inline__ void trace_ray(
 
         scalar_t light_intensity = 1.f;
         scalar_t t = tmin;
-
         // Helper variables for sampling
-        scalar_t delta_t = 0, subcube_tmin, subcube_tmax;
+        scalar_t delta_t = 0;
         int32_t num_strat_samples = 0;
 
         const scalar_t d_rgb_pad = 1 + 2 * opt.rgb_padding;
         while (true) {
-            scalar_t att;
-
-//          tree_val = stratified_fwd_sample_proposal(
-//                &delta_t, &t, &subcube_tmin, &subcube_tmax, &invdir, ray, opt.step_size);
             stratified_sample_proposal<scalar_t, K>(
-                tree, &num_strat_samples, &delta_t, &t, &subcube_tmin, &subcube_tmax, invdir, ray,
+                tree, &num_strat_samples, &delta_t, &t, invdir, ray,
                 opt.max_samples_per_node, neighbor_data_buf, tree_val);
             printf("t: %f - tmax %f\n", t, tmax);
             if (t >= tmax) {
@@ -430,25 +424,18 @@ __device__ __inline__ void trace_ray(
                 sigma = _SOFTPLUS_M1(sigma);
             }
             if (sigma > opt.sigma_thresh) {
-                att = expf(-delta_t * delta_scale * sigma);
+                const scalar_t att = expf(-delta_t * delta_scale * sigma);  // (1 - alpha)
                 const scalar_t weight = light_intensity * (1.f - att);
-
-                if (opt.format != FORMAT_RGBA) {
-                    for (int j = 0; j < out_data_dim; ++j) {
-                        int off = j * opt.basis_dim;
-                        scalar_t tmp = 0.0;
-                        for (int i = opt.min_comp; i <= opt.max_comp; ++i) {
-                            tmp += basis_fn[i] * tree_val[off + i];
-                        }
-                        out[j] += weight * (_SIGMOID(tmp) * d_rgb_pad - opt.rgb_padding);
-                    }
-                } else {
-                    for (int j = 0; j < out_data_dim; ++j) {
-                        out[j] += weight * (_SIGMOID(tree_val[j]) * d_rgb_pad - opt.rgb_padding);
-                    }
-                }
                 light_intensity *= att;
 
+                for (int j = 0; j < out_data_dim; ++j) {
+                    int off = j * opt.basis_dim;
+                    scalar_t tmp = 0.0;
+                    for (int i = opt.min_comp; i <= opt.max_comp; ++i) {
+                        tmp += basis_fn[i] * tree_val[off + i];
+                    }
+                    out[j] += weight * (_SIGMOID(tmp) * d_rgb_pad - opt.rgb_padding);
+                }
                 if (light_intensity <= opt.stop_thresh) {
                     // Full opacity, stop
                     scalar_t scale = 1.0 / (1.0 - light_intensity);
@@ -484,7 +471,6 @@ __device__ __inline__ void trace_ray_backward(
     scalar_t neighbor_data_buf[8*K];
     scalar_t tree_val[K];
 
-
     #pragma unroll 3
     for (int i = 0; i < 3; ++i) {
         invdir[i] = 1.0 / (ray.dir[i] + 1e-9);
@@ -495,25 +481,22 @@ __device__ __inline__ void trace_ray_backward(
         // Ray doesn't hit box
         return;
     } else {
-        scalar_t pos[3];
         scalar_t basis_fn[25];
-        maybe_precalc_basis<scalar_t>(opt.format, opt.basis_dim, tree.extra_data,
-                ray.vdir, basis_fn);
+        maybe_precalc_basis<scalar_t>(opt.format, opt.basis_dim, tree.extra_data,  ray.vdir, basis_fn);
 
         scalar_t accum = 0.0;
         const scalar_t d_rgb_pad = 1 + 2 * opt.rgb_padding;
-        // PASS 1
+        // PASS 1:
         {
-            scalar_t light_intensity = 1.f, t = tmin, cube_sz;
+            scalar_t light_intensity = 1.f, t = tmin;
             // Helper variables for sampling
-            scalar_t delta_t = 0, subcube_tmin, subcube_tmax;
+            scalar_t delta_t = 0;
             int32_t num_strat_samples = 0;
             while (true) {
-//                const scalar_t* tree_val = query_single_from_root<scalar_t>(
-//                        tree.data, tree.child, pos, &cube_sz);
                 stratified_sample_proposal<scalar_t, K>(
-                    tree, &num_strat_samples, &delta_t, &t, &subcube_tmin, &subcube_tmax, invdir, ray,
+                    tree, &num_strat_samples, &delta_t, &t, invdir, ray,
                     opt.max_samples_per_node, neighbor_data_buf, tree_val);
+                printf("In trace-bwd pass 1. t=%f\n", t);
                 if (t >= tmax) {
                     break;
                 }
@@ -521,41 +504,28 @@ __device__ __inline__ void trace_ray_backward(
                 const int64_t curr_leaf_offset = tree_val - tree.data.data();
                 scalar_t* grad_tree_val = grad_data_out.data() + curr_leaf_offset;
 
-                scalar_t att;
                 scalar_t sigma = tree_val[K - 1];
-                if (opt.density_softplus) sigma = _SOFTPLUS_M1(sigma);
+                if (opt.density_softplus) {
+                    sigma = _SOFTPLUS_M1(sigma);
+                }
                 if (sigma > 0.0) {
-                    att = expf(-delta_t * sigma * delta_scale);
+                    const scalar_t att = expf(-delta_t * sigma * delta_scale);
                     const scalar_t weight = light_intensity * (1.f - att);
 
                     scalar_t total_color = 0.f;
-                    if (opt.format != FORMAT_RGBA) {
-                        for (int t = 0; t < out_data_dim; ++ t) {
-                            int off = t * opt.basis_dim;
-                            scalar_t tmp = 0.0;
-                            for (int i = opt.min_comp; i <= opt.max_comp; ++i) {
-                                tmp += basis_fn[i] * tree_val[off + i];
-                            }
-                            const scalar_t sigmoid = _SIGMOID(tmp);
-                            const scalar_t tmp2 = weight * sigmoid * (1.0 - sigmoid) *
-                                                 grad_output[t] * d_rgb_pad;
-                            for (int i = opt.min_comp; i <= opt.max_comp; ++i) {
-                                const scalar_t toadd = basis_fn[i] * tmp2;
-                                atomicAdd(&grad_tree_val[off + i],
-                                        toadd);
-                            }
-                            total_color += (sigmoid * d_rgb_pad - opt.rgb_padding)
-                                            * grad_output[t];
+                    for (int j = 0; j < out_data_dim; ++j) {
+                        int off = j * opt.basis_dim;
+                        scalar_t tmp = 0.0;
+                        for (int i = opt.min_comp; i <= opt.max_comp; ++i) {
+                            tmp += basis_fn[i] * tree_val[off + i];
                         }
-                    } else {
-                        for (int j = 0; j < out_data_dim; ++j) {
-                            const scalar_t sigmoid = _SIGMOID(tree_val[j]);
-                            const scalar_t toadd = weight * sigmoid * (
-                                    1.f - sigmoid) * grad_output[j] * d_rgb_pad;
-                            atomicAdd(&grad_tree_val[j], toadd);
-                            total_color += (sigmoid * d_rgb_pad - opt.rgb_padding)
-                                            * grad_output[j];
+                        const scalar_t sigmoid = _SIGMOID(tmp);
+                        const scalar_t tmp2 = weight * sigmoid * (1.0 - sigmoid) * grad_output[j] * d_rgb_pad;
+                        for (int i = opt.min_comp; i <= opt.max_comp; ++i) {
+                            const scalar_t toadd = basis_fn[i] * tmp2;
+                            atomicAdd(&grad_tree_val[off + i], toadd);
                         }
+                        total_color += (sigmoid * d_rgb_pad - opt.rgb_padding) * grad_output[j];
                     }
                     light_intensity *= att;
                     accum += weight * total_color;
@@ -568,47 +538,40 @@ __device__ __inline__ void trace_ray_backward(
         }
         // PASS 2
         {
-            // scalar_t accum_lo = 0.0;
-            scalar_t light_intensity = 1.f, t = tmin, cube_sz;
+            scalar_t light_intensity = 1.f, t = tmin;
             // Helper variables for sampling
-            scalar_t delta_t = 0, subcube_tmin, subcube_tmax;
+            scalar_t delta_t = 0;
             int32_t num_strat_samples = 0;
             while (true) {
-//                const scalar_t* tree_val = query_single_from_root<scalar_t>(tree.data,
-//                        tree.child, pos, &cube_sz);
                 stratified_sample_proposal<scalar_t, K>(
-                    tree, &num_strat_samples, &delta_t, &t, &subcube_tmin, &subcube_tmax, invdir, ray,
+                    tree, &num_strat_samples, &delta_t, &t, invdir, ray,
                     opt.max_samples_per_node, neighbor_data_buf, tree_val);
+                printf("In trace-bwd pass 2. t=%f\n", t);
                 if (t >= tmax) {
                     break;
                 }
                 // Reuse offset on gradient
                 const int64_t curr_leaf_offset = tree_val - tree.data.data();
-                scalar_t* grad_tree_val = grad_data_out.data() + curr_leaf_offset;
+                const scalar_t* grad_tree_val = grad_data_out.data() + curr_leaf_offset;
 
-                scalar_t att;
-                scalar_t sigma = tree_val[K - 1];
+                const scalar_t sigma = tree_val[K - 1];
                 const scalar_t raw_sigma = sigma;
-                if (opt.density_softplus) sigma = _SOFTPLUS_M1(sigma);
+                if (opt.density_softplus) {
+                    sigma = _SOFTPLUS_M1(sigma);
+                }
                 if (sigma > 0.0) {
-                    att = expf(-delta_t * sigma * delta_scale);
+                    const scalar_t att = expf(-delta_t * sigma * delta_scale);
                     const scalar_t weight = light_intensity * (1.f - att);
 
                     scalar_t total_color = 0.f;
                     if (opt.format != FORMAT_RGBA) {
-                        for (int t = 0; t < out_data_dim; ++ t) {
+                        for (int j = 0; j < out_data_dim; ++j) {
                             int off = t * opt.basis_dim;
                             scalar_t tmp = 0.0;
                             for (int i = opt.min_comp; i <= opt.max_comp; ++i) {
                                 tmp += basis_fn[i] * tree_val[off + i];
                             }
-                            total_color += (_SIGMOID(tmp) * d_rgb_pad - opt.rgb_padding)
-                                            * grad_output[t];
-                        }
-                    } else {
-                        for (int j = 0; j < out_data_dim; ++j) {
-                            total_color += (_SIGMOID(tree_val[j]) * d_rgb_pad - opt.rgb_padding)
-                                            * grad_output[j];
+                            total_color += (_SIGMOID(tmp) * d_rgb_pad - opt.rgb_padding) * grad_output[j];
                         }
                     }
                     light_intensity *= att;
@@ -617,9 +580,7 @@ __device__ __inline__ void trace_ray_backward(
                             &grad_tree_val[K - 1],
                             delta_t * delta_scale * (
                                 total_color * light_intensity - accum)
-                                *  (opt.density_softplus ?
-                                    _SIGMOID(raw_sigma - 1)
-                                    : 1)
+                                *  (opt.density_softplus ? _SIGMOID(raw_sigma - 1) : 1)
                             );
                 }
             }
