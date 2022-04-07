@@ -282,30 +282,45 @@ __device__ __inline__ void stratified_sample_proposal(
         2. Go through the samples one by one.
         3. Once there are no more samples go to the next subcube (adding some small amount to tmax) and repeat
     */
-    scalar_t pos [3];
+    scalar_t pos[3];
+    scalar_t relpos[3];
     scalar_t t = *t_ptr;
+    scalar_t l, r, t1, t2;
     if (*num_strat_samples == 0)
     {
         // old sub-cube position
         # pragma unroll 3
         for (int j = 0; j < 3; ++j) {
-            pos[j] = ray.origin[j] + t * ray.dir[j];
+            pos[j] = ray.origin[j] + (t + *delta_t) * ray.dir[j];
+            relpos[j] = pos[j];
         }
-        // Advance to after the end of the current sub-cube
-        _dda_unit(pos, invdir, subcube_tmin, subcube_tmax);
-        for (int j = 0; j < 3; ++j) {
-            pos[j] += (*subcube_tmax - *subcube_tmin + 1e-5) * ray.dir[j];
-        }
-        // Fetch the new sub-cube size
+        printf("position %f %f %f\n", pos[0], pos[1], pos[2]);
+        // New subcube info
+        // pos will hold the current offset in the new subcube
         scalar_t cube_sz;
-        query_single_from_root<scalar_t>(tree.data, tree.child, pos, &cube_sz, nullptr);  // only care about cube_sz
-        _dda_unit(pos, invdir, subcube_tmin, subcube_tmax);
+        int64_t node_id;
+        query_node_info_from_root<scalar_t>(tree.child, relpos, &cube_sz, &node_id);
+        printf("New subcube offset: %f %f %f - node id %d - size %f\n", relpos[0], relpos[1], relpos[2], node_id, cube_sz);
+
+        *subcube_tmin = 0.0f;
+        *subcube_tmax = 1e9f;
+        for (int j = 0; j < 3; ++j) {
+            l = (pos[j] - relpos[j]) - (1.7320508075688772 / 2.0 / cube_sz);
+            r = (pos[j] - relpos[j]) + (1.7320508075688772 / 2.0 / cube_sz);
+            // Intersect AABB
+            t1 = (r - pos[j]) * invdir[j];
+            t2 = (l - pos[j]) * invdir[j];
+            *subcube_tmin = max(*subcube_tmin, min(t1, t2));
+            *subcube_tmax = min(*subcube_tmax, max(t1, t2));
+        }
+        printf("Subcube tmin %f -- tmax %f\n", *subcube_tmin, *subcube_tmax);
         // Calculate the number of samples needed in the new sub-cube
-        *num_strat_samples = ceilf(max_samples_per_node * (*subcube_tmax - *subcube_tmin) / 1.7320508075688772);  // diag of unit cube
+        *num_strat_samples = ceilf(max_samples_per_node * (*subcube_tmax - *subcube_tmin) * cube_sz / 1.7320508075688772);
         // Compute step-size for the new sub-cube
-        *delta_t = (*subcube_tmax - *subcube_tmin) / cube_sz / *num_strat_samples;
+        *delta_t = (*subcube_tmax - *subcube_tmin) / *num_strat_samples;
         // Correct sub-cube start position to be in middle of first delta_t-long segment
         t += *subcube_tmin + *delta_t / 2;
+        printf("samples: %d, dt: %f, new t: %f\n", *num_strat_samples, *delta_t, t);
     }
     else
     {
