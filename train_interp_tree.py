@@ -23,7 +23,7 @@ def train_interp_tree(cfg):
         data_dim=3 * (h_degree + 1) ** 2 + 1,
         depth_limit=8,
         init_reserve=64**3,
-        init_refine=5,
+        init_refine=2,
         geom_resize_fact=1.,
         radius=(tr_dset.scene_bbox[1] - tr_dset.scene_bbox[0]) / 2,
         center=(tr_dset.scene_bbox[1] + tr_dset.scene_bbox[0]) / 2,
@@ -63,6 +63,7 @@ def train_interp_tree(cfg):
                 imgs = imgs.to(device=dev)
 
                 preds = renderer.forward(rays=svox_renderer.Rays(origins=rays_o, dirs=rays_d, viewdirs=rays_d))
+                return
                 loss = F.mse_loss(preds, imgs)
                 loss.backward()
                 optim.step()

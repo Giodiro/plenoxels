@@ -12,7 +12,7 @@ _C.sh.degree = 2
 _C.sh.sh_encoder = "plenoxels"
 
 _C.optim = CN()
-_C.optim.batch_size = 8000
+_C.optim.batch_size = 1
 _C.optim.occupancy_penalty = 0.001
 _C.optim.profile = False
 _C.optim.num_epochs = 10

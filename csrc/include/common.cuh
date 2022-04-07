@@ -117,6 +117,7 @@ __device__ __inline__ void query_node_info_from_root(
         const int32_t skip = child[node_id][u][v][w];
         if (skip == 0) {
             *node_id_out = node_id * int64_t(N * N * N) + u * int32_t(N * N) + v * int32_t(N) + w;
+            return;
         }
         *cube_sz_out *= N;
         node_id += skip;
@@ -161,7 +162,7 @@ __device__ __inline__ void query_interp_from_root(
     xyz_inout[0] -= pu;
     xyz_inout[1] -= pv;
     xyz_inout[2] -= pw;
-    printf("coords after root: %f, %f, %f\n", xyz_inout[0], xyz_inout[1], xyz_inout[2]);
+    //printf("coords after root: %f, %f, %f\n", xyz_inout[0], xyz_inout[1], xyz_inout[2]);
 
     while (true) {
         xyz_inout[0] *= N;
@@ -173,9 +174,9 @@ __device__ __inline__ void query_interp_from_root(
         xyz_inout[0] -= u;
         xyz_inout[1] -= v;
         xyz_inout[2] -= w;
-        printf("coords: %f, %f, %f\n", xyz_inout[0], xyz_inout[1], xyz_inout[2]);
+        //printf("coords: %f, %f, %f\n", xyz_inout[0], xyz_inout[1], xyz_inout[2]);
 
-        printf("pt = %d,%d,%d - pt+1 = %d,%d,%d\n", pu, pv, pw, u, v, w);
+        //printf("pt = %d,%d,%d - pt+1 = %d,%d,%d\n", pu, pv, pw, u, v, w);
         // i, j, k index neighbors
         #pragma unroll 2
         for (int i = 0; i < 2; ++i) {
@@ -187,7 +188,7 @@ __device__ __inline__ void query_interp_from_root(
                         (pv + v + j - 1 == 0 || pv + v + j - 1 == 1) &&
                         (pw + w + k - 1 == 0 || pw + w + k - 1 == 1)) {
                         neighbor_data = &data[node_id][pu + u + i - 1][pv + v + j - 1][pw + w + k - 1][0];
-                        printf("Found valid %d,%d,%d neighbor at node [%d][%d][%d][%d] with value [%f, %f, %f] \n", i, j, k, node_id, pu + u + i - 1, pv + v + j - 1, pw + w + k - 1, neighbor_data[0], neighbor_data[1], neighbor_data[2]);
+                        //printf("Found valid %d,%d,%d neighbor at node [%d][%d][%d][%d] with value [%f, %f, %f] \n", i, j, k, node_id, pu + u + i - 1, pv + v + j - 1, pw + w + k - 1, neighbor_data[0], neighbor_data[1], neighbor_data[2]);
                         for (int data_idx = 0; data_idx < K; ++data_idx) {
                             neighbor_data_buf[((i << 2) + (j << 1) + k) * K + data_idx] = parent_sum[data_idx] + neighbor_data[data_idx];
                         }
@@ -198,7 +199,7 @@ __device__ __inline__ void query_interp_from_root(
                             dist_o[1] = dist_o[1] < 0.5 ? dist_o[1] + 0.5 : dist_o[1] - 0.5;
                             dist_o[2] = (xyz_inout[2] + w) / N;
                             dist_o[2] = dist_o[2] < 0.5 ? dist_o[2] + 0.5 : dist_o[2] - 0.5;
-                            printf("Distance: %f, %f, %f\n", dist_o[0], dist_o[1], dist_o[2]);
+                            //printf("Distance: %f, %f, %f\n", dist_o[0], dist_o[1], dist_o[2]);
                         } else if (i == 1 && j == 1 && k == 1) {
                             dist_o[0] = (xyz_inout[0] + u) / N;
                             dist_o[0] = dist_o[0] < 0.5 ? dist_o[0] + 0.5 : dist_o[0] - 0.5;
@@ -206,7 +207,7 @@ __device__ __inline__ void query_interp_from_root(
                             dist_o[1] = dist_o[1] < 0.5 ? dist_o[1] + 0.5 : dist_o[1] - 0.5;
                             dist_o[2] = (xyz_inout[2] + w) / N;
                             dist_o[2] = dist_o[2] < 0.5 ? dist_o[2] + 0.5 : dist_o[2] - 0.5;
-                            printf("Distance: %f, %f, %f\n", dist_o[0], dist_o[1], dist_o[2]);
+                            //printf("Distance: %f, %f, %f\n", dist_o[0], dist_o[1], dist_o[2]);
                         }
 //                        neighbor_valid[(i << 2) + (j << 1) + k] = true;
                     }
@@ -230,7 +231,7 @@ __device__ __inline__ void query_interp_from_root(
 //            }
        // }
         const int32_t skip = child[node_id][pu][pv][pw];
-        printf("At node %d - child %d, %d, %d - skip %d\n", node_id, pu, pv, pw, skip);
+        //printf("At node %d - child %d, %d, %d - skip %d\n", node_id, pu, pv, pw, skip);
         if (skip == 0) {
             for (int data_idx = 0; data_idx < K; ++data_idx) {
                 interp_out[data_idx] =

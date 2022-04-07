@@ -388,6 +388,7 @@ class VolumeRenderer(nn.Module):
         opts = _C.RenderOptions()
         opts.step_size = self.step_size
         opts.background_brightness = self.background_brightness
+        opts.max_samples_per_node = 3
 
         opts.format = self.data_format.format
         opts.basis_dim = self.data_format.basis_dim

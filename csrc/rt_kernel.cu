@@ -285,42 +285,43 @@ __device__ __inline__ void stratified_sample_proposal(
     scalar_t pos[3];
     scalar_t relpos[3];
     scalar_t t = *t_ptr;
-    scalar_t l, r, t1, t2;
+    scalar_t t1, t2;
     if (*num_strat_samples == 0)
     {
-        // old sub-cube position
+        // advance to new sub-cube
+        t += *delta_t / 2 + 1e-4;
+        // new sub-cube position
         # pragma unroll 3
         for (int j = 0; j < 3; ++j) {
-            pos[j] = ray.origin[j] + (t + *delta_t) * ray.dir[j];
+            pos[j] = ray.origin[j] + t * ray.dir[j];
             relpos[j] = pos[j];
         }
-        printf("position %f %f %f\n", pos[0], pos[1], pos[2]);
-        // New subcube info
-        // pos will hold the current offset in the new subcube
+        // New subcube info pos will hold the current offset in the new subcube
         scalar_t cube_sz;
         int64_t node_id;
         query_node_info_from_root<scalar_t>(tree.child, relpos, &cube_sz, &node_id);
-        printf("New subcube offset: %f %f %f - node id %d - size %f\n", relpos[0], relpos[1], relpos[2], node_id, cube_sz);
+        //printf("New subcube offset: %f %f %f - node id %ld - size %f\n", relpos[0], relpos[1], relpos[2], node_id, cube_sz);
 
         *subcube_tmin = 0.0f;
         *subcube_tmax = 1e9f;
         for (int j = 0; j < 3; ++j) {
-            l = (pos[j] - relpos[j]) - (1.7320508075688772 / 2.0 / cube_sz);
-            r = (pos[j] - relpos[j]) + (1.7320508075688772 / 2.0 / cube_sz);
-            // Intersect AABB
-            t1 = (r - pos[j]) * invdir[j];
-            t2 = (l - pos[j]) * invdir[j];
+            t1 = (-relpos[j] + 1.0) / cube_sz * invdir[j];
+            t2 = (-relpos[j] - 1.0) / cube_sz * invdir[j];
+            // first part gets the center of the cube, then go to its edges.
+            // invariant l <= pos[j] <= r
+            //l = (pos[j] - relpos[j] / cube_sz) - (1.0 / cube_sz);
+            //r = (pos[j] - relpos[j] / cube_sz) + (1.0 / cube_sz);
+            //t1 = (r - pos[j]) * invdir[j];
+            //t2 = (l - pos[j]) * invdir[j];
             *subcube_tmin = max(*subcube_tmin, min(t1, t2));
             *subcube_tmax = min(*subcube_tmax, max(t1, t2));
         }
-        printf("Subcube tmin %f -- tmax %f\n", *subcube_tmin, *subcube_tmax);
         // Calculate the number of samples needed in the new sub-cube
         *num_strat_samples = ceilf(max_samples_per_node * (*subcube_tmax - *subcube_tmin) * cube_sz / 1.7320508075688772);
         // Compute step-size for the new sub-cube
         *delta_t = (*subcube_tmax - *subcube_tmin) / *num_strat_samples;
         // Correct sub-cube start position to be in middle of first delta_t-long segment
         t += *subcube_tmin + *delta_t / 2;
-        printf("samples: %d, dt: %f, new t: %f\n", *num_strat_samples, *delta_t, t);
     }
     else
     {
@@ -406,7 +407,7 @@ __device__ __inline__ void trace_ray(
         scalar_t t = tmin;
 
         // Helper variables for sampling
-        scalar_t delta_t, subcube_tmin, subcube_tmax;
+        scalar_t delta_t = 0, subcube_tmin, subcube_tmax;
         int32_t num_strat_samples = 0;
 
         const scalar_t d_rgb_pad = 1 + 2 * opt.rgb_padding;
@@ -418,6 +419,7 @@ __device__ __inline__ void trace_ray(
             stratified_sample_proposal<scalar_t, K>(
                 tree, &num_strat_samples, &delta_t, &t, &subcube_tmin, &subcube_tmax, invdir, ray,
                 opt.max_samples_per_node, neighbor_data_buf, tree_val);
+            printf("t: %f - tmax %f\n", t, tmax);
             if (t >= tmax) {
                 break;
             }
@@ -456,6 +458,7 @@ __device__ __inline__ void trace_ray(
                     return;
                 }
             }
+            printf("Loop finished\n");
         }
         for (int j = 0; j < out_data_dim; ++j) {
             out[j] += light_intensity * opt.background_brightness;
@@ -503,7 +506,7 @@ __device__ __inline__ void trace_ray_backward(
         {
             scalar_t light_intensity = 1.f, t = tmin, cube_sz;
             // Helper variables for sampling
-            scalar_t delta_t, subcube_tmin, subcube_tmax;
+            scalar_t delta_t = 0, subcube_tmin, subcube_tmax;
             int32_t num_strat_samples = 0;
             while (true) {
 //                const scalar_t* tree_val = query_single_from_root<scalar_t>(
@@ -568,7 +571,7 @@ __device__ __inline__ void trace_ray_backward(
             // scalar_t accum_lo = 0.0;
             scalar_t light_intensity = 1.f, t = tmin, cube_sz;
             // Helper variables for sampling
-            scalar_t delta_t, subcube_tmin, subcube_tmax;
+            scalar_t delta_t = 0, subcube_tmin, subcube_tmax;
             int32_t num_strat_samples = 0;
             while (true) {
 //                const scalar_t* tree_val = query_single_from_root<scalar_t>(tree.data,
