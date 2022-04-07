@@ -151,7 +151,7 @@ __device__ __inline__ void query_interp_from_root(
             neighbor_data_buf[i * K + data_idx] = 0.0;
         }
     }
-    printf("input coords: %f, %f, %f\n", xyz_inout[0], xyz_inout[1], xyz_inout[2]);
+    //printf("input coords: %f, %f, %f\n", xyz_inout[0], xyz_inout[1], xyz_inout[2]);
     // First iteration, to initialize parent coordinates
     xyz_inout[0] *= N;
     xyz_inout[1] *= N;

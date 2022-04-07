@@ -312,15 +312,15 @@ __device__ __inline__ void stratified_sample_proposal(
             //r = (pos[j] - relpos[j] / cube_sz) + (1.0 / cube_sz);
             //t1 = (r - pos[j]) * invdir[j];
             //t2 = (l - pos[j]) * invdir[j];
-            *subcube_tmin = max(*subcube_tmin, min(t1, t2));
-            *subcube_tmax = min(*subcube_tmax, max(t1, t2));
+            subcube_tmin = max(subcube_tmin, min(t1, t2));
+            subcube_tmax = min(subcube_tmax, max(t1, t2));
         }
         // Calculate the number of samples needed in the new sub-cube
-        *num_strat_samples = ceilf(max_samples_per_node * (*subcube_tmax - *subcube_tmin) * cube_sz / 1.7320508075688772);
+        *num_strat_samples = ceilf(max_samples_per_node * (subcube_tmax - subcube_tmin) * cube_sz / 1.7320508075688772);
         // Compute step-size for the new sub-cube
-        *delta_t = (*subcube_tmax - *subcube_tmin) / *num_strat_samples;
+        *delta_t = (subcube_tmax - subcube_tmin) / *num_strat_samples;
         // Correct sub-cube start position to be in middle of first delta_t-long segment
-        t += *subcube_tmin + *delta_t / 2;
+        t += subcube_tmin + *delta_t / 2;
     }
     else
     {
@@ -333,7 +333,9 @@ __device__ __inline__ void stratified_sample_proposal(
     (*num_strat_samples)--;
     *t_ptr = t;
     scalar_t cube_sz_;
-    query_interp_from_root<scalar_t, K>(tree.data, tree.child, neighbor_data_buf, pos, &cube_sz_, interp_out);
+    //query_interp_from_root<scalar_t, K>(tree.data, tree.child, neighbor_data_buf, pos, &cube_sz_, interp_out);
+    scalar_t * out = query_single_from_root<scalar_t>(tree.data, tree.child, pos, &cube_sz_, nullptr);
+    interp_out = out;
 }
 
 template <typename scalar_t, int K>
@@ -413,7 +415,6 @@ __device__ __inline__ void trace_ray(
             stratified_sample_proposal<scalar_t, K>(
                 tree, &num_strat_samples, &delta_t, &t, invdir, ray,
                 opt.max_samples_per_node, neighbor_data_buf, tree_val);
-            printf("t: %f - tmax %f\n", t, tmax);
             if (t >= tmax) {
                 break;
             }
@@ -445,7 +446,6 @@ __device__ __inline__ void trace_ray(
                     return;
                 }
             }
-            printf("Loop finished\n");
         }
         for (int j = 0; j < out_data_dim; ++j) {
             out[j] += light_intensity * opt.background_brightness;
@@ -496,13 +496,12 @@ __device__ __inline__ void trace_ray_backward(
                 stratified_sample_proposal<scalar_t, K>(
                     tree, &num_strat_samples, &delta_t, &t, invdir, ray,
                     opt.max_samples_per_node, neighbor_data_buf, tree_val);
-                printf("In trace-bwd pass 1. t=%f\n", t);
                 if (t >= tmax) {
                     break;
                 }
                 // Reuse offset on gradient
                 const int64_t curr_leaf_offset = tree_val - tree.data.data();
-                scalar_t* grad_tree_val = grad_data_out.data() + curr_leaf_offset;
+                scalar_t* const grad_tree_val = grad_data_out.data() + curr_leaf_offset;
 
                 scalar_t sigma = tree_val[K - 1];
                 if (opt.density_softplus) {
@@ -546,15 +545,14 @@ __device__ __inline__ void trace_ray_backward(
                 stratified_sample_proposal<scalar_t, K>(
                     tree, &num_strat_samples, &delta_t, &t, invdir, ray,
                     opt.max_samples_per_node, neighbor_data_buf, tree_val);
-                printf("In trace-bwd pass 2. t=%f\n", t);
                 if (t >= tmax) {
                     break;
                 }
                 // Reuse offset on gradient
                 const int64_t curr_leaf_offset = tree_val - tree.data.data();
-                const scalar_t* grad_tree_val = grad_data_out.data() + curr_leaf_offset;
+                scalar_t* const grad_tree_val = grad_data_out.data() + curr_leaf_offset;
 
-                const scalar_t sigma = tree_val[K - 1];
+                scalar_t sigma = tree_val[K - 1];
                 const scalar_t raw_sigma = sigma;
                 if (opt.density_softplus) {
                     sigma = _SOFTPLUS_M1(sigma);
