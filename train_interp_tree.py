@@ -1,6 +1,9 @@
 import math
+import os
 from contextlib import ExitStack
+from typing import Union
 
+import imageio
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -8,8 +11,56 @@ from tqdm import tqdm
 
 import svox
 import svox_renderer
-from svox_helpers import DataFormat
+from synthetic_nerf_dataset import SyntheticNerfDataset
 from tc_plenoptimize import init_datasets, init_profiler, parse_config
+
+
+def run_test_step(test_dset: SyntheticNerfDataset,
+                  model,
+                  renderer,
+                  render_every: int,
+                  log_dir: str,
+                  iteration: int,
+                  batch_size: int,
+                  device: Union[torch.device, str],
+                  exp_name: str) -> float:
+    model.eval()
+    with torch.autograd.no_grad():
+        total_psnr = 0.0
+        for i, test_el in tqdm(enumerate(test_dset), desc="Evaluating on test data"):
+            # These are rays/rgb for a full single image
+            rays, rgb = test_el
+            rgb = rgb.reshape(test_dset.img_h, test_dset.img_w, 3)
+            # We need to do some manual batching
+            rgb_map, depth = [], []
+            for b in range(math.ceil(rays.shape[0] / batch_size)):
+                rays_o = rays[b * batch_size: (b + 1) * batch_size, 0].contiguous().to(
+                    device=device)
+                rays_d = rays[b * batch_size: (b + 1) * batch_size, 1].contiguous().to(
+                    device=device)
+
+                rgb_map_b = renderer.forward(rays=svox_renderer.Rays(origins=rays_o, dirs=rays_d, viewdirs=rays_d))
+                rgb_map.append(rgb_map_b.cpu())
+                # depth.append(depth_b.cpu())
+            rgb_map = torch.stack(rgb_map, 0).reshape(test_dset.img_h, test_dset.img_w, 3)
+            # depth = torch.stack(depth).reshape(test_dset.img_h, test_dset.img_w)
+
+            # Compute loss metrics
+            mse = torch.mean((rgb_map - rgb) ** 2)
+            psnr = -10.0 * torch.log(mse) / math.log(10)
+            total_psnr += psnr
+
+            # Render and save result to file
+            if (i + 1) % render_every == 0:
+                # depth = depth.unsqueeze(-1).repeat(1, 1, 3)
+                # out_img = torch.cat((rgb, rgb_map, depth), dim=1)
+                out_img = torch.cat((rgb, rgb_map), dim=1)
+                out_img = (out_img * 255).to(dtype=torch.uint8).numpy()
+                out_dir = os.path.join(log_dir, exp_name)
+                os.makedirs(out_dir, exist_ok=True)
+                imageio.imwrite(os.path.join(out_dir, f"{iteration:05}_test_img_{i:04}.png"), out_img)
+    return total_psnr / i
+
 
 
 def train_interp_tree(cfg):
@@ -79,12 +130,12 @@ def train_interp_tree(cfg):
                           f"MSE {np.mean(mses):.4f} PSNR {np.mean(psnrs):.4f}")
                     psnrs, mses = [], []
 
-                # if (i + 1) % cfg.optim.eval_refresh_rate == 0:
-                #     ts_psnr = run_test_step(
-                #         ts_dset, model, render_every=cfg.optim.render_refresh_rate,
-                #         log_dir=cfg.logdir, iteration=epoch * len(tr_loader) + i + 1,
-                #         batch_size=cfg.optim.batch_size, device=dev, exp_name=cfg.expname)
-                #     print(f"Epoch {epoch} - iteration {i}: Test PSNR: {ts_psnr:.4f}")
+                if (i + 1) % cfg.optim.eval_refresh_rate == 0:
+                    ts_psnr = run_test_step(
+                        ts_dset, model, renderer=renderer, render_every=cfg.optim.render_refresh_rate,
+                        log_dir=cfg.logdir, iteration=epoch * len(tr_loader) + i + 1,
+                        batch_size=cfg.optim.batch_size, device=dev, exp_name=cfg.expname)
+                    print(f"Epoch {epoch} - iteration {i}: Test PSNR: {ts_psnr:.4f}")
 
                 # Profiling
                 if p is not None:
