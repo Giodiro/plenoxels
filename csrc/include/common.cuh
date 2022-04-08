@@ -50,6 +50,60 @@ __device__ __inline__ void transform_coord(scalar_t* __restrict__ q,
     }
 }
 
+template <uint32_t N>
+__device__ __inline__ int64_t pack_idx(int32_t i, int32_t u, int32_t v, int32_t w)
+{
+    return int64_t(i) * (N * N * N) +
+            u * N * N +
+            v * N +
+            w;
+}
+
+template <uint32_t N>
+__device__ __inline__ void unpack_idx(int64_t idx, int32_t *i, int32_t *u, int32_t *v, int32_t *w)
+{
+    *w = idx % N;
+    idx = idx / N;
+    *v = idx % N;
+    idx = idx / N;
+    *u = idx % N;
+    *i = idx / N;
+}
+
+template <typename scalar_t>
+__device__ __inline__ void trilinear_weights(const scalar_t* __restrict__ dist_o,
+                                             scalar_t* __restrict__ weights_out)
+{
+    weights_out[0] = (1 - dist_o[0]) * (1 - dist_o[1]) * (1 - dist_o[2]);
+    weights_out[1] = (1 - dist_o[0]) * (1 - dist_o[1]) * dist_o[2]      ;
+    weights_out[2] = (1 - dist_o[0]) * dist_o[1]       * (1 - dist_o[2]);
+    weights_out[3] = (1 - dist_o[0]) * dist_o[1]       * dist_o[2]      ;
+    weights_out[4] = dist_o[0]       * (1 - dist_o[1]) * (1 - dist_o[2]);
+    weights_out[5] = dist_o[0]       * (1 - dist_o[1]) * dist_o[2]      ;
+    weights_out[6] = dist_o[0]       * dist_o[1]       * (1 - dist_o[2]);
+    weights_out[7] = dist_o[0]       * dist_o[1]       * dist_o[2]      ;
+}
+
+template <typename scalar_t>
+__device__ __inline__ void traverse_tree_level(
+            scalar_t* __restrict__ xyz_inout,
+            const scalar_t N,
+            scalar_t* __restrict__ u_out,
+            scalar_t* __restrict__ v_out,
+            scalar_t* __restrict__ w_out)
+{
+    xyz_inout[0] *= N;
+    xyz_inout[1] *= N;
+    xyz_inout[2] *= N;
+    *u_out = floor(xyz_inout[0]);
+    *v_out = floor(xyz_inout[1]);
+    *w_out = floor(xyz_inout[2]);
+    xyz_inout[0] -= *u_out;
+    xyz_inout[1] -= *v_out;
+    xyz_inout[2] -= *w_out;
+}
+
+
 template <typename scalar_t>
 __device__ __inline__ scalar_t* query_single_from_root(
     torch::PackedTensorAccessor64<scalar_t, 5, torch::RestrictPtrTraits> data,
@@ -127,11 +181,12 @@ __device__ __inline__ void query_node_info_from_root(
 
 template <typename scalar_t, int K>
 __device__ __inline__ void query_interp_from_root(
-    torch::PackedTensorAccessor64<scalar_t, 5, torch::RestrictPtrTraits> data,
+    const torch::PackedTensorAccessor64<scalar_t, 5, torch::RestrictPtrTraits> data,
     const torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> child,
     scalar_t* __restrict__ neighbor_data_buf,
     scalar_t* __restrict__ xyz_inout,
-    scalar_t* __restrict__ cube_sz_out,
+    scalar_t* __restrict__ iweights_out,
+    int64_t* __restrict__ neighbor_ids_out,
     scalar_t* __restrict__ interp_out)
 {
     const scalar_t N = child.size(1);
@@ -140,9 +195,7 @@ __device__ __inline__ void query_interp_from_root(
 
     int32_t node_id = 0;
     int32_t u, v, w, pu, pv, pw;
-    *cube_sz_out = N;
     scalar_t dist_o[3] = {0.25, 0.25, 0.25};
-//    bool neighbor_valid[8] = {false, false, false, false, false, false, false, false};
     scalar_t parent_sum[K] = {};
 
     // initialize neighbor_data_buf as zeros (since no data in root of tree).
@@ -153,29 +206,12 @@ __device__ __inline__ void query_interp_from_root(
     }
     //printf("input coords: %f, %f, %f\n", xyz_inout[0], xyz_inout[1], xyz_inout[2]);
     // First iteration, to initialize parent coordinates
-    xyz_inout[0] *= N;
-    xyz_inout[1] *= N;
-    xyz_inout[2] *= N;
-    pu = floor(xyz_inout[0]);
-    pv = floor(xyz_inout[1]);
-    pw = floor(xyz_inout[2]);
-    xyz_inout[0] -= pu;
-    xyz_inout[1] -= pv;
-    xyz_inout[2] -= pw;
+    traverse_tree_level(xyz_inout, N, &pu, &pv, &pw);
     //printf("coords after root: %f, %f, %f\n", xyz_inout[0], xyz_inout[1], xyz_inout[2]);
 
     while (true) {
-        xyz_inout[0] *= N;
-        xyz_inout[1] *= N;
-        xyz_inout[2] *= N;
-        u = floor(xyz_inout[0]);
-        v = floor(xyz_inout[1]);
-        w = floor(xyz_inout[2]);
-        xyz_inout[0] -= u;
-        xyz_inout[1] -= v;
-        xyz_inout[2] -= w;
+        traverse_tree_level(xyz_inout, N, &u, &v, &w);
         //printf("coords: %f, %f, %f\n", xyz_inout[0], xyz_inout[1], xyz_inout[2]);
-
         //printf("pt = %d,%d,%d - pt+1 = %d,%d,%d\n", pu, pv, pw, u, v, w);
         // i, j, k index neighbors
         #pragma unroll 2
@@ -188,10 +224,15 @@ __device__ __inline__ void query_interp_from_root(
                         (pv + v + j - 1 == 0 || pv + v + j - 1 == 1) &&
                         (pw + w + k - 1 == 0 || pw + w + k - 1 == 1)) {
                         neighbor_data = &data[node_id][pu + u + i - 1][pv + v + j - 1][pw + w + k - 1][0];
+                        if (neighbor_ids_out != nullptr)
+                        {
+                            neighbor_ids_out[(i << 2) + (j << 1) + k] = pack_idx<2>(node_id, pu + u + i - 1, pv + v + j - 1, pw + w + k - 1);
+                        }
                         //printf("Found valid %d,%d,%d neighbor at node [%d][%d][%d][%d] with value [%f, %f, %f] \n", i, j, k, node_id, pu + u + i - 1, pv + v + j - 1, pw + w + k - 1, neighbor_data[0], neighbor_data[1], neighbor_data[2]);
                         for (int data_idx = 0; data_idx < K; ++data_idx) {
                             neighbor_data_buf[((i << 2) + (j << 1) + k) * K + data_idx] = parent_sum[data_idx] + neighbor_data[data_idx];
                         }
+                        // TODO: It's not clear why the next two blocks work.
                         if (i == 0 && j == 0 && k == 0) {
                             dist_o[0] = (xyz_inout[0] + u) / N;
                             dist_o[0] = dist_o[0] < 0.5 ? dist_o[0] + 0.5 : dist_o[0] - 0.5;
@@ -209,50 +250,54 @@ __device__ __inline__ void query_interp_from_root(
                             dist_o[2] = dist_o[2] < 0.5 ? dist_o[2] + 0.5 : dist_o[2] - 0.5;
                             //printf("Distance: %f, %f, %f\n", dist_o[0], dist_o[1], dist_o[2]);
                         }
-//                        neighbor_valid[(i << 2) + (j << 1) + k] = true;
                     }
-//                    else if (!neighbor_valid[(i << 2) + (j << 1) + k]) {
-//                        neighbor_data = &data[node_id][pu][pv][pw][0];
-//                        for (int data_idx = 0; data_idx < K; ++data_idx) {
-//                            neighbor_data_buf[((i << 2) + (j << 1) + k) * K + data_idx] += neighbor_data[data_idx];
-//                        }
-//                    }
                 }
             }
         }
         for (int data_idx = 0; data_idx < K; ++data_idx) {
             parent_sum[data_idx] += data[node_id][pu][pv][pw][data_idx];
         }
-        //for (int i = 0; i < 8; ++i) {
-//            if (!neighbor_valid[i]) {
-          //  for (int data_idx = 0; data_idx < K; ++data_idx) {
-          //      neighbor_data_buf[i * K + data_idx] = 0.0;
-         //   }
-//            }
-       // }
         const int32_t skip = child[node_id][pu][pv][pw];
         //printf("At node %d - child %d, %d, %d - skip %d\n", node_id, pu, pv, pw, skip);
         if (skip == 0) {
+            trilinear_weights(dist_o, iweights_out);
             for (int data_idx = 0; data_idx < K; ++data_idx) {
-                interp_out[data_idx] =
-                    (1 - dist_o[0]) * (1 - dist_o[1]) * (1 - dist_o[2]) * neighbor_data_buf[0 * K + data_idx] +
-                    (1 - dist_o[0]) * (1 - dist_o[1]) * dist_o[2]       * neighbor_data_buf[1 * K + data_idx] +
-                    (1 - dist_o[0]) * dist_o[1]       * (1 - dist_o[2]) * neighbor_data_buf[2 * K + data_idx] +
-                    (1 - dist_o[0]) * dist_o[1]       * dist_o[2]       * neighbor_data_buf[3 * K + data_idx] +
-                    dist_o[0]       * (1 - dist_o[1]) * (1 - dist_o[2]) * neighbor_data_buf[4 * K + data_idx] +
-                    dist_o[0]       * (1 - dist_o[1]) * dist_o[2]       * neighbor_data_buf[5 * K + data_idx] +
-                    dist_o[0]       * dist_o[1]       * (1 - dist_o[2]) * neighbor_data_buf[6 * K + data_idx] +
-                    dist_o[0]       * dist_o[1]       * dist_o[2]       * neighbor_data_buf[7 * K + data_idx];
+                interp_out[data_idx] = 0;
+                for (int i = 0; i < 8; ++i) {
+                    interp_out[data_idx] += iweights_out[i] * neighbor_data_buf[i * K + data_idx];
+                }
             }
             return;
         }
-        *cube_sz_out *= N;
         node_id += skip;
         pu = u;
         pv = v;
         pw = w;
     }
 }
+
+
+template <typename scalar_t, int K>
+__device__ __inline__ void query_interp_from_root_bwd(
+    torch::PackedTensorAccessor64<scalar_t, 5, torch::RestrictPtrTraits> grad,
+    const torch::PackedTensorAccessor32<int32_t, 2, torch::RestrictPtrTraits> parent_depth,
+    const scalar_t* __restrict__ weights,       // Interpolation weights [8]
+    const int64_t* __restrict__ neighbor_ids,  // Packed ids of the neighbors [8]
+    const scalar_t* __restrict__ grad_output)   // [K]
+{
+    int64_t parent_idx, packed_node_idx;
+    for (uint32_t neigh_idx = 0; neigh_idx < 8; ++neigh_idx) {
+        packed_node_idx = neighbor_ids[neigh_idx];
+        while (packed_node_idx > 0) {  // Loop going up through the tree.
+            unpack_idx<2>(packed_node_idx, &i, &u, &v, &w);
+            for (uint32_t data_idx = 0; data_idx < K; ++data_idx) {
+                atomicAdd(&grad[i][u][v][w][data_idx], grad_output[data_idx] * weights[neigh_idx]);
+            }
+            packed_node_idx = parent_depth[packed_node_idx, 0];
+        }
+    }
+}
+
 
 }  // namespace device
 }  // namespace

@@ -263,16 +263,15 @@ __device__ __inline__ void _dda_unit(
 //}
 
 template <typename scalar_t, int K>
-__device__ __inline__ void stratified_sample_proposal(
-                                                      PackedTreeSpec<scalar_t>& __restrict__ tree,
-                                                      int32_t* __restrict__ num_strat_samples,
-                                                      scalar_t* __restrict__ delta_t,
-                                                      scalar_t* __restrict__ t_ptr,
+__device__ __inline__ void stratified_sample_proposal(PackedTreeSpec<scalar_t>& __restrict__ tree,
+                                                      const SingleRaySpec<scalar_t> ray,
                                                       const scalar_t* __restrict__ invdir,
-                                                      SingleRaySpec<scalar_t> ray,
-                                                      int32_t max_samples_per_node,
-                                                      scalar_t* __restrict__ neighbor_data_buf,
-                                                      scalar_t* __restrict__ interp_out
+                                                      const int32_t max_samples,
+                                                      int32_t*  __restrict__ n_samples_inout,
+                                                      scalar_t* __restrict__ dt_inout,
+                                                      scalar_t* __restrict__ t_inout,
+//                                                      scalar_t* __restrict__ neighbor_data_buf,
+//                                                      scalar_t* __restrict__ interp_out
                                                       )
 {
     /*
@@ -280,19 +279,18 @@ __device__ __inline__ void stratified_sample_proposal(
         2. Go through the samples one by one.
         3. Once there are no more samples go to the next subcube (adding some small amount to tmax) and repeat
     */
-    scalar_t pos[3];
+//    scalar_t pos[3];
     scalar_t relpos[3];
-    scalar_t t = *t_ptr;
     scalar_t t1, t2, subcube_tmin, subcube_tmax;
-    if (*num_strat_samples == 0)
+    if (*n_samples_inout == 0)
     {
         // advance to new sub-cube
-        t += *delta_t / 2 + 1e-4;
+        *t_inout += *dt_inout / 2 + 1e-4;
         // new sub-cube position
         # pragma unroll 3
         for (int j = 0; j < 3; ++j) {
-            pos[j] = ray.origin[j] + t * ray.dir[j];
-            relpos[j] = pos[j];
+//            pos[j] = ray.origin[j] + t * ray.dir[j];
+            relpos[j] = ray.origin[j] + *t_inout * ray.dir[j];//pos[j];
         }
         // New subcube info pos will hold the current offset in the new subcube
         scalar_t cube_sz;
@@ -316,26 +314,26 @@ __device__ __inline__ void stratified_sample_proposal(
             subcube_tmax = min(subcube_tmax, max(t1, t2));
         }
         // Calculate the number of samples needed in the new sub-cube
-        *num_strat_samples = ceilf(max_samples_per_node * (subcube_tmax - subcube_tmin) * cube_sz / 1.7320508075688772);
+        *n_samples_inout = ceilf(max_samples * (subcube_tmax - subcube_tmin) * cube_sz / 1.7320508075688772);
         // Compute step-size for the new sub-cube
-        *delta_t = (subcube_tmax - subcube_tmin) / *num_strat_samples;
+        *dt_inout = (subcube_tmax - subcube_tmin) / *n_samples_inout;
         // Correct sub-cube start position to be in middle of first delta_t-long segment
-        t += subcube_tmin + *delta_t / 2;
+        *t_inout += subcube_tmin + *dt_inout / 2;
     }
     else
     {
-        t += *delta_t;
+        *t_inout += *dt_inout;
     }
-    # pragma unroll 3
-    for (int j = 0; j < 3; ++j) {
-        pos[j] = ray.origin[j] + t * ray.dir[j];
-    }
-    (*num_strat_samples)--;
-    *t_ptr = t;
-    scalar_t cube_sz_;
+//    # pragma unroll 3
+//    for (int j = 0; j < 3; ++j) {
+//        pos[j] = ray.origin[j] + t * ray.dir[j];
+//    }
+    (*n_samples_inout)--;
+//    *t_inout = t;
+//    scalar_t cube_sz_;
     //query_interp_from_root<scalar_t, K>(tree.data, tree.child, neighbor_data_buf, pos, &cube_sz_, interp_out);
-    scalar_t * out = query_single_from_root<scalar_t>(tree.data, tree.child, pos, &cube_sz_, nullptr);
-    interp_out = out;
+    //scalar_t * out = query_single_from_root<scalar_t>(tree.data, tree.child, pos, &cube_sz_, nullptr);
+//    interp_out = out;
 }
 
 template <typename scalar_t, int K>
@@ -378,6 +376,7 @@ __device__ __inline__ void trace_ray(
 
     scalar_t tmin, tmax;
     scalar_t invdir[3];
+    scalar_t pos[3];
     const int tree_N = tree.child.size(1);
     const int out_data_dim = out.size(0);
 
@@ -413,11 +412,17 @@ __device__ __inline__ void trace_ray(
         const scalar_t d_rgb_pad = 1 + 2 * opt.rgb_padding;
         while (true) {
             stratified_sample_proposal<scalar_t, K>(
-                tree, &num_strat_samples, &delta_t, &t, invdir, ray,
-                opt.max_samples_per_node, neighbor_data_buf, tree_val);
+                ray, invdir, opt.max_samples_per_node, &num_strat_samples, &delta_t, &t);
             if (t >= tmax) {
                 break;
             }
+            #pragma unroll 3
+            for (int j = 0; j < 3; ++j) {
+                pos[j] = ray.origin[j] + t * ray.dir[j];
+            }
+            query_interp_from_root<scalar_t, K>(
+                tree.data, tree.child, neighbor_data_buf, /*xyz_inout=*/pos,
+                /*iweights_out=*/interp_weights, /*neighbor_ids_out=*/nullptr, /*interp_out=*/tree_val);
 
             scalar_t sigma = tree_val[K - 1];
             if (opt.density_softplus)
@@ -465,6 +470,7 @@ __device__ __inline__ void trace_ray_backward(
 
     scalar_t tmin, tmax;
     scalar_t invdir[3];
+    scalar_t pos[3];
     const int tree_N = tree.child.size(1);
     const int out_data_dim = grad_output.size(0);
 
@@ -486,7 +492,7 @@ __device__ __inline__ void trace_ray_backward(
 
         scalar_t accum = 0.0;
         const scalar_t d_rgb_pad = 1 + 2 * opt.rgb_padding;
-        // PASS 1:
+        // PASS 1: Just to compute the accum variable. This could be merged with the fwd pass.
         {
             scalar_t light_intensity = 1.f, t = tmin;
             // Helper variables for sampling
@@ -494,16 +500,73 @@ __device__ __inline__ void trace_ray_backward(
             int32_t num_strat_samples = 0;
             while (true) {
                 stratified_sample_proposal<scalar_t, K>(
-                    tree, &num_strat_samples, &delta_t, &t, invdir, ray,
-                    opt.max_samples_per_node, neighbor_data_buf, tree_val);
+                    ray, invdir, opt.max_samples_per_node, &num_strat_samples, &delta_t, &t);
                 if (t >= tmax) {
                     break;
                 }
-                // Reuse offset on gradient
-                const int64_t curr_leaf_offset = tree_val - tree.data.data();
-                scalar_t* const grad_tree_val = grad_data_out.data() + curr_leaf_offset;
+                #pragma unroll 3
+                for (int j = 0; j < 3; ++j) {
+                    pos[j] = ray.origin[j] + t * ray.dir[j];
+                }
+                query_interp_from_root<scalar_t, K>(
+                    tree.data, tree.child, neighbor_data_buf, /*xyz_inout=*/pos,
+                    /*iweights_out=*/interp_weights, /*neighbor_ids_out=*/nullptr, /*interp_out=*/tree_val);
+                scalar_t sigma = tree_val[K - 1];
+                if (opt.density_softplus) {
+                    sigma = _SOFTPLUS_M1(sigma);
+                }
+                if (sigma > 0.0) {
+                    const scalar_t att = expf(-delta_t * sigma * delta_scale);
+                    const scalar_t weight = light_intensity * (1.f - att);
+
+                    scalar_t total_color = 0.f;
+                    for (int j = 0; j < out_data_dim; ++j) {
+                        int off = j * opt.basis_dim;
+                        scalar_t tmp = 0.0;
+                        for (int i = opt.min_comp; i <= opt.max_comp; ++i) {
+                            tmp += basis_fn[i] * tree_val[off + i];
+                        }
+                        const scalar_t sigmoid = _SIGMOID(tmp);
+                        total_color += (sigmoid * d_rgb_pad - opt.rgb_padding) * grad_output[j];
+                    }
+                    light_intensity *= att;
+                    accum += weight * total_color;
+                }
+            }
+            scalar_t total_grad = 0.f;
+            for (int j = 0; j < out_data_dim; ++j)
+                total_grad += grad_output[j];
+            accum += light_intensity * opt.background_brightness * total_grad;
+        }
+        // PASS 2: Actually compute the gradient
+        {
+            scalar_t light_intensity = 1.f, t = tmin;
+            // Helper variables for sampling
+            scalar_t delta_t = 0;
+            int32_t num_strat_samples = 0;
+            // Gradient calculation helpers
+            scalar_t grad_tree_val[K];
+            int64_t neighbor_ids[8];
+            while (true) {
+                stratified_sample_proposal<scalar_t, K>(
+                    ray, invdir, opt.max_samples_per_node, &num_strat_samples, &delta_t, &t);
+                if (t >= tmax) {
+                    break;
+                }
+                #pragma unroll 3
+                for (int j = 0; j < 3; ++j) {
+                    pos[j] = ray.origin[j] + t * ray.dir[j];
+                }
+                query_interp_from_root<scalar_t, K>(
+                    tree.data, tree.child, neighbor_data_buf, /*xyz_inout=*/pos,
+                    /*iweights_out=*/interp_weights, /*neighbor_ids_out=*/neighbor_ids, /*interp_out=*/tree_val);
+                // Zero-out gradient
+                for (int j = 0; j < K; ++j) {
+                    grad_tree_val[j] = 0;
+                }
 
                 scalar_t sigma = tree_val[K - 1];
+                const scalar_t raw_sigma = sigma;
                 if (opt.density_softplus) {
                     sigma = _SOFTPLUS_M1(sigma);
                 }
@@ -521,65 +584,19 @@ __device__ __inline__ void trace_ray_backward(
                         const scalar_t sigmoid = _SIGMOID(tmp);
                         const scalar_t tmp2 = weight * sigmoid * (1.0 - sigmoid) * grad_output[j] * d_rgb_pad;
                         for (int i = opt.min_comp; i <= opt.max_comp; ++i) {
-                            const scalar_t toadd = basis_fn[i] * tmp2;
-                            atomicAdd(&grad_tree_val[off + i], toadd);
+                            grad_tree_val[off + i] += basis_fn[i] * tmp2;
                         }
                         total_color += (sigmoid * d_rgb_pad - opt.rgb_padding) * grad_output[j];
                     }
                     light_intensity *= att;
-                    accum += weight * total_color;
-                }
-            }
-            scalar_t total_grad = 0.f;
-            for (int j = 0; j < out_data_dim; ++j)
-                total_grad += grad_output[j];
-            accum += light_intensity * opt.background_brightness * total_grad;
-        }
-        // PASS 2
-        {
-            scalar_t light_intensity = 1.f, t = tmin;
-            // Helper variables for sampling
-            scalar_t delta_t = 0;
-            int32_t num_strat_samples = 0;
-            while (true) {
-                stratified_sample_proposal<scalar_t, K>(
-                    tree, &num_strat_samples, &delta_t, &t, invdir, ray,
-                    opt.max_samples_per_node, neighbor_data_buf, tree_val);
-                if (t >= tmax) {
-                    break;
-                }
-                // Reuse offset on gradient
-                const int64_t curr_leaf_offset = tree_val - tree.data.data();
-                scalar_t* const grad_tree_val = grad_data_out.data() + curr_leaf_offset;
-
-                scalar_t sigma = tree_val[K - 1];
-                const scalar_t raw_sigma = sigma;
-                if (opt.density_softplus) {
-                    sigma = _SOFTPLUS_M1(sigma);
-                }
-                if (sigma > 0.0) {
-                    const scalar_t att = expf(-delta_t * sigma * delta_scale);
-                    const scalar_t weight = light_intensity * (1.f - att);
-
-                    scalar_t total_color = 0.f;
-                    if (opt.format != FORMAT_RGBA) {
-                        for (int j = 0; j < out_data_dim; ++j) {
-                            int off = t * opt.basis_dim;
-                            scalar_t tmp = 0.0;
-                            for (int i = opt.min_comp; i <= opt.max_comp; ++i) {
-                                tmp += basis_fn[i] * tree_val[off + i];
-                            }
-                            total_color += (_SIGMOID(tmp) * d_rgb_pad - opt.rgb_padding) * grad_output[j];
-                        }
-                    }
-                    light_intensity *= att;
                     accum -= weight * total_color;
-                    atomicAdd(
-                            &grad_tree_val[K - 1],
-                            delta_t * delta_scale * (
-                                total_color * light_intensity - accum)
-                                *  (opt.density_softplus ? _SIGMOID(raw_sigma - 1) : 1)
-                            );
+                    grad_tree_val[K - 1] = delta_t * delta_scale * (
+                        total_color * light_intensity - accum)
+                        *  (opt.density_softplus ? _SIGMOID(raw_sigma - 1) : 1)
+                    );
+                    query_interp_from_root_bwd<scalar_t, K>(
+                        /*grad=*/grad_data_out, /*parent_depth=*/tree.parent_depth, /*weights=*/interp_weights,
+                        /*neighbor_ids=*/neighbor_ids, /*grad_output=*/grad_tree_val);
                 }
             }
         }
