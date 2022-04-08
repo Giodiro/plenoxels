@@ -269,7 +269,7 @@ __device__ __inline__ void stratified_sample_proposal(PackedTreeSpec<scalar_t>& 
                                                       const int32_t max_samples,
                                                       int32_t*  __restrict__ n_samples_inout,
                                                       scalar_t* __restrict__ dt_inout,
-                                                      scalar_t* __restrict__ t_inout,
+                                                      scalar_t* __restrict__ t_inout
 //                                                      scalar_t* __restrict__ neighbor_data_buf,
 //                                                      scalar_t* __restrict__ interp_out
                                                       )
@@ -377,6 +377,7 @@ __device__ __inline__ void trace_ray(
     scalar_t tmin, tmax;
     scalar_t invdir[3];
     scalar_t pos[3];
+    scalar_t interp_weights[8];
     const int tree_N = tree.child.size(1);
     const int out_data_dim = out.size(0);
 
@@ -476,6 +477,7 @@ __device__ __inline__ void trace_ray_backward(
 
     scalar_t neighbor_data_buf[8*K];
     scalar_t tree_val[K];
+    scalar_t interp_weights[8];
 
     #pragma unroll 3
     for (int i = 0; i < 3; ++i) {
@@ -592,8 +594,7 @@ __device__ __inline__ void trace_ray_backward(
                     accum -= weight * total_color;
                     grad_tree_val[K - 1] = delta_t * delta_scale * (
                         total_color * light_intensity - accum)
-                        *  (opt.density_softplus ? _SIGMOID(raw_sigma - 1) : 1)
-                    );
+                        *  (opt.density_softplus ? _SIGMOID(raw_sigma - 1) : 1);
                     query_interp_from_root_bwd<scalar_t, K>(
                         /*grad=*/grad_data_out, /*parent_depth=*/tree.parent_depth, /*weights=*/interp_weights,
                         /*neighbor_ids=*/neighbor_ids, /*grad_output=*/grad_tree_val);

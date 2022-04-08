@@ -181,7 +181,7 @@ __device__ __inline__ void query_node_info_from_root(
 
 template <typename scalar_t, int K>
 __device__ __inline__ void query_interp_from_root(
-    const torch::PackedTensorAccessor64<scalar_t, 5, torch::RestrictPtrTraits> data,
+    torch::PackedTensorAccessor64<scalar_t, 5, torch::RestrictPtrTraits> data,
     const torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> child,
     scalar_t* __restrict__ neighbor_data_buf,
     scalar_t* __restrict__ xyz_inout,
@@ -285,7 +285,8 @@ __device__ __inline__ void query_interp_from_root_bwd(
     const int64_t* __restrict__ neighbor_ids,  // Packed ids of the neighbors [8]
     const scalar_t* __restrict__ grad_output)   // [K]
 {
-    int64_t parent_idx, packed_node_idx;
+    int32_t i, u, v, w;
+    int64_t packed_node_idx;
     for (uint32_t neigh_idx = 0; neigh_idx < 8; ++neigh_idx) {
         packed_node_idx = neighbor_ids[neigh_idx];
         while (packed_node_idx > 0) {  // Loop going up through the tree.
