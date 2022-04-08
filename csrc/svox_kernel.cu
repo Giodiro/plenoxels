@@ -61,13 +61,13 @@ __global__ void query_interp_kernel(
         torch::PackedTensorAccessor32<scalar_t, 2, torch::RestrictPtrTraits> values_out
         ) {
     CUDA_GET_THREAD_ID(tid, indices.size(0));
+    scalar_t interp_weights[8];
     scalar_t xyz[3] = {indices[tid][0], indices[tid][1], indices[tid][2]};
     transform_coord<scalar_t>(xyz, tree.offset, tree.scaling);
 
     scalar_t neighbor_data_buf[8*K];
 
-    scalar_t _cube_sz;
-    query_interp_from_root<scalar_t, K>(tree.data, tree.child, neighbor_data_buf, xyz, &_cube_sz, &values_out[tid][0]);
+    query_interp_from_root<scalar_t, K>(tree.data, tree.child, neighbor_data_buf, xyz, interp_weights, nullptr, &values_out[tid][0]);
 }
 
 

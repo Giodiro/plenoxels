@@ -413,7 +413,7 @@ __device__ __inline__ void trace_ray(
         const scalar_t d_rgb_pad = 1 + 2 * opt.rgb_padding;
         while (true) {
             stratified_sample_proposal<scalar_t, K>(
-                ray, invdir, opt.max_samples_per_node, &num_strat_samples, &delta_t, &t);
+                tree, ray, invdir, opt.max_samples_per_node, &num_strat_samples, &delta_t, &t);
             if (t >= tmax) {
                 break;
             }
@@ -502,7 +502,7 @@ __device__ __inline__ void trace_ray_backward(
             int32_t num_strat_samples = 0;
             while (true) {
                 stratified_sample_proposal<scalar_t, K>(
-                    ray, invdir, opt.max_samples_per_node, &num_strat_samples, &delta_t, &t);
+                    tree, ray, invdir, opt.max_samples_per_node, &num_strat_samples, &delta_t, &t);
                 if (t >= tmax) {
                     break;
                 }
@@ -551,13 +551,17 @@ __device__ __inline__ void trace_ray_backward(
             int64_t neighbor_ids[8];
             while (true) {
                 stratified_sample_proposal<scalar_t, K>(
-                    ray, invdir, opt.max_samples_per_node, &num_strat_samples, &delta_t, &t);
+                    tree, ray, invdir, opt.max_samples_per_node, &num_strat_samples, &delta_t, &t);
                 if (t >= tmax) {
                     break;
                 }
                 #pragma unroll 3
                 for (int j = 0; j < 3; ++j) {
                     pos[j] = ray.origin[j] + t * ray.dir[j];
+                }
+                #pragma unroll 8
+                for (int j = 0; j < 8; ++j) {
+                    neighbor_ids[j] = 0;
                 }
                 query_interp_from_root<scalar_t, K>(
                     tree.data, tree.child, neighbor_data_buf, /*xyz_inout=*/pos,
@@ -595,6 +599,7 @@ __device__ __inline__ void trace_ray_backward(
                     grad_tree_val[K - 1] = delta_t * delta_scale * (
                         total_color * light_intensity - accum)
                         *  (opt.density_softplus ? _SIGMOID(raw_sigma - 1) : 1);
+                    //printf("t=%f - setting sigma gradient to %f\n", t, grad_tree_val[K-1]);
                     query_interp_from_root_bwd<scalar_t, K>(
                         /*grad=*/grad_data_out, /*parent_depth=*/tree.parent_depth, /*weights=*/interp_weights,
                         /*neighbor_ids=*/neighbor_ids, /*grad_output=*/grad_tree_val);

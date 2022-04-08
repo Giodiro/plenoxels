@@ -53,10 +53,11 @@ __device__ __inline__ void transform_coord(scalar_t* __restrict__ q,
 template <uint32_t N>
 __device__ __inline__ int64_t pack_idx(int32_t i, int32_t u, int32_t v, int32_t w)
 {
-    return int64_t(i) * (N * N * N) +
+    int64_t out = int64_t(i) * (N * N * N) +
             u * N * N +
             v * N +
             w;
+    return out; 
 }
 
 template <uint32_t N>
@@ -88,9 +89,9 @@ template <typename scalar_t>
 __device__ __inline__ void traverse_tree_level(
             scalar_t* __restrict__ xyz_inout,
             const scalar_t N,
-            scalar_t* __restrict__ u_out,
-            scalar_t* __restrict__ v_out,
-            scalar_t* __restrict__ w_out)
+            int32_t* __restrict__ u_out,
+            int32_t* __restrict__ v_out,
+            int32_t* __restrict__ w_out)
 {
     xyz_inout[0] *= N;
     xyz_inout[1] *= N;
@@ -286,15 +287,15 @@ __device__ __inline__ void query_interp_from_root_bwd(
     const scalar_t* __restrict__ grad_output)   // [K]
 {
     int32_t i, u, v, w;
-    int64_t packed_node_idx;
+    int32_t packed_node_idx;
     for (uint32_t neigh_idx = 0; neigh_idx < 8; ++neigh_idx) {
-        packed_node_idx = neighbor_ids[neigh_idx];
+        packed_node_idx = (int32_t)neighbor_ids[neigh_idx];
         while (packed_node_idx > 0) {  // Loop going up through the tree.
             unpack_idx<2>(packed_node_idx, &i, &u, &v, &w);
             for (uint32_t data_idx = 0; data_idx < K; ++data_idx) {
                 atomicAdd(&grad[i][u][v][w][data_idx], grad_output[data_idx] * weights[neigh_idx]);
             }
-            packed_node_idx = parent_depth[packed_node_idx, 0];
+            packed_node_idx = parent_depth[packed_node_idx][0];
         }
     }
 }
