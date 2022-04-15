@@ -7,12 +7,29 @@
 using namespace torch::indexing;
 
 
+template <typename scalar_t, int32_t branching, int32_t data_dim>
 at::Tensor query_octree(at::Tensor &indices,
                         torch::Tensor &data,
                         torch::Tensor &child,
                         torch::Tensor &is_child_leaf,
                         const bool parent_sum);
 
+template <typename scalar_t, int32_t branching, int32_t data_dim>
+std::tuple<at::Tensor, at::Tensor> query_interp_octree(at::Tensor &indices,
+                                                       at::Tensor &data,
+                                                       at::Tensor &child,
+                                                       at::Tensor &is_child_leaf,
+                                                       const bool parent_sum);
+
+template <typename scalar_t, int32_t branching, int32_t data_dim>
+void set_octree(at::Tensor &indices,
+                const at::Tensor &vals,
+                at::Tensor &data,
+                at::Tensor &child,
+                at::Tensor &is_child_leaf,
+                at::Tensor &parent,
+                const bool update_avg,
+                const bool parent_sum);
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 class Octree {
@@ -49,11 +66,15 @@ class Octree {
         ~Octree() { }
 
 //        void refine(const at::optional<at::Tensor> & opt_leaves);
-//        void set(at::Tensor indices, const at::Tensor vals, const bool update_avg);
-        at::Tensor query(at::Tensor indices) {
-            return query_octree(indices, data, child, is_child_leaf, _parent_sum);
+        void set(at::Tensor indices, const at::Tensor vals, const bool update_avg) {
+            set_octree<scalar_t, branching, data_dim>(indices, vals, data, child, is_child_leaf, parent_sum, update_avg, _parent_sum);
         }
-//        std::tuple<at::Tensor, at::Tensor> query_interp(at::Tensor indices);
+        at::Tensor query(at::Tensor indices) {
+            return query_octree<scalar_t, branching, data_dim>(indices, data, child, is_child_leaf, _parent_sum);
+        }
+        std::tuple<at::Tensor, at::Tensor> query_interp(at::Tensor indices) {
+            return query_interp_octree<scalar_t, branching, data_dim>(indices, data, child, is_child_leaf, _parent_sum);
+        }
 };
 
 
