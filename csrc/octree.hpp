@@ -36,7 +36,7 @@ void set_octree(at::Tensor &indices,
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 class Octree {
     private:
-        size_t _n_internal;
+        int64_t _n_internal;
         bool _parent_sum;
         int32_t _node_size;
         int32_t _max_depth;
@@ -150,7 +150,7 @@ void Octree<scalar_t, branching, data_dim>::refine(const at::optional<at::Tensor
             packed_leaves
         );
         auto old_depth = depth.index({packed_leaves});
-        _max_depth = max(_max_depth, old_depth.max().item<int32_t>() + 1);
+        _max_depth = max(_max_depth, torch::max(old_depth).item<int32_t>() + 1);
         depth.index_put_(
             {Slice(total_nodes, new_total_nodes)},
             old_depth + torch::tensor({1}) // TODO: Think wrapping is unnecessary
