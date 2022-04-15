@@ -1,6 +1,6 @@
 #include <torch/extension.h>
 
-#include "octree.hpp"
+#include "octree.h"
 #include "octree_common.cuh"
 
 
