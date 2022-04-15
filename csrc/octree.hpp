@@ -107,7 +107,7 @@ at::Tensor pack_index_3d(const at::Tensor & leaves) {
 }
 
 
-void refine(const at::optional<at::Tensor> & opt_leaves)
+void Octree::refine(const at::optional<at::Tensor> & opt_leaves)
 {
     int32_t node_size = branching * branching * branching;
     const auto leaves = opt_leaves.has_value() ? opt_leaves.value() : is_child_leaf.nonzero();
@@ -115,7 +115,7 @@ void refine(const at::optional<at::Tensor> & opt_leaves)
     const size_t new_internal = leaves.size(0);
     const size_t new_total_nodes = total_nodes + new_internal * node_size;
 
-    resize_tree(new_internal);
+    _resize_add_cap(new_internal);
 
     if (total_nodes == 1) // root node is an exception
     {
