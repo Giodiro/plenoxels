@@ -32,7 +32,7 @@
 #include <string>
 
 //#include "data_spec.hpp"
-#include "octree.hpp"
+#include "octree.cu"
 
 namespace py = pybind11;
 using torch::Tensor;

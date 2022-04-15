@@ -11,6 +11,7 @@ try:
     ext_modules = [
         CUDAExtension('csrc', [
             'csrc/svox.cpp',
+            'csrc/octree.cu',
             # 'csrc/svox_kernel.cu',
             # 'csrc/rt_kernel.cu',
         ], include_dirs=[osp.join(ROOT_DIR, "csrc", "include")],

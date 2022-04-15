@@ -11,7 +11,7 @@ constexpr uint32_t n_blocks_linear(T n_elements) {
 }
 
 template <int32_t branching>
-at::Tensor pack_index_3d<branching>(const at::Tensor & leaves) {
+at::Tensor pack_index_3d(const at::Tensor & leaves) {
     auto multiplier = torch::tensor({branching * branching * branching, branching * branching, branching, 1}, leaves.options());
     return leaves.mul(multiplier.unsqueeze(0)).sum(-1);
 }

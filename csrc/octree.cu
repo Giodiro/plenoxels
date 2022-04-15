@@ -12,14 +12,14 @@ class Octree {
     private:
         size_t _n_internal;
         bool _parent_sum;
+        int32_t _node_size;
         void _resize_add_cap(const size_t num_new_internal);
-
 
     public:
         at::Tensor data;
         at::Tensor child;
         at::Tensor is_child_leaf;
-        at::Tensor parent
+        at::Tensor parent;
         at::Tensor depth;
 
         Octree(int32_t levels, bool parent_sum, torch::Device device) {
@@ -45,7 +45,7 @@ class Octree {
         void set(at::Tensor indices, const at::Tensor vals, const bool update_avg);
         at::Tensor query(at::Tensor indices);
         std::tuple<at::Tensor, at::Tensor> query_interp(at::Tensor indices);
-}
+};
 
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
