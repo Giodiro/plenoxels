@@ -107,7 +107,8 @@ at::Tensor pack_index_3d(const at::Tensor & leaves) {
 }
 
 
-void Octree::refine(const at::optional<at::Tensor> & opt_leaves)
+template <typename scalar_t, int32_t branching, int32_t data_dim>
+void Octree<scalar_t, branching, data_dim>::refine(const at::optional<at::Tensor> & opt_leaves)
 {
     int32_t node_size = branching * branching * branching;
     const auto leaves = opt_leaves.has_value() ? opt_leaves.value() : is_child_leaf.nonzero();
