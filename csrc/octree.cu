@@ -322,4 +322,3 @@ std::tuple<at::Tensor, at::Tensor> query_interp_octree(at::Tensor &indices,
     );
     return std::make_tuple(values_out, weights_out);
 }
-

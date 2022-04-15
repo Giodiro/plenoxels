@@ -10,12 +10,6 @@ constexpr uint32_t n_blocks_linear(T n_elements) {
 	return (uint32_t)div_round_up(n_elements, (T)n_threads_linear);
 }
 
-template <int32_t branching>
-at::Tensor pack_index_3d(const at::Tensor & leaves) {
-    auto multiplier = torch::tensor({branching * branching * branching, branching * branching, branching, 1}, leaves.options());
-    return leaves.mul(multiplier.unsqueeze(0)).sum(-1);
-}
-
 __device__ __inline__ float3 diff_prod(const float3 &a, const float3 &b, const float &c) {
     // (a - b) * c
     return make_float3(

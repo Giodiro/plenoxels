@@ -3,7 +3,6 @@
 #include <tuple>
 #include <c10/util/typeid.h>
 #include <torch/extension.h>
-#include "octree_common.cuh"
 
 using namespace torch::indexing;
 
@@ -99,6 +98,13 @@ class Octree {
             return query_interp_octree<scalar_t, branching, data_dim>(indices, data, child, is_child_leaf, _parent_sum);
         }
 };
+
+
+template <int32_t branching>
+at::Tensor pack_index_3d(const at::Tensor & leaves) {
+    auto multiplier = torch::tensor({branching * branching * branching, branching * branching, branching, 1}, leaves.options());
+    return leaves.mul(multiplier.unsqueeze(0)).sum(-1);
+}
 
 
 void refine(const at::optional<at::Tensor> & opt_leaves)
