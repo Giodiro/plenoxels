@@ -56,7 +56,7 @@ __device__ __inline__ void _dev_query_interp(
                     (floorf(in_coo.y * cube_sz + offset2[i].y + 1e-5) + 0.5) / cube_sz,
                     (floorf(in_coo.z * cube_sz + offset2[i].z + 1e-5) + 0.5) / cube_sz
                 );
-                clamp_coord(neigh_coo, 1 / (cube_sz * branching), 1 - 1 / (cube_sz * branching));
+                clamp_coord(neigh_coo[i], 1 / (cube_sz * branching), 1 - 1 / (cube_sz * branching));
                 // Simpler formula (without clamping)
                 // (floor((in_coordinate[0] + offset2[i][0] / (cube_sz * 2)) * cube_sz + 1e-5) + 0.5) / cube_sz,
                 valid_neighbors[i] = node_id + skip;
