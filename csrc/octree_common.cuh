@@ -16,7 +16,7 @@ at::Tensor pack_index_3d(const at::Tensor & leaves) {
     return leaves.mul(multiplier.unsqueeze(0)).sum(-1);
 }
 
-__device__ __inline__ float3 diff_prod(const float3 &a, const float3 &b, const float &b) {
+__device__ __inline__ float3 diff_prod(const float3 &a, const float3 &b, const float &c) {
     // (a - b) * c
     return make_float3(
         (a.x - b.x) * c,
