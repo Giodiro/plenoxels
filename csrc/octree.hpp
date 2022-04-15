@@ -150,8 +150,9 @@ void Octree<scalar_t, branching, data_dim>::refine(const at::optional<at::Tensor
             packed_leaves
         );
         auto old_depth = depth.index({packed_leaves});
-        int new_max_depth = torch::max(old_depth).item<int>();
-        _max_depth = max(_max_depth, new_max_depth + 1);
+        torch::Tensor new_max_depth = torch::max(old_depth);
+        int new_max_depth_i = new_max_depth.item<int>();
+        _max_depth = _max_depth > new_max_depth_i + 1 ? _max_depth : new_max_depth_i + 1;
         depth.index_put_(
             {Slice(total_nodes, new_total_nodes)},
             old_depth + torch::tensor({1}) // TODO: Think wrapping is unnecessary
