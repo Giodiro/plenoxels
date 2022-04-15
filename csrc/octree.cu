@@ -301,7 +301,7 @@ std::tuple<at::Tensor, at::Tensor> query_interp_octree(at::Tensor &indices,
                                                        at::Tensor &is_child_leaf,
                                                        const bool parent_sum)
 {
-    size_t n_elements = indices.size(0);
+    int64_t n_elements = indices.size(0);
     if (n_elements <= 0) {
         torch::Tensor undefined;
         return undefined;

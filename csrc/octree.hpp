@@ -40,7 +40,7 @@ class Octree {
         bool _parent_sum;
         int32_t _node_size;
         int32_t _max_depth;
-        void _resize_add_cap(const size_t num_new_internal)
+        void _resize_add_cap(const int64_t num_new_internal)
         {
             child = torch::cat({
                 child,
@@ -56,11 +56,11 @@ class Octree {
             });
             parent = torch::cat({
                 parent,
-                torch::zeros({num_new_internal * branching * branching * branching}, parent.options())
+                torch::zeros({(int64_t)num_new_internal * branching * branching * branching}, parent.options())
             });
             depth = torch::cat({
                 depth,
-                torch::zeros({num_new_internal * branching * branching * branching}, depth.options())
+                torch::zeros({(int64_t)num_new_internal * branching * branching * branching}, depth.options())
             });
         }
     public:
@@ -115,9 +115,9 @@ void Octree<scalar_t, branching, data_dim>::refine(const at::optional<at::Tensor
 {
     int32_t node_size = branching * branching * branching;
     const auto leaves = opt_leaves.has_value() ? opt_leaves.value() : is_child_leaf.nonzero();
-    const size_t total_nodes = data.size(0);
-    const size_t new_internal = leaves.size(0);
-    const size_t new_total_nodes = total_nodes + new_internal * node_size;
+    const int64_t total_nodes = data.size(0);
+    const int64_t new_internal = leaves.size(0);
+    const int64_t new_total_nodes = total_nodes + new_internal * node_size;
 
     if (new_internal == 0) {
         return;
@@ -141,7 +141,8 @@ void Octree<scalar_t, branching, data_dim>::refine(const at::optional<at::Tensor
         child.index_put_({Slice(_n_internal, _n_internal + new_internal, 1), Ellipsis},
                          new_child_ids);
         // is_child_leaf
-        is_child_leaf.index_put_(leaves.unbind(1), torch::tensor({true}));
+        auto sel = leaves.unbind(1);
+        is_child_leaf.index_put_({sel[0], sel[1], sel[2], sel[3]}, torch::tensor({true}));
         // parent_depth
         auto packed_leaves = pack_index_3d<branching>(leaves).repeat_interleave(_node_size) + 1;  // +1 for the invisible root node.
         parent.index_put_(
@@ -152,7 +153,7 @@ void Octree<scalar_t, branching, data_dim>::refine(const at::optional<at::Tensor
         _max_depth = max(_max_depth, old_depth.max().item<int32_t>() + 1);
         depth.index_put_(
             {Slice(total_nodes, new_total_nodes)},
-            old_depth + torch::tensor({1})
+            old_depth + torch::tensor({1}) // TODO: Think wrapping is unnecessary
         );
     }
     _n_internal += new_internal;
