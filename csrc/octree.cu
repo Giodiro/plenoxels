@@ -15,10 +15,14 @@ __device__ __inline__ void _dev_query_interp(
     const bool parent_sum
 )
 {
+    constexpr float3 offset[8] = {make_float3(-1, -1, -1), make_float3(-1, -1, 0), make_float3(-1, 0, -1),
+                                  make_float3(-1, 0, 0), make_float3(0, -1, -1), make_float3(0, -1, 0),
+                                  make_float3(0, 0, -1), make_float3(0, 0, 0)};
     clamp_coord(coordinate, 0.0, 1.0 - 1e-9);
     int32_t node_id = 0;
     int32_t u, v, w, skip, i, j;
     int32_t uc, vc, wc;
+    int32_t cube_sz = branching;
 
     const float3 in_coo = make_float3(coordinate.x, coordinate.y, coordinate.z);
     float3 tmp_coo;
@@ -63,9 +67,9 @@ __device__ __inline__ void _dev_query_interp(
                 if (valid_neighbors[j] < 0) continue;
                 for (i = 0; i < data_dim; i++) {
                     if (parent_sum) {
-                        out_val[i] += weights[j] * tree_data[valid_neighbors[j]][i];
+                        out_val[i] += weights[j] * data[valid_neighbors[j]][i];
                     } else {
-                        out_val[i] = weights[j] * tree_data[valid_neighbors[j]][i];
+                        out_val[i] = weights[j] * data[valid_neighbors[j]][i];
                     }
                 }
             }
@@ -321,14 +325,14 @@ at::Tensor query_octree(at::Tensor &indices,
                         torch::Tensor &is_child_leaf,
                         const bool parent_sum)
 {
-    size_t n_elements = indices.shape(0);
+    size_t n_elements = indices.size(0);
     if (n_elements <= 0) {
         return torch::tensor();  // undefined tensor
     }
 
     // Create output tensor
     at::Tensor values_out = torch::empty({n_elements, data_dim}, data.options());
-    octree_query_kernel<scalar_t, branching, data_dim><<<n_blocks_linear(n_elements), n_threads_linear>>(
+    octree_query_kernel<scalar_t, branching, data_dim><<<n_blocks_linear(n_elements), n_threads_linear>>>(
         data.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits>(),
         child.packed_accessor32<scalar_t, 4, torch::RestrictPtrTraits>(),
         is_child_leaf.packed_accessor32<bool, 4, torch::RestrictPtrTraits>(),
