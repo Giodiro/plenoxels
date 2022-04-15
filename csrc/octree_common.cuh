@@ -55,19 +55,19 @@ __host__ __device__ __inline__ void clamp_coord(float3 & __restrict__ q_out, flo
 template <int32_t branching>
 __device__ __inline__ void traverse_tree_level(
     float3 & __restrict__ coordinate,
-    int32_t& __restrict__ u_out,
-    int32_t& __restrict__ v_out,
-    int32_t& __restrict__ w_out
+    int32_t* __restrict__ u_out,
+    int32_t* __restrict__ v_out,
+    int32_t* __restrict__ w_out
 ) {
     coordinate.x *= branching;
     coordinate.y *= branching;
     coordinate.z *= branching;
-    u_out = floorf(coordinate.x);
-    v_out = floorf(coordinate.y);
-    w_out = floorf(coordinate.z);
-    coordinate.x -= u_out;
-    coordinate.y -= v_out;
-    coordinate.z -= w_out;
+    *u_out = floorf(coordinate.x);
+    *v_out = floorf(coordinate.y);
+    *w_out = floorf(coordinate.z);
+    coordinate.x -= *u_out;
+    coordinate.y -= *v_out;
+    coordinate.z -= *w_out;
 }
 
 

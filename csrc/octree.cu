@@ -18,6 +18,9 @@ __device__ __inline__ void _dev_query_interp(
     constexpr float3 offset[8] = {make_float3(-1, -1, -1), make_float3(-1, -1, 0), make_float3(-1, 0, -1),
                                   make_float3(-1, 0, 0), make_float3(0, -1, -1), make_float3(0, -1, 0),
                                   make_float3(0, 0, -1), make_float3(0, 0, 0)};
+    constexpr float3 offset2[8] = {make_float3(-0.5, -0.5, -0.5), make_float3(-0.5, -0.5, 0.5), make_float3(-0.5, 0.5, -0.5),
+                                  make_float3(-0.5, 0.5, 0.5), make_float3(0.5, -0.5, -0.5), make_float3(0.5, -0.5, 0.5),
+                                  make_float3(0.5, 0.5, -0.5), make_float3(0.5, 0.5, 0.5)};
     clamp_coord(coordinate, 0.0, 1.0 - 1e-9);
     int32_t node_id = 0;
     int32_t u, v, w, skip, i, j;
@@ -35,7 +38,7 @@ __device__ __inline__ void _dev_query_interp(
         }
     }
     while (true) {
-        traverse_tree_level<branching>(coordinate, &u, &v, &w);
+        traverse_tree_level<branching>(&coordinate, &u, &v, &w);
         tmp_coo = make_float3(coordinate.x, coordinate.y, coordinate.z);
         traverse_tree_level<2>(tmp_coo, &uc, &vc, &wc);
 
@@ -49,11 +52,11 @@ __device__ __inline__ void _dev_query_interp(
                 // Keep track of neighbor coordinates as well as neighbor indices. Coordinates cannot be computed
                 // at the end due to dependency on current cube size.
                 neigh_coo[i] = make_float3(
-                    (floorf(in_coo.x * cube_sz + offset2[i].x / 2 + 1e-5) + 0.5) / cube_sz,
-                    (floorf(in_coo.y * cube_sz + offset2[i].y / 2 + 1e-5) + 0.5) / cube_sz,
-                    (floorf(in_coo.z * cube_sz + offset2[i].z / 2 + 1e-5) + 0.5) / cube_sz
+                    (floorf(in_coo.x * cube_sz + offset2[i].x + 1e-5) + 0.5) / cube_sz,
+                    (floorf(in_coo.y * cube_sz + offset2[i].y + 1e-5) + 0.5) / cube_sz,
+                    (floorf(in_coo.z * cube_sz + offset2[i].z + 1e-5) + 0.5) / cube_sz
                 );
-                neigh_coo[i] = clamp_coord(neigh_coo, 1 / (cube_sz * branching), 1 - 1 / (cube_sz * branching));
+                clamp_coord(neigh_coo, 1 / (cube_sz * branching), 1 - 1 / (cube_sz * branching));
                 // Simpler formula (without clamping)
                 // (floor((in_coordinate[0] + offset2[i][0] / (cube_sz * 2)) * cube_sz + 1e-5) + 0.5) / cube_sz,
                 valid_neighbors[i] = node_id + skip;
@@ -327,7 +330,8 @@ at::Tensor query_octree(at::Tensor &indices,
 {
     size_t n_elements = indices.size(0);
     if (n_elements <= 0) {
-        return torch::tensor();  // undefined tensor
+        torch::Tensor undefined;
+        return undefined;
     }
 
     // Create output tensor
