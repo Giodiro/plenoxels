@@ -50,11 +50,11 @@ using torch::Tensor;
 //Tensor calc_corners(TreeSpec&, Tensor);
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
-void declare_octree(py::module &m, std::string &typestr) {
+void declare_octree(py::module &m, const std::string &typestr) {
     using TOctree = Octree<scalar_t, branching, data_dim>;
     std::string pyclass_name = std::string("Octree") + typestr;
     py::class_<TOctree>(m, pyclass_name)
-        .def(py::init<int32, bool, torch::Device>())
+        .def(py::init<int32_t, bool, torch::Device>())
 //        .def("refine", &TOctree::refine)
 //        .def("set", &TOctree::set)
         .def("query", &TOctree::query)
