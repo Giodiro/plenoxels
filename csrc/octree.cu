@@ -311,7 +311,12 @@ void set(at::Tensor indices, const at::Tensor vals, const bool update_avg)
     }
 }
 
-at::Tensor query_octree(at::Tensor &indices, Octree &tree, const bool parent_sum)
+template <typename scalar_t, int32_t branching, int32_t data_dim>
+at::Tensor query_octree(at::Tensor &indices,
+                        torch::Tensor &data,
+                        torch::Tensor &child,
+                        torch::Tensor &is_child_leaf,
+                        const bool parent_sum)
 {
     size_t n_elements = indices.shape(0);
     if (n_elements <= 0) {
@@ -321,11 +326,11 @@ at::Tensor query_octree(at::Tensor &indices, Octree &tree, const bool parent_sum
     // Create output tensor
     at::Tensor values_out = torch::empty({n_elements, data_dim}, data.options());
     octree_query_kernel<scalar_t, branching, data_dim><<<n_blocks_linear(n_elements), n_threads_linear>>(
-        tree.data.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits>(),
-        tree.child.packed_accessor32<scalar_t, 4, torch::RestrictPtrTraits>(),
-        tree.is_child_leaf.packed_accessor32<bool, 4, torch::RestrictPtrTraits>(),
-        tree.indices.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
-        tree.values_out.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+        data.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits>(),
+        child.packed_accessor32<scalar_t, 4, torch::RestrictPtrTraits>(),
+        is_child_leaf.packed_accessor32<bool, 4, torch::RestrictPtrTraits>(),
+        indices.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
+        values_out.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
         n_elements,
         parent_sum
     );

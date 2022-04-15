@@ -5,7 +5,11 @@
 #include <torch/extension.h>
 
 
-at::Tensor query_octree(at::Tensor &indices, Octree &tree, const bool parent_sum);
+at::Tensor query_octree(at::Tensor &indices,
+                        torch::Tensor &data,
+                        torch::Tensor &child,
+                        torch::Tensor &is_child_leaf,
+                        const bool parent_sum);
 
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
@@ -45,7 +49,7 @@ class Octree {
 //        void refine(const at::optional<at::Tensor> & opt_leaves);
 //        void set(at::Tensor indices, const at::Tensor vals, const bool update_avg);
         at::Tensor query(at::Tensor indices) {
-            return query_octree(indices, this, _parent_sum);
+            return query_octree(indices, data, child, is_child_leaf, _parent_sum);
         }
 //        std::tuple<at::Tensor, at::Tensor> query_interp(at::Tensor indices);
 };
