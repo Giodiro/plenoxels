@@ -92,7 +92,7 @@ class Octree {
 
         void refine(const at::optional<at::Tensor> & opt_leaves);
         void set(at::Tensor indices, const at::Tensor vals, const bool update_avg) {
-            set_octree<scalar_t, branching, data_dim>(indices, vals, data, child, is_child_leaf, parent, depth, update_avg, _parent_sum);
+            set_octree<scalar_t, branching, data_dim>(indices, vals, data, child, is_child_leaf, parent, depth, update_avg, _parent_sum, _max_depth);
         }
         at::Tensor query(at::Tensor indices) {
             return query_octree<scalar_t, branching, data_dim>(indices, data, child, is_child_leaf, _parent_sum);
