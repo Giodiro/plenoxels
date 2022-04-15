@@ -219,71 +219,7 @@ __global__ void octree_query_interp_kernel(
     );
 }
 
-/*
 
-void refine(const at::optional<at::Tensor> & opt_leaves) {
-    const auto leaves = opt_leaves.has_value() ? opt_leaves.value() : is_child_leaf.nonzero();
-    const size_t total_nodes = data.size(0);
-    const size_t new_internal = leaves.size(0);
-    const size_t new_total_nodes = total_nodes + new_internal * _node_size;
-
-    _resize_add_cap(new_internal);
-
-    if (total_nodes == 1) // root node is an exception
-    {
-        child.index_put_({Ellipsis}, torch::arange(total_nodes, new_total_nodes, child.options()));
-        is_child_leaf.index_put_({Ellipsis}, true);
-        parent.index_put_({Ellipsis}, 0);
-        depth.index_put_({Ellipsis}, 1);
-    }
-    else
-    {
-        // child
-        torch::Tensor new_child_ids =
-            torch::arange(total_nodes, new_total_nodes, child.options()).view({-1, branching, branching, branching})
-            - torch::arange(_n_internal, _n_internal + new_internal, 1).view({-1, 1, 1, 1});
-        child.index_put_({Slice(_n_internal, _n_internal + new_internal, 1), Ellipsis},
-                         new_child_ids);
-        // is_child_leaf
-        is_child_leaf.index_put_(leaves.unbind(1), true);
-        // parent_depth
-        auto packed_leaves = pack_index_3d<branching>(leaves).repeat_interleave(_node_size) + 1;  // +1 for the invisible root node.
-        parent.index_put_(
-            {Slice(total_nodes, new_total_nodes)},
-            packed_leaves
-        );
-        depth.index_put_(
-            {Slice(total_nodes, new_total_nodes)},
-            depth.index({packed_leaves}) + 1
-        );
-    }
-    _n_internal += new_internal;
-}
-
-void _resize_add_cap(const size_t num_new_internal)
-{
-    child = torch::cat({
-        child,
-        torch::zeros({num_new_internal, branching, branching, branching}, child.options())
-    });
-    data = torch::cat({
-        data,
-        torch::zeros({num_new_internal * branching * branching * branching, data_dim}, data.options())
-    });
-    is_child_leaf = torch::cat({
-        is_child_leaf,
-        torch::ones({num_new_internal, branching, branching, branching}, is_child_leaf.options())
-    });
-    parent = torch::cat({
-        parent,
-        torch::zeros({num_new_internal * branching * branching * branching}, parent.options())
-    });
-    depth = torch::cat({
-        depth,
-        torch::zeros({num_new_internal * branching * branching * branching}, depth.options())
-    });
-}
-*/
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 void set_octree(at::Tensor &indices,
@@ -314,14 +250,14 @@ void set_octree(at::Tensor &indices,
     // Remove the average from the children
     int32_t node_size = branching * branching * branching;
     if (update_avg) {
-        max_depth = depth.max();
+        auto max_depth = depth.max();
         for (int i = max_depth; i > 0; i--) {
             auto child_ids = (depth == torch::tensor({i})).nonzero().squeeze();
             auto parent_ids = parent.index({child_ids}).to(torch::kInt64);
-            data.index_put_(parent_ids, torch::tensor({0}));
+            data.index_put_({parent_ids}, torch::tensor({0}));
             data.scatter_add_(
                 0, parent_ids.unsqueeze(-1).expand(parent_ids.size(0), data_dim), data.index(child_ids));
-            data.index(parent_ids).div_(node_size);
+            data.index({parent_ids}).div_(node_size);
             if (parent_sum) {
                 data.scatter_add_(
                     0, child_ids.unsqueeze(-1).expand(child_ids.size(0), data_dim), -data.index(parent_ids));
@@ -386,3 +322,4 @@ std::tuple<at::Tensor, at::Tensor> query_interp_octree(at::Tensor &indices,
     );
     return std::make_tuple(values_out, weights_out);
 }
+
