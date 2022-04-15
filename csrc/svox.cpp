@@ -32,7 +32,7 @@
 #include <string>
 
 //#include "data_spec.hpp"
-#include "octree.cu"
+#include "octree.hpp"
 
 namespace py = pybind11;
 using torch::Tensor;
@@ -55,10 +55,10 @@ void declare_octree(py::module &m, std::string &typestr) {
     std::string pyclass_name = std::string("Octree") + typestr;
     py::class_<TOctree>(m, pyclass_name)
         .def(py::init<int32, bool, torch::Device>())
-        .def("refine", &TOctree::refine)
-        .def("set", &TOctree::set)
+//        .def("refine", &TOctree::refine)
+//        .def("set", &TOctree::set)
         .def("query", &TOctree::query)
-        .def("query_interp", &TOctree::query_interp)
+//        .def("query_interp", &TOctree::query_interp)
         .def_readwrite("data", &TOctree::data)
         .def_readwrite("child", &TOctree::child)
         .def_readwrite("is_child_leaf", &TOctree::is_child_leaf)

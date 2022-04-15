@@ -174,7 +174,6 @@ class VolumeRenderer(nn.Module):
                         Please note the padding will NOT be compatible with volrend,
                         although most likely the effect is very small.
                         0.001 is a reasonable value to try.
-
         """
         super().__init__()
         self.tree = tree
