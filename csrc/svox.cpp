@@ -29,24 +29,25 @@
 #include <torch/extension.h>
 #include <cstdint>
 #include <vector>
+#include <string>
 
-#include "data_spec.hpp"
+//#include "data_spec.hpp"
 #include "octree.hpp"
 
 namespace py = pybind11;
 using torch::Tensor;
 
-QueryResult query_vertical(TreeSpec&, Tensor);
-Tensor query_vertical_backward(TreeSpec&, Tensor, Tensor);
-Tensor query_interp(TreeSpec& tree, Tensor indices);
-void assign_vertical(TreeSpec&, Tensor, Tensor);
-
-Tensor volume_render(TreeSpec&, RaysSpec&, RenderOptions&);
-Tensor volume_render_image(TreeSpec&, CameraSpec&, RenderOptions&);
-Tensor volume_render_backward(TreeSpec&, RaysSpec&, RenderOptions&, Tensor);
-Tensor volume_render_image_backward(TreeSpec&, CameraSpec&, RenderOptions&, Tensor);
-
-Tensor calc_corners(TreeSpec&, Tensor);
+//QueryResult query_vertical(TreeSpec&, Tensor);
+//Tensor query_vertical_backward(TreeSpec&, Tensor, Tensor);
+//Tensor query_interp(TreeSpec& tree, Tensor indices);
+//void assign_vertical(TreeSpec&, Tensor, Tensor);
+//
+//Tensor volume_render(TreeSpec&, RaysSpec&, RenderOptions&);
+//Tensor volume_render_image(TreeSpec&, CameraSpec&, RenderOptions&);
+//Tensor volume_render_backward(TreeSpec&, RaysSpec&, RenderOptions&, Tensor);
+//Tensor volume_render_image_backward(TreeSpec&, CameraSpec&, RenderOptions&, Tensor);
+//
+//Tensor calc_corners(TreeSpec&, Tensor);
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 void declare_octree(py::module &m, std::string &typestr) {
@@ -69,58 +70,58 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     declare_octree<float, 2, 1>(m, "<float, 2, 1>");
     declare_octree<float, 3, 1>(m, "<float, 3, 1>");
     declare_octree<float, 4, 1>(m, "<float, 4, 1>");
-
-    py::class_<RaysSpec>(m, "RaysSpec")
-        .def(py::init<>())
-        .def_readwrite("origins", &RaysSpec::origins)
-        .def_readwrite("dirs", &RaysSpec::dirs)
-        .def_readwrite("vdirs", &RaysSpec::vdirs);
-
-    py::class_<TreeSpec>(m, "TreeSpec")
-        .def(py::init<>())
-        .def_readwrite("data", &TreeSpec::data)
-        .def_readwrite("child", &TreeSpec::child)
-        .def_readwrite("parent_depth", &TreeSpec::parent_depth)
-        .def_readwrite("extra_data", &TreeSpec::extra_data)
-        .def_readwrite("offset", &TreeSpec::offset)
-        .def_readwrite("scaling", &TreeSpec::scaling)
-        .def_readwrite("_weight_accum", &TreeSpec::_weight_accum)
-        .def_readwrite("_weight_accum_max", &TreeSpec::_weight_accum_max);
-
-    py::class_<CameraSpec>(m, "CameraSpec")
-        .def(py::init<>())
-        .def_readwrite("c2w", &CameraSpec::c2w)
-        .def_readwrite("fx", &CameraSpec::fx)
-        .def_readwrite("fy", &CameraSpec::fy)
-        .def_readwrite("width", &CameraSpec::width)
-        .def_readwrite("height", &CameraSpec::height);
-
-    py::class_<RenderOptions>(m, "RenderOptions")
-        .def(py::init<>())
-        .def_readwrite("step_size", &RenderOptions::step_size)
-        .def_readwrite("background_brightness", &RenderOptions::background_brightness)
-        .def_readwrite("max_samples_per_node", &RenderOptions::max_samples_per_node)
-        .def_readwrite("ndc_width", &RenderOptions::ndc_width)
-        .def_readwrite("ndc_height", &RenderOptions::ndc_height)
-        .def_readwrite("ndc_focal", &RenderOptions::ndc_focal)
-        .def_readwrite("format", &RenderOptions::format)
-        .def_readwrite("basis_dim", &RenderOptions::basis_dim)
-        .def_readwrite("min_comp", &RenderOptions::min_comp)
-        .def_readwrite("max_comp", &RenderOptions::max_comp)
-        .def_readwrite("sigma_thresh", &RenderOptions::sigma_thresh)
-        .def_readwrite("stop_thresh", &RenderOptions::stop_thresh)
-        .def_readwrite("density_softplus", &RenderOptions::density_softplus)
-        .def_readwrite("rgb_padding", &RenderOptions::rgb_padding);
-
-    m.def("query_interp", &query_interp);
-    m.def("query_vertical", &query_vertical);
-    m.def("query_vertical_backward", &query_vertical_backward);
-    m.def("assign_vertical", &assign_vertical);
-
-    m.def("volume_render", &volume_render);
-    m.def("volume_render_image", &volume_render_image);
-    m.def("volume_render_backward", &volume_render_backward);
-    m.def("volume_render_image_backward", &volume_render_image_backward);
-
-    m.def("calc_corners", &calc_corners);
+//
+//    py::class_<RaysSpec>(m, "RaysSpec")
+//        .def(py::init<>())
+//        .def_readwrite("origins", &RaysSpec::origins)
+//        .def_readwrite("dirs", &RaysSpec::dirs)
+//        .def_readwrite("vdirs", &RaysSpec::vdirs);
+//
+//    py::class_<TreeSpec>(m, "TreeSpec")
+//        .def(py::init<>())
+//        .def_readwrite("data", &TreeSpec::data)
+//        .def_readwrite("child", &TreeSpec::child)
+//        .def_readwrite("parent_depth", &TreeSpec::parent_depth)
+//        .def_readwrite("extra_data", &TreeSpec::extra_data)
+//        .def_readwrite("offset", &TreeSpec::offset)
+//        .def_readwrite("scaling", &TreeSpec::scaling)
+//        .def_readwrite("_weight_accum", &TreeSpec::_weight_accum)
+//        .def_readwrite("_weight_accum_max", &TreeSpec::_weight_accum_max);
+//
+//    py::class_<CameraSpec>(m, "CameraSpec")
+//        .def(py::init<>())
+//        .def_readwrite("c2w", &CameraSpec::c2w)
+//        .def_readwrite("fx", &CameraSpec::fx)
+//        .def_readwrite("fy", &CameraSpec::fy)
+//        .def_readwrite("width", &CameraSpec::width)
+//        .def_readwrite("height", &CameraSpec::height);
+//
+//    py::class_<RenderOptions>(m, "RenderOptions")
+//        .def(py::init<>())
+//        .def_readwrite("step_size", &RenderOptions::step_size)
+//        .def_readwrite("background_brightness", &RenderOptions::background_brightness)
+//        .def_readwrite("max_samples_per_node", &RenderOptions::max_samples_per_node)
+//        .def_readwrite("ndc_width", &RenderOptions::ndc_width)
+//        .def_readwrite("ndc_height", &RenderOptions::ndc_height)
+//        .def_readwrite("ndc_focal", &RenderOptions::ndc_focal)
+//        .def_readwrite("format", &RenderOptions::format)
+//        .def_readwrite("basis_dim", &RenderOptions::basis_dim)
+//        .def_readwrite("min_comp", &RenderOptions::min_comp)
+//        .def_readwrite("max_comp", &RenderOptions::max_comp)
+//        .def_readwrite("sigma_thresh", &RenderOptions::sigma_thresh)
+//        .def_readwrite("stop_thresh", &RenderOptions::stop_thresh)
+//        .def_readwrite("density_softplus", &RenderOptions::density_softplus)
+//        .def_readwrite("rgb_padding", &RenderOptions::rgb_padding);
+//
+//    m.def("query_interp", &query_interp);
+//    m.def("query_vertical", &query_vertical);
+//    m.def("query_vertical_backward", &query_vertical_backward);
+//    m.def("assign_vertical", &assign_vertical);
+//
+//    m.def("volume_render", &volume_render);
+//    m.def("volume_render_image", &volume_render_image);
+//    m.def("volume_render_backward", &volume_render_backward);
+//    m.def("volume_render_image_backward", &volume_render_image_backward);
+//
+//    m.def("calc_corners", &calc_corners);
 }
