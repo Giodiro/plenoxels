@@ -230,7 +230,8 @@ void set_octree(at::Tensor &indices,
                 at::Tensor &parent,
                 at::Tensor &depth,
                 const bool update_avg,
-                const bool parent_sum)
+                const bool parent_sum,
+                const int32_t max_depth)
 {
     size_t n_elements = indices.size(0);
     if (n_elements <= 0) {
@@ -250,17 +251,16 @@ void set_octree(at::Tensor &indices,
     // Remove the average from the children
     int32_t node_size = branching * branching * branching;
     if (update_avg) {
-        auto max_depth = depth.max();
         for (int i = max_depth; i > 0; i--) {
             auto child_ids = (depth == torch::tensor({i})).nonzero().squeeze();
             auto parent_ids = parent.index({child_ids}).to(torch::kInt64);
             data.index_put_({parent_ids}, torch::tensor({0}));
             data.scatter_add_(
-                0, parent_ids.unsqueeze(-1).expand(parent_ids.size(0), data_dim), data.index(child_ids));
+                0, parent_ids.unsqueeze(-1).expand(parent_ids.size(0), data_dim), data.index({child_ids}));
             data.index({parent_ids}).div_(node_size);
             if (parent_sum) {
                 data.scatter_add_(
-                    0, child_ids.unsqueeze(-1).expand(child_ids.size(0), data_dim), -data.index(parent_ids));
+                    0, child_ids.unsqueeze(-1).expand(child_ids.size(0), data_dim), -data.index({parent_ids}));
             }
         }
     }

@@ -30,7 +30,8 @@ void set_octree(at::Tensor &indices,
                 at::Tensor &parent,
                 at::Tensor &depth,
                 const bool update_avg,
-                const bool parent_sum);
+                const bool parent_sum,
+                const int32_t max_depth);
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 class Octree {
@@ -38,6 +39,7 @@ class Octree {
         size_t _n_internal;
         bool _parent_sum;
         int32_t _node_size;
+        int32_t _max_depth;
         void _resize_add_cap(const size_t num_new_internal)
         {
             child = torch::cat({
@@ -71,6 +73,7 @@ class Octree {
         Octree(int32_t levels, bool parent_sum, torch::Device device) {
             _parent_sum = parent_sum;
             _node_size = branching * branching * branching;
+            _max_depth = 0;
 
             const auto data_dt = caffe2::TypeMeta::Make<scalar_t>().toScalarType();
 
@@ -116,6 +119,9 @@ void Octree<scalar_t, branching, data_dim>::refine(const at::optional<at::Tensor
     const size_t new_internal = leaves.size(0);
     const size_t new_total_nodes = total_nodes + new_internal * node_size;
 
+    if (new_internal == 0) {
+        return;
+    }
     _resize_add_cap(new_internal);
 
     if (total_nodes == 1) // root node is an exception
@@ -124,26 +130,29 @@ void Octree<scalar_t, branching, data_dim>::refine(const at::optional<at::Tensor
         is_child_leaf.index_put_({Ellipsis}, true);
         parent.index_put_({Ellipsis}, 0);
         depth.index_put_({Ellipsis}, 1);
+        _max_depth += 1;
     }
     else
     {
         // child
         torch::Tensor new_child_ids =
             torch::arange(total_nodes, new_total_nodes, child.options()).view({-1, branching, branching, branching})
-            - torch::arange(_n_internal, _n_internal + new_internal, 1).view({-1, 1, 1, 1});
+            - torch::arange(_n_internal, _n_internal + new_internal, child.options()).view({-1, 1, 1, 1});
         child.index_put_({Slice(_n_internal, _n_internal + new_internal, 1), Ellipsis},
                          new_child_ids);
         // is_child_leaf
-        is_child_leaf.index_put_(leaves.unbind(1), true);
+        is_child_leaf.index_put_(leaves.unbind(1), torch::tensor({true}));
         // parent_depth
         auto packed_leaves = pack_index_3d<branching>(leaves).repeat_interleave(_node_size) + 1;  // +1 for the invisible root node.
         parent.index_put_(
             {Slice(total_nodes, new_total_nodes)},
             packed_leaves
         );
+        auto old_depth = depth.index({packed_leaves});
+        _max_depth = max(_max_depth, old_depth.max().item<int32_t>() + 1);
         depth.index_put_(
             {Slice(total_nodes, new_total_nodes)},
-            depth.index({packed_leaves}) + 1
+            old_depth + torch::tensor({1})
         );
     }
     _n_internal += new_internal;
