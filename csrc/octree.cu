@@ -292,6 +292,7 @@ void set_octree(at::Tensor &indices,
                 at::Tensor &child,
                 at::Tensor &is_child_leaf,
                 at::Tensor &parent,
+                at::Tensor &depth,
                 const bool update_avg,
                 const bool parent_sum)
 {
@@ -305,12 +306,13 @@ void set_octree(at::Tensor &indices,
         child.packed_accessor32<scalar_t, 4, torch::RestrictPtrTraits>(),
         is_child_leaf.packed_accessor32<bool, 4, torch::RestrictPtrTraits>(),
         indices.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
-        values.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+        vals.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
         n_elements
     );
 
     // Set all parents to be their child's average (bottom to top)
     // Remove the average from the children
+    int32_t node_size = branching * branching * branching;
     if (update_avg) {
         max_depth = depth.max();
         for (int i = max_depth; i > 0; i--) {
@@ -319,7 +321,7 @@ void set_octree(at::Tensor &indices,
             data.index_put_(parent_ids, torch::tensor({0}));
             data.scatter_add_(
                 0, parent_ids.unsqueeze(-1).expand(parent_ids.size(0), data_dim), data.index(child_ids));
-            data.index(parent_ids).div_(_node_size);
+            data.index(parent_ids).div_(node_size);
             if (parent_sum) {
                 data.scatter_add_(
                     0, child_ids.unsqueeze(-1).expand(child_ids.size(0), data_dim), -data.index(parent_ids));
@@ -365,7 +367,8 @@ std::tuple<at::Tensor, at::Tensor> query_interp_octree(at::Tensor &indices,
 {
     size_t n_elements = indices.size(0);
     if (n_elements <= 0) {
-        return torch::tensor();  // undefined tensor
+        torch::Tensor undefined;
+        return undefined;
     }
 
     // Create output tensors
