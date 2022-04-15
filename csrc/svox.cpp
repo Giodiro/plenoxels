@@ -53,7 +53,7 @@ template <typename scalar_t, int32_t branching, int32_t data_dim>
 void declare_octree(py::module &m, const std::string &typestr) {
     using TOctree = Octree<scalar_t, branching, data_dim>;
     std::string pyclass_name = std::string("Octree") + typestr;
-    py::class_<TOctree>(m, pyclass_name)
+    py::class_<TOctree>(m, pyclass_name.c_str())
         .def(py::init<int32_t, bool, torch::Device>())
 //        .def("refine", &TOctree::refine)
 //        .def("set", &TOctree::set)
