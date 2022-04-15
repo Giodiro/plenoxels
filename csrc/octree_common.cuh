@@ -28,7 +28,7 @@ __device__ __inline__ float3 diff_prod(const float3 &a, const float &b, const fl
 
 __device__ __inline__ float prod_diff(const float &a, const float &b, const float &c, const float &d) {
     // a * b - c * d (using kahan sum)
-    float cd = __fmul__(c, d);  // use intrinsic to avoid compiler optimizing this out.
+    float cd = __fmul_rn(c, d);  // use intrinsic to avoid compiler optimizing this out.
     float err = fmaf(-c, d, cd);
     float dop = fmaf(a, b, -cd);
     return dop + err;
@@ -74,7 +74,7 @@ __device__ __inline__ void traverse_tree_level(
 __device__ __inline__ void interp_quad_3d_newt(
     float * __restrict__ weights,
     const float3 * __restrict__ point,
-    const float3 * __restrict__ neighbors,
+    const float3 * __restrict__ n
 )
 {
     /*
@@ -105,15 +105,15 @@ __device__ __inline__ void interp_quad_3d_newt(
         js = diff_prod(n[4], n[0], (1 - stw.y) * (1 - stw.z)) +
              diff_prod(n[5], n[1], (1 - stw.y) * stw.z      ) +
              diff_prod(n[6], n[2], stw.y       * (1 - stw.z)) +
-             diff_prod(n[7], n[3], stw.y       * stw.z      ) - point;
+             diff_prod(n[7], n[3], stw.y       * stw.z      ) - *point;
         jt = diff_prod(n[2], n[0], (1 - stw.x) * (1 - stw.z)) +
              diff_prod(n[3], n[1], (1 - stw.x) * stw.z      ) +
              diff_prod(n[6], n[4], stw.x       * (1 - stw.z)) +
-             diff_prod(n[7], n[5], stw.x       * stw.z      ) - point;
+             diff_prod(n[7], n[5], stw.x       * stw.z      ) - *point;
         jw = diff_prod(n[1], n[0], (1 - stw.x) * (1 - stw.y)) +
              diff_prod(n[3], n[2], (1 - stw.x) * stw.y      ) +
              diff_prod(n[5], n[4], stw.x       * (1 - stw.y)) +
-             diff_prod(n[7], n[6], stw.x       * stw.y      ) - point;
+             diff_prod(n[7], n[6], stw.x       * stw.y      ) - *point;
         inv_det_j = 1 / (
              js.x * prod_diff(jt.y, jw.z, jw.y, jt.z) -
              js.y * prod_diff(jt.x, jw.z, jt.z, jw.x) +

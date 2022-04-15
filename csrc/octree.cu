@@ -90,7 +90,7 @@ __device__ __inline__ void _dev_query_sum(
     const torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> child,
     const torch::PackedTensorAccessor32<bool, 4, torch::RestrictPtrTraits> is_child_leaf,
     float3 & __restrict__ coordinate,
-    scalar_t* __restrict__ out_val,
+    scalar_t* __restrict__ out_val
 )
 {
     clamp_coord(coordinate, 0.0, 1.0 - 1e-9);
@@ -119,7 +119,7 @@ __device__ __inline__ scalar_t* _dev_query_single(
     torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> data,
     const torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> child,
     const torch::PackedTensorAccessor32<bool, 4, torch::RestrictPtrTraits> is_child_leaf,
-    float3 & __restrict__ coordinate,
+    float3 & __restrict__ coordinate
 )
 {
     clamp_coord(coordinate, 0.0, 1.0 - 1e-9);
@@ -196,7 +196,7 @@ __global__ void octree_query_interp_kernel(
     const torch::PackedTensorAccessor32<bool, 4, torch::RestrictPtrTraits> is_child_leaf,
     torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> indices,
     torch::PackedTensorAccessor32<scalar_t, 2, torch::RestrictPtrTraits> out_values,
-    torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits weights,
+    torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> weights,
     const size_t n_elements,
     const bool parent_sum
 ) {
@@ -212,6 +212,7 @@ __global__ void octree_query_interp_kernel(
     );
 }
 
+/*
 
 void refine(const at::optional<at::Tensor> & opt_leaves) {
     const auto leaves = opt_leaves.has_value() ? opt_leaves.value() : is_child_leaf.nonzero();
@@ -311,6 +312,8 @@ void set(at::Tensor indices, const at::Tensor vals, const bool update_avg)
     }
 }
 
+*/
+
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 at::Tensor query_octree(at::Tensor &indices,
                         torch::Tensor &data,
@@ -337,6 +340,7 @@ at::Tensor query_octree(at::Tensor &indices,
     return values_out;
 }
 
+/*
 std::tuple<at::Tensor, at::Tensor> query_interp(at::Tensor indices)
 {
     size_t n_elements = indices.shape(0);
@@ -359,3 +363,5 @@ std::tuple<at::Tensor, at::Tensor> query_interp(at::Tensor indices)
     );
     return make_tuple(values_out, weights_out);
 }
+
+*/
