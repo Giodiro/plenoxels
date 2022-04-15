@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "data_spec.hpp"
+#include "octree.hpp"
 
 namespace py = pybind11;
 using torch::Tensor;
@@ -47,7 +48,28 @@ Tensor volume_render_image_backward(TreeSpec&, CameraSpec&, RenderOptions&, Tens
 
 Tensor calc_corners(TreeSpec&, Tensor);
 
+template <typename scalar_t, int32_t branching, int32_t data_dim>
+void declare_octree(py::module &m, std::string &typestr) {
+    using TOctree = Octree<scalar_t, branching, data_dim>;
+    std::string pyclass_name = std::string("Octree") + typestr;
+    py::class_<TOctree>(m, pyclass_name)
+        .def(py::init<int32, bool, torch::Device>())
+        .def("refine", &TOctree::refine)
+        .def("set", &TOctree::set)
+        .def("query", &TOctree::query)
+        .def("query_interp", &TOctree::query_interp)
+        .def_readwrite("data", &TOctree::data)
+        .def_readwrite("child", &TOctree::child)
+        .def_readwrite("is_child_leaf", &TOctree::is_child_leaf)
+        .def_readwrite("parent", &TOctree::parent)
+        .def_readwrite("depth", &TOctree::depth);
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    declare_octree<float, 2, 1>(m, "<float, 2, 1>");
+    declare_octree<float, 3, 1>(m, "<float, 3, 1>");
+    declare_octree<float, 4, 1>(m, "<float, 4, 1>");
+
     py::class_<RaysSpec>(m, "RaysSpec")
         .def(py::init<>())
         .def_readwrite("origins", &RaysSpec::origins)
