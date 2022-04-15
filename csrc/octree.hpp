@@ -4,6 +4,8 @@
 #include <c10/util/typeid.h>
 #include <torch/extension.h>
 
+using namespace torch::indexing
+
 
 at::Tensor query_octree(at::Tensor &indices,
                         torch::Tensor &data,
