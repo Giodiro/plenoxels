@@ -1,8 +1,8 @@
 #pragma once
 
 #include <tuple>
-#include <c10/util/typeid.h>
 #include <torch/extension.h>
+#include <c10/util/typeid.h>
 
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
@@ -25,7 +25,6 @@ struct Octree {
     torch::PackedTensorAccessor64<int32_t, 2, torch::RestrictPtrTraits> depth_acc;
 
     Octree(int32_t levels, bool parent_sum, torch::Device device) : parent_sum(parent_sum) {
-        node_size = branching * branching * branching;
         max_depth = 0;
 
         const auto data_dt = caffe2::TypeMeta::Make<scalar_t>().toScalarType();
