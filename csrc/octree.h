@@ -18,11 +18,11 @@ struct Octree {
     torch::Tensor parent;
     torch::Tensor depth;
 
-    torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> data_acc;
-    torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> child_acc;
-    torch::PackedTensorAccessor32<bool, 4, torch::RestrictPtrTraits> is_child_leaf_acc;
-    torch::PackedTensorAccessor64<int32_t, 2, torch::RestrictPtrTraits> parent_acc;
-    torch::PackedTensorAccessor64<int32_t, 2, torch::RestrictPtrTraits> depth_acc;
+//    torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> data_acc;
+//    torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> child_acc;
+//    torch::PackedTensorAccessor32<bool, 4, torch::RestrictPtrTraits> is_child_leaf_acc;
+//    torch::PackedTensorAccessor64<int32_t, 2, torch::RestrictPtrTraits> parent_acc;
+//    torch::PackedTensorAccessor64<int32_t, 2, torch::RestrictPtrTraits> depth_acc;
 
     Octree(int32_t levels, bool parent_sum, torch::Device device) : parent_sum(parent_sum) {
         max_depth = 0;
@@ -40,12 +40,13 @@ struct Octree {
         depth = torch::zeros({1},
             torch::dtype(torch::kInt32).layout(torch::kStrided).device(device));
 
-        data_acc = data.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits>();
-        child_acc = child.packed_accessor32<int32_t, 4, torch::RestrictPtrTraits>();
-        is_child_leaf_acc = is_child_leaf.packed_accessor32<bool, 4, torch::RestrictPtrTraits>();
-        parent_acc = parent.packed_accessor64<int32_t, 2, torch::RestrictPtrTraits>();
-        depth_acc = depth.packed_accessor64<int32_t, 2, torch::RestrictPtrTraits>();
+//        data_acc = data.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits>();
+//        child_acc = child.packed_accessor32<int32_t, 4, torch::RestrictPtrTraits>();
+//        is_child_leaf_acc = is_child_leaf.packed_accessor32<bool, 4, torch::RestrictPtrTraits>();
+//        parent_acc = parent.packed_accessor64<int32_t, 2, torch::RestrictPtrTraits>();
+//        depth_acc = depth.packed_accessor64<int32_t, 2, torch::RestrictPtrTraits>();
     }
+
     ~Octree() { }
 };
 

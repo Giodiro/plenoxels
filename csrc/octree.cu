@@ -236,9 +236,9 @@ void set_octree(Octree<scalar_t, branching, data_dim> &tree, torch::Tensor &indi
     }
 
     octree_set_kernel<scalar_t, branching, data_dim><<<n_blocks_linear(n_elements), n_threads_linear>>>(
-        tree.data_acc,
-        tree.child_acc,
-        tree.is_child_leaf_acc,
+        tree.data.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits>(),
+        tree.child.packed_accessor32<int32_t, 4, torch::RestrictPtrTraits>()
+        tree.is_child_leaf.packed_accessor32<bool, 4, torch::RestrictPtrTraits>()
         indices.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
         vals.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
         n_elements
@@ -276,9 +276,9 @@ torch::Tensor query_octree(Octree<scalar_t, branching, data_dim> &tree, torch::T
     // Create output tensor
     torch::Tensor values_out = torch::empty({n_elements, data_dim}, tree.data.options());
     octree_query_kernel<scalar_t, branching, data_dim><<<n_blocks_linear(n_elements), n_threads_linear>>>(
-        tree.data_acc,
-        tree.child_acc,
-        tree.is_child_leaf_acc,
+        tree.data.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits>(),
+        tree.child.packed_accessor32<int32_t, 4, torch::RestrictPtrTraits>()
+        tree.is_child_leaf.packed_accessor32<bool, 4, torch::RestrictPtrTraits>()
         indices.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
         values_out.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
         n_elements,
@@ -301,9 +301,9 @@ std::tuple<torch::Tensor, torch::Tensor> query_interp_octree(Octree<scalar_t, br
     torch::Tensor values_out = torch::empty({n_elements, data_dim}, tree.data.options());
     torch::Tensor weights_out = torch::empty({n_elements, 8}, indices.options());
     octree_query_interp_kernel<scalar_t, branching, data_dim><<<n_blocks_linear(n_elements), n_threads_linear>>>(
-        tree.data_acc,
-        tree.child_acc,
-        tree.is_child_leaf_acc,
+        tree.data.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits>(),
+        tree.child.packed_accessor32<int32_t, 4, torch::RestrictPtrTraits>()
+        tree.is_child_leaf.packed_accessor32<bool, 4, torch::RestrictPtrTraits>()
         indices.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
         values_out.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
         weights_out.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
@@ -338,11 +338,11 @@ void _resize_add_cap(Octree<scalar_t, branching, data_dim> &tree, const int64_t 
         torch::zeros({(int64_t)num_new_internal * branching * branching * branching}, tree.depth.options())
     });
 
-    tree.data_acc = tree.data.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits>();
-    tree.child_acc = tree.child.packed_accessor32<int32_t, 4, torch::RestrictPtrTraits>();
-    tree.is_child_leaf_acc = tree.is_child_leaf.packed_accessor32<bool, 4, torch::RestrictPtrTraits>();
-    tree.parent_acc = tree.parent.packed_accessor64<int32_t, 2, torch::RestrictPtrTraits>();
-    tree.depth_acc = tree.depth.packed_accessor64<int32_t, 2, torch::RestrictPtrTraits>();
+//    tree.data_acc = tree.data.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits>();
+//    tree.child_acc = tree.child.packed_accessor32<int32_t, 4, torch::RestrictPtrTraits>();
+//    tree.is_child_leaf_acc = tree.is_child_leaf.packed_accessor32<bool, 4, torch::RestrictPtrTraits>();
+//    tree.parent_acc = tree.parent.packed_accessor64<int32_t, 2, torch::RestrictPtrTraits>();
+//    tree.depth_acc = tree.depth.packed_accessor64<int32_t, 2, torch::RestrictPtrTraits>();
 }
 
 
