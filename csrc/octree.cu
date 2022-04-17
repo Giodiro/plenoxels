@@ -1,8 +1,7 @@
-#include <torch/extension.h>
-
 #include "octree.h"
 #include "octree_common.cuh"
 
+using namespace torch::indexing;
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 __device__ __inline__ void _dev_query_interp(
@@ -143,6 +142,7 @@ __device__ __inline__ scalar_t* _dev_query_single(
     }
 }
 
+
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 __global__ void octree_set_kernel(
     torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> tree_data,
@@ -220,18 +220,15 @@ __global__ void octree_query_interp_kernel(
 }
 
 
+template <int32_t branching>
+at::Tensor pack_index_3d(const at::Tensor & leaves) {
+    auto multiplier = torch::tensor({branching * branching * branching, branching * branching, branching, 1}, leaves.options());
+    return leaves.mul(multiplier.unsqueeze(0)).sum(-1);
+}
+
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
-void set_octree(at::Tensor &indices,
-                const at::Tensor &vals,
-                at::Tensor &data,
-                at::Tensor &child,
-                at::Tensor &is_child_leaf,
-                at::Tensor &parent,
-                at::Tensor &depth,
-                const bool update_avg,
-                const bool parent_sum,
-                const int32_t max_depth)
+void set_octree(Octree<scalar_t, branching, data_dim> &tree, at::Tensor &indices, const at::Tensor &vals, const bool update_avg)
 {
     size_t n_elements = indices.size(0);
     if (n_elements <= 0) {
@@ -239,9 +236,9 @@ void set_octree(at::Tensor &indices,
     }
 
     octree_set_kernel<scalar_t, branching, data_dim><<<n_blocks_linear(n_elements), n_threads_linear>>>(
-        data.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits>(),
-        child.packed_accessor32<scalar_t, 4, torch::RestrictPtrTraits>(),
-        is_child_leaf.packed_accessor32<bool, 4, torch::RestrictPtrTraits>(),
+        tree.data_acc,
+        tree.child_acc,
+        tree.is_child_leaf_acc,
         indices.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
         vals.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
         n_elements
@@ -251,16 +248,16 @@ void set_octree(at::Tensor &indices,
     // Remove the average from the children
     int32_t node_size = branching * branching * branching;
     if (update_avg) {
-        for (int i = max_depth; i > 0; i--) {
-            auto child_ids = (depth == torch::tensor({i})).nonzero().squeeze();
-            auto parent_ids = parent.index({child_ids}).to(torch::kInt64);
-            data.index_put_({parent_ids}, torch::tensor({0}));
-            data.scatter_add_(
-                0, parent_ids.unsqueeze(-1).expand(parent_ids.size(0), data_dim), data.index({child_ids}));
-            data.index({parent_ids}).div_(node_size);
-            if (parent_sum) {
-                data.scatter_add_(
-                    0, child_ids.unsqueeze(-1).expand(child_ids.size(0), data_dim), -data.index({parent_ids}));
+        for (int i = tree.max_depth; i > 0; i--) {
+            auto child_ids = (tree.depth == torch::tensor({i})).nonzero().squeeze();
+            auto parent_ids = tree.parent.index({child_ids}).to(torch::kInt64);
+            tree.data.index_put_({parent_ids}, torch::tensor({0}));
+            tree.data.scatter_add_(
+                0, parent_ids.unsqueeze(-1).expand(parent_ids.size(0), data_dim), tree.data.index({child_ids}));
+            tree.data.index({parent_ids}).div_(tree.node_size);
+            if (tree.parent_sum) {
+                tree.data.scatter_add_(
+                    0, child_ids.unsqueeze(-1).expand(child_ids.size(0), data_dim), -tree.data.index({parent_ids}));
             }
         }
     }
@@ -268,57 +265,133 @@ void set_octree(at::Tensor &indices,
 
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
-at::Tensor query_octree(at::Tensor &indices,
-                        torch::Tensor &data,
-                        torch::Tensor &child,
-                        torch::Tensor &is_child_leaf,
-                        const bool parent_sum)
+at::Tensor query_octree(Octree<scalar_t, branching, data_dim> &tree, at::Tensor &indices)
 {
     size_t n_elements = indices.size(0);
     if (n_elements <= 0) {
-        torch::Tensor undefined;
+        at::Tensor undefined;
         return undefined;
     }
 
     // Create output tensor
-    at::Tensor values_out = torch::empty({n_elements, data_dim}, data.options());
+    at::Tensor values_out = torch::empty({n_elements, data_dim}, tree.data.options());
     octree_query_kernel<scalar_t, branching, data_dim><<<n_blocks_linear(n_elements), n_threads_linear>>>(
-        data.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits>(),
-        child.packed_accessor32<scalar_t, 4, torch::RestrictPtrTraits>(),
-        is_child_leaf.packed_accessor32<bool, 4, torch::RestrictPtrTraits>(),
+        tree.data_acc,
+        tree.child_acc,
+        tree.is_child_leaf_acc,
         indices.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
         values_out.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
         n_elements,
-        parent_sum
+        tree.parent_sum
     );
     return values_out;
 }
 
+
 template <typename scalar_t, int32_t branching, int32_t data_dim>
-std::tuple<at::Tensor, at::Tensor> query_interp_octree(at::Tensor &indices,
-                                                       at::Tensor &data,
-                                                       at::Tensor &child,
-                                                       at::Tensor &is_child_leaf,
-                                                       const bool parent_sum)
+std::tuple<at::Tensor, at::Tensor> query_interp_octree(Octree<scalar_t, branching, data_dim> &tree, at::Tensor &indices)
 {
     int64_t n_elements = indices.size(0);
     if (n_elements <= 0) {
-        torch::Tensor undefined;
-        return undefined;
+        at::Tensor undefined;
+        return std::make_tuple(undefined, undefined);
     }
 
     // Create output tensors
-    at::Tensor values_out = torch::empty({n_elements, data_dim}, data.options());
+    at::Tensor values_out = torch::empty({n_elements, data_dim}, tree.data.options());
     at::Tensor weights_out = torch::empty({n_elements, 8}, indices.options());
     octree_query_interp_kernel<scalar_t, branching, data_dim><<<n_blocks_linear(n_elements), n_threads_linear>>>(
-        data.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits>(),
-        child.packed_accessor32<scalar_t, 4, torch::RestrictPtrTraits>(),
-        is_child_leaf.packed_accessor32<bool, 4, torch::RestrictPtrTraits>(),
+        tree.data_acc,
+        tree.child_acc,
+        tree.is_child_leaf_acc,
         indices.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
         values_out.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
         weights_out.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
         n_elements,
-        parent_sum
+        tree.parent_sum
     );
     return std::make_tuple(values_out, weights_out);
+}
+
+
+template <typename scalar_t, int32_t branching, int32_t data_dim>
+void _resize_add_cap(Octree<scalar_t, branching, data_dim> &tree, const int64_t num_new_internal)
+{
+    tree.child = torch::cat({
+        tree.child,
+        torch::zeros({num_new_internal, branching, branching, branching}, tree.child.options())
+    });
+    tree.data = torch::cat({
+        tree.data,
+        torch::zeros({num_new_internal * branching * branching * branching, data_dim}, tree.data.options())
+    });
+    tree.is_child_leaf = torch::cat({
+        tree.is_child_leaf,
+        torch::ones({num_new_internal, branching, branching, branching}, tree.is_child_leaf.options())
+    });
+    tree.parent = torch::cat({
+        tree.parent,
+        torch::zeros({(int64_t)num_new_internal * branching * branching * branching}, tree.parent.options())
+    });
+    tree.depth = torch::cat({
+        tree.depth,
+        torch::zeros({(int64_t)num_new_internal * branching * branching * branching}, tree.depth.options())
+    });
+
+    tree.data_acc = tree.data.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits>();
+    tree.child_acc = tree.child.packed_accessor32<int32_t, 4, torch::RestrictPtrTraits>();
+    tree.is_child_leaf_acc = tree.is_child_leaf.packed_accessor32<bool, 4, torch::RestrictPtrTraits>();
+    tree.parent_acc = tree.parent.packed_accessor64<int32_t, 2, torch::RestrictPtrTraits>();
+    tree.depth_acc = tree.depth.packed_accessor64<int32_t, 2, torch::RestrictPtrTraits>();
+}
+
+
+template <typename scalar_t, int32_t branching, int32_t data_dim>
+void refine_octree(Octree<scalar_t, branching, data_dim> &tree, const at::optional<at::Tensor> &opt_leaves)
+{
+    const auto leaves = opt_leaves.has_value() ? opt_leaves.value() : tree.is_child_leaf.nonzero();
+    const int64_t total_nodes = tree.data.size(0);
+    const int64_t new_internal = leaves.size(0);
+    const int64_t new_total_nodes = total_nodes + new_internal * tree.node_size;
+
+    if (new_internal == 0) {
+        return;
+    }
+    _resize_add_cap(tree, new_internal);
+
+    if (total_nodes == 1) // root node is an exception
+    {
+        tree.child.index_put_({Ellipsis}, torch::arange(total_nodes, new_total_nodes, tree.child.options()));
+        tree.is_child_leaf.index_put_({Ellipsis}, true);
+        tree.parent.index_put_({Ellipsis}, 0);
+        tree.depth.index_put_({Ellipsis}, 1);
+        tree.max_depth += 1;
+    }
+    else
+    {
+        // child
+        torch::Tensor new_child_ids =
+            torch::arange(total_nodes, new_total_nodes, tree.child.options()).view({-1, branching, branching, branching})
+            - torch::arange(tree.n_internal, tree.n_internal + new_internal, tree.child.options()).view({-1, 1, 1, 1});
+        child.index_put_({Slice(tree.n_internal, tree.n_internal + new_internal, 1), Ellipsis},
+                         new_child_ids);
+        // is_child_leaf
+        auto sel = leaves.unbind(1);
+        tree.is_child_leaf.index_put_({sel[0], sel[1], sel[2], sel[3]}, torch::tensor({true}));
+        // parent_depth
+        auto packed_leaves = pack_index_3d<branching>(leaves).repeat_interleave(tree.node_size) + 1;  // +1 for the invisible root node.
+        tree.parent.index_put_(
+            {Slice(total_nodes, new_total_nodes)},
+            packed_leaves
+        );
+        auto old_depth = tree.depth.index({packed_leaves});
+        torch::Tensor new_max_depth = torch::max(old_depth);
+        int new_max_depth_i = new_max_depth.item<int>() + 1;
+        tree.max_depth = tree.max_depth > new_max_depth_i ? tree.max_depth : new_max_depth_i;
+        tree.depth.index_put_(
+            {Slice(total_nodes, new_total_nodes)},
+            old_depth + 1
+        );
+    }
+    tree.n_internal += new_internal;
 }

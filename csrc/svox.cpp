@@ -55,15 +55,19 @@ void declare_octree(py::module &m, const std::string &typestr) {
     std::string pyclass_name = std::string("Octree") + typestr;
     py::class_<TOctree>(m, pyclass_name.c_str())
         .def(py::init<int32_t, bool, torch::Device>())
-        .def("refine", &TOctree::refine)
-        .def("set", &TOctree::set)
-        .def("query", &TOctree::query)
-        .def("query_interp", &TOctree::query_interp)
+        .def_readonly("n_internal", &TOctree::n_internal)
+        .def_readonly("max_depth", &TOctree::max_depth)
+        .def_readonly("parent_sum", &TOctree::parent_sum)
+        .def_readonly("node_size", &TOctree::node_size)
         .def_readwrite("data", &TOctree::data)
         .def_readwrite("child", &TOctree::child)
         .def_readwrite("is_child_leaf", &TOctree::is_child_leaf)
         .def_readwrite("parent", &TOctree::parent)
         .def_readwrite("depth", &TOctree::depth);
+    m.def("set_octree", &set_octree<scalar_t, branching, data_dim>);
+    m.def("query_octree", &query_octree<scalar_t, branching, data_dim>);
+    m.def("query_interp_octree", &query_interp_octree<scalar_t, branching, data_dim>);
+    m.def("refine_octree", &refine_octree<scalar_t, branching, data_dim>);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
