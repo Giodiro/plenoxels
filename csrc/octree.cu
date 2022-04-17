@@ -221,14 +221,14 @@ __global__ void octree_query_interp_kernel(
 
 
 template <int32_t branching>
-at::Tensor pack_index_3d(const at::Tensor & leaves) {
+torch::Tensor pack_index_3d(const torch::Tensor & leaves) {
     auto multiplier = torch::tensor({branching * branching * branching, branching * branching, branching, 1}, leaves.options());
     return leaves.mul(multiplier.unsqueeze(0)).sum(-1);
 }
 
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
-void set_octree(Octree<scalar_t, branching, data_dim> &tree, at::Tensor &indices, const at::Tensor &vals, const bool update_avg)
+void set_octree(Octree<scalar_t, branching, data_dim> &tree, torch::Tensor &indices, const torch::Tensor &vals, const bool update_avg)
 {
     size_t n_elements = indices.size(0);
     if (n_elements <= 0) {
@@ -265,16 +265,16 @@ void set_octree(Octree<scalar_t, branching, data_dim> &tree, at::Tensor &indices
 
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
-at::Tensor query_octree(Octree<scalar_t, branching, data_dim> &tree, at::Tensor &indices)
+torch::Tensor query_octree(Octree<scalar_t, branching, data_dim> &tree, torch::Tensor &indices)
 {
     size_t n_elements = indices.size(0);
     if (n_elements <= 0) {
-        at::Tensor undefined;
+        torch::Tensor undefined;
         return undefined;
     }
 
     // Create output tensor
-    at::Tensor values_out = torch::empty({n_elements, data_dim}, tree.data.options());
+    torch::Tensor values_out = torch::empty({n_elements, data_dim}, tree.data.options());
     octree_query_kernel<scalar_t, branching, data_dim><<<n_blocks_linear(n_elements), n_threads_linear>>>(
         tree.data_acc,
         tree.child_acc,
@@ -289,17 +289,17 @@ at::Tensor query_octree(Octree<scalar_t, branching, data_dim> &tree, at::Tensor 
 
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
-std::tuple<at::Tensor, at::Tensor> query_interp_octree(Octree<scalar_t, branching, data_dim> &tree, at::Tensor &indices)
+std::tuple<torch::Tensor, torch::Tensor> query_interp_octree(Octree<scalar_t, branching, data_dim> &tree, torch::Tensor &indices)
 {
     int64_t n_elements = indices.size(0);
     if (n_elements <= 0) {
-        at::Tensor undefined;
+        torch::Tensor undefined;
         return std::make_tuple(undefined, undefined);
     }
 
     // Create output tensors
-    at::Tensor values_out = torch::empty({n_elements, data_dim}, tree.data.options());
-    at::Tensor weights_out = torch::empty({n_elements, 8}, indices.options());
+    torch::Tensor values_out = torch::empty({n_elements, data_dim}, tree.data.options());
+    torch::Tensor weights_out = torch::empty({n_elements, 8}, indices.options());
     octree_query_interp_kernel<scalar_t, branching, data_dim><<<n_blocks_linear(n_elements), n_threads_linear>>>(
         tree.data_acc,
         tree.child_acc,
@@ -347,7 +347,7 @@ void _resize_add_cap(Octree<scalar_t, branching, data_dim> &tree, const int64_t 
 
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
-void refine_octree(Octree<scalar_t, branching, data_dim> &tree, const at::optional<at::Tensor> &opt_leaves)
+void refine_octree(Octree<scalar_t, branching, data_dim> &tree, const at::optional<torch::Tensor> &opt_leaves)
 {
     const auto leaves = opt_leaves.has_value() ? opt_leaves.value() : tree.is_child_leaf.nonzero();
     const int64_t total_nodes = tree.data.size(0);
@@ -373,7 +373,7 @@ void refine_octree(Octree<scalar_t, branching, data_dim> &tree, const at::option
         torch::Tensor new_child_ids =
             torch::arange(total_nodes, new_total_nodes, tree.child.options()).view({-1, branching, branching, branching})
             - torch::arange(tree.n_internal, tree.n_internal + new_internal, tree.child.options()).view({-1, 1, 1, 1});
-        child.index_put_({Slice(tree.n_internal, tree.n_internal + new_internal, 1), Ellipsis},
+        tree.child.index_put_({Slice(tree.n_internal, tree.n_internal + new_internal, 1), Ellipsis},
                          new_child_ids);
         // is_child_leaf
         auto sel = leaves.unbind(1);

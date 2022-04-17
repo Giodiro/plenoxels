@@ -6,30 +6,17 @@
 
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
-void set_octree(Octree<scalar_t, branching, data_dim> &tree, at::Tensor &indices, const at::Tensor &vals, const bool update_avg);
-
-template <typename scalar_t, int32_t branching, int32_t data_dim>
-at::Tensor query_octree(Octree<scalar_t, branching, data_dim> &tree, at::Tensor &indices);
-
-template <typename scalar_t, int32_t branching, int32_t data_dim>
-std::tuple<at::Tensor, at::Tensor> query_interp_octree(Octree<scalar_t, branching, data_dim> &tree, at::Tensor &indices);
-
-template <typename scalar_t, int32_t branching, int32_t data_dim>
-void refine_octree(Octree<scalar_t, branching, data_dim> &tree, const at::optional<at::Tensor> &opt_leaves);
-
-
-template <typename scalar_t, int32_t branching, int32_t data_dim>
 struct Octree {
     int64_t n_internal;
     int32_t max_depth;
-    const bool parent_sum;
-    const int32_t node_size;
+    bool parent_sum;
+    const int32_t node_size = branching * branching * branching;
 
-    at::Tensor data;
-    at::Tensor child;
-    at::Tensor is_child_leaf;
-    at::Tensor parent;
-    at::Tensor depth;
+    torch::Tensor data;
+    torch::Tensor child;
+    torch::Tensor is_child_leaf;
+    torch::Tensor parent;
+    torch::Tensor depth;
 
     torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> data_acc;
     torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> child_acc;
@@ -62,3 +49,16 @@ struct Octree {
     }
     ~Octree() { }
 };
+
+
+template <typename scalar_t, int32_t branching, int32_t data_dim>
+void set_octree(Octree<scalar_t, branching, data_dim> &tree, torch::Tensor &indices, const torch::Tensor &vals, const bool update_avg);
+
+template <typename scalar_t, int32_t branching, int32_t data_dim>
+torch::Tensor query_octree(Octree<scalar_t, branching, data_dim> &tree, torch::Tensor &indices);
+
+template <typename scalar_t, int32_t branching, int32_t data_dim>
+std::tuple<torch::Tensor, torch::Tensor> query_interp_octree(Octree<scalar_t, branching, data_dim> &tree, torch::Tensor &indices);
+
+template <typename scalar_t, int32_t branching, int32_t data_dim>
+void refine_octree(Octree<scalar_t, branching, data_dim> &tree, const at::optional<torch::Tensor> &opt_leaves);
