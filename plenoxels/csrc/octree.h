@@ -8,12 +8,6 @@
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 struct Octree {
-//    torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> data_acc;
-//    torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> child_acc;
-//    torch::PackedTensorAccessor32<bool, 4, torch::RestrictPtrTraits> is_child_leaf_acc;
-//    torch::PackedTensorAccessor64<int32_t, 2, torch::RestrictPtrTraits> parent_acc;
-//    torch::PackedTensorAccessor64<int32_t, 2, torch::RestrictPtrTraits> depth_acc;
-
     Octree(int32_t levels, bool parent_sum, torch::Device device) : parent_sum(parent_sum) {
         max_depth = 0;
         n_internal = 0;
@@ -30,12 +24,6 @@ struct Octree {
             torch::dtype(torch::kInt32).layout(torch::kStrided).device(device));
         depth = torch::zeros({1},
             torch::dtype(torch::kInt32).layout(torch::kStrided).device(device));
-
-//        data_acc = data.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits>();
-//        child_acc = child.packed_accessor32<int32_t, 4, torch::RestrictPtrTraits>();
-//        is_child_leaf_acc = is_child_leaf.packed_accessor32<bool, 4, torch::RestrictPtrTraits>();
-//        parent_acc = parent.packed_accessor64<int32_t, 2, torch::RestrictPtrTraits>();
-//        depth_acc = depth.packed_accessor64<int32_t, 2, torch::RestrictPtrTraits>();
     }
 
     int64_t n_internal;
@@ -51,7 +39,10 @@ struct Octree {
 
     void _resize_add_cap(const int64_t num_new_internal);
     void refine_octree(const torch::optional<torch::Tensor> opt_leaves);
-    torch::Tensor query_octree(torch::Tensor indices);
+
+    torch::Tensor query_octree(torch::Tensor indices) {
+        return query_octree_impl(indices, this->data, this->child, this->is_child_leaf, this->parent_sum);
+    }
 };
 
 
@@ -93,12 +84,6 @@ void Octree<scalar_t, branching, data_dim>::_resize_add_cap(const int64_t num_ne
         torch::zeros({(int64_t)num_new_internal * branching * branching * branching}, depth.options())
     });
     printf("depth size(0): %ld\n", depth.size(0));
-
-//    tree.data_acc = tree.data.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits>();
-//    tree.child_acc = tree.child.packed_accessor32<int32_t, 4, torch::RestrictPtrTraits>();
-//    tree.is_child_leaf_acc = tree.is_child_leaf.packed_accessor32<bool, 4, torch::RestrictPtrTraits>();
-//    tree.parent_acc = tree.parent.packed_accessor64<int32_t, 2, torch::RestrictPtrTraits>();
-//    tree.depth_acc = tree.depth.packed_accessor64<int32_t, 2, torch::RestrictPtrTraits>();
 }
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
@@ -156,31 +141,4 @@ void Octree<scalar_t, branching, data_dim>::refine_octree(const torch::optional<
         printf("depth complete\n");
     }
     n_internal += new_internal;
-}
-
-
-template <typename scalar_t, int32_t branching, int32_t data_dim>
-torch::Tensor Octree<scalar_t, branching, data_dim>::query_octree(torch::Tensor indices)
-{
-    size_t n_elements = indices.size(0);
-    if (n_elements <= 0) {
-        torch::Tensor undefined;
-        return undefined;
-    }
-
-    // Create output tensor
-    torch::Tensor values_out = torch::empty({n_elements, data_dim}, data.options());
-    torch::Tensor td = data;
-    torch::Tensor tc = child;
-    torch::Tensor tl = is_child_leaf;
-    octree_query_kernel<scalar_t, branching, data_dim><<<n_blocks_linear(n_elements), n_threads_linear>>>(
-        td.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits>(),
-        tc.packed_accessor32<int32_t, 4, torch::RestrictPtrTraits>(),
-        tl.packed_accessor32<bool, 4, torch::RestrictPtrTraits>(),
-        indices.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
-        values_out.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-        n_elements,
-        parent_sum
-    );
-    return values_out;
 }
