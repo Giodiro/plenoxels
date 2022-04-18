@@ -85,7 +85,7 @@ __device__ __inline__ void interp_quad_3d_newt(
     p6~(1,0,1), p7~(1,1,0), p8~(1,1,1)
     */
 
-    const int32_t num_iter = 3;
+    const int32_t num_iter = 6;
     float3 stw = make_float3(0.49, 0.49, 0.49);
     float3 r, js, jt, jw;
     float inv_det_j, det_other;
@@ -103,18 +103,19 @@ __device__ __inline__ void interp_quad_3d_newt(
             r.y += n[i].y * weights[i];
             r.z += n[i].z * weights[i];
         }
+        r = r - *point;
         js = diff_prod(n[4], n[0], (1 - stw.y) * (1 - stw.z)) +
              diff_prod(n[5], n[1], (1 - stw.y) * stw.z      ) +
              diff_prod(n[6], n[2], stw.y       * (1 - stw.z)) +
-             diff_prod(n[7], n[3], stw.y       * stw.z      ) - *point;
+             diff_prod(n[7], n[3], stw.y       * stw.z      );
         jt = diff_prod(n[2], n[0], (1 - stw.x) * (1 - stw.z)) +
              diff_prod(n[3], n[1], (1 - stw.x) * stw.z      ) +
              diff_prod(n[6], n[4], stw.x       * (1 - stw.z)) +
-             diff_prod(n[7], n[5], stw.x       * stw.z      ) - *point;
+             diff_prod(n[7], n[5], stw.x       * stw.z      );
         jw = diff_prod(n[1], n[0], (1 - stw.x) * (1 - stw.y)) +
              diff_prod(n[3], n[2], (1 - stw.x) * stw.y      ) +
              diff_prod(n[5], n[4], stw.x       * (1 - stw.y)) +
-             diff_prod(n[7], n[6], stw.x       * stw.y      ) - *point;
+             diff_prod(n[7], n[6], stw.x       * stw.y      );
         inv_det_j = 1 / (
              js.x * prod_diff(jt.y, jw.z, jw.y, jt.z) -
              js.y * prod_diff(jt.x, jw.z, jt.z, jw.x) +
@@ -267,7 +268,7 @@ __device__ __inline__ void _dev_query_interp(
 
         // Determine whether we have finished, and we must interpolate
         if (is_child_leaf[node_id][u][v][w]) {
-            printf("Interpolating.\n")
+            printf("Interpolating.\n");
             interp_quad_3d_newt(weights, &in_coo, neigh_coo);
             printf("Weights: %f %f %f %f %f %f %f %f\n", weights[0], weights[1], weights[2], weights[3], weights[4], weights[5], weights[6], weights[7]);
             for (j = 0; j < 8; j++) {
