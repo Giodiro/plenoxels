@@ -41,7 +41,7 @@ struct Octree {
     void refine_octree(const torch::optional<torch::Tensor> opt_leaves);
 
     torch::Tensor query_octree(torch::Tensor indices) {
-        return query_octree_impl(indices, this->data, this->child, this->is_child_leaf, this->parent_sum);
+        return query_octree_impl<scalar_t, branching, data_dim>(indices, this->data, this->child, this->is_child_leaf, this->parent_sum);
     }
 };
 
