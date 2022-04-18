@@ -382,7 +382,7 @@ torch::Tensor pack_index_3d(const torch::Tensor leaves) {
 
 
 template <class scalar_t, int32_t branching, int32_t data_dim>
-void set_octree(Octree<scalar_t, branching, data_dim> &tree, torch::Tensor indices, const torch::Tensor vals, const bool update_avg)
+void set_octree(Octree<scalar_t, branching, data_dim> tree, torch::Tensor indices, const torch::Tensor vals, const bool update_avg)
 {
     size_t n_elements = indices.size(0);
     if (n_elements <= 0) {
@@ -477,7 +477,7 @@ std::tuple<torch::Tensor, torch::Tensor> query_interp_octree(Octree<scalar_t, br
 
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
-void _resize_add_cap(Octree<scalar_t, branching, data_dim> &tree, const int64_t num_new_internal)
+void _resize_add_cap(Octree<scalar_t, branching, data_dim> tree, const int64_t num_new_internal)
 {
     tree.child = torch::cat({
         tree.child,
@@ -509,7 +509,7 @@ void _resize_add_cap(Octree<scalar_t, branching, data_dim> &tree, const int64_t 
 
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
-void refine_octree(Octree<scalar_t, branching, data_dim> &tree, const at::optional<torch::Tensor> &opt_leaves)
+void refine_octree(Octree<scalar_t, branching, data_dim> tree, const at::optional<torch::Tensor> opt_leaves)
 {
     const auto leaves = opt_leaves.has_value() ? opt_leaves.value() : tree.is_child_leaf.nonzero();
     const int64_t total_nodes = tree.data.size(0);
