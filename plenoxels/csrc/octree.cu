@@ -375,14 +375,14 @@ __global__ void octree_query_interp_kernel(
 
 
 template <int32_t branching>
-torch::Tensor pack_index_3d(const torch::Tensor & leaves) {
+torch::Tensor pack_index_3d(const torch::Tensor leaves) {
     auto multiplier = torch::tensor({branching * branching * branching, branching * branching, branching, 1}, leaves.options());
     return leaves.mul(multiplier.unsqueeze(0)).sum(-1);
 }
 
 
 template <class scalar_t, int32_t branching, int32_t data_dim>
-void set_octree(Octree<scalar_t, branching, data_dim> &tree, torch::Tensor &indices, const torch::Tensor &vals, const bool update_avg)
+void set_octree(Octree<scalar_t, branching, data_dim> &tree, torch::Tensor indices, const torch::Tensor vals, const bool update_avg)
 {
     size_t n_elements = indices.size(0);
     if (n_elements <= 0) {
@@ -448,7 +448,7 @@ torch::Tensor query_octree(Octree<scalar_t, branching, data_dim> tree, torch::Te
 
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
-std::tuple<torch::Tensor, torch::Tensor> query_interp_octree(Octree<scalar_t, branching, data_dim> &tree, torch::Tensor &indices)
+std::tuple<torch::Tensor, torch::Tensor> query_interp_octree(Octree<scalar_t, branching, data_dim> &tree, torch::Tensor indices)
 {
     int64_t n_elements = indices.size(0);
     if (n_elements <= 0) {
