@@ -509,7 +509,7 @@ void _resize_add_cap(Octree<scalar_t, branching, data_dim> tree, const int64_t n
 
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
-void refine_octree(Octree<scalar_t, branching, data_dim> tree, const at::optional<torch::Tensor> opt_leaves)
+void refine_octree(Octree<scalar_t, branching, data_dim> tree, const torch::optional<torch::Tensor> opt_leaves)
 {
     const auto leaves = opt_leaves.has_value() ? opt_leaves.value() : tree.is_child_leaf.nonzero();
     const int64_t total_nodes = tree.data.size(0);
