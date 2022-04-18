@@ -475,7 +475,7 @@ std::tuple<torch::Tensor, torch::Tensor> query_interp_octree(Octree<scalar_t, br
         tree.parent_sum
     );
     return std::make_tuple(values_out, weights_out);
-}
+}*/
 
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
@@ -558,4 +558,3 @@ void refine_octree(Octree<scalar_t, branching, data_dim> tree, const torch::opti
     }
     tree.n_internal += new_internal;
 }
-*/

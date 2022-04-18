@@ -71,7 +71,7 @@ void declare_octree(py::module &m, const std::string &typestr) {
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    declare_octree<float, 2, 1>(m, "<float, 2, 1>");
+    declare_octree<float, 2, 1>(m, "f21");
     //declare_octree<float, 3, 1>(m, "<float, 3, 1>");
     //declare_octree<float, 4, 1>(m, "<float, 4, 1>");
 //
