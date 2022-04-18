@@ -4,17 +4,17 @@
 
 constexpr uint32_t n_threads_linear = 128;
 
+
+template <typename T>
+__host__ __device__ T div_round_up(T val, T divisor) {
+	return (val + divisor - 1) / divisor;
+}
+
+
 template <typename T>
 constexpr uint32_t n_blocks_linear(T n_elements) {
 	return (uint32_t)div_round_up(n_elements, (T)n_threads_linear);
 }
-
-//template <typename T, int32_t b, int32_t d>
-//torch::Tensor query_octree_impl (torch::Tensor &indices,
-//                                 torch::Tensor &data,
-//                                 torch::Tensor &child,
-//                                 torch::Tensor &is_child_leaf,
-//                                 const bool parent_sum);
 
 
 __device__ __inline__ float3 diff_prod(const float3 &a, const float3 &b, const float &c) {
@@ -155,7 +155,7 @@ __device__ __inline__ void _dev_query_sum(
     torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> data,
     const torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> child,
     const torch::PackedTensorAccessor32<bool, 4, torch::RestrictPtrTraits> is_child_leaf,
-    float3 & __restrict__ coordinate,
+    float3& coordinate,
     scalar_t* __restrict__ out_val
 )
 {
@@ -232,30 +232,4 @@ __global__ void octree_query_kernel(
             out_values[i][j] = data_at_coo[j];
         }
     }
-}
-
-template <typename T, int32_t b, int32_t d>
-torch::Tensor query_octree_impl (torch::Tensor &indices,
-                                 torch::Tensor &data,
-                                 torch::Tensor &child,
-                                 torch::Tensor &is_child_leaf,
-                                 const bool parent_sum)
-{
-    size_t n_elements = indices.size(0);
-    if (n_elements <= 0) {
-        torch::Tensor undefined;
-        return undefined;
-    }
-    // Create output tensor
-    torch::Tensor values_out = torch::empty({n_elements, d}, data.options());
-    octree_query_kernel<T, b, d><<<n_blocks_linear(n_elements), n_threads_linear>>>(
-        data.packed_accessor64<T, 2, torch::RestrictPtrTraits>(),
-        child.packed_accessor32<int32_t, 4, torch::RestrictPtrTraits>(),
-        is_child_leaf.packed_accessor32<bool, 4, torch::RestrictPtrTraits>(),
-        indices.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
-        values_out.packed_accessor32<T, 2, torch::RestrictPtrTraits>(),
-        n_elements,
-        parent_sum
-    );
-    return values_out;
 }
