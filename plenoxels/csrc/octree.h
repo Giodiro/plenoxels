@@ -215,9 +215,9 @@ void Octree<scalar_t, branching, data_dim>::set_octree(torch::Tensor &indices, c
     int32_t node_size = branching * branching * branching;
     if (update_avg) {
         for (int i = max_depth; i > 0; i--) {
-            auto child_ids = (depth == torch::tensor({i})).nonzero().squeeze();
+            auto child_ids = (depth == torch::tensor({i}, depth.options())).nonzero().squeeze();
             auto parent_ids = parent.index({child_ids}).to(torch::kInt64);
-            data.index_put_({parent_ids}, torch::tensor({0}));
+            data.index_put_({parent_ids}, torch::tensor({0}, data.options()));
             data.scatter_add_(
                 0, parent_ids.unsqueeze(-1).expand(parent_ids.size(0), data_dim), data.index({child_ids}));
             data.index({parent_ids}).div_(node_size);
