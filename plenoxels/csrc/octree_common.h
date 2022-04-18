@@ -204,13 +204,11 @@ __device__ __inline__ scalar_t* _dev_query_single(
 
 
 __constant__
-static const float3 OFFSET[8] = {make_float3(-1, -1, -1), make_float3(-1, -1, 0), make_float3(-1, 0, -1),
-                                 make_float3(-1, 0, 0), make_float3(0, -1, -1), make_float3(0, -1, 0),
-                                 make_float3(0, 0, -1), make_float3(0, 0, 0)};
+static const float OFFSET[8][3] = {{-1, -1, -1}, {-1, -1, 0}, {-1, 0, -1}, {-1, 0, 0},
+                                   {0, -1, -1}, {0, -1, 0}, {0, 0, -1}, {0, 0, 0}};
 __constant__
-static const float3 OFFSET2[8] = {make_float3(-0.5, -0.5, -0.5), make_float3(-0.5, -0.5, 0.5), make_float3(-0.5, 0.5, -0.5),
-                                  make_float3(-0.5, 0.5, 0.5), make_float3(0.5, -0.5, -0.5), make_float3(0.5, -0.5, 0.5),
-                                  make_float3(0.5, 0.5, -0.5), make_float3(0.5, 0.5, 0.5)};
+static const float OFFSET2[8][3] = {{-0.5, -0.5, -0.5}, {-0.5, -0.5, 0.5}, {-0.5, 0.5, -0.5}, {-0.5, 0.5, 0.5},
+                                    {0.5, -0.5, -0.5}, {0.5, -0.5, 0.5}, {0.5, 0.5, -0.5}, {0.5, 0.5, 0.5}}
 
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
@@ -224,12 +222,6 @@ __device__ __inline__ void _dev_query_interp(
     const bool parent_sum
 )
 {
-//    constexpr float3 offset[8] = {make_float3(-1, -1, -1), make_float3(-1, -1, 0), make_float3(-1, 0, -1),
-//                                  make_float3(-1, 0, 0), make_float3(0, -1, -1), make_float3(0, -1, 0),
-//                                  make_float3(0, 0, -1), make_float3(0, 0, 0)};
-//    constexpr float3 offset2[8] = {make_float3(-0.5, -0.5, -0.5), make_float3(-0.5, -0.5, 0.5), make_float3(-0.5, 0.5, -0.5),
-//                                  make_float3(-0.5, 0.5, 0.5), make_float3(0.5, -0.5, -0.5), make_float3(0.5, -0.5, 0.5),
-//                                  make_float3(0.5, 0.5, -0.5), make_float3(0.5, 0.5, 0.5)};
     clamp_coord(coordinate, 0.0, 1.0 - 1e-9);
     int32_t node_id = 0;
     int32_t u, v, w, skip, i, j;
@@ -253,17 +245,17 @@ __device__ __inline__ void _dev_query_interp(
 
         // Identify valid neighbors
         for(i = 0; i < 8; i++) {
-            if (u + uc + OFFSET[i].x >= 0 && u + uc + OFFSET[i].x < branching &&
-                v + vc + OFFSET[i].y >= 0 && v + vc + OFFSET[i].y < branching &&
-                w + wc + OFFSET[i].z >= 0 && w + wc + OFFSET[i].z < branching)
+            if (u + uc + OFFSET[i][0] >= 0 && u + uc + OFFSET[i][0] < branching &&
+                v + vc + OFFSET[i][1] >= 0 && v + vc + OFFSET[i][1] < branching &&
+                w + wc + OFFSET[i][2] >= 0 && w + wc + OFFSET[i][2] < branching)
             {
-                skip = child[node_id][u + uc + OFFSET[i].x][v + vc + OFFSET[i].y][w + wc + OFFSET[i].z];
+                skip = child[node_id][u + uc + OFFSET[i][0]][v + vc + OFFSET[i][1]][w + wc + OFFSET[i][2]];
                 // Keep track of neighbor coordinates as well as neighbor indices. Coordinates cannot be computed
                 // at the end due to dependency on current cube size.
                 neigh_coo[i] = make_float3(
-                    (floorf(in_coo.x * cube_sz + OFFSET2[i].x + 1e-5) + 0.5) / cube_sz,
-                    (floorf(in_coo.y * cube_sz + OFFSET2[i].y + 1e-5) + 0.5) / cube_sz,
-                    (floorf(in_coo.z * cube_sz + OFFSET2[i].z + 1e-5) + 0.5) / cube_sz
+                    (floorf(in_coo.x * cube_sz + OFFSET2[i][0] + 1e-5) + 0.5) / cube_sz,
+                    (floorf(in_coo.y * cube_sz + OFFSET2[i][1] + 1e-5) + 0.5) / cube_sz,
+                    (floorf(in_coo.z * cube_sz + OFFSET2[i][2] + 1e-5) + 0.5) / cube_sz
                 );
                 clamp_coord(neigh_coo[i], 1 / (cube_sz * branching), 1 - 1 / (cube_sz * branching));
                 // Simpler formula (without clamping)
