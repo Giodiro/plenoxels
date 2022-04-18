@@ -6,6 +6,8 @@
 
 #include "octree_common.h"
 
+using namespace torch::indexing;
+
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 struct Octree {
     Octree(int32_t levels, bool parent_sum, torch::Device device) : parent_sum(parent_sum) {
@@ -38,16 +40,16 @@ struct Octree {
     torch::Tensor depth;
 
     void _resize_add_cap(const int64_t num_new_internal);
-    void refine_octree(const torch::optional<torch::Tensor> opt_leaves);
+    void refine_octree(const torch::optional<torch::Tensor> &opt_leaves);
 
     torch::Tensor query_octree(torch::Tensor &indices);
+    std::tuple<torch::Tensor, torch::Tensor> query_interp_octree(torch::Tensor &indices);
+    void set_octree(torch::Tensor &indices, const torch::Tensor &vals, const bool update_avg);
 };
 
 
-using namespace torch::indexing;
-
 template <int32_t branching>
-torch::Tensor pack_index_3d(const torch::Tensor leaves) {
+torch::Tensor pack_index_3d(const torch::Tensor &leaves) {
     auto multiplier = torch::tensor({branching * branching * branching, branching * branching, branching, 1}, leaves.options());
     return leaves.mul(multiplier.unsqueeze(0)).sum(-1);
 }
@@ -84,8 +86,9 @@ void Octree<scalar_t, branching, data_dim>::_resize_add_cap(const int64_t num_ne
     printf("depth size(0): %ld\n", depth.size(0));
 }
 
+
 template <typename scalar_t, int32_t branching, int32_t data_dim>
-void Octree<scalar_t, branching, data_dim>::refine_octree(const torch::optional<torch::Tensor> opt_leaves)
+void Octree<scalar_t, branching, data_dim>::refine_octree(const torch::optional<torch::Tensor> &opt_leaves)
 {
     const auto leaves = opt_leaves.has_value() ? opt_leaves.value() : is_child_leaf.nonzero();
     const int64_t total_nodes = data.size(0);
@@ -162,4 +165,66 @@ torch::Tensor Octree<scalar_t, branching, data_dim>::query_octree (torch::Tensor
         parent_sum
     );
     return values_out;
+}
+
+
+template <typename scalar_t, int32_t branching, int32_t data_dim>
+std::tuple<torch::Tensor, torch::Tensor> Octree<scalar_t, branching, data_dim>::query_interp_octree(torch::Tensor &indices)
+{
+    int64_t n_elements = indices.size(0);
+    if (n_elements <= 0) {
+        torch::Tensor undefined;
+        return std::make_tuple(undefined, undefined);
+    }
+
+    // Create output tensors
+    torch::Tensor values_out = torch::empty({n_elements, data_dim}, data.options());
+    torch::Tensor weights_out = torch::empty({n_elements, 8}, indices.options());
+    octree_query_interp_kernel<scalar_t, branching, data_dim><<<n_blocks_linear(n_elements), n_threads_linear>>>(
+        data.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits>(),
+        child.packed_accessor32<int32_t, 4, torch::RestrictPtrTraits>(),
+        is_child_leaf.packed_accessor32<bool, 4, torch::RestrictPtrTraits>(),
+        indices.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
+        values_out.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+        weights_out.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
+        n_elements,
+        parent_sum
+    );
+    return std::make_tuple(values_out, weights_out);
+}
+
+
+template <class scalar_t, int32_t branching, int32_t data_dim>
+void Octree<scalar_t, branching, data_dim>::set_octree(torch::Tensor &indices, const torch::Tensor &vals, const bool update_avg)
+{
+    int64_t n_elements = indices.size(0);
+    if (n_elements <= 0) {
+        return;
+    }
+    octree_set_kernel<scalar_t, branching, data_dim><<<n_blocks_linear(n_elements), n_threads_linear>>>(
+        data.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits>(),
+        child.packed_accessor32<int32_t, 4, torch::RestrictPtrTraits>(),
+        is_child_leaf.packed_accessor32<bool, 4, torch::RestrictPtrTraits>(),
+        indices.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
+        vals.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+        n_elements
+    );
+
+    // Set all parents to be their child's average (bottom to top)
+    // Remove the average from the children
+    int32_t node_size = branching * branching * branching;
+    if (update_avg) {
+        for (int i = max_depth; i > 0; i--) {
+            auto child_ids = (depth == torch::tensor({i})).nonzero().squeeze();
+            auto parent_ids = parent.index({child_ids}).to(torch::kInt64);
+            data.index_put_({parent_ids}, torch::tensor({0}));
+            data.scatter_add_(
+                0, parent_ids.unsqueeze(-1).expand(parent_ids.size(0), data_dim), data.index({child_ids}));
+            data.index({parent_ids}).div_(node_size);
+            if (parent_sum) {
+                data.scatter_add_(
+                    0, child_ids.unsqueeze(-1).expand(child_ids.size(0), data_dim), -data.index({parent_ids}));
+            }
+        }
+    }
 }

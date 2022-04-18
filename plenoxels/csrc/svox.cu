@@ -65,11 +65,9 @@ void declare_octree(py::module &m, const std::string &typestr) {
         .def_readwrite("parent", &TOctree::parent)
         .def_readwrite("depth", &TOctree::depth)
         .def("refine", &TOctree::refine_octree)
-        .def("query", &TOctree::query_octree);
-//    m.def("set_octree", &set_octree<scalar_t, branching, data_dim>);
-//    m.def("query_octree", &query_octree<scalar_t, branching, data_dim>);
-//    m.def("query_interp_octree", &query_interp_octree<scalar_t, branching, data_dim>);
-    //m.def("refine_octree", &refine_octree<scalar_t, branching, data_dim>);
+        .def("query", &TOctree::query_octree)
+        .def("set", &TOctree::set_octree)
+        .def("query_interp", &TOctree::query_interp_octree);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
