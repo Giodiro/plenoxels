@@ -1,5 +1,12 @@
 *.txt
+.ipynb_checkpoints/
+.eggs/
+build/
+*.egg-info/
+data/
+logs/
 *.json
+tensorRF/
 *.zip
 drums/
 **/__pycache__/
