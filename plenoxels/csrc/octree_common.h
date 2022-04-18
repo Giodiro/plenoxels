@@ -208,7 +208,7 @@ static const float OFFSET[8][3] = {{-1, -1, -1}, {-1, -1, 0}, {-1, 0, -1}, {-1, 
                                    {0, -1, -1}, {0, -1, 0}, {0, 0, -1}, {0, 0, 0}};
 __constant__
 static const float OFFSET2[8][3] = {{-0.5, -0.5, -0.5}, {-0.5, -0.5, 0.5}, {-0.5, 0.5, -0.5}, {-0.5, 0.5, 0.5},
-                                    {0.5, -0.5, -0.5}, {0.5, -0.5, 0.5}, {0.5, 0.5, -0.5}, {0.5, 0.5, 0.5}}
+                                    {0.5, -0.5, -0.5}, {0.5, -0.5, 0.5}, {0.5, 0.5, -0.5}, {0.5, 0.5, 0.5}};
 
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
@@ -239,9 +239,9 @@ __device__ __inline__ void _dev_query_interp(
         }
     }
     while (true) {
-        traverse_tree_level<branching>(&coordinate, &u, &v, &w);
+        traverse_tree_level<branching>(coordinate, &u, &v, &w);
         tmp_coo = make_float3(coordinate.x, coordinate.y, coordinate.z);
-        traverse_tree_level<2>(&tmp_coo, &uc, &vc, &wc);
+        traverse_tree_level<2>(tmp_coo, &uc, &vc, &wc);
 
         // Identify valid neighbors
         for(i = 0; i < 8; i++) {
