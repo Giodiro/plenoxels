@@ -145,7 +145,7 @@ void Octree<scalar_t, branching, data_dim>::refine_octree(const torch::optional<
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 torch::Tensor Octree<scalar_t, branching, data_dim>::query_octree (torch::Tensor &indices)
 {
-    size_t n_elements = indices.size(0);
+    int64_t n_elements = indices.size(0);
     if (n_elements <= 0) {
         torch::Tensor undefined;
         return undefined;

@@ -155,7 +155,7 @@ __device__ __inline__ void _dev_query_sum(
     torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> data,
     const torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> child,
     const torch::PackedTensorAccessor32<bool, 4, torch::RestrictPtrTraits> is_child_leaf,
-    float3& coordinate,
+    float3& __restrict__ coordinate,
     scalar_t* __restrict__ out_val
 )
 {
@@ -218,15 +218,16 @@ __global__ void octree_query_kernel(
 	const size_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_elements) return;
 
+    float3 coord = make_float3(indices[i][0], indices[i][1], indices[i][2]);
     if (parent_sum) {
         _dev_query_sum<scalar_t, branching, data_dim>(
             tree_data, child, is_child_leaf,
-            make_float3(indices[i][0], indices[i][1], indices[i][2]),
+            coord, 
             &out_values[i][0]
         );
     } else {
         scalar_t* data_at_coo = _dev_query_single<scalar_t, branching>(
-            tree_data, child, is_child_leaf, make_float3(indices[i][0], indices[i][1], indices[i][2])
+            tree_data, child, is_child_leaf, coord
         );
         for (int32_t j = 0; j < data_dim; j++) {
             out_values[i][j] = data_at_coo[j];
