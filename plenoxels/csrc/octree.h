@@ -53,8 +53,8 @@ struct Octree {
 //template <typename scalar_t, int32_t branching, int32_t data_dim>
 //void set_octree(Octree<scalar_t, branching, data_dim> tree, torch::Tensor indices, const torch::Tensor vals, const bool update_avg);
 
-template <typename scalar_t, int32_t branching, int32_t data_dim>
-torch::Tensor query_octree(Octree<scalar_t, branching, data_dim> tree, torch::Tensor indices);
+//template <typename scalar_t, int32_t branching, int32_t data_dim>
+//torch::Tensor query_octree(Octree<scalar_t, branching, data_dim> tree, torch::Tensor indices);
 
 //template <typename scalar_t, int32_t branching, int32_t data_dim>
 //std::tuple<torch::Tensor, torch::Tensor> query_interp_octree(Octree<scalar_t, branching, data_dim> tree, torch::Tensor indices);

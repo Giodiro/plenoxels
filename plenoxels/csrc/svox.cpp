@@ -65,7 +65,7 @@ void declare_octree(py::module &m, const std::string &typestr) {
         .def_readwrite("parent", &TOctree::parent)
         .def_readwrite("depth", &TOctree::depth);
 //    m.def("set_octree", &set_octree<scalar_t, branching, data_dim>);
-    m.def("query_octree", &query_octree<scalar_t, branching, data_dim>);
+//    m.def("query_octree", &query_octree<scalar_t, branching, data_dim>);
 //    m.def("query_interp_octree", &query_interp_octree<scalar_t, branching, data_dim>);
 //    m.def("refine_octree", &refine_octree<scalar_t, branching, data_dim>);
 }

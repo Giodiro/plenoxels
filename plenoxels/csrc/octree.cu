@@ -420,6 +420,7 @@ void set_octree(Octree<scalar_t, branching, data_dim> tree, torch::Tensor indice
 }
 */
 
+/*
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 torch::Tensor query_octree(Octree<scalar_t, branching, data_dim> tree, torch::Tensor indices)
 {
@@ -445,6 +446,7 @@ torch::Tensor query_octree(Octree<scalar_t, branching, data_dim> tree, torch::Te
     );
     return values_out;
 }
+*/
 
 /*
 template <typename scalar_t, int32_t branching, int32_t data_dim>
