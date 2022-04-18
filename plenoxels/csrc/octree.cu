@@ -509,13 +509,13 @@ void _resize_add_cap(Octree<scalar_t, branching, data_dim> tree, const int64_t n
 //    tree.depth_acc = tree.depth.packed_accessor64<int32_t, 2, torch::RestrictPtrTraits>();
 }
 
-template <typename scalar_t, int32_t branching, int32_t data_dim>
-void refine_octree(Octree<scalar_t, branching, data_dim> tree, const torch::optional<torch::Tensor> opt_leaves)
+//template <typename scalar_t, int32_t branching, int32_t data_dim>
+void refine_octree()//Octree<scalar_t, branching, data_dim> tree, const torch::optional<torch::Tensor> opt_leaves)
 {
-    const auto leaves = opt_leaves.has_value() ? opt_leaves.value() : tree.is_child_leaf.nonzero();
-    const int64_t total_nodes = tree.data.size(0);
-    const int64_t new_internal = leaves.size(0);
-    const int64_t new_total_nodes = total_nodes + new_internal * tree.node_size;
+//    const auto leaves = opt_leaves.has_value() ? opt_leaves.value() : tree.is_child_leaf.nonzero();
+//    const int64_t total_nodes = tree.data.size(0);
+//    const int64_t new_internal = leaves.size(0);
+//    const int64_t new_total_nodes = total_nodes + new_internal * tree.node_size;
     printf("Called refine\n");
     /*
     if (new_internal == 0) {

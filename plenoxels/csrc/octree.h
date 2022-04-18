@@ -59,5 +59,7 @@ void set_octree(Octree<scalar_t, branching, data_dim> tree, torch::Tensor indice
 //template <typename scalar_t, int32_t branching, int32_t data_dim>
 //std::tuple<torch::Tensor, torch::Tensor> query_interp_octree(Octree<scalar_t, branching, data_dim> tree, torch::Tensor indices);
 //
-template <typename scalar_t, int32_t branching, int32_t data_dim>
-void refine_octree(Octree<scalar_t, branching, data_dim> tree, const torch::optional<torch::Tensor> opt_leaves);
+//template <typename scalar_t, int32_t branching, int32_t data_dim>
+//void refine_octree(Octree<scalar_t, branching, data_dim> tree, const torch::optional<torch::Tensor> opt_leaves);
+
+void refine_octree();
