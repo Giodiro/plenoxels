@@ -15,6 +15,7 @@ struct Octree {
 
     Octree(int32_t levels, bool parent_sum, torch::Device device) : parent_sum(parent_sum) {
         max_depth = 0;
+        n_internal = 0;
 
         const auto data_dt = caffe2::TypeMeta::Make<scalar_t>().toScalarType();
 
@@ -47,6 +48,9 @@ struct Octree {
     torch::Tensor parent;
     torch::Tensor depth;
 
+    void _resize_add_cap(const int64_t num_new_internal);
+    void refine_octree(const torch::optional<torch::Tensor> opt_leaves);
+
 };
 
 
@@ -62,6 +66,7 @@ void set_octree(Octree<scalar_t, branching, data_dim> tree, torch::Tensor indice
 //template <typename scalar_t, int32_t branching, int32_t data_dim>
 //void refine_octree(Octree<scalar_t, branching, data_dim> tree, const torch::optional<torch::Tensor> opt_leaves);
 
+using namespace torch::indexing;
 
 template <int32_t branching>
 torch::Tensor pack_index_3d(const torch::Tensor leaves) {
@@ -71,28 +76,34 @@ torch::Tensor pack_index_3d(const torch::Tensor leaves) {
 
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
-void _resize_add_cap(Octree<scalar_t, branching, data_dim> tree, const int64_t num_new_internal)
+void Octree<scalar_t, branching, data_dim>::_resize_add_cap(const int64_t num_new_internal)
 {
-    tree.child = torch::cat({
-        tree.child,
-        torch::zeros({num_new_internal, branching, branching, branching}, tree.child.options())
+    printf("Resizing with %ld new internal\n", num_new_internal);
+    child = torch::cat({
+        child,
+        torch::zeros({num_new_internal, branching, branching, branching}, child.options())
     });
-    tree.data = torch::cat({
-        tree.data,
-        torch::zeros({num_new_internal * branching * branching * branching, data_dim}, tree.data.options())
+    printf("child size(0): %ld\n", this->child.size(0));
+    data = torch::cat({
+        data,
+        torch::zeros({num_new_internal * branching * branching * branching, data_dim}, data.options())
     });
-    tree.is_child_leaf = torch::cat({
-        tree.is_child_leaf,
-        torch::ones({num_new_internal, branching, branching, branching}, tree.is_child_leaf.options())
+    printf("data size(0): %ld\n", data.size(0));
+    is_child_leaf = torch::cat({
+        is_child_leaf,
+        torch::ones({num_new_internal, branching, branching, branching}, is_child_leaf.options())
     });
-    tree.parent = torch::cat({
-        tree.parent,
-        torch::zeros({(int64_t)num_new_internal * branching * branching * branching}, tree.parent.options())
+    printf("child leaf size(0): %ld\n", is_child_leaf.size(0));
+    parent = torch::cat({
+        parent,
+        torch::zeros({(int64_t)num_new_internal * branching * branching * branching}, parent.options())
     });
-    tree.depth = torch::cat({
-        tree.depth,
-        torch::zeros({(int64_t)num_new_internal * branching * branching * branching}, tree.depth.options())
+    printf("parent size(0): %ld\n", parent.size(0));
+    depth = torch::cat({
+        depth,
+        torch::zeros({(int64_t)num_new_internal * branching * branching * branching}, depth.options())
     });
+    printf("depth size(0): %ld\n", depth.size(0));
 
 //    tree.data_acc = tree.data.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits>();
 //    tree.child_acc = tree.child.packed_accessor32<int32_t, 4, torch::RestrictPtrTraits>();
@@ -101,52 +112,59 @@ void _resize_add_cap(Octree<scalar_t, branching, data_dim> tree, const int64_t n
 //    tree.depth_acc = tree.depth.packed_accessor64<int32_t, 2, torch::RestrictPtrTraits>();
 }
 
-
 template <typename scalar_t, int32_t branching, int32_t data_dim>
-void refine_octree(Octree<scalar_t, branching, data_dim> tree, const torch::optional<torch::Tensor> opt_leaves)
+void Octree<scalar_t, branching, data_dim>::refine_octree(const torch::optional<torch::Tensor> opt_leaves)
 {
-    const auto leaves = opt_leaves.has_value() ? opt_leaves.value() : tree.is_child_leaf.nonzero();
-    const int64_t total_nodes = tree.data.size(0);
-    const int64_t new_internal = leaves.size(0);
-    const int64_t new_total_nodes = total_nodes + new_internal * tree.node_size;
-    if (new_internal == 0) {
-        return;
-    }
-    _resize_add_cap(tree, new_internal);
+    const auto leaves = opt_leaves.has_value() ? opt_leaves.value() : is_child_leaf.nonzero();
+    const int64_t total_nodes = data.size(0);
+    int64_t new_internal = leaves.size(0);
 
     if (total_nodes == 1) // root node is an exception
     {
-        tree.child.index_put_({Ellipsis}, torch::arange(total_nodes, new_total_nodes, tree.child.options()));
-        tree.is_child_leaf.index_put_({Ellipsis}, true);
-        tree.parent.index_put_({Ellipsis}, 0);
-        tree.depth.index_put_({Ellipsis}, 1);
-        tree.max_depth += 1;
+        new_internal = 1;
+        _resize_add_cap(new_internal);
+        const int64_t new_total_nodes = total_nodes + new_internal * node_size;
+        child.index_put_({Ellipsis}, torch::arange(total_nodes, new_total_nodes, child.options()).view({-1, branching, branching, branching}));
+        is_child_leaf.index_put_({Ellipsis}, true);
+        parent.index_put_({Ellipsis}, 0);
+        depth.index_put_({Ellipsis}, 1);
+        max_depth += 1;
     }
     else
     {
+        const int64_t new_total_nodes = total_nodes + new_internal * node_size;
+        if (new_internal == 0) {
+            return;
+        }
+        _resize_add_cap(new_internal);
+        printf("resize complete\n");
         // child
         torch::Tensor new_child_ids =
-            torch::arange(total_nodes, new_total_nodes, tree.child.options()).view({-1, branching, branching, branching})
-            - torch::arange(tree.n_internal, tree.n_internal + new_internal, tree.child.options()).view({-1, 1, 1, 1});
-        tree.child.index_put_({Slice(tree.n_internal, tree.n_internal + new_internal, 1), Ellipsis},
-                         new_child_ids);
+            torch::arange(total_nodes, new_total_nodes, child.options()).view({-1, branching, branching, branching})
+            - torch::arange(n_internal, n_internal + new_internal, child.options()).view({-1, 1, 1, 1});
+        printf("n_internal %d, new internal %d - new ids shape(0) %ld\n", n_internal, new_internal, new_child_ids.size(0));
+        child.index_put_({Slice(n_internal, n_internal + new_internal), Ellipsis}, new_child_ids);
+        printf("child complete\n");
         // is_child_leaf
         auto sel = leaves.unbind(1);
-        tree.is_child_leaf.index_put_({sel[0], sel[1], sel[2], sel[3]}, torch::tensor({true}));
+        is_child_leaf.index_put_({sel[0], sel[1], sel[2], sel[3]}, torch::tensor({true}));
+        printf("child leaf complete\n");
         // parent_depth
-        auto packed_leaves = pack_index_3d<branching>(leaves).repeat_interleave(tree.node_size) + 1;  // +1 for the invisible root node.
-        tree.parent.index_put_(
+        auto packed_leaves = pack_index_3d<branching>(leaves).repeat_interleave(node_size) + 1;  // +1 for the invisible root node.
+        parent.index_put_(
             {Slice(total_nodes, new_total_nodes)},
             packed_leaves
         );
-        auto old_depth = tree.depth.index({packed_leaves});
+        printf("parent complete\n");
+        auto old_depth = depth.index({packed_leaves});
         torch::Tensor new_max_depth = torch::max(old_depth);
         int new_max_depth_i = new_max_depth.item<int>() + 1;
-        tree.max_depth = tree.max_depth > new_max_depth_i ? tree.max_depth : new_max_depth_i;
-        tree.depth.index_put_(
+        max_depth = max_depth > new_max_depth_i ? max_depth : new_max_depth_i;
+        depth.index_put_(
             {Slice(total_nodes, new_total_nodes)},
             old_depth + 1
         );
+        printf("depth complete\n");
     }
-    tree.n_internal += new_internal;
+    n_internal += new_internal;
 }

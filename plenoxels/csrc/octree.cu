@@ -374,13 +374,13 @@ __global__ void octree_query_interp_kernel(
 }
 
 
+/*
 template <int32_t branching>
 torch::Tensor pack_index_3d(const torch::Tensor leaves) {
     auto multiplier = torch::tensor({branching * branching * branching, branching * branching, branching, 1}, leaves.options());
     return leaves.mul(multiplier.unsqueeze(0)).sum(-1);
 }
 
-/*
 template <class scalar_t, int32_t branching, int32_t data_dim>
 void set_octree(Octree<scalar_t, branching, data_dim> tree, torch::Tensor indices, const torch::Tensor vals, const bool update_avg)
 {
