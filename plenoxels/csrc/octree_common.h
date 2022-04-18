@@ -203,6 +203,16 @@ __device__ __inline__ scalar_t* _dev_query_single(
 }
 
 
+__constant__
+static const float3 OFFSET[8] = {make_float3(-1, -1, -1), make_float3(-1, -1, 0), make_float3(-1, 0, -1),
+                                 make_float3(-1, 0, 0), make_float3(0, -1, -1), make_float3(0, -1, 0),
+                                 make_float3(0, 0, -1), make_float3(0, 0, 0)};
+__constant__
+static const float3 OFFSET2[8] = {make_float3(-0.5, -0.5, -0.5), make_float3(-0.5, -0.5, 0.5), make_float3(-0.5, 0.5, -0.5),
+                                  make_float3(-0.5, 0.5, 0.5), make_float3(0.5, -0.5, -0.5), make_float3(0.5, -0.5, 0.5),
+                                  make_float3(0.5, 0.5, -0.5), make_float3(0.5, 0.5, 0.5)};
+
+
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 __device__ __inline__ void _dev_query_interp(
     torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> data,
@@ -214,12 +224,12 @@ __device__ __inline__ void _dev_query_interp(
     const bool parent_sum
 )
 {
-    constexpr float3 offset[8] = {make_float3(-1, -1, -1), make_float3(-1, -1, 0), make_float3(-1, 0, -1),
-                                  make_float3(-1, 0, 0), make_float3(0, -1, -1), make_float3(0, -1, 0),
-                                  make_float3(0, 0, -1), make_float3(0, 0, 0)};
-    constexpr float3 offset2[8] = {make_float3(-0.5, -0.5, -0.5), make_float3(-0.5, -0.5, 0.5), make_float3(-0.5, 0.5, -0.5),
-                                  make_float3(-0.5, 0.5, 0.5), make_float3(0.5, -0.5, -0.5), make_float3(0.5, -0.5, 0.5),
-                                  make_float3(0.5, 0.5, -0.5), make_float3(0.5, 0.5, 0.5)};
+//    constexpr float3 offset[8] = {make_float3(-1, -1, -1), make_float3(-1, -1, 0), make_float3(-1, 0, -1),
+//                                  make_float3(-1, 0, 0), make_float3(0, -1, -1), make_float3(0, -1, 0),
+//                                  make_float3(0, 0, -1), make_float3(0, 0, 0)};
+//    constexpr float3 offset2[8] = {make_float3(-0.5, -0.5, -0.5), make_float3(-0.5, -0.5, 0.5), make_float3(-0.5, 0.5, -0.5),
+//                                  make_float3(-0.5, 0.5, 0.5), make_float3(0.5, -0.5, -0.5), make_float3(0.5, -0.5, 0.5),
+//                                  make_float3(0.5, 0.5, -0.5), make_float3(0.5, 0.5, 0.5)};
     clamp_coord(coordinate, 0.0, 1.0 - 1e-9);
     int32_t node_id = 0;
     int32_t u, v, w, skip, i, j;
@@ -239,25 +249,25 @@ __device__ __inline__ void _dev_query_interp(
     while (true) {
         traverse_tree_level<branching>(&coordinate, &u, &v, &w);
         tmp_coo = make_float3(coordinate.x, coordinate.y, coordinate.z);
-        traverse_tree_level<2>(tmp_coo, &uc, &vc, &wc);
+        traverse_tree_level<2>(&tmp_coo, &uc, &vc, &wc);
 
         // Identify valid neighbors
         for(i = 0; i < 8; i++) {
-            if (u + uc + offset[i].x >= 0 && u + uc + offset[i].x < branching &&
-                v + vc + offset[i].y >= 0 && v + vc + offset[i].y < branching &&
-                w + wc + offset[i].z >= 0 && w + wc + offset[i].z < branching)
+            if (u + uc + OFFSET[i].x >= 0 && u + uc + OFFSET[i].x < branching &&
+                v + vc + OFFSET[i].y >= 0 && v + vc + OFFSET[i].y < branching &&
+                w + wc + OFFSET[i].z >= 0 && w + wc + OFFSET[i].z < branching)
             {
-                skip = child[node_id][u + uc + offset[i].x][v + vc + offset[i].y][w + wc + offset[i].z];
+                skip = child[node_id][u + uc + OFFSET[i].x][v + vc + OFFSET[i].y][w + wc + OFFSET[i].z];
                 // Keep track of neighbor coordinates as well as neighbor indices. Coordinates cannot be computed
                 // at the end due to dependency on current cube size.
                 neigh_coo[i] = make_float3(
-                    (floorf(in_coo.x * cube_sz + offset2[i].x + 1e-5) + 0.5) / cube_sz,
-                    (floorf(in_coo.y * cube_sz + offset2[i].y + 1e-5) + 0.5) / cube_sz,
-                    (floorf(in_coo.z * cube_sz + offset2[i].z + 1e-5) + 0.5) / cube_sz
+                    (floorf(in_coo.x * cube_sz + OFFSET2[i].x + 1e-5) + 0.5) / cube_sz,
+                    (floorf(in_coo.y * cube_sz + OFFSET2[i].y + 1e-5) + 0.5) / cube_sz,
+                    (floorf(in_coo.z * cube_sz + OFFSET2[i].z + 1e-5) + 0.5) / cube_sz
                 );
                 clamp_coord(neigh_coo[i], 1 / (cube_sz * branching), 1 - 1 / (cube_sz * branching));
                 // Simpler formula (without clamping)
-                // (floor((in_coordinate[0] + offset2[i][0] / (cube_sz * 2)) * cube_sz + 1e-5) + 0.5) / cube_sz,
+                // (floor((in_coordinate[0] + OFFSET2[i][0] / (cube_sz * 2)) * cube_sz + 1e-5) + 0.5) / cube_sz,
                 valid_neighbors[i] = node_id + skip;
             }
         }
