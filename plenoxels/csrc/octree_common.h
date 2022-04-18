@@ -139,3 +139,90 @@ __device__ __inline__ void interp_quad_3d_newt(
     weights[6] = stw.x       * stw.y       * (1 - stw.z) ;
     weights[7] = stw.x       * stw.y       * stw.z       ;
 }
+
+
+
+// Device kernels
+template <typename scalar_t, int32_t branching, int32_t data_dim>
+__device__ __inline__ void _dev_query_sum(
+    torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> data,
+    const torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> child,
+    const torch::PackedTensorAccessor32<bool, 4, torch::RestrictPtrTraits> is_child_leaf,
+    float3 & __restrict__ coordinate,
+    scalar_t* __restrict__ out_val
+)
+{
+    clamp_coord(coordinate, 0.0, 1.0 - 1e-9);
+    int32_t node_id = 0;
+    int32_t u, v, w, skip, i;
+
+    for (i = 0; i < data_dim; i++) {
+        out_val[i] = data[0][i];
+    }
+    while (true) {
+        traverse_tree_level<branching>(coordinate, &u, &v, &w);
+        skip = child[node_id][u][v][w];
+        for (i = 0; i < data_dim; i++) {
+            out_val[i] += data[node_id + skip][i];
+        }
+        if (is_child_leaf[node_id][u][v][w]) {
+            return;
+        }
+        node_id += skip;
+    }
+}
+
+
+template <typename scalar_t, int32_t branching>
+__device__ __inline__ scalar_t* _dev_query_single(
+    torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> data,
+    const torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> child,
+    const torch::PackedTensorAccessor32<bool, 4, torch::RestrictPtrTraits> is_child_leaf,
+    float3 & __restrict__ coordinate
+)
+{
+    clamp_coord(coordinate, 0.0, 1.0 - 1e-9);
+
+    int32_t node_id = 0;
+    int32_t u, v, w, skip;
+    while (true) {
+        traverse_tree_level<branching>(coordinate, &u, &v, &w);
+        skip = child[node_id][u][v][w];
+        if (is_child_leaf[node_id][u][v][w]) {
+            return &data[node_id + skip][0];
+        }
+        node_id += skip;
+    }
+}
+
+
+// Global kernels
+template <typename scalar_t, int32_t branching, int32_t data_dim>
+__global__ void octree_query_kernel(
+    torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> tree_data,
+    const torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> child,
+    const torch::PackedTensorAccessor32<bool, 4, torch::RestrictPtrTraits> is_child_leaf,
+    torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> indices,
+    torch::PackedTensorAccessor32<scalar_t, 2, torch::RestrictPtrTraits> out_values,
+    const size_t n_elements,
+    const bool parent_sum
+)
+{
+	const size_t i = threadIdx.x + blockIdx.x * blockDim.x;
+	if (i >= n_elements) return;
+
+    if (parent_sum) {
+        _dev_query_sum<scalar_t, branching, data_dim>(
+            tree_data, child, is_child_leaf,
+            make_float3(indices[i][0], indices[i][1], indices[i][2]),
+            &out_values[i][0]
+        );
+    } else {
+        scalar_t* data_at_coo = _dev_query_single<scalar_t, branching>(
+            tree_data, child, is_child_leaf, make_float3(indices[i][0], indices[i][1], indices[i][2])
+        );
+        for (int32_t j = 0; j < data_dim; j++) {
+            out_values[i][j] = data_at_coo[j];
+        }
+    }
+}

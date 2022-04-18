@@ -4,6 +4,7 @@
 #include <torch/extension.h>
 #include <c10/util/typeid.h>
 
+#include "octree_common.h"
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 struct Octree {
@@ -50,21 +51,9 @@ struct Octree {
 
     void _resize_add_cap(const int64_t num_new_internal);
     void refine_octree(const torch::optional<torch::Tensor> opt_leaves);
-
+    torch::Tensor query_octree(torch::Tensor indices);
 };
 
-
-template <typename scalar_t, int32_t branching, int32_t data_dim>
-void set_octree(Octree<scalar_t, branching, data_dim> tree, torch::Tensor indices, const torch::Tensor vals, const bool update_avg);
-
-//template <typename scalar_t, int32_t branching, int32_t data_dim>
-//torch::Tensor query_octree(Octree<scalar_t, branching, data_dim> tree, torch::Tensor indices);
-
-//template <typename scalar_t, int32_t branching, int32_t data_dim>
-//std::tuple<torch::Tensor, torch::Tensor> query_interp_octree(Octree<scalar_t, branching, data_dim> tree, torch::Tensor indices);
-//
-//template <typename scalar_t, int32_t branching, int32_t data_dim>
-//void refine_octree(Octree<scalar_t, branching, data_dim> tree, const torch::optional<torch::Tensor> opt_leaves);
 
 using namespace torch::indexing;
 
@@ -167,4 +156,31 @@ void Octree<scalar_t, branching, data_dim>::refine_octree(const torch::optional<
         printf("depth complete\n");
     }
     n_internal += new_internal;
+}
+
+
+template <typename scalar_t, int32_t branching, int32_t data_dim>
+torch::Tensor Octree<scalar_t, branching, data_dim>::query_octree(torch::Tensor indices)
+{
+    size_t n_elements = indices.size(0);
+    if (n_elements <= 0) {
+        torch::Tensor undefined;
+        return undefined;
+    }
+
+    // Create output tensor
+    torch::Tensor values_out = torch::empty({n_elements, data_dim}, data.options());
+    torch::Tensor td = data;
+    torch::Tensor tc = child;
+    torch::Tensor tl = is_child_leaf;
+    octree_query_kernel<scalar_t, branching, data_dim><<<n_blocks_linear(n_elements), n_threads_linear>>>(
+        td.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits>(),
+        tc.packed_accessor32<int32_t, 4, torch::RestrictPtrTraits>(),
+        tl.packed_accessor32<bool, 4, torch::RestrictPtrTraits>(),
+        indices.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
+        values_out.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+        n_elements,
+        parent_sum
+    );
+    return values_out;
 }
