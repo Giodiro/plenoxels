@@ -516,7 +516,8 @@ void refine_octree(Octree<scalar_t, branching, data_dim> tree, const torch::opti
     const int64_t total_nodes = tree.data.size(0);
     const int64_t new_internal = leaves.size(0);
     const int64_t new_total_nodes = total_nodes + new_internal * tree.node_size;
-
+    printf("Called refine\n");
+    /*
     if (new_internal == 0) {
         return;
     }
@@ -556,5 +557,5 @@ void refine_octree(Octree<scalar_t, branching, data_dim> tree, const torch::opti
             old_depth + 1
         );
     }
-    tree.n_internal += new_internal;
+    tree.n_internal += new_internal;*/
 }
