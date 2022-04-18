@@ -11,7 +11,7 @@ ext_modules = [
     CUDAExtension('plenoxels.c_ext',
         sources=[
             'plenoxels/csrc/svox.cpp',
-            'plenoxels/csrc/octree_common.cu',
+            # 'plenoxels/csrc/octree_common.cu',
             # 'csrc/svox_kernel.cu',
             # 'csrc/rt_kernel.cu',
         ],
