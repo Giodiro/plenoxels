@@ -380,7 +380,7 @@ torch::Tensor pack_index_3d(const torch::Tensor leaves) {
     return leaves.mul(multiplier.unsqueeze(0)).sum(-1);
 }
 
-
+/*
 template <class scalar_t, int32_t branching, int32_t data_dim>
 void set_octree(Octree<scalar_t, branching, data_dim> tree, torch::Tensor indices, const torch::Tensor vals, const bool update_avg)
 {
@@ -418,7 +418,7 @@ void set_octree(Octree<scalar_t, branching, data_dim> tree, torch::Tensor indice
         }
     }
 }
-
+*/
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 torch::Tensor query_octree(Octree<scalar_t, branching, data_dim> tree, torch::Tensor indices)
@@ -446,7 +446,7 @@ torch::Tensor query_octree(Octree<scalar_t, branching, data_dim> tree, torch::Te
     return values_out;
 }
 
-
+/*
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 std::tuple<torch::Tensor, torch::Tensor> query_interp_octree(Octree<scalar_t, branching, data_dim> &tree, torch::Tensor indices)
 {
@@ -507,7 +507,6 @@ void _resize_add_cap(Octree<scalar_t, branching, data_dim> tree, const int64_t n
 //    tree.depth_acc = tree.depth.packed_accessor64<int32_t, 2, torch::RestrictPtrTraits>();
 }
 
-
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 void refine_octree(Octree<scalar_t, branching, data_dim> tree, const torch::optional<torch::Tensor> opt_leaves)
 {
@@ -557,3 +556,4 @@ void refine_octree(Octree<scalar_t, branching, data_dim> tree, const torch::opti
     }
     tree.n_internal += new_internal;
 }
+*/

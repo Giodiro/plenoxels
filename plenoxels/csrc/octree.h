@@ -36,8 +36,6 @@ struct Octree {
 //        depth_acc = depth.packed_accessor64<int32_t, 2, torch::RestrictPtrTraits>();
     }
 
-    ~Octree() { }
-
     int64_t n_internal;
     int32_t max_depth;
     bool parent_sum;
@@ -52,14 +50,14 @@ struct Octree {
 };
 
 
-template <typename scalar_t, int32_t branching, int32_t data_dim>
-void set_octree(Octree<scalar_t, branching, data_dim> tree, torch::Tensor indices, const torch::Tensor vals, const bool update_avg);
+//template <typename scalar_t, int32_t branching, int32_t data_dim>
+//void set_octree(Octree<scalar_t, branching, data_dim> tree, torch::Tensor indices, const torch::Tensor vals, const bool update_avg);
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 torch::Tensor query_octree(Octree<scalar_t, branching, data_dim> tree, torch::Tensor indices);
 
-template <typename scalar_t, int32_t branching, int32_t data_dim>
-std::tuple<torch::Tensor, torch::Tensor> query_interp_octree(Octree<scalar_t, branching, data_dim> tree, torch::Tensor indices);
-
-template <typename scalar_t, int32_t branching, int32_t data_dim>
-void refine_octree(Octree<scalar_t, branching, data_dim> tree, const torch::optional<torch::Tensor> opt_leaves);
+//template <typename scalar_t, int32_t branching, int32_t data_dim>
+//std::tuple<torch::Tensor, torch::Tensor> query_interp_octree(Octree<scalar_t, branching, data_dim> tree, torch::Tensor indices);
+//
+//template <typename scalar_t, int32_t branching, int32_t data_dim>
+//void refine_octree(Octree<scalar_t, branching, data_dim> tree, const torch::optional<torch::Tensor> opt_leaves);
