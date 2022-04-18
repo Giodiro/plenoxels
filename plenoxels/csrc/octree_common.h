@@ -308,9 +308,7 @@ __global__ void octree_query_kernel(
     float3 coord = make_float3(indices[i][0], indices[i][1], indices[i][2]);
     if (parent_sum) {
         _dev_query_sum<scalar_t, branching, data_dim>(
-            tree_data, child, is_child_leaf,
-            coord, 
-            &out_values[i][0]
+            tree_data, child, is_child_leaf, coord, &out_values[i][0]
         );
     } else {
         scalar_t* data_at_coo = _dev_query_single<scalar_t, branching>(
@@ -338,9 +336,10 @@ __global__ void octree_query_interp_kernel(
 	const size_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_elements) return;
 
+    float3 coord = make_float3(indices[i][0], indices[i][1], indices[i][2]);
     _dev_query_interp<scalar_t, branching, data_dim>(
         tree_data, child, is_child_leaf,
-        make_float3(indices[i][0], indices[i][1], indices[i][2]),
+        coord,
         &weights[i][0],
         &out_values[i][0],
         parent_sum
@@ -361,8 +360,9 @@ __global__ void octree_set_kernel(
 	const size_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_elements) return;
 
+    float3 coord = make_float3(indices[i][0], indices[i][1], indices[i][2]);
     scalar_t* data_at_coo = _dev_query_single<scalar_t, branching>(
-        tree_data, child, is_child_leaf, make_float3(indices[i][0], indices[i][1], indices[i][2])
+        tree_data, child, is_child_leaf, coord
     );
     for (int32_t j = 0; j < data_dim; j++) {
         data_at_coo[j] = values[i][j];
