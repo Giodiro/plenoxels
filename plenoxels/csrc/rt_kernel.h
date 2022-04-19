@@ -121,10 +121,6 @@ __device__ __inline__ void stratified_sample_proposal(
     (*n_samples_inout)--;
 }
 
-e: (const at::PackedTensorAccessor32<int32_t, 1UL, at::RestrictPtrTraits>, const float *__restrict__, at::TensorAccessor<float, 2UL, at::RestrictPtrTraits, int32_t>,
-at::TensorAccessor<int64_t, 2UL, at::RestrictPtrTraits, int32_t>, at::TensorAccessor<float, 2UL, at::RestrictPtrTraits, int32_t>,
-const at::TensorAccessor<float, 1UL, at::RestrictPtrTraits, int32_t>, const at::TensorAccessor<float, 1UL, at::RestrictPtrTraits, int32_t>, const at::T
-ensorAccessor<float, 1UL, at::RestrictPtrTraits, int32_t>, at::PackedTensorAccessor64<float, 2UL, at::RestrictPtrTraits>, float3, float3, const RenderOptions)
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 __device__ __inline__ void trace_ray_backward(
