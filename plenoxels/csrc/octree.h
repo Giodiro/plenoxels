@@ -95,7 +95,7 @@ void Octree<scalar_t, branching, data_dim>::refine_octree(const torch::optional<
     torch::Tensor leaves;
     if (opt_leaves.has_value()) {  // Check validity of user-supplied leaves
         auto sel = opt_leaves.value().unbind(1);
-        auto valid_leaves = is_child_leaf.index({sel[0], sel[1], sel[2], sel[3]}) && (sel[0] < n_internal);
+        auto valid_leaves = is_child_leaf.index({sel[0], sel[1], sel[2], sel[3]}).logical_and(sel[0] < n_internal);
         leaves = opt_leaves.value().index({valid_leaves, Ellipsis});
     } else {
         leaves = is_child_leaf.index({Slice(0, n_internal), Ellipsis}).nonzero();
@@ -118,7 +118,7 @@ void Octree<scalar_t, branching, data_dim>::refine_octree(const torch::optional<
 
     // Child tensor
     torch::Tensor new_child_ids =
-        torch::arange(cur_tot_nodes, new_total_nodes, child.options()).view({-1, branching, branching, branching})
+        torch::arange(cur_tot_nodes, new_tot_nodes, child.options()).view({-1, branching, branching, branching})
         - torch::arange(n_internal, n_internal + new_internal, child.options()).view({-1, 1, 1, 1});
     child.index_put_({Slice(n_internal, n_internal + new_internal), Ellipsis}, new_child_ids);
 
