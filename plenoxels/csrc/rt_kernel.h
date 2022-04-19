@@ -319,15 +319,15 @@ __global__ void render_ray_bwd_kernel(
     const torch::PackedTensorAccessor32<bool, 1, torch::RestrictPtrTraits> t_parent,
     const float* __restrict__ t_offset,
     const float* __restrict__ t_scaling,
-    const torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> ray_offsets,  // batch_size, n_intersections
-    const torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> ray_steps,    // batch_size, n_intersections
-    torch::PackedTensorAccessor32<scalar_t, 3, torch::RestrictPtrTraits> interp_vals,     // batch_size, n_intersections, data_dim
-    torch::PackedTensorAccessor32<int64_t, 3, torch::RestrictPtrTraits> interp_nids,      // batch_size, n_intersections, 8
-    torch::PackedTensorAccessor32<float, 3, torch::RestrictPtrTraits> interp_weights,     // batch_size, n_intersections, 8
-    const torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> rays_o,       // batch_size, 3
-    const torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> rays_d,       // batch_size, 3
+    const torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> ray_offsets,    // batch_size, n_intersections
+    const torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> ray_steps,      // batch_size, n_intersections
+    torch::PackedTensorAccessor32<scalar_t, 3, torch::RestrictPtrTraits> interp_vals,       // batch_size, n_intersections, data_dim
+    torch::PackedTensorAccessor32<int64_t, 3, torch::RestrictPtrTraits> interp_nids,        // batch_size, n_intersections, 8
+    torch::PackedTensorAccessor32<float, 3, torch::RestrictPtrTraits> interp_weights,       // batch_size, n_intersections, 8
+    const torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> rays_o,         // batch_size, 3
+    const torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> rays_d,         // batch_size, 3
     const torch::PackedTensorAccessor32<scalar_t, 2, torch::RestrictPtrTraits> grad_output, // batch_size, data_dim
-    torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> grad_data_out      // num_points, data_dim
+    torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> grad_data_out,     // num_points, data_dim
     RenderOptions& __restrict__ opt,
     const int32_t n_elements)
 {
@@ -454,7 +454,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> volume_re
 
     gen_samples_kernel<scalar_t, branching>
         <<<n_blocks_linear<uint32_t>(batch_size, gen_samples_n_threads), gen_samples_n_threads>>>(
-            tree.child.packed_accessor32<int32_t, 4, torch::RestrictPtrTraits>(),
+//            tree.child.packed_accessor32<int32_t, 4, torch::RestrictPtrTraits>(),
+            tree.child_acc(),
             tree.is_child_leaf.packed_accessor32<bool, 4, torch::RestrictPtrTraits>(),
             tree.offset.data_ptr<float>(),
             tree.scaling.data_ptr<float>(),
