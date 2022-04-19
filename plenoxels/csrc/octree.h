@@ -28,7 +28,10 @@ struct Octree {
         depth = torch::zeros({1},
             torch::dtype(torch::kInt32).layout(torch::kStrided).device(device));
 
-        int64_t n_internal_prealloc = 1 + pow(node_size, levels);
+        int64_t n_internal_prealloc = 0;
+        for (int i = 0; i < levels; i++) {
+            n_internal_prealloc += pow(node_size, i);
+        }
         _resize_add_cap(n_internal_prealloc);
     }
 
@@ -89,8 +92,15 @@ void Octree<scalar_t, branching, data_dim>::_resize_add_cap(const int64_t num_ne
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 void Octree<scalar_t, branching, data_dim>::refine_octree(const torch::optional<torch::Tensor> &opt_leaves)
 {
-    const auto leaves = opt_leaves.has_value() ? opt_leaves.value() : is_child_leaf.index({Slice(0, n_internal), Ellipsis}).nonzero();
-    const bool is_root_node = n_internal == 0
+    torch::Tensor leaves;
+    if (opt_leaves.has_value()) {  // Check validity of user-supplied leaves
+        auto sel = opt_leaves.value().unbind(1);
+        auto valid_leaves = is_child_leaf.index({sel[0], sel[1], sel[2], sel[3]}) && (sel[0] < n_internal);
+        leaves = opt_leaves.value().index({valid_leaves, Ellipsis});
+    } else {
+        leaves = is_child_leaf.index({Slice(0, n_internal), Ellipsis}).nonzero();
+    }
+    const bool is_root_node = n_internal == 0;
     const int64_t new_internal = is_root_node ? 1 : leaves.size(0);
     const int64_t alloc_internal = child.size(0);
     printf("Current internal %ld - New internal %ld\n", n_internal, new_internal);
@@ -102,8 +112,8 @@ void Octree<scalar_t, branching, data_dim>::refine_octree(const torch::optional<
         _resize_add_cap(new_internal);
     }
 
-    const int64_t cur_tot_nodes = n_internal * node_size;
-    const int64_t new_tot_nodes = (n_internal + new_internal) * node_size;
+    const int64_t cur_tot_nodes = n_internal * node_size + 1;  // +1 for root node
+    const int64_t new_tot_nodes = cur_tot_nodes + new_internal * node_size;
     printf("Current tot nodes %ld - New tot nodes %ld\n", cur_tot_nodes, new_tot_nodes);
 
     // Child tensor
@@ -118,8 +128,9 @@ void Octree<scalar_t, branching, data_dim>::refine_octree(const torch::optional<
 
     // Parent + Depth
     if (is_root_node) {
-        parent.index_put_({0}, 0);
-        depth.index_put_({0}, 1);
+        parent.index_put_({Slice(cur_tot_nodes, new_tot_nodes)}, 0);
+        depth.index_put_({Slice(cur_tot_nodes, new_tot_nodes)}, 1);
+        max_depth = 1;
     } else {
         auto packed_leaves = pack_index_3d<branching>(leaves).repeat_interleave(node_size) + 1;  // +1 for the invisible root node.
         parent.index_put_(
