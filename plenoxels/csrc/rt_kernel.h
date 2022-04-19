@@ -137,7 +137,7 @@ __device__ __inline__ void trace_ray_backward(
         const torch::PackedTensorAccessor32<scalar_t, 1, torch::RestrictPtrTraits> grad_output,
         torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> grad_data_out,
         const float3 & __restrict__ ray_o,
-        const float3 & __restrict__ ray_d,
+        float3 & __restrict__ ray_d,
         const RenderOptions& __restrict__ opt)
 {
     const float delta_scale = _get_delta_scale(t_scaling, ray_d);
@@ -251,7 +251,7 @@ __device__ __inline__ void trace_ray(
     torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> interp_weights,
     torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> neighbor_coo,
     const float3 & __restrict__ ray_o,
-    const float3 & __restrict__ ray_d,
+    float3 & __restrict__ ray_d,
     const RenderOptions& __restrict__ opt,
     torch::PackedTensorAccessor32<scalar_t, 1, torch::RestrictPtrTraits> out)
 {
@@ -335,7 +335,7 @@ __global__ void render_ray_bwd_kernel(
 	if (i >= n_elements) return;
 
     float3 ray_o = make_float3(rays_o[i][0], rays_o[i][1], rays_o[i][2]);
-    const float3 ray_d = make_float3(rays_d[i][0], rays_d[i][1], rays_d[i][2]);
+    float3 ray_d = make_float3(rays_d[i][0], rays_d[i][1], rays_d[i][2]);
     transform_coord(ray_o, t_offset, t_scaling);
 
 	trace_ray_backward<scalar_t, branching, data_dim>(
@@ -368,7 +368,7 @@ __global__ void render_ray_kernel(
 	if (i >= n_elements) return;
 
     float3 ray_o = make_float3(rays_o[i][0], rays_o[i][1], rays_o[i][2]);
-    const float3 ray_d = make_float3(rays_d[i][0], rays_d[i][1], rays_d[i][2]);
+    float3 ray_d = make_float3(rays_d[i][0], rays_d[i][1], rays_d[i][2]);
     transform_coord(ray_o, t_offset, t_scaling);
 
 	trace_ray<scalar_t, branching, data_dim>(
@@ -395,7 +395,7 @@ __global__ void gen_samples_kernel(
 	if (i >= n_elements) return;
 
     float3 ray_o = make_float3(rays_o[i][0], rays_o[i][1], rays_o[i][2]);
-    const float3 ray_d = make_float3(rays_d[i][0], rays_d[i][1], rays_d[i][2]);
+    float3 ray_d = make_float3(rays_d[i][0], rays_d[i][1], rays_d[i][2]);
     transform_coord(ray_o, t_offset, t_scaling);
 
     const float delta_scale = _get_delta_scale(t_scaling, ray_d);
