@@ -138,7 +138,7 @@ __device__ __inline__ void trace_ray_backward(
         torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> grad_data_out,
         const float3 & __restrict__ ray_o,
         const float3 & __restrict__ ray_d,
-        RenderOptions& __restrict__ opt)
+        const RenderOptions& __restrict__ opt)
 {
     const float delta_scale = _get_delta_scale(t_scaling, ray_d);
     float tmin, tmax;
@@ -252,7 +252,7 @@ __device__ __inline__ void trace_ray(
     torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> neighbor_coo,
     const float3 & __restrict__ ray_o,
     const float3 & __restrict__ ray_d,
-    RenderOptions& __restrict__ opt,
+    const RenderOptions& __restrict__ opt,
     torch::PackedTensorAccessor32<scalar_t, 1, torch::RestrictPtrTraits> out)
 {
     const float delta_scale = _get_delta_scale(t_scaling, ray_d);
@@ -328,7 +328,7 @@ __global__ void render_ray_bwd_kernel(
     const torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> rays_d,         // batch_size, 3
     const torch::PackedTensorAccessor32<scalar_t, 2, torch::RestrictPtrTraits> grad_output, // batch_size, data_dim
     torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> grad_data_out,     // num_points, data_dim
-    RenderOptions& __restrict__ opt,
+    const RenderOptions& __restrict__ opt,
     const int32_t n_elements)
 {
 	const int32_t i = threadIdx.x + blockIdx.x * blockDim.x;
@@ -360,7 +360,7 @@ __global__ void render_ray_kernel(
     torch::PackedTensorAccessor32<float, 3, torch::RestrictPtrTraits> neighbor_coo,       // batch_size, 8, 3
     const torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> rays_o,       // batch_size, 3
     const torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> rays_d,       // batch_size, 3
-    RenderOptions& __restrict__ opt,
+    const RenderOptions& __restrict__ opt,
     torch::PackedTensorAccessor32<scalar_t, 2, torch::RestrictPtrTraits> out,            // batch_size, data_dim
     const int32_t n_elements)
 {
@@ -388,7 +388,7 @@ __global__ void gen_samples_kernel(
     torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> ray_offsets,  // batch_size, n_intersections
     torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> ray_steps,    // batch_size, n_intersections
     const int32_t max_intersections,
-    RenderOptions& __restrict__ opt,
+    const RenderOptions& __restrict__ opt,
     const int32_t n_elements)
 {
 	const int32_t i = threadIdx.x + blockIdx.x * blockDim.x;
@@ -510,6 +510,8 @@ torch::Tensor volume_render_bwd(
     const torch::Tensor & interp_vals,
     const torch::Tensor & interp_nids,
     const torch::Tensor & interp_weights,
+    const torch::Tensor & ray_offsets,
+    const torch::Tensor & ray_steps,
     const RenderOptions & opt)
 {
     DEVICE_GUARD(tree.data);
@@ -519,10 +521,7 @@ torch::Tensor volume_render_bwd(
     torch::Tensor output = torch::zeros_like(tree.data);
     render_ray_bwd_kernel<scalar_t, branching, data_dim>
         <<<n_blocks_linear<uint32_t>(batch_size, render_ray_n_threads), render_ray_n_threads>>>(
-//            tree.parent.packed_accessor32<int32_t, 1, torch::RestrictPtrTraits>(),
             tree.parent_acc(),
-//            tree.offset.data_ptr<float>(),
-//            tree.scaling.data_ptr<float>(),
             tree.offset_ptr(),
             tree.scaling_ptr(),
             ray_offsets.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),

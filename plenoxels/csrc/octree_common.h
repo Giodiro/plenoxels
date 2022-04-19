@@ -6,7 +6,7 @@
 template <typename T, size_t N>
 using Acc32 = torch::GenericPackedTensorAccessor<T, N, torch::RestrictPtrTraits, int32_t>;
 template <typename T, size_t N>
-using Acc64 = torch::GenericPackedTensorAccessor<T, N, torch::RestrictPtrTraits, int32_t>;
+using Acc64 = torch::GenericPackedTensorAccessor<T, N, torch::RestrictPtrTraits, int64_t>;
 
 constexpr uint32_t n_threads_linear = 128;
 
@@ -322,11 +322,11 @@ __global__ void octree_query_kernel(
     const Acc32<bool, 4> is_child_leaf,
     Acc32<float, 2> indices,
     Acc32<scalar_t, 2> out_values,
-    const size_t n_elements,
+    const int64_t n_elements,
     const bool parent_sum
 )
 {
-	const size_t i = threadIdx.x + blockIdx.x * blockDim.x;
+	const int64_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_elements) return;
 
     float3 coord = make_float3(indices[i][0], indices[i][1], indices[i][2]);
