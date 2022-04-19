@@ -65,6 +65,10 @@ struct Octree {
     torch::Tensor query_octree(torch::Tensor &indices);
     std::tuple<torch::Tensor, torch::Tensor> query_interp_octree(torch::Tensor &indices);
     void set_octree(torch::Tensor &indices, const torch::Tensor &vals, const bool update_avg);
+
+    torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> child_acc() {
+        return child.packed_accessor32<int32_t, 4, torch::RestrictPtrTraits>();
+    }
 };
 
 
@@ -195,6 +199,10 @@ std::tuple<torch::Tensor, torch::Tensor> Octree<scalar_t, branching, data_dim>::
         return std::make_tuple(undefined, undefined);
     }
 
+    // Temporary tensors
+    torch::Tensor neighbor_coo = torch::empty({n_elements, 8, 3}, torch::dtype(torch::kFloat32).device(data.device).layout(data.layout));
+    torch::Tensor neighbor_ids = torch::full({n_elements, 8}, -1, torch::dtype(torch::kInt64).device(data.device).layout(data.layout));
+
     // Create output tensors
     torch::Tensor values_out = torch::empty({n_elements, data_dim}, data.options());
     torch::Tensor weights_out = torch::empty({n_elements, 8}, indices.options());
@@ -205,6 +213,8 @@ std::tuple<torch::Tensor, torch::Tensor> Octree<scalar_t, branching, data_dim>::
         indices.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
         values_out.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
         weights_out.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
+        neighbor_coo.packed_accessor32<float, 3, torch::RestrictPtrTraits(),
+        neighbor_ids.packed_accessor32<int64_t, 2, torch::RestrictPtrTraits(),
         n_elements,
         parent_sum
     );
