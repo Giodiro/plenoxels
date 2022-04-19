@@ -262,15 +262,18 @@ __device__ __inline__ void _dev_query_interp(
                 // Simpler formula (without clamping)
                 // (floor((in_coordinate[0] + OFFSET2[i][0] / (cube_sz * 2)) * cube_sz + 1e-5) + 0.5) / cube_sz,
                 valid_neighbors[i] = node_id + skip;
-                printf("Set valid neighbor %d: %ld, coordinate %f %f %f \n", i, valid_neighbors[i], neigh_coo[i].x, neigh_coo[i].y, neigh_coo[i].z);
+                #ifdef DEBUG
+                    printf("Set valid neighbor %d: %ld, coordinate %f %f %f \n", i, valid_neighbors[i], neigh_coo[i].x, neigh_coo[i].y, neigh_coo[i].z);
+                #endif
             }
         }
 
         // Determine whether we have finished, and we must interpolate
         if (is_child_leaf[node_id][u][v][w]) {
-            printf("Interpolating.\n");
             interp_quad_3d_newt(weights, &in_coo, neigh_coo);
-            printf("Weights: %f %f %f %f %f %f %f %f\n", weights[0], weights[1], weights[2], weights[3], weights[4], weights[5], weights[6], weights[7]);
+            #ifdef DEBUG
+                printf("Weights: %f %f %f %f %f %f %f %f\n", weights[0], weights[1], weights[2], weights[3], weights[4], weights[5], weights[6], weights[7]);
+            #endif
             for (j = 0; j < 8; j++) {
                 if (valid_neighbors[j] < 0) continue;
                 for (i = 0; i < data_dim; i++) {
