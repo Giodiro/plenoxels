@@ -4,9 +4,9 @@
 #include "cuda_common.h"
 
 template <typename T, size_t N>
-using Acc32 = GenericPackedTensorAccessor<T, N, torch::RestrictPtrTraits, int32_t>;
+using Acc32 = torch::GenericPackedTensorAccessor<T, N, torch::RestrictPtrTraits, int32_t>;
 template <typename T, size_t N>
-using Acc64 = GenericPackedTensorAccessor<T, N, torch::RestrictPtrTraits, int32_t>;
+using Acc64 = torch::GenericPackedTensorAccessor<T, N, torch::RestrictPtrTraits, int32_t>;
 
 constexpr uint32_t n_threads_linear = 128;
 
@@ -39,7 +39,8 @@ __device__ __inline__ void traverse_tree_level(
 __device__ __inline__ void interp_quad_3d_newt(
     float * __restrict__ weights,
     const float3 * __restrict__ point,
-    const torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> n
+//    const torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> n
+    const torch::TensorAccessor<float, 2, torch::RestrictPtrTraits, int32_t> n
 )
 {
     /*
