@@ -3,6 +3,10 @@
 #include <torch/extension.h>
 #include "cuda_common.h"
 
+template <typename T, size_t N>
+using Acc32 = GenericPackedTensorAccessor<T, N, torch::RestrictPtrTraits, int32_t>;
+template <typename T, size_t N>
+using Acc64 = GenericPackedTensorAccessor<T, N, torch::RestrictPtrTraits, int32_t>;
 
 constexpr uint32_t n_threads_linear = 128;
 
@@ -205,7 +209,8 @@ __device__ __inline__ void _dev_query_interp(
     const torch::PackedTensorAccessor32<bool, 4, torch::RestrictPtrTraits> is_child_leaf,    // tree description
     const float3& __restrict__ in_coo,     // query coordinate
     float    * __restrict__ weights,       // [8]. output parameter. Interpolation weights
-    torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> neighbor_coo,  // [8,3]. output parameter (temp buffer). Coordinates of the neighbors
+    torch::TensorAccessor<float, 2, torch::RestrictPtrTraits, int32_t> neighbor_coo,    // [8,3]. output parameter (temp buffer). Coordinates of the neighbors
+//    torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> neighbor_coo,  // [8,3]. output parameter (temp buffer). Coordinates of the neighbors
     int64_t  * __restrict__ neighbor_ids,  // [8]. output parameter. Node IDs of the interpolation neighbors. Assumed to all be -1 on input.
     scalar_t * __restrict__ out_val,       // [data_dim]. output parameter. Interpolated value
     const bool parent_sum                                                                    // tree description

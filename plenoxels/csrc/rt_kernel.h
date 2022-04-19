@@ -449,15 +449,11 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> volume_re
     // 1. Generate samples
     const int32_t n_intersections = 1024;
     torch::Tensor ray_offsets = torch::full({batch_size, n_intersections}, -1.0,
-        torch::dtype(torch::kFloat32).device(tree.data.device).layout(tree.data.layout));
+        torch::dtype(torch::kFloat32).device(tree.data.device()).layout(tree.data.layout()));
     torch::Tensor ray_steps = torch::full_like(ray_offsets, -1.0);
 
     gen_samples_kernel<scalar_t, branching>
         <<<n_blocks_linear<uint32_t>(batch_size, gen_samples_n_threads), gen_samples_n_threads>>>(
-//            tree.child.packed_accessor32<int32_t, 4, torch::RestrictPtrTraits>(),
-//            tree.is_child_leaf.packed_accessor32<bool, 4, torch::RestrictPtrTraits>(),
-//            tree.offset.data_ptr<float>(),
-//            tree.scaling.data_ptr<float>(),
             tree.child_acc(),
             tree.is_child_leaf_acc(),
             tree.offset_ptr(),
@@ -483,15 +479,10 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> volume_re
     // 3. Forward pass (compute)
     render_ray_kernel<scalar_t, branching, data_dim>
         <<<n_blocks_linear<uint32_t>(batch_size, render_ray_n_threads), render_ray_n_threads>>>(
-//            tree.data.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits>(),
-//            tree.child.packed_accessor32<int32_t, 4, torch::RestrictPtrTraits>(),
-//            tree.is_child_leaf.packed_accessor32<bool, 4, torch::RestrictPtrTraits>(),
             tree.data_acc(),
             tree.child_acc(),
             tree.is_child_leaf_acc(),
             tree.parent_sum,
-//            tree.offset.data_ptr<float>(),
-//            tree.scaling.data_ptr<float>(),
             tree.offset_ptr(),
             tree.scaling_ptr(),
             ray_offsets.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
