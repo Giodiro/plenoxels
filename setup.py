@@ -17,6 +17,7 @@ ext_modules = [
         ],
         include_dirs=[
             'plenoxels/csrc',
+            'plenoxels/csrc/include',
         ],
         extra_compile_args={
             "cxx": ["-std=c++14", "-g"],

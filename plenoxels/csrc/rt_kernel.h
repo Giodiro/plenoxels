@@ -4,8 +4,8 @@
 
 #include "cuda_common.h"
 #include "octree_common.h"
-#include "data_spec.hpp"
 #include "sh.h"
+#include "include/data_spec.hpp"
 
 #define _SOFTPLUS_M1(x) (logf(1 + expf((x) - 1)))
 #define _SIGMOID(x) (1 / (1 + expf(-(x))))
