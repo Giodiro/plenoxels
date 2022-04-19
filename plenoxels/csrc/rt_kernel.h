@@ -121,19 +121,23 @@ __device__ __inline__ void stratified_sample_proposal(
     (*n_samples_inout)--;
 }
 
+e: (const at::PackedTensorAccessor32<int32_t, 1UL, at::RestrictPtrTraits>, const float *__restrict__, at::TensorAccessor<float, 2UL, at::RestrictPtrTraits, int32_t>,
+at::TensorAccessor<int64_t, 2UL, at::RestrictPtrTraits, int32_t>, at::TensorAccessor<float, 2UL, at::RestrictPtrTraits, int32_t>,
+const at::TensorAccessor<float, 1UL, at::RestrictPtrTraits, int32_t>, const at::TensorAccessor<float, 1UL, at::RestrictPtrTraits, int32_t>, const at::T
+ensorAccessor<float, 1UL, at::RestrictPtrTraits, int32_t>, at::PackedTensorAccessor64<float, 2UL, at::RestrictPtrTraits>, float3, float3, const RenderOptions)
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 __device__ __inline__ void trace_ray_backward(
         const torch::PackedTensorAccessor32<int32_t, 2, torch::RestrictPtrTraits> t_parent,
         const float* __restrict__ t_scaling,
-        const torch::PackedTensorAccessor32<scalar_t, 2, torch::RestrictPtrTraits> interp_vals,
-        const torch::PackedTensorAccessor32<int64_t, 2, torch::RestrictPtrTraits> interp_nids,
-        const torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> interp_weights,
+        const torch::TensorAccessor<scalar_t, 2, torch::RestrictPtrTraits, int32_t> interp_vals,
+        const torch::TensorAccessor<int64_t, 2, torch::RestrictPtrTraits, int32_t> interp_nids,
+        const torch::TensorAccessor<float, 2, torch::RestrictPtrTraits, int32_t> interp_weights,
 
-        const torch::PackedTensorAccessor32<float, 1, torch::RestrictPtrTraits> ray_offsets,
-        const torch::PackedTensorAccessor32<float, 1, torch::RestrictPtrTraits> ray_steps,
+        const torch::TensorAccessor<float, 1, torch::RestrictPtrTraits, int32_t> ray_offsets,
+        const torch::TensorAccessor<float, 1, torch::RestrictPtrTraits, int32_t> ray_steps,
 
-        const torch::PackedTensorAccessor32<scalar_t, 1, torch::RestrictPtrTraits> grad_output,
+        const torch::TensorAccessor<scalar_t, 1, torch::RestrictPtrTraits, int32_t> grad_output,
         torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> grad_data_out,
         const float3 & __restrict__ ray_o,
         float3 & __restrict__ ray_d,
@@ -166,7 +170,7 @@ __device__ __inline__ void trace_ray_backward(
         if (t < tmin) continue;
         if (t >= tmax) break;
         float delta_t = ray_steps[i] * delta_scale;
-        pos = ray.origin + t * ray.dir;
+        pos = ray_o + t * ray_d;
 
         scalar_t sigma = interp_vals[i][data_dim - 1];
         if (opt.density_softplus) { sigma = _SOFTPLUS_M1(sigma); }
@@ -197,7 +201,7 @@ __device__ __inline__ void trace_ray_backward(
         if (t < tmin) continue;
         if (t >= tmax) break;
         float delta_t = ray_steps[i] * delta_scale;
-        pos = ray.origin + t * ray.dir;
+        pos = ray_o + t * ray_d;
         // Zero-out gradient
         for (int j = 0; j < data_dim; ++j) { grad_tree_val[j] = 0; }
 
@@ -279,7 +283,7 @@ __device__ __inline__ void trace_ray(
         if (t < tmin) continue;
         if (t >= tmax) break;
         float delta_t = ray_steps[i];
-        pos = ray.origin + t * ray.dir;
+        pos = ray_o + t * ray_d;
         scalar_t *tree_val = &interp_vals[i][0];
         _dev_query_interp<scalar_t, branching, data_dim>(
             t_data, t_child, t_icf, /*in_coo=*/pos, /*weights=*/&interp_weights[i][0],

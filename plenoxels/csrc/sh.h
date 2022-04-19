@@ -39,16 +39,15 @@ template <typename scalar_t>
 __device__ __inline__ void maybe_precalc_basis(
     const int format,
     const int basis_dim,
-    const float* __restrict__ dir,
+    const float3& __restrict__ dir,
     scalar_t* __restrict__ out)
 {
     switch(format) {
         case FORMAT_SH:
             {
                 out[0] = C0;
-                const scalar_t x = dir[0], y = dir[1], z = dir[2];
-                const scalar_t xx = x * x, yy = y * y, zz = z * z;
-                const scalar_t xy = x * y, yz = y * z, xz = x * z;
+                const float xx = dir.x * dir.x, yy = dir.y * dir.y, zz = dir.z * dir.z;
+                const float xy = dir.x * dir.y, yz = dir.y * dir.z, xz = dir.x * dir.z;
                 switch (basis_dim) {
                     case 25:
                         out[16] = C4[0] * xy * (xx - yy);
@@ -62,13 +61,13 @@ __device__ __inline__ void maybe_precalc_basis(
                         out[24] = C4[8] * (xx * (xx - 3 * yy) - yy * (3 * xx - yy));
                         [[fallthrough]];
                     case 16:
-                        out[9] = C3[0] * y * (3 * xx - yy);
-                        out[10] = C3[1] * xy * z;
-                        out[11] = C3[2] * y * (4 * zz - xx - yy);
-                        out[12] = C3[3] * z * (2 * zz - 3 * xx - 3 * yy);
-                        out[13] = C3[4] * x * (4 * zz - xx - yy);
-                        out[14] = C3[5] * z * (xx - yy);
-                        out[15] = C3[6] * x * (xx - 3 * yy);
+                        out[9] = C3[0] * dir.y * (3 * xx - yy);
+                        out[10] = C3[1] * xy * dir.z;
+                        out[11] = C3[2] * dir.y * (4 * zz - xx - yy);
+                        out[12] = C3[3] * dir.z * (2 * zz - 3 * xx - 3 * yy);
+                        out[13] = C3[4] * dir.x * (4 * zz - xx - yy);
+                        out[14] = C3[5] * dir.z * (xx - yy);
+                        out[15] = C3[6] * dir.x * (xx - 3 * yy);
                         [[fallthrough]];
                     case 9:
                         out[4] = C2[0] * xy;
@@ -78,9 +77,9 @@ __device__ __inline__ void maybe_precalc_basis(
                         out[8] = C2[4] * (xx - yy);
                         [[fallthrough]];
                     case 4:
-                        out[1] = -C1 * y;
-                        out[2] = C1 * z;
-                        out[3] = -C1 * x;
+                        out[1] = -C1 * dir.y;
+                        out[2] = C1 * dir.z;
+                        out[3] = -C1 * dir.x;
                 }
             }  // SH
             break;
