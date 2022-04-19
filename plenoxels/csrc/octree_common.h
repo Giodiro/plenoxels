@@ -124,7 +124,7 @@ template <typename scalar_t, int32_t branching>
 __device__ __inline__ void _dev_query_ninfo(
     const torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> child,
     const torch::PackedTensorAccessor32<bool, 4, torch::RestrictPtrTraits> is_child_leaf,
-    float& __restrict__ coordinate,
+    float3& __restrict__ coordinate,
     float* __restrict__ cube_sz_out,
     int64_t* __restrict__ node_id_out)
 {

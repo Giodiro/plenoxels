@@ -26,7 +26,6 @@ __device__ __inline__ float _get_delta_scale(
     return delta_scale;
 }
 
-template <typename scalar_t>
 __device__ __inline__ void _dda_unit(
         const float3& __restrict__ cen,
         const float3& __restrict__ invdir,
@@ -244,16 +243,16 @@ __device__ __inline__ void trace_ray(
     const torch::PackedTensorAccessor32<bool, 4, torch::RestrictPtrTraits> t_icf,  // is_child_leaf
     const bool t_parent_sum,
     const float* __restrict__ t_scaling,
-    const torch::PackedTensorAccessor32<float, 1, torch::RestrictPtrTraits> ray_offsets,
-    const torch::PackedTensorAccessor32<float, 1, torch::RestrictPtrTraits> ray_steps,
-    torch::PackedTensorAccessor32<scalar_t, 2, torch::RestrictPtrTraits> interp_vals,
-    torch::PackedTensorAccessor32<int64_t, 2, torch::RestrictPtrTraits> interp_nids,
-    torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> interp_weights,
-    torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> neighbor_coo,
+    const torch::TensorAccessor<float, 1, torch::RestrictPtrTraits, int32_t> ray_offsets,
+    const torch::TensorAccessor<float, 1, torch::RestrictPtrTraits, int32_t> ray_steps,
+    torch::TensorAccessor<scalar_t, 2, torch::RestrictPtrTraits, int32_t> interp_vals,
+    torch::TensorAccessor<int64_t, 2, torch::RestrictPtrTraits, int32_t> interp_nids,
+    torch::TensorAccessor<float, 2, torch::RestrictPtrTraits, int32_t> interp_weights,
+    torch::TensorAccessor<float, 2, torch::RestrictPtrTraits, int32_t> neighbor_coo,
     const float3 & __restrict__ ray_o,
     float3 & __restrict__ ray_d,
     const RenderOptions& __restrict__ opt,
-    torch::PackedTensorAccessor32<scalar_t, 1, torch::RestrictPtrTraits> out)
+    torch::TensorAccessor<scalar_t, 1, torch::RestrictPtrTraits, int32_t> out)
 {
     const float delta_scale = _get_delta_scale(t_scaling, ray_d);
     float tmin, tmax;
@@ -316,7 +315,7 @@ __device__ __inline__ void trace_ray(
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 __global__ void render_ray_bwd_kernel(
-    const torch::PackedTensorAccessor32<bool, 1, torch::RestrictPtrTraits> t_parent,
+    const torch::PackedTensorAccessor32<int32_t, 1, torch::RestrictPtrTraits> t_parent,
     const float* __restrict__ t_offset,
     const float* __restrict__ t_scaling,
     const torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> ray_offsets,    // batch_size, n_intersections
