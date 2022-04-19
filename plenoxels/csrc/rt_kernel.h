@@ -124,7 +124,7 @@ __device__ __inline__ void stratified_sample_proposal(
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 __device__ __inline__ void trace_ray_backward(
-        const torch::PackedTensorAccessor32<int32_t, 2, torch::RestrictPtrTraits> t_parent,
+        const torch::PackedTensorAccessor32<int32_t, 1, torch::RestrictPtrTraits> t_parent,
         const float* __restrict__ t_scaling,
         const torch::TensorAccessor<scalar_t, 2, torch::RestrictPtrTraits, int32_t> interp_vals,
         const torch::TensorAccessor<int64_t, 2, torch::RestrictPtrTraits, int32_t> interp_nids,
