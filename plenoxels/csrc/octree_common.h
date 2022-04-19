@@ -1,56 +1,16 @@
 #pragma once
 
 #include <torch/extension.h>
+#include "cuda_common.h"
+
 
 constexpr uint32_t n_threads_linear = 128;
-
-
-template <typename T>
-__host__ __device__ T div_round_up(T val, T divisor) {
-	return (val + divisor - 1) / divisor;
-}
-
 
 template <typename T>
 constexpr uint32_t n_blocks_linear(T n_elements) {
 	return (uint32_t)div_round_up(n_elements, (T)n_threads_linear);
 }
 
-
-__device__ __inline__ float3 diff_prod(const float3 &a, const float3 &b, const float &c) {
-    // (a - b) * c
-    return make_float3(
-        (a.x - b.x) * c,
-        (a.y - b.y) * c,
-        (a.z - b.z) * c
-    );
-}
-
-
-__device__ __inline__ float prod_diff(const float &a, const float &b, const float &c, const float &d) {
-    // a * b - c * d (using kahan sum)
-    float cd = __fmul_rn(c, d);  // use intrinsic to avoid compiler optimizing this out.
-    float err = fmaf(-c, d, cd);
-    float dop = fmaf(a, b, -cd);
-    return dop + err;
-}
-
-
-__device__ __inline__ float3 operator+(const float3 &a, const float3 &b) {
-    return make_float3(a.x+b.x, a.y+b.y, a.z+b.z);
-}
-
-
-__device__ __inline__ float3 operator-(const float3 &a, const float3 &b) {
-    return make_float3(a.x-b.x, a.y-b.y, a.z-b.z);
-}
-
-
-__host__ __device__ __inline__ void clamp_coord(float3 & __restrict__ q_out, float lower, float upper) {
-    q_out.x = q_out.x < lower ? lower : (upper < q_out.x ? upper : q_out.x);
-    q_out.y = q_out.y < lower ? lower : (upper < q_out.y ? upper : q_out.y);
-    q_out.z = q_out.z < lower ? lower : (upper < q_out.z ? upper : q_out.z);
-}
 
 
 template <int32_t branching>
@@ -75,7 +35,7 @@ __device__ __inline__ void traverse_tree_level(
 __device__ __inline__ void interp_quad_3d_newt(
     float * __restrict__ weights,
     const float3 * __restrict__ point,
-    const float3 * __restrict__ n
+    const torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> n
 )
 {
     /*
@@ -84,12 +44,11 @@ __device__ __inline__ void interp_quad_3d_newt(
     p1~(0,0,0), p2~(0,0,1), p3~(0,1,0), p4~(1,0,0), p5~(0,1,1),
     p6~(1,0,1), p7~(1,1,0), p8~(1,1,1)
     */
-
-    const int32_t num_iter = 6;
+    int32_t num_iter = 4;
     float3 stw = make_float3(0.49, 0.49, 0.49);
-    float3 r, js, jt, jw;
+    float3 js = make_float3(0, 0, 0), jt = make_float3(0, 0, 0), jw = make_float3(0, 0, 0), r = make_float3(0, 0, 0);
     float inv_det_j, det_other;
-    for (int32_t i = 0; i < num_iter; i++) {
+    for (;num_iter > 0; num_iter--) {
         weights[0] = (1 - stw.x) * (1 - stw.y) * (1 - stw.z) ;
         weights[1] = (1 - stw.x) * (1 - stw.y) * stw.z       ;
         weights[2] = (1 - stw.x) * stw.y       * (1 - stw.z) ;
@@ -99,23 +58,27 @@ __device__ __inline__ void interp_quad_3d_newt(
         weights[6] = stw.x       * stw.y       * (1 - stw.z) ;
         weights[7] = stw.x       * stw.y       * stw.z       ;
         for (i = 0; i < 8; i++) {
-            r.x += n[i].x * weights[i];
-            r.y += n[i].y * weights[i];
-            r.z += n[i].z * weights[i];
+            r.x += n[i][0] * weights[i];
+            r.y += n[i][1] * weights[i];
+            r.z += n[i][2] * weights[i];
         }
-        r = r - *point;
-        js = diff_prod(n[4], n[0], (1 - stw.y) * (1 - stw.z)) +
-             diff_prod(n[5], n[1], (1 - stw.y) * stw.z      ) +
-             diff_prod(n[6], n[2], stw.y       * (1 - stw.z)) +
-             diff_prod(n[7], n[3], stw.y       * stw.z      );
-        jt = diff_prod(n[2], n[0], (1 - stw.x) * (1 - stw.z)) +
-             diff_prod(n[3], n[1], (1 - stw.x) * stw.z      ) +
-             diff_prod(n[6], n[4], stw.x       * (1 - stw.z)) +
-             diff_prod(n[7], n[5], stw.x       * stw.z      );
-        jw = diff_prod(n[1], n[0], (1 - stw.x) * (1 - stw.y)) +
-             diff_prod(n[3], n[2], (1 - stw.x) * stw.y      ) +
-             diff_prod(n[5], n[4], stw.x       * (1 - stw.y)) +
-             diff_prod(n[7], n[6], stw.x       * stw.y      );
+        r -= *point;
+
+        js.x = 0; js.y = 0; js.z = 0;
+        diff_prod(&n[4][0], &n[0][0], (1 - stw.y) * (1 - stw.z), js);
+        diff_prod(&n[5][0], &n[1][0], (1 - stw.y) * stw.z,       js);
+        diff_prod(&n[6][0], &n[2][0], stw.y       * (1 - stw.z), js);
+        diff_prod(&n[7][0], &n[3][0], stw.y       * stw.z      , js);
+        jt.x = 0; jt.y = 0; jt.z = 0;
+        diff_prod(&n[2][0], &n[0][0], (1 - stw.x) * (1 - stw.z), jt);
+        diff_prod(&n[3][0], &n[1][0], (1 - stw.x) * stw.z,       jt);
+        diff_prod(&n[6][0], &n[4][0], stw.x       * (1 - stw.z), jt);
+        diff_prod(&n[7][0], &n[5][0], stw.x       * stw.z,       jt);
+        jw.x = 0; jw.y = 0; jw;z = 0;
+        diff_prod(&n[1][0], &n[0][0], (1 - stw.x) * (1 - stw.y), jw);
+        diff_prod(&n[3][0], &n[2][0], (1 - stw.x) * stw.y,       jw);
+        diff_prod(&n[5][0], &n[4][0], stw.x       * (1 - stw.y), jw);
+        diff_prod(&n[7][0], &n[6][0], stw.x       * stw.y,       jw);
         inv_det_j = 1 / (
              js.x * prod_diff(jt.y, jw.z, jw.y, jt.z) -
              js.y * prod_diff(jt.x, jw.z, jt.z, jw.x) +
@@ -151,6 +114,28 @@ __device__ __inline__ void interp_quad_3d_newt(
 
 
 // Device kernels
+template <typename scalar_t, int32_t branching>
+__device__ __inline__ void _dev_query_ninfo(
+    const torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> child,
+    const torch::PackedTensorAccessor32<bool, 4, torch::RestrictPtrTraits> is_child_leaf,
+    float& __restrict__ coordinate,
+    float* __restrict__ cube_sz_out,
+    int64_t* __restrict__ node_id_out)
+{
+    clamp_coord(coordinate, 0.0, 1.0 - 1e-9);
+
+    int32_t u, v, w;
+    *cube_sz_out = branching;
+    while (true) {
+        traverse_tree_level<branching>(coordinate, &u, &v, &w);
+        bool is_child = is_child_leaf[*node_id_out][u][v][w];
+        *node_id_out += child[*node_id_out][u][v][w];
+        if (is_child) { return; }
+        *cube_sz_out *= branching; // TODO: Check if multiplication to be performed before or after returning
+    }
+}
+
+
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 __device__ __inline__ void _dev_query_sum(
     torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> data,
@@ -214,25 +199,23 @@ static const float OFFSET2[8][3] = {{-0.5, -0.5, -0.5}, {-0.5, -0.5, 0.5}, {-0.5
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 __device__ __inline__ void _dev_query_interp(
-    torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> data,
-    const torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> child,
-    const torch::PackedTensorAccessor32<bool, 4, torch::RestrictPtrTraits> is_child_leaf,
-    float3& __restrict__ coordinate,
-    float* __restrict__ weights,
-    scalar_t* __restrict__ out_val,
-    const bool parent_sum
+    torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> data,               // tree description
+    const torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> child,         // tree description
+    const torch::PackedTensorAccessor32<bool, 4, torch::RestrictPtrTraits> is_child_leaf,    // tree description
+    const float3& __restrict__ in_coo,     // query coordinate
+    float    * __restrict__ weights,       // [8]. output parameter. Interpolation weights
+    torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> neighbor_coo,  // [8,3]. output parameter (temp buffer). Coordinates of the neighbors
+    int64_t  * __restrict__ neighbor_ids,  // [8]. output parameter. Node IDs of the interpolation neighbors. Assumed to all be -1 on input.
+    scalar_t * __restrict__ out_val,       // [data_dim]. output parameter. Interpolated value
+    const bool parent_sum                                                                    // tree description
 )
 {
-    clamp_coord(coordinate, 0.0, 1.0 - 1e-9);
+    float3 coo = make_float3(in_coo.x, in_coo.y, in_coo.z);
+    clamp_coord(coo, 0.0, 1.0 - 1e-9);
     int32_t node_id = 0;
-    int32_t u, v, w, skip, i, j;
+    int32_t u, v, w, i, j;
     int32_t uc, vc, wc;
     int32_t cube_sz = branching;
-
-    const float3 in_coo = make_float3(coordinate.x, coordinate.y, coordinate.z);
-    float3 tmp_coo;
-    float3 neigh_coo[8];
-    int64_t valid_neighbors[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
 
     if (parent_sum) {
         for (i = 0; i < data_dim; i++) {
@@ -240,9 +223,10 @@ __device__ __inline__ void _dev_query_interp(
         }
     }
     while (true) {
-        traverse_tree_level<branching>(coordinate, &u, &v, &w);
-        tmp_coo = make_float3(coordinate.x, coordinate.y, coordinate.z);
-        traverse_tree_level<2>(tmp_coo, &uc, &vc, &wc);
+        traverse_tree_level<branching>(coo, &u, &v, &w);
+        uc = floorf(coo.x * 2);
+        vc = floorf(coo.y * 2);
+        wc = floorf(coo.z * 2);
 
         // Identify valid neighbors
         for(i = 0; i < 8; i++) {
@@ -250,53 +234,77 @@ __device__ __inline__ void _dev_query_interp(
                 v + vc + OFFSET[i][1] >= 0 && v + vc + OFFSET[i][1] < branching &&
                 w + wc + OFFSET[i][2] >= 0 && w + wc + OFFSET[i][2] < branching)
             {
-                skip = child[node_id][u + uc + OFFSET[i][0]][v + vc + OFFSET[i][1]][w + wc + OFFSET[i][2]];
+                neighbor_ids[i] = node_id + child[node_id][u + uc + OFFSET[i][0]][v + vc + OFFSET[i][1]][w + wc + OFFSET[i][2]];
                 // Keep track of neighbor coordinates as well as neighbor indices. Coordinates cannot be computed
                 // at the end due to dependency on current cube size.
-                neigh_coo[i] = make_float3(
-                    (floorf(in_coo.x * cube_sz + OFFSET2[i][0] + 1e-5) + 0.5) / cube_sz,
-                    (floorf(in_coo.y * cube_sz + OFFSET2[i][1] + 1e-5) + 0.5) / cube_sz,
-                    (floorf(in_coo.z * cube_sz + OFFSET2[i][2] + 1e-5) + 0.5) / cube_sz
-                );
-                clamp_coord(neigh_coo[i], 1 / (cube_sz * branching), 1 - 1 / (cube_sz * branching));
                 // Simpler formula (without clamping)
                 // (floor((in_coordinate[0] + OFFSET2[i][0] / (cube_sz * 2)) * cube_sz + 1e-5) + 0.5) / cube_sz,
-                valid_neighbors[i] = node_id + skip;
+                neighbor_coo[i][0] = (floorf(in_coo.x * cube_sz + OFFSET2[i][0] + 1e-5) + 0.5) / cube_sz;
+                neighbor_coo[i][1] = (floorf(in_coo.y * cube_sz + OFFSET2[i][1] + 1e-5) + 0.5) / cube_sz;
+                neighbor_coo[i][2] = (floorf(in_coo.z * cube_sz + OFFSET2[i][2] + 1e-5) + 0.5) / cube_sz;
+                clamp_coord(&neighbor_coo[i][0], 1 / (cube_sz * branching), 1 - 1 / (cube_sz * branching));
+
                 #ifdef DEBUG
-                    printf("Set valid neighbor %d: %ld, coordinate %f %f %f \n", i, valid_neighbors[i], neigh_coo[i].x, neigh_coo[i].y, neigh_coo[i].z);
+                    printf("Set valid neighbor %d: %ld, coordinate %f %f %f \n",
+                        i, neighbor_ids[i], neighbor_coo[i][0], neighbor_coo[i][1], neighbor_coo[i][2]);
                 #endif
             }
         }
 
         // Determine whether we have finished, and we must interpolate
         if (is_child_leaf[node_id][u][v][w]) {
-            interp_quad_3d_newt(weights, &in_coo, neigh_coo);
+            interp_quad_3d_newt(weights, &in_coo, neighbor_coo);
             #ifdef DEBUG
                 printf("Weights: %f %f %f %f %f %f %f %f\n", weights[0], weights[1], weights[2], weights[3], weights[4], weights[5], weights[6], weights[7]);
             #endif
             for (j = 0; j < 8; j++) {
-                if (valid_neighbors[j] < 0) continue;
+                if (neighbor_ids[j] < 0) continue;
                 for (i = 0; i < data_dim; i++) {
                     if (parent_sum) {
-                        out_val[i] += weights[j] * data[valid_neighbors[j]][i];
+                        out_val[i] += weights[j] * data[neighbor_ids[j]][i];
                     } else {
-                        out_val[i] = weights[j] * data[valid_neighbors[j]][i];
+                        out_val[i] = weights[j] * data[neighbor_ids[j]][i];
                     }
                 }
             }
             return;
         }
         // Not finished yet. Add the current node's value to results
-        skip = child[node_id][u][v][w];
+        node_id += child[node_id][u][v][w];
         if (parent_sum) {
             for (i = 0; i < data_dim; i++) {
-                out_val[i] += data[node_id + skip][i];
+                out_val[i] += data[node_id][i];
             }
         }
-        node_id += skip;
         cube_sz *= branching;
     }
 }
+
+
+/*
+ *  Backward pass for Query Interpolate.
+ */
+template <typename scalar_t, int32_t data_dim>
+__device__ __inline__ void _dev_query_interp_bwd(
+    const torch::PackedTensorAccessor32<int32_t, 2, torch::RestrictPtrTraits> parent,       // tree description
+    torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> grad,
+    const scalar_t* __restrict__ weights,       // [8]. Interpolation weights
+    const int64_t* __restrict__ neighbor_ids,   // [8]. Neighbor IDs
+    const scalar_t* __restrict__ grad_output)   // [data_dim].
+{
+    int32_t i, j;
+    int64_t node_id;
+    for (i = 0; i < 8; ++i) {
+        node_id = neighbor_ids[i];
+        while (node_id > 0) {
+            for (j = 0; j < data_dim; ++j) {
+                atomicAdd(&grad[node_id][j], grad_output[j] * weights[i]);
+            }
+            node_id = parent[node_id];
+        }
+    }
+}
+
 
 
 // Global kernels

@@ -23,7 +23,7 @@ struct Octree {
             torch::dtype(torch::kInt32).layout(torch::kStrided).device(device));
         is_child_leaf = torch::ones({0, branching, branching, branching},
             torch::dtype(torch::kBool).layout(torch::kStrided).device(device));
-        parent = torch::zeros({1},
+        parent = torch::tensor({-1},
             torch::dtype(torch::kInt32).layout(torch::kStrided).device(device));
         depth = torch::zeros({1},
             torch::dtype(torch::kInt32).layout(torch::kStrided).device(device));
