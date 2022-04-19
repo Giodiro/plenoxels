@@ -11,11 +11,22 @@ using namespace torch::indexing;
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 struct Octree {
-    Octree(int32_t levels, bool parent_sum, torch::Device device) : parent_sum(parent_sum) {
+    Octree(int32_t levels,
+           bool parent_sum,
+           torch::Device device,
+           torch::optional<torch::Tensor> offset,
+           torch::optional<torch::Tensor> scaling) : parent_sum(parent_sum) {
         max_depth = 0;
         n_internal = 0;
 
         const auto data_dt = caffe2::TypeMeta::Make<scalar_t>().toScalarType();
+
+        this->offset = offset.has_value() ?
+            offset.value() :
+            torch::tensor({0, 0, 0}, torch::dtype(torch::kFloat32).layout(torch::kStrided).device(device));
+        this->scaling = scaling.has_value() ?
+            scaling.value() :
+            torch::tensor({1, 1, 1}, torch::dtype(torch::kFloat32).layout(torch::kStrided).device(device));
 
         data = torch::zeros({1, data_dim},
             torch::dtype(data_dt).layout(torch::kStrided).device(device));
@@ -45,6 +56,8 @@ struct Octree {
     torch::Tensor is_child_leaf;
     torch::Tensor parent;
     torch::Tensor depth;
+    torch::Tensor offset;
+    torch::Tensor scaling;
 
     void _resize_add_cap(const int64_t num_new_internal);
     void refine_octree(const torch::optional<torch::Tensor> &opt_leaves);

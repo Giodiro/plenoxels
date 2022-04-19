@@ -5,6 +5,7 @@
 #include "cuda_common.h"
 #include "octree_common.h"
 #include "data_spec.hpp"
+#include "sh.h"
 
 #define _SOFTPLUS_M1(x) (logf(1 + expf((x) - 1)))
 #define _SIGMOID(x) (1 / (1 + expf(-(x))))
@@ -125,7 +126,7 @@ __device__ __inline__ void stratified_sample_proposal(
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 __device__ __inline__ void trace_ray_backward(
         const torch::PackedTensorAccessor32<int32_t, 2, torch::RestrictPtrTraits> t_parent,
-        const float* __restrict__ t_scaling;
+        const float* __restrict__ t_scaling,
         const torch::PackedTensorAccessor32<scalar_t, 2, torch::RestrictPtrTraits> interp_vals,
         const torch::PackedTensorAccessor32<int64_t, 2, torch::RestrictPtrTraits> interp_nids,
         const torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> interp_weights,
@@ -242,7 +243,7 @@ __device__ __inline__ void trace_ray(
     const torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> t_child,
     const torch::PackedTensorAccessor32<bool, 4, torch::RestrictPtrTraits> t_icf,  // is_child_leaf
     const bool t_parent_sum,
-    const float* __restrict__ t_scaling;
+    const float* __restrict__ t_scaling,
     const torch::PackedTensorAccessor32<float, 1, torch::RestrictPtrTraits> ray_offsets,
     const torch::PackedTensorAccessor32<float, 1, torch::RestrictPtrTraits> ray_steps,
     torch::PackedTensorAccessor32<scalar_t, 2, torch::RestrictPtrTraits> interp_vals,
@@ -252,7 +253,7 @@ __device__ __inline__ void trace_ray(
     const float3 & __restrict__ ray_o,
     const float3 & __restrict__ ray_d,
     RenderOptions& __restrict__ opt,
-    torch::TensorAccessor<scalar_t, 1, torch::RestrictPtrTraits, int32_t> out)
+    torch::PackedTensorAccessor32<scalar_t, 1, torch::RestrictPtrTraits> out)
 {
     const float delta_scale = _get_delta_scale(t_scaling, ray_d);
     float tmin, tmax;
@@ -455,8 +456,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> volume_re
         <<<n_blocks_linear<uint32_t>(batch_size, gen_samples_n_threads), gen_samples_n_threads>>>(
             tree.child.packed_accessor32<int32_t, 4, torch::RestrictPtrTraits>(),
             tree.is_child_leaf.packed_accessor32<bool, 4, torch::RestrictPtrTraits>(),
-            tree.offset,  // TODO: offset, scaling not implemented
-            tree.scaling,
+            tree.offset.data_ptr<float>(),
+            tree.scaling.data_ptr<float>(),
             rays_o.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
             rays_d.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
             ray_offsets.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
@@ -470,9 +471,9 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> volume_re
     torch::Tensor output = torch::empty({batch_size, data_dim}, tree.data.options());
     torch::Tensor interp_vals = torch::empty({batch_size, n_intersections, data_dim}, tree.data.options());
     torch::Tensor interp_nids = torch::full({batch_size, n_intersections, 8}, -1,
-        torch::dtype(kInt64).device(tree.data.device).layout(tree.data.layout));
+        torch::dtype(torch::kInt64).device(tree.data.device).layout(tree.data.layout));
     torch::Tensor interp_weights = torch::empty({batch_size, n_intersections, 8},
-        torch::dtype(kFloat32).device(tree.data.device).layout(tree.data.layout));
+        torch::dtype(torch::kFloat32).device(tree.data.device).layout(tree.data.layout));
     torch::Tensor neighbor_coo = torch::empty({batch_size, 8, 3}, interp_weights.options());
 
     // 3. Forward pass (compute)
@@ -482,8 +483,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> volume_re
             tree.child.packed_accessor32<int32_t, 4, torch::RestrictPtrTraits>(),
             tree.is_child_leaf.packed_accessor32<bool, 4, torch::RestrictPtrTraits>(),
             tree.parent_sum,
-            tree.offset,  // TODO: offset, scaling not implemented
-            tree.scaling,
+            tree.offset.data_ptr<float>(),
+            tree.scaling.data_ptr<float>(),
             ray_offsets.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
             ray_steps.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
             interp_vals.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
@@ -519,8 +520,8 @@ torch::Tensor volume_render_bwd(
     render_ray_bwd_kernel<scalar_t, branching, data_dim>
         <<<n_blocks_linear<uint32_t>(batch_size, render_ray_n_threads), render_ray_n_threads>>>(
             tree.parent.packed_accessor32<int32_t, 1, torch::RestrictPtrTraits>(),
-            tree.offset,  // TODO: offset, scaling not implemented
-            tree.scaling,
+            tree.offset.data_ptr<float>(),
+            tree.scaling.data_ptr<float>(),
             ray_offsets.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
             ray_steps.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
             interp_vals.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),

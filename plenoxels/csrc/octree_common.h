@@ -57,7 +57,8 @@ __device__ __inline__ void interp_quad_3d_newt(
         weights[5] = stw.x       * (1 - stw.y) * stw.z       ;
         weights[6] = stw.x       * stw.y       * (1 - stw.z) ;
         weights[7] = stw.x       * stw.y       * stw.z       ;
-        for (i = 0; i < 8; i++) {
+        #pragma unroll 8
+        for (int i = 0; i < 8; i++) {
             r.x += n[i][0] * weights[i];
             r.y += n[i][1] * weights[i];
             r.z += n[i][2] * weights[i];
@@ -74,7 +75,7 @@ __device__ __inline__ void interp_quad_3d_newt(
         diff_prod(&n[3][0], &n[1][0], (1 - stw.x) * stw.z,       jt);
         diff_prod(&n[6][0], &n[4][0], stw.x       * (1 - stw.z), jt);
         diff_prod(&n[7][0], &n[5][0], stw.x       * stw.z,       jt);
-        jw.x = 0; jw.y = 0; jw;z = 0;
+        jw.x = 0; jw.y = 0; jw.z = 0;
         diff_prod(&n[1][0], &n[0][0], (1 - stw.x) * (1 - stw.y), jw);
         diff_prod(&n[3][0], &n[2][0], (1 - stw.x) * stw.y,       jw);
         diff_prod(&n[5][0], &n[4][0], stw.x       * (1 - stw.y), jw);
@@ -343,9 +344,11 @@ __global__ void octree_query_interp_kernel(
     torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> tree_data,
     const torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> child,
     const torch::PackedTensorAccessor32<bool, 4, torch::RestrictPtrTraits> is_child_leaf,
-    torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> indices,
-    torch::PackedTensorAccessor32<scalar_t, 2, torch::RestrictPtrTraits> out_values,
-    torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> weights,
+    torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> indices,             // n_elements, 3
+    torch::PackedTensorAccessor32<scalar_t, 2, torch::RestrictPtrTraits> out_values,       // n_elements, data_dim
+    torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> weights,             // n_elements, 8
+    torch::PackedTensorAccessor32<float, 3, torch::RestrictPtrTraits> neighbor_coo,        // n_elements, 8, 3
+    torch::PackedTensorAccessor32<int64_t, 2, torch::RestrictPtrTraits> neighbor_ids,      // n_elements, 8
     const size_t n_elements,
     const bool parent_sum
 )
@@ -358,6 +361,8 @@ __global__ void octree_query_interp_kernel(
         tree_data, child, is_child_leaf,
         coord,
         &weights[i][0],
+        neighbor_coo[i],
+        &neighbor_ids[i][0],
         &out_values[i][0],
         parent_sum
     );

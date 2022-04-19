@@ -61,6 +61,14 @@ __device__ __inline__ float3 operator-(const float &a, const float3 &b) {
     return make_float3(a-b.x, a-b.y, a-b.z);
 }
 
+__device__ __inline__ float3 operator -=(float3 &a, const float3 &b) {
+    a.x -= b.x;
+    a.y -= b.y;
+    a.z -= b.z;
+    return a;
+}
+
+
 __device__ __inline__ float3 operator/(const float3 &a, const float3 &b) {
     return make_float3(a.x/b.x, a.y/b.y, a.z/b.z);
 }
@@ -106,9 +114,9 @@ __device__ __inline__ void transform_coord(float* __restrict__ q,
 __device__ __inline__ void transform_coord(float3 & __restrict__ q,
                                            const float* __restrict__ offset,
                                            const float* __restrict__ scaling) {
-    q.x = offset[i] + scaling[i] * q.x;
-    q.y = offset[i] + scaling[i] * q.y;
-    q.z = offset[i] + scaling[i] * q.z;
+    q.x = offset[0] + scaling[0] * q.x;
+    q.y = offset[1] + scaling[1] * q.y;
+    q.z = offset[2] + scaling[2] * q.z;
 }
 
 
