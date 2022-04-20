@@ -293,9 +293,9 @@ __device__ __inline__ void _dev_query_interp(
  */
 template <typename scalar_t, int32_t data_dim>
 __device__ __inline__ void _dev_query_interp_bwd(
-    const Acc32<int32_t, 2> parent,       // tree description
+    const Acc32<int32_t, 1> parent,       // tree description
     Acc64<scalar_t, 2> grad,
-    const scalar_t* __restrict__ weights,       // [8]. Interpolation weights
+    const float* __restrict__ weights,       // [8]. Interpolation weights
     const int64_t* __restrict__ neighbor_ids,   // [8]. Neighbor IDs
     const scalar_t* __restrict__ grad_output)   // [data_dim].
 {

@@ -224,8 +224,8 @@ __device__ __inline__ void trace_ray_backward(
                 printf("t=%f - setting sigma gradient to %f\n", t, grad_tree_val[data_dim - 1]);
             #endif
             _dev_query_interp_bwd<scalar_t, data_dim>(
-                /*parent=*/t_parent, /*grad=*/grad_data_out, /*weights=*/interp_weights,
-                /*neighbor_ids=*/interp_nids, /*grad_output=*/grad_tree_val);
+                /*parent=*/t_parent, /*grad=*/grad_data_out, /*weights=*/interp_weights.data(),
+                /*neighbor_ids=*/interp_nids.data(), /*grad_output=*/grad_tree_val);
         }
     }
 }  // trace_ray_backward
