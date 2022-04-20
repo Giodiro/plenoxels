@@ -141,7 +141,6 @@ __device__ __inline__ void trace_ray_backward(
 {
     const float delta_scale = _get_delta_scale(t_scaling, ray_d);
     float tmin, tmax;
-    float3 pos;
     scalar_t grad_tree_val[data_dim];
     scalar_t light_intensity;
     const int out_data_dim = grad_output.size(0);
@@ -150,7 +149,6 @@ __device__ __inline__ void trace_ray_backward(
     _dda_unit(ray_o, invdir, &tmin, &tmax);
     if (tmax < 0 || tmin > tmax) {
         // Ray doesn't hit box
-        for (int j = 0; j < out_data_dim; ++j) { out[j] = opt.background_brightness; }
         return;
     }
 
@@ -158,7 +156,6 @@ __device__ __inline__ void trace_ray_backward(
     maybe_precalc_basis<scalar_t>(opt.format, opt.basis_dim, ray_d, basis_fn);
 
     scalar_t accum = 0.0;
-    const scalar_t d_rgb_pad = 1 + 2 * opt.rgb_padding;
     // PASS 1: Just to compute the accum variable. This could be merged with the fwd pass (if we knew grad_output)
     light_intensity = 1.f;
     for (int i = 0; i < ray_offsets.size(0); i++) {
@@ -166,7 +163,6 @@ __device__ __inline__ void trace_ray_backward(
         if (t < tmin) continue;
         if (t >= tmax) break;
         float delta_t = ray_steps[i] * delta_scale;
-        pos = ray_o + t * ray_d;
 
         scalar_t sigma = interp_vals[i][data_dim - 1];
         if (opt.density_softplus) { sigma = _SOFTPLUS_M1(sigma); }
@@ -197,7 +193,6 @@ __device__ __inline__ void trace_ray_backward(
         if (t < tmin) continue;
         if (t >= tmax) break;
         float delta_t = ray_steps[i] * delta_scale;
-        pos = ray_o + t * ray_d;
         // Zero-out gradient
         for (int j = 0; j < data_dim; ++j) { grad_tree_val[j] = 0; }
 
@@ -230,7 +225,7 @@ __device__ __inline__ void trace_ray_backward(
             #endif
             _dev_query_interp_bwd<scalar_t, data_dim>(
                 /*parent=*/t_parent, /*grad=*/grad_data_out, /*weights=*/interp_weights,
-                /*neighbor_ids=*/neighbor_ids, /*grad_output=*/grad_tree_val);
+                /*neighbor_ids=*/interp_nids, /*grad_output=*/grad_tree_val);
         }
     }
 }  // trace_ray_backward
