@@ -14,19 +14,21 @@ struct Octree {
     Octree(int32_t levels,
            bool parent_sum,
            torch::Device device,
-           torch::optional<torch::Tensor> offset,
-           torch::optional<torch::Tensor> scaling) : parent_sum(parent_sum) {
+           torch::optional<torch::Tensor> radius,
+           torch::optional<torch::Tensor> center) : parent_sum(parent_sum) {
         max_depth = 0;
         n_internal = 0;
 
         const auto data_dt = caffe2::TypeMeta::Make<scalar_t>().toScalarType();
 
-        this->offset = offset.has_value() ?
-            offset.value() :
-            torch::tensor({0, 0, 0}, torch::dtype(torch::kFloat32).layout(torch::kStrided).device(device));
-        this->scaling = scaling.has_value() ?
-            scaling.value() :
+        // 1 / (2 * radius); default: 1 (equiv. diameter = 1).
+        this->scaling = radius.has_value() ?
+            (0.5 / radius.value()) :
             torch::tensor({1, 1, 1}, torch::dtype(torch::kFloat32).layout(torch::kStrided).device(device));
+        // ??
+        this->offset = center.has_value() ?
+            (0.5 - center.value() * this->scaling) :
+            (0.5 - 0.5 * this->scaling);
 
         data = torch::zeros({1, data_dim},
             torch::dtype(data_dt).layout(torch::kStrided).device(device));
@@ -86,6 +88,12 @@ struct Octree {
     }
     float * scaling_ptr() {
         return scaling.data_ptr<float>();
+    }
+    Octree<scalar_t, branching, data_dim> eval() {
+        return this;
+    }
+    Octree<scalar_t, branching, data_dim> train() {
+        return this;
     }
 };
 

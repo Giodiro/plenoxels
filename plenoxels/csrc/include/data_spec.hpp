@@ -126,4 +126,13 @@ struct RenderOptions {
     float rgb_padding;
 };
 
+struct RenderingOutput {
+    torch::Tensor output_rgb;
+    torch::Tensor interpolated_vals;
+    torch::Tensor interpolated_n_ids;
+    torch::Tensor interpolation_weights;
+    torch::Tensor ray_offsets;
+    torch::Tensor ray_steps;
+};
+
 using QueryResult = std::tuple<torch::Tensor, torch::Tensor>;

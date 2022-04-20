@@ -43,6 +43,7 @@ Rays = namedtuple('Rays', ["origins", "dirs", "viewdirs"])
 
 
 def _rays_spec_from_rays(rays):
+    return rays
     spec = _C.RaysSpec()
     spec.origins = rays.origins
     spec.dirs = rays.dirs
@@ -60,21 +61,66 @@ def _make_camera_spec(c2w, width, height, fx, fy):
     return spec
 
 
+def get_c_template_str(dtype, branching, sh_degree) -> str:
+    if isinstance(dtype, torch.dtype):
+        if dtype == torch.float32:
+            dts = 'f'
+        elif dtype == torch.float64:
+            dts = 'd'
+        else:
+            raise RuntimeError(f"Dtype {dtype} unsupported.")
+    elif isinstance(dtype, str):
+        if dtype.lower() == 'float32':
+            dts = 'f'
+        elif dtype.lower() == 'float64':
+            dts = 'd'
+        else:
+            raise RuntimeError(f"Dtype {dtype} unsupported.")
+    else:
+        raise TypeError(f"Cannot understand datatype {dtype}")
+    return f"{dts}{int(branching)}d{int(sh_degree)}"
+
+
 # noinspection PyMethodOverriding,PyAbstractClass
 class _VolumeRenderFunction(autograd.Function):
+    # TODO: The dispatchers are hard-coded!
+    @staticmethod
+    def dispatch_vol_render(*args):
+        """
+        The function name depends on template arguments:
+        volume_render{dtype}{branching}d{sh_degree}
+        """
+        fn_name = f"volume_render{get_c_template_str(torch.float32, 2, 2)}"
+        fn = getattr(_C, fn_name)
+        return fn(*args)
+
+    @staticmethod
+    def dispatch_vol_render_bwd(*args):
+        """
+        The function name depends on template arguments:
+        volume_render_bwd{dtype}{branching}d{sh_degree}
+        """
+        fn_name = f"volume_render_bwd{get_c_template_str(torch.float32, 2, 2)}"
+        fn = getattr(_C, fn_name)
+        return fn(*args)
+
     @staticmethod
     def forward(ctx, data, tree, rays, opt):
-        out = _C.volume_render(tree, rays, opt)
+        out = _VolumeRenderFunction.dispatch_vol_render(tree, rays.origins, rays.dirs, opt)
         ctx.tree = tree
         ctx.rays = rays
+        ctx.fwd_out = out
         ctx.opt = opt
-        return out
+        return out.output_rgb
 
     @staticmethod
     def backward(ctx, grad_out):
         if ctx.needs_input_grad[0]:
-            return _C.volume_render_backward(
-                ctx.tree, ctx.rays, ctx.opt, grad_out.contiguous()
+            _VolumeRenderFunction.dispatch_vol_render_bwd(
+                ctx.tree, ctx.rays.origins, ctx.rays.dirs, grad_out.contiguous(),
+                ctx.fwd_out.interpolated_vals, ctx.fwd_out.interpolated_n_ids,
+                ctx.fwd_out.interpolation_weights, ctx.fwd_out.ray_offsets, ctx.fwd_out.ray_steps,
+                ctx.opt
             ), None, None, None
         return None, None, None, None
 
@@ -119,6 +165,42 @@ def convert_to_ndc(origins, directions, focal, w, h, near=1.0):
     origins = torch.stack([o0, o1, o2], -1)
     directions = torch.stack([d0, d1, d2], -1)
     return origins, directions
+
+
+class SimpleVolumeRenderer(nn.Module):
+    def __init__(self,
+                 tree,
+                 background_brightness: float = 1.0,
+                 density_softplus: bool = False,
+                 rgb_padding: float = 0.0):
+        super().__init__()
+        self.tree = tree
+        self.background_brightness = background_brightness
+        self.density_softplus = density_softplus
+        self.rgb_padding = rgb_padding
+
+    def forward(self, rays: Rays):
+        return _VolumeRenderFunction.apply(
+            self.tree.data,
+            self.tree,
+            rays,
+            self.get_options()
+        )
+
+    def _get_options(self):
+        """
+        Make RenderOptions struct to send to C++
+        """
+        opts = _C.RenderOptions()
+        opts.background_brightness = self.background_brightness
+        opts.max_samples_per_node = 3
+
+        opts.density_softplus = self.density_softplus
+        opts.rgb_padding = self.rgb_padding
+
+        opts.sigma_thresh = 1e-2
+        opts.stop_thresh = 1e-2
+        return opts
 
 
 class VolumeRenderer(nn.Module):

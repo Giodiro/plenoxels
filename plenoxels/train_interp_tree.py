@@ -13,6 +13,7 @@ import svox
 import svox_renderer
 from synthetic_nerf_dataset import SyntheticNerfDataset
 from tc_plenoptimize import init_datasets, init_profiler, parse_config
+import csrc as _C
 
 
 def run_test_step(test_dset: SyntheticNerfDataset,
@@ -62,43 +63,67 @@ def run_test_step(test_dset: SyntheticNerfDataset,
     return total_psnr / i
 
 
+def init_tree(tree_type, levels, sh_degree, scene_bbox, dtype, device):
+    if tree_type.lower() == "n3tree":
+        model = svox.N3Tree(
+            N=2,
+            data_dim=3 * (sh_degree + 1) ** 2 + 1,
+            depth_limit=8,
+            init_reserve=64**3,
+            init_refine=levels,
+            geom_resize_fact=1.,
+            radius=(scene_bbox[1] - scene_bbox[0]) / 2,
+            center=(scene_bbox[1] + scene_bbox[0]) / 2,
+            device="cpu",
+            dtype=dtype,
+            data_format="SH%d" % ((sh_degree + 1) ** 2),
+        ).to(device)
+        renderer = svox_renderer.VolumeRenderer(
+            tree=model,
+            step_size=1e-5,
+            background_brightness=1.0,
+        )
+    elif tree_type.lower() == "octree":
+        model = _C.Octreef2d2(
+            levels, True, device,
+            (scene_bbox[1] - scene_bbox[0]) / 2, (scene_bbox[1] + scene_bbox[0]) / 2
+        )
+        renderer = svox_renderer.SimpleVolumeRenderer(
+            tree=model, background_brightness=1.0
+        )
+    else:
+        raise RuntimeError(f"Tree type {tree_type} not recognized.")
+    return model, renderer
+
+
+def init_optimizer(tree_type, tree, optim_type, lr):
+    if tree_type.lower() == "n3tree":
+        params = (tree.data, )
+    elif tree_type.lower() == "octree":
+        params = (tree.data[:tree.n_internal * 8 + 1], )
+    else:
+        raise RuntimeError(f"Tree type {tree_type} not recognized.")
+
+    if optim_type.lower() == "sgd":
+        return torch.optim.SGD(params=params, lr=lr)
+    else:
+        raise RuntimeError(f"Optimizer type {optim_type} not recognized.")
+
 
 def train_interp_tree(cfg):
-    h_degree = cfg.sh.degree
+    sh_degree = cfg.sh.degree
     dev = "cuda:0" if torch.cuda.is_available() else "cpu"
     tr_dset, tr_loader, ts_dset = init_datasets(cfg, dev)
 
-    # Initialize model
-    model = svox.N3Tree(
-        N=2,
-        data_dim=3 * (h_degree + 1) ** 2 + 1,
-        depth_limit=8,
-        init_reserve=64**3,
-        init_refine=0,
-        geom_resize_fact=1.,
-        radius=(tr_dset.scene_bbox[1] - tr_dset.scene_bbox[0]) / 2,
-        center=(tr_dset.scene_bbox[1] + tr_dset.scene_bbox[0]) / 2,
-        device="cpu",
-        dtype=torch.float32,
-        data_format="SH%d" % ((h_degree + 1) ** 2),
-    ).to(dev)
-    model.refine(2)
+    # Initialize model, optimizer
+    model, renderer = init_tree("octree", levels=2, sh_degree=sh_degree,
+                                scene_bbox=tr_dset.scene_bbox, dtype=torch.float32,
+                                device=torch.device('cuda:0'))
+    optim = init_optimizer("octree", tree=model, optim_type=cfg.optim.optimizer, lr=cfg.optim.lr)
+    # Initialize data
     with torch.autograd.no_grad():
         model.data[..., :-1].fill_(0.01)  # RGB
         model.data[..., -1].fill_(0.1)    # Density
-    renderer = svox_renderer.VolumeRenderer(
-        tree=model,
-        step_size=1e-5,
-        background_brightness=1.0,
-    )
-
-    def init_optim(model_):
-        if cfg.optim.optimizer.lower() == "sgd":
-            lr_rgb = 150 * ((model_.data.shape[0] ** (1/3)) ** 1.75) * (cfg.optim.batch_size / 4000)
-            return torch.optim.SGD(params=[
-                {'params': (model_.data, ), 'lr': 1e1},
-            ])
-    optim = init_optim(model)
 
     # Main iteration starts here
     for epoch in range(cfg.optim.num_epochs):
@@ -108,8 +133,8 @@ def train_interp_tree(cfg):
             if cfg.optim.profile:
                 p = init_profiler(cfg, dev)
                 stack.enter_context(p)
-            model = model.train()
             for i, batch in tqdm(enumerate(tr_loader), desc=f"Epoch {epoch}"):
+                model.train()
                 optim.zero_grad()
                 rays, imgs = batch
                 rays_o = rays[:, 0].contiguous().to(device=dev)

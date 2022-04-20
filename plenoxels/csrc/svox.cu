@@ -50,7 +50,7 @@ using torch::Tensor;
 //
 //Tensor calc_corners(TreeSpec&, Tensor);
 
-template <typename scalar_t, int32_t branching, int32_t data_dim>
+template <typename scalar_t, int32_t branching, int32_t data_dim, int32_t out_data_dim>
 void declare_octree(py::module &m, const std::string &typestr) {
     using TOctree = Octree<scalar_t, branching, data_dim>;
     std::string pyclass_name = std::string("Octree") + typestr;
@@ -70,14 +70,27 @@ void declare_octree(py::module &m, const std::string &typestr) {
         .def("set", &TOctree::set_octree)
         .def("query_interp", &TOctree::query_interp_octree);
 
-    m.def("volume_render", &volume_render<scalar_t, branching, data_dim>);
-    m.def("volume_render_bwd", &volume_render_bwd<scalar_t, branching, data_dim>);
+    std::string fn_name = std::String("volume_render") + typestr;
+    m.def(fn_name.c_str(), &volume_render<scalar_t, branching, data_dim, out_data_dim>);
+
+    fn_name = std::String("volume_render_bwd") + typestr;
+    m.def(fn_name, &volume_render_bwd<scalar_t, branching, data_dim, out_data_dim>);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    declare_octree<float, 2, 1>(m, "f21");
-    //declare_octree<float, 3, 1>(m, "<float, 3, 1>");
-    //declare_octree<float, 4, 1>(m, "<float, 4, 1>");
+    declare_octree<float, 2, 13, 3>(m, "f2d1");
+    declare_octree<float, 4, 13, 3>(m, "f4d1");
+    declare_octree<float, 2, 28, 3>(m, "f2d2");
+    declare_octree<float, 4, 28, 3>(m, "f4d2");
+
+    py::class_<RenderingOutput>(m, "RenderOutput")
+        .def(py::init<>())
+        .def_readonly("output_rgb", &RenderingOutput::output_rgb)
+        .def_readonly("interpolated_vals", &RenderingOutput::interpolated_vals)
+        .def_readonly("interpolated_n_ids", &RenderingOutput::interpolated_n_ids)
+        .def_readonly("interpolation_weights", &RenderingOutput::interpolation_weights)
+        .def_readonly("ray_offsets", &RenderingOutput::ray_offsets)
+        .def_readonly("ray_steps", &RenderingOutput::ray_steps);
 
     py::class_<RenderOptions>(m, "RenderOptions")
         .def(py::init<>())
@@ -95,5 +108,4 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         .def_readwrite("stop_thresh", &RenderOptions::stop_thresh)
         .def_readwrite("density_softplus", &RenderOptions::density_softplus)
         .def_readwrite("rgb_padding", &RenderOptions::rgb_padding);
-
 }

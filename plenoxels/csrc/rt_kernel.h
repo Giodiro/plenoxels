@@ -122,7 +122,7 @@ __device__ __inline__ void stratified_sample_proposal(
 }
 
 
-template <typename scalar_t, int32_t branching, int32_t data_dim>
+template <typename scalar_t, int32_t branching, int32_t data_dim, int32_t out_data_dim>
 __device__ __inline__ void trace_ray_backward(
         const torch::PackedTensorAccessor32<int32_t, 1, torch::RestrictPtrTraits> t_parent,
         const float* __restrict__ t_scaling,
@@ -139,11 +139,11 @@ __device__ __inline__ void trace_ray_backward(
         float3 & __restrict__ ray_d,
         const RenderOptions& __restrict__ opt)
 {
+    constexpr int32_t basis_dim = (data_dim - 1) / out_data_dim;
     const float delta_scale = _get_delta_scale(t_scaling, ray_d);
     float tmin, tmax;
     scalar_t grad_tree_val[data_dim];
     scalar_t light_intensity;
-    const int out_data_dim = grad_output.size(0);
     const scalar_t d_rgb_pad = 1 + 2 * opt.rgb_padding;
     const float3 invdir = 1.0 / (ray_d + 1e-9);
     _dda_unit(ray_o, invdir, &tmin, &tmax);
@@ -152,8 +152,8 @@ __device__ __inline__ void trace_ray_backward(
         return;
     }
 
-    scalar_t basis_fn[25];
-    maybe_precalc_basis<scalar_t>(opt.format, opt.basis_dim, ray_d, basis_fn);
+    scalar_t basis_fn[basis_dim];
+    calc_sh_basis<scalar_t, basis_dim>(ray_d, basis_fn);
 
     scalar_t accum = 0.0;
     // PASS 1: Just to compute the accum variable. This could be merged with the fwd pass (if we knew grad_output)
@@ -171,10 +171,9 @@ __device__ __inline__ void trace_ray_backward(
             const scalar_t weight = light_intensity * (1.f - att);
 
             scalar_t total_color = 0.f;
-            for (int j = 0; j < out_data_dim; ++j) {
-                int off = j * opt.basis_dim;
+            for (int j = 0, off = 0; j < out_data_dim; ++j, off += basis_dim) {
                 scalar_t tmp = 0.0;
-                for (int k = opt.min_comp; k <= opt.max_comp; ++k) {
+                for (int k = 0; k < basis_dim; ++k) {
                     tmp += basis_fn[k] * interp_vals[i][off + k];
                 }
                 total_color += (_SIGMOID(tmp) * d_rgb_pad - opt.rgb_padding) * grad_output[j];
@@ -204,14 +203,14 @@ __device__ __inline__ void trace_ray_backward(
             const scalar_t weight = light_intensity * (1.f - att);
 
             scalar_t total_color = 0.f;
-            for (int j = 0, off = 0; j < out_data_dim; ++j, off += opt.basis_dim) {
+            for (int j = 0, off = 0; j < out_data_dim; ++j, off += basis_dim) {
                 scalar_t tmp = 0.0;
-                for (int k = opt.min_comp; k <= opt.max_comp; ++k) {
+                for (int k = 0; k < basis_dim; ++k) {
                     tmp += basis_fn[k] * interp_vals[i][off + k];
                 }
                 const scalar_t sigmoid = _SIGMOID(tmp);
                 const scalar_t tmp2 = weight * sigmoid * (1.0 - sigmoid) * grad_output[j] * d_rgb_pad;
-                for (int k = opt.min_comp; k <= opt.max_comp; ++k) {
+                for (int k = 0; k < basis_dim; ++k) {
                     grad_tree_val[off + k] += basis_fn[k] * tmp2;
                 }
                 total_color += (sigmoid * d_rgb_pad - opt.rgb_padding) * grad_output[j];
@@ -231,7 +230,7 @@ __device__ __inline__ void trace_ray_backward(
 }  // trace_ray_backward
 
 
-template <typename scalar_t, int32_t branching, int32_t data_dim>
+template <typename scalar_t, int32_t branching, int32_t data_dim, int32_t out_data_dim>
 __device__ __inline__ void trace_ray(
     torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> t_data,
     const torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> t_child,
@@ -249,10 +248,11 @@ __device__ __inline__ void trace_ray(
     const RenderOptions& __restrict__ opt,
     torch::TensorAccessor<scalar_t, 1, torch::RestrictPtrTraits, int32_t> out)
 {
+    constexpr int32_t basis_dim = (data_dim - 1) / out_data_dim;
     const float delta_scale = _get_delta_scale(t_scaling, ray_d);
     float tmin, tmax;
     float3 pos;
-    scalar_t basis_fn[25];
+    scalar_t basis_fn[basis_dim];
     const int out_data_dim = out.size(0);
 
     const scalar_t d_rgb_pad = 1 + 2 * opt.rgb_padding;
@@ -266,7 +266,7 @@ __device__ __inline__ void trace_ray(
     }
 
     for (int j = 0; j < out_data_dim; ++j) { out[j] = 0.0f; }
-    maybe_precalc_basis<scalar_t>(opt.format, opt.basis_dim, ray_d, basis_fn);
+    calc_sh_basis<scalar_t, basis_dim>(ray_d, basis_fn);
     scalar_t light_intensity = 1.f;
 
     for (int i = 0; i < ray_offsets.size(0); i++) {
@@ -288,9 +288,9 @@ __device__ __inline__ void trace_ray(
             const scalar_t weight = light_intensity * (1.f - att);
             light_intensity *= att;
 
-            for (int j = 0, off = 0; j < out_data_dim; ++j, off += opt.basis_dim) {
+            for (int j = 0, off = 0; j < out_data_dim; ++j, off += basis_dim) {
                 scalar_t tmp = 0.0;
-                for (int k = opt.min_comp; k <= opt.max_comp; ++i) {
+                for (int k = 0; k < basis_dim; ++k) {
                     tmp += basis_fn[k] * interp_vals[i][off + k];
                 }
                 out[j] += weight * (_SIGMOID(tmp) * d_rgb_pad - opt.rgb_padding);
@@ -308,7 +308,7 @@ __device__ __inline__ void trace_ray(
 }  // trace ray
 
 
-template <typename scalar_t, int32_t branching, int32_t data_dim>
+template <typename scalar_t, int32_t branching, int32_t data_dim, int32_t out_data_dim>
 __global__ void render_ray_bwd_kernel(
     const torch::PackedTensorAccessor32<int32_t, 1, torch::RestrictPtrTraits> t_parent,
     const float* __restrict__ t_offset,
@@ -332,13 +332,13 @@ __global__ void render_ray_bwd_kernel(
     float3 ray_d = make_float3(rays_d[i][0], rays_d[i][1], rays_d[i][2]);
     transform_coord(ray_o, t_offset, t_scaling);
 
-	trace_ray_backward<scalar_t, branching, data_dim>(
+	trace_ray_backward<scalar_t, branching, data_dim, out_data_dim>(
 	    t_parent, t_scaling, interp_vals[i], interp_nids[i], interp_weights[i], ray_offsets[i], ray_steps[i],
         grad_output[i], grad_data_out, ray_o, ray_d, opt);
 }
 
 
-template <typename scalar_t, int32_t branching, int32_t data_dim>
+template <typename scalar_t, int32_t branching, int32_t data_dim, int32_t out_data_dim>
 __global__ void render_ray_kernel(
     torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> t_data,
     const torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> t_child,
@@ -365,7 +365,7 @@ __global__ void render_ray_kernel(
     float3 ray_d = make_float3(rays_d[i][0], rays_d[i][1], rays_d[i][2]);
     transform_coord(ray_o, t_offset, t_scaling);
 
-	trace_ray<scalar_t, branching, data_dim>(
+	trace_ray<scalar_t, branching, data_dim, out_data_dim>(
 	    t_data, t_child, t_icf, t_parent_sum, t_scaling, ray_offsets[i], ray_steps[i], interp_vals[i],
 	    interp_nids[i], interp_weights[i], neighbor_coo[i], ray_o, ray_d, opt, out[i]);
 }
@@ -415,20 +415,8 @@ __global__ void gen_samples_kernel(
 }
 
 
-
-// Compute RGB output dimension from input dimension & SH degree
-__host__ int get_out_data_dim(int format, int basis_dim, int in_data_dim)
-{
-    if (format != FORMAT_RGBA) {
-        return (in_data_dim - 1) / basis_dim;
-    } else {
-        return in_data_dim - 1;
-    }
-}
-
-
-template <typename scalar_t, int32_t branching, int32_t data_dim>
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> volume_render(
+template <typename scalar_t, int32_t branching, int32_t data_dim, int32_t out_data_dim>
+RenderingOutput volume_render(
     Octree<scalar_t, branching, data_dim> & tree,
     const torch::Tensor & rays_o,
     const torch::Tensor & rays_d,
@@ -462,7 +450,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> volume_re
     );
 
     // 2. Forward pass (allocate tensors)
-    torch::Tensor output = torch::empty({batch_size, data_dim}, tree.data.options());
+    torch::Tensor output = torch::empty({batch_size, out_data_dim}, tree.data.options());
     torch::Tensor interp_vals = torch::empty({batch_size, n_intersections, data_dim}, tree.data.options());
     torch::Tensor interp_nids = torch::full({batch_size, n_intersections, 8}, -1,
         torch::dtype(torch::kInt64).device(tree.data.device()).layout(tree.data.layout()));
@@ -471,7 +459,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> volume_re
     torch::Tensor neighbor_coo = torch::empty({batch_size, 8, 3}, interp_weights.options());
 
     // 3. Forward pass (compute)
-    render_ray_kernel<scalar_t, branching, data_dim>
+    render_ray_kernel<scalar_t, branching, data_dim, out_data_dim>
         <<<n_blocks_linear<uint32_t>(batch_size, render_ray_n_threads), render_ray_n_threads>>>(
             tree.data_acc(),
             tree.child_acc(),
@@ -491,11 +479,18 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> volume_re
             output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
             (int32_t)batch_size
     );
-    return std::make_tuple(output, interp_vals, interp_nids, interp_weights);
+    return RenderingOutput(
+        /*output_rgb=*/output,
+        /*interpolated_vals=*/interp_vals,
+        /*interpolated_n_ids=*/interp_nids,
+        /*interpolation_weights=*/interp_weights,
+        /*ray_offsets=*/ray_offsets,
+        /*ray_steps=*/ray_steps
+    );
 }
 
 
-template <typename scalar_t, int32_t branching, int32_t data_dim>
+template <typename scalar_t, int32_t branching, int32_t data_dim, int32_t out_data_dim>
 torch::Tensor volume_render_bwd(
     Octree<scalar_t, branching, data_dim> & tree,
     const torch::Tensor & rays_o,
@@ -513,7 +508,7 @@ torch::Tensor volume_render_bwd(
     const uint32_t render_ray_n_threads = 128;
 
     torch::Tensor output = torch::zeros_like(tree.data);
-    render_ray_bwd_kernel<scalar_t, branching, data_dim>
+    render_ray_bwd_kernel<scalar_t, branching, data_dim, out_data_dim>
         <<<n_blocks_linear<uint32_t>(batch_size, render_ray_n_threads), render_ray_n_threads>>>(
             tree.parent_acc(),
             tree.offset_ptr(),
