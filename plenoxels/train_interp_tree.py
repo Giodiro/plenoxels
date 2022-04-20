@@ -91,6 +91,8 @@ def init_tree(tree_type, levels, sh_degree, scene_bbox, dtype, device):
         renderer = svox_renderer.SimpleVolumeRenderer(
             tree=model, background_brightness=1.0
         )
+        for i in range(levels):
+            model.refine(None)
     else:
         raise RuntimeError(f"Tree type {tree_type} not recognized.")
     return model, renderer
@@ -141,6 +143,7 @@ def train_interp_tree(cfg):
                 rays_d = rays[:, 1].contiguous().to(device=dev)
                 imgs = imgs.to(device=dev)
 
+                print(model.is_child_leaf)
                 preds = renderer.forward(rays=svox_renderer.Rays(origins=rays_o, dirs=rays_d, viewdirs=rays_d))
                 print("preds", preds[:5])
                 loss = F.mse_loss(preds, imgs)

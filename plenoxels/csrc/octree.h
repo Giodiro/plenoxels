@@ -1,6 +1,7 @@
 #pragma once
 
 #include <tuple>
+#include <iostream>
 #include <torch/extension.h>
 #include <math.h>
 #include <c10/util/typeid.h>
@@ -23,12 +24,14 @@ struct Octree {
 
         // 1 / (2 * radius); default: 1 (equiv. diameter = 1).
         this->scaling = radius.has_value() ?
-            (0.5 / radius.value()) :
+            (0.5 / radius.value()).to(device) :
             torch::tensor({1, 1, 1}, torch::dtype(torch::kFloat32).layout(torch::kStrided).device(device));
         // ??
         this->offset = center.has_value() ?
-            (0.5 - center.value() * this->scaling) :
+            (0.5 - center.value().to(device) * this->scaling) :
             (0.5 - 0.5 * this->scaling);
+        std::cout << "scaling " << this->scaling << std::endl;
+        std::cout << "offset " << this->offset << std::endl;
 
         data = torch::zeros({1, data_dim},
             torch::dtype(data_dt).layout(torch::kStrided).device(device).requires_grad(true));

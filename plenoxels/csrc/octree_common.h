@@ -49,6 +49,7 @@ __device__ __inline__ void interp_quad_3d_newt(
     p1~(0,0,0), p2~(0,0,1), p3~(0,1,0), p4~(1,0,0), p5~(0,1,1),
     p6~(1,0,1), p7~(1,1,0), p8~(1,1,1)
     */
+    printf("Interpolating coordinate %f %f %f\n", point->x, point->y, point->z);
     int32_t num_iter = 4;
     float3 stw = make_float3(0.49, 0.49, 0.49);
     float3 js = make_float3(0, 0, 0), jt = make_float3(0, 0, 0), jw = make_float3(0, 0, 0), r = make_float3(0, 0, 0);
@@ -62,6 +63,7 @@ __device__ __inline__ void interp_quad_3d_newt(
         weights[5] = stw.x       * (1 - stw.y) * stw.z       ;
         weights[6] = stw.x       * stw.y       * (1 - stw.z) ;
         weights[7] = stw.x       * stw.y       * stw.z       ;
+        r.x = 0; r.y = 0; r.z = 0;
         #pragma unroll 8
         for (int i = 0; i < 8; i++) {
             r.x += n[i][0] * weights[i];
@@ -106,6 +108,9 @@ __device__ __inline__ void interp_quad_3d_newt(
              js.y * prod_diff(jt.x, r.z, r.y, jw.x) +
              r.x * prod_diff(jt.x, jw.y, jt.y, jw.x);
         stw.z = fmaf(inv_det_j, -det_other, stw.z);
+        if (num_iter > 1)
+            clamp_coord(stw, 1e-4, 1-1e-4);
+        printf("s %f - t %f - w %f\n", stw.x, stw.y, stw.z);
     }
     weights[0] = (1 - stw.x) * (1 - stw.y) * (1 - stw.z) ;
     weights[1] = (1 - stw.x) * (1 - stw.y) * stw.z       ;
@@ -132,6 +137,7 @@ __device__ __inline__ void _dev_query_ninfo(
 
     int32_t u, v, w;
     *cube_sz_out = branching;
+    *node_id_out = 0;
     while (true) {
         traverse_tree_level<branching>(coordinate, &u, &v, &w);
         bool is_child = is_child_leaf[*node_id_out][u][v][w];
@@ -229,6 +235,30 @@ __device__ __inline__ void _dev_query_interp(
             out_val[i] = data[0][i];
         }
     }
+    neighbor_coo[0][0] =  0;
+    neighbor_coo[0][1] =  0;
+    neighbor_coo[0][2] =  0;
+    neighbor_coo[1][0] =  0;
+    neighbor_coo[1][1] =  0;
+    neighbor_coo[1][2] = +1;
+    neighbor_coo[2][0] =  0;
+    neighbor_coo[2][1] = +1;
+    neighbor_coo[2][2] =  0;
+    neighbor_coo[3][0] =  0;
+    neighbor_coo[3][1] = +1;
+    neighbor_coo[3][2] = +1;
+    neighbor_coo[4][0] = +1;
+    neighbor_coo[4][1] =  0;
+    neighbor_coo[4][2] =  0;
+    neighbor_coo[5][0] = +1;
+    neighbor_coo[5][1] =  0;
+    neighbor_coo[5][2] = +1;
+    neighbor_coo[6][0] = +1;
+    neighbor_coo[6][1] = +1;
+    neighbor_coo[6][2] =  0;
+    neighbor_coo[7][0] = +1;
+    neighbor_coo[7][1] = +1;
+    neighbor_coo[7][2] = +1;
     while (true) {
         traverse_tree_level<branching>(coo, &u, &v, &w);
         uc = floorf(coo.x * 2);
@@ -251,19 +281,19 @@ __device__ __inline__ void _dev_query_interp(
                 neighbor_coo[i][2] = (floorf(in_coo.z * cube_sz + OFFSET2[i][2] + 1e-5) + 0.5) / cube_sz;
                 clamp_coord(&neighbor_coo[i][0], 1 / (cube_sz * branching), 1 - 1 / (cube_sz * branching));
 
-                #ifdef DEBUG
+                //#ifdef DEBUG
                     printf("Set valid neighbor %d: %ld, coordinate %f %f %f \n",
                         i, neighbor_ids[i], neighbor_coo[i][0], neighbor_coo[i][1], neighbor_coo[i][2]);
-                #endif
+                //#endif
             }
         }
 
         // Determine whether we have finished, and we must interpolate
         if (is_child_leaf[node_id][u][v][w]) {
             interp_quad_3d_newt(weights, &in_coo, neighbor_coo);
-            #ifdef DEBUG
+            //#ifdef DEBUG
                 printf("Weights: %f %f %f %f %f %f %f %f\n", weights[0], weights[1], weights[2], weights[3], weights[4], weights[5], weights[6], weights[7]);
-            #endif
+            //#endif
             for (j = 0; j < 8; j++) {
                 if (neighbor_ids[j] < 0) continue;
                 for (i = 0; i < data_dim; i++) {

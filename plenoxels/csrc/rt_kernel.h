@@ -82,7 +82,6 @@ __device__ __inline__ void stratified_sample_proposal(
         scalar_t cube_sz;
         int64_t node_id;
         _dev_query_ninfo<scalar_t, branching>(t_child, t_icf, relpos, &cube_sz, &node_id);
-        //printf("New subcube offset: %f %f %f - node id %ld - size %f\n", relpos[0], relpos[1], relpos[2], node_id, cube_sz);
 
         t1 = (-relpos.x + 1.0) / cube_sz * invdir.x;
         t2 = (-relpos.x - 1.0) / cube_sz * invdir.x;
@@ -137,14 +136,18 @@ __device__ __inline__ void trace_ray_backward(
         torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> grad_data_out,
         const float3 & __restrict__ ray_o,
         float3 & __restrict__ ray_d,
-        const RenderOptions& __restrict__ opt)
+        const float rgb_padding,
+        const float background_brightness,
+        const bool density_softplus,
+        const float sigma_thresh,
+        const float stop_thresh)
 {
     constexpr int32_t basis_dim = (data_dim - 1) / out_data_dim;
     const float delta_scale = _get_delta_scale(t_scaling, ray_d);
     float tmin, tmax;
     scalar_t grad_tree_val[data_dim];
     scalar_t light_intensity;
-    const scalar_t d_rgb_pad = 1 + 2 * opt.rgb_padding;
+    const scalar_t d_rgb_pad = 1 + 2 * rgb_padding;
     const float3 invdir = 1.0 / (ray_d + 1e-9);
     _dda_unit(ray_o, invdir, &tmin, &tmax);
     if (tmax < 0 || tmin > tmax) {
@@ -165,8 +168,8 @@ __device__ __inline__ void trace_ray_backward(
         float delta_t = ray_steps[i] * delta_scale;
 
         scalar_t sigma = interp_vals[i][data_dim - 1];
-        if (opt.density_softplus) { sigma = _SOFTPLUS_M1(sigma); }
-        if (sigma > opt.sigma_thresh) {
+        if (density_softplus) { sigma = _SOFTPLUS_M1(sigma); }
+        if (sigma > sigma_thresh) {
             const scalar_t att = expf(-delta_t * sigma);
             const scalar_t weight = light_intensity * (1.f - att);
 
@@ -176,7 +179,7 @@ __device__ __inline__ void trace_ray_backward(
                 for (int k = 0; k < basis_dim; ++k) {
                     tmp += basis_fn[k] * interp_vals[i][off + k];
                 }
-                total_color += (_SIGMOID(tmp) * d_rgb_pad - opt.rgb_padding) * grad_output[j];
+                total_color += (_SIGMOID(tmp) * d_rgb_pad - rgb_padding) * grad_output[j];
             }
             light_intensity *= att;
             accum += weight * total_color;
@@ -184,7 +187,7 @@ __device__ __inline__ void trace_ray_backward(
     }
     scalar_t total_grad = 0.f;
     for (int j = 0; j < out_data_dim; ++j) { total_grad += grad_output[j]; }
-    accum += light_intensity * opt.background_brightness * total_grad;
+    accum += light_intensity * background_brightness * total_grad;
     // PASS 2: Actually compute the gradient
     light_intensity = 1.f;
     for (int i = 0; i < ray_offsets.size(0); i++) {
@@ -197,8 +200,8 @@ __device__ __inline__ void trace_ray_backward(
 
         scalar_t sigma = interp_vals[i][data_dim - 1];
         const scalar_t raw_sigma = sigma;  // needed for softplus-bwd
-        if (opt.density_softplus) { sigma = _SOFTPLUS_M1(sigma); }
-        if (sigma > opt.sigma_thresh) {
+        if (density_softplus) { sigma = _SOFTPLUS_M1(sigma); }
+        if (sigma > sigma_thresh) {
             const scalar_t att = expf(-delta_t * sigma);
             const scalar_t weight = light_intensity * (1.f - att);
 
@@ -213,12 +216,12 @@ __device__ __inline__ void trace_ray_backward(
                 for (int k = 0; k < basis_dim; ++k) {
                     grad_tree_val[off + k] += basis_fn[k] * tmp2;
                 }
-                total_color += (sigmoid * d_rgb_pad - opt.rgb_padding) * grad_output[j];
+                total_color += (sigmoid * d_rgb_pad - rgb_padding) * grad_output[j];
             }
             light_intensity *= att;
             accum -= weight * total_color;
             grad_tree_val[data_dim - 1] = delta_t * (total_color * light_intensity - accum)
-                *  (opt.density_softplus ? _SIGMOID(raw_sigma - 1) : 1);
+                *  (density_softplus ? _SIGMOID(raw_sigma - 1) : 1);
             #ifdef DEBUG
                 printf("t=%f - setting sigma gradient to %f\n", t, grad_tree_val[data_dim - 1]);
             #endif
@@ -245,7 +248,11 @@ __device__ __inline__ void trace_ray(
     torch::TensorAccessor<float, 2, torch::RestrictPtrTraits, int32_t> neighbor_coo,
     const float3 & __restrict__ ray_o,
     float3 & __restrict__ ray_d,
-    const RenderOptions& __restrict__ opt,
+    const float rgb_padding,
+    const float background_brightness,
+    const bool density_softplus,
+    const float sigma_thresh,
+    const float stop_thresh,
     torch::TensorAccessor<scalar_t, 1, torch::RestrictPtrTraits, int32_t> out)
 {
     constexpr int32_t basis_dim = (data_dim - 1) / out_data_dim;
@@ -254,13 +261,13 @@ __device__ __inline__ void trace_ray(
     float3 pos;
     scalar_t basis_fn[basis_dim];
 
-    const scalar_t d_rgb_pad = 1 + 2 * opt.rgb_padding;
+    const scalar_t d_rgb_pad = 1 + 2 * rgb_padding;
 
     const float3 invdir = 1.0 / (ray_d + 1e-9);
     _dda_unit(ray_o, invdir, &tmin, &tmax);
     if (tmax < 0 || tmin > tmax) {
         // Ray doesn't hit box
-        for (int j = 0; j < out_data_dim; ++j) { out[j] = opt.background_brightness; }
+        for (int j = 0; j < out_data_dim; ++j) { out[j] = background_brightness; }
         return;
     }
 
@@ -279,15 +286,19 @@ __device__ __inline__ void trace_ray(
             t_data, t_child, t_icf, /*in_coo=*/pos, /*weights=*/&interp_weights[i][0],
             /*neighbor_coo=*/neighbor_coo, /*neighbor_ids=*/&interp_nids[i][0], /*out_val=*/&interp_vals[i][0],
             /*parent_sum=*/t_parent_sum);
-        printf("%d - interpolation completed. Interpolated value: \n");
+        printf("%d - interpolation completed. Interpolated value: \n", i);
         for (int dd = 0; dd < data_dim; dd++) {
             printf("%f ", interp_vals[i][dd]);
         }
         printf("\n");
+        for (int dd = 0; dd < 8; dd++) {
+            printf("%ld  %f\n", interp_nids[i][dd], interp_vals[i][dd]);
+        }
+        printf("\n");
 
         scalar_t sigma = interp_vals[i][data_dim - 1];
-        if (opt.density_softplus) { sigma = _SOFTPLUS_M1(sigma); }
-        if (sigma > opt.sigma_thresh) {
+        if (density_softplus) { sigma = _SOFTPLUS_M1(sigma); }
+        if (sigma > sigma_thresh) {
             const scalar_t att = expf(-delta_t * delta_scale * sigma);  // (1 - alpha)
             const scalar_t weight = light_intensity * (1.f - att);
             light_intensity *= att;
@@ -297,10 +308,10 @@ __device__ __inline__ void trace_ray(
                 for (int k = 0; k < basis_dim; ++k) {
                     tmp += basis_fn[k] * interp_vals[i][off + k];
                 }
-                out[j] += weight * (_SIGMOID(tmp) * d_rgb_pad - opt.rgb_padding);
-                printf("Setting output %d: %f", j, out[j]);
+                out[j] += weight * (_SIGMOID(tmp) * d_rgb_pad - rgb_padding);
+                printf("Setting output %d: %f\n", j, out[j]);
             }
-            if (light_intensity <= opt.stop_thresh) {  // Full opacity, stop
+            if (light_intensity <= stop_thresh) {  // Full opacity, stop
                 scalar_t scale = 1.0 / (1.0 - light_intensity);
                 for (int j = 0; j < out_data_dim; ++j) { out[j] *= scale; }
                 return;
@@ -308,7 +319,7 @@ __device__ __inline__ void trace_ray(
         }
     }
     for (int j = 0; j < out_data_dim; ++j) {
-        out[j] += light_intensity * opt.background_brightness;
+        out[j] += light_intensity * background_brightness;
     }
 }  // trace ray
 
@@ -327,7 +338,11 @@ __global__ void render_ray_bwd_kernel(
     const torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> rays_d,         // batch_size, 3
     const torch::PackedTensorAccessor32<scalar_t, 2, torch::RestrictPtrTraits> grad_output, // batch_size, data_dim
     torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> grad_data_out,     // num_points, data_dim
-    const RenderOptions& __restrict__ opt,
+    const float rgb_padding,
+    const float background_brightness,
+    const bool density_softplus,
+    const float sigma_thresh,
+    const float stop_thresh,
     const int32_t n_elements)
 {
 	const int32_t i = threadIdx.x + blockIdx.x * blockDim.x;
@@ -339,7 +354,7 @@ __global__ void render_ray_bwd_kernel(
 
 	trace_ray_backward<scalar_t, branching, data_dim, out_data_dim>(
 	    t_parent, t_scaling, interp_vals[i], interp_nids[i], interp_weights[i], ray_offsets[i], ray_steps[i],
-        grad_output[i], grad_data_out, ray_o, ray_d, opt);
+        grad_output[i], grad_data_out, ray_o, ray_d, rgb_padding, background_brightness, density_softplus, sigma_thresh, stop_thresh);
 }
 
 
@@ -359,7 +374,11 @@ __global__ void render_ray_kernel(
     torch::PackedTensorAccessor32<float, 3, torch::RestrictPtrTraits> neighbor_coo,       // batch_size, 8, 3
     const torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> rays_o,       // batch_size, 3
     const torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> rays_d,       // batch_size, 3
-    const RenderOptions& __restrict__ opt,
+    const float rgb_padding,
+    const float background_brightness,
+    const bool density_softplus,
+    const float sigma_thresh,
+    const float stop_thresh,
     torch::PackedTensorAccessor32<scalar_t, 2, torch::RestrictPtrTraits> out,            // batch_size, data_dim
     const int32_t n_elements)
 {
@@ -372,7 +391,7 @@ __global__ void render_ray_kernel(
 
 	trace_ray<scalar_t, branching, data_dim, out_data_dim>(
 	    t_data, t_child, t_icf, t_parent_sum, t_scaling, ray_offsets[i], ray_steps[i], interp_vals[i],
-	    interp_nids[i], interp_weights[i], neighbor_coo[i], ray_o, ray_d, opt, out[i]);
+	    interp_nids[i], interp_weights[i], neighbor_coo[i], ray_o, ray_d, rgb_padding, background_brightness, density_softplus, sigma_thresh, stop_thresh, out[i]);
 }
 
 
@@ -387,7 +406,7 @@ __global__ void gen_samples_kernel(
     torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> ray_offsets,  // batch_size, n_intersections
     torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> ray_steps,    // batch_size, n_intersections
     const int32_t max_intersections,
-    const RenderOptions& __restrict__ opt,
+    const int32_t max_samples_per_node,
     const int32_t n_elements)
 {
 	const int32_t i = threadIdx.x + blockIdx.x * blockDim.x;
@@ -401,16 +420,14 @@ __global__ void gen_samples_kernel(
     float tmin, tmax;
     const float3 invdir = 1.0 / (ray_d + 1e-9);
     _dda_unit(ray_o, invdir, &tmin, &tmax);
-    printf("Gen-samples. tmin: %f, tmax: %f\n", tmin, tmax);
     if (tmax < 0 || tmin > tmax) { return; }
 
     float delta_t = 0;
     int32_t num_strat_samples = 0;
     float t = tmin;
-    for (int32_t j = 0; j < max_intersections; j++) {
+    for (int j = 0; j < max_intersections; j++) {
         stratified_sample_proposal<scalar_t, branching>(
-            t_child, t_icf, ray_o, ray_d, invdir, opt.max_samples_per_node, &num_strat_samples, &delta_t, &t);
-        printf("Generated new sample t=%f, dt=%f\n", t, delta_t);
+            t_child, t_icf, ray_o, ray_d, invdir, max_samples_per_node, &num_strat_samples, &delta_t, &t);
         if (t >= tmax) { break; }
         ray_offsets[i][j] = t;
         ray_steps[i][j] = delta_t;
@@ -453,7 +470,7 @@ RenderingOutput volume_render(
             ray_offsets.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
             ray_steps.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
             n_intersections,
-            opt,
+            opt.max_samples_per_node,
             (int32_t)batch_size  // TODO: It would be nice without this cast.
     );
 
@@ -471,7 +488,7 @@ RenderingOutput volume_render(
     torch::Tensor interp_weights = torch::empty({batch_size, n_intersections, 8},
         torch::dtype(torch::kFloat32).device(tree.data.device()).layout(tree.data.layout()));
     torch::Tensor neighbor_coo = torch::empty({batch_size, 8, 3}, interp_weights.options());
-    print("Forward pass tensors allocated.\n");
+    printf("Forward pass tensors allocated.\n");
 
     // 3. Forward pass (compute)
     render_ray_kernel<scalar_t, branching, data_dim, out_data_dim>
@@ -490,7 +507,11 @@ RenderingOutput volume_render(
             neighbor_coo.packed_accessor32<float, 3, torch::RestrictPtrTraits>(),
             rays_o.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
             rays_d.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
-            opt,
+            opt.rgb_padding,
+            opt.background_brightness,
+            opt.density_softplus,
+            opt.sigma_thresh,
+            opt.stop_thresh,
             output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
             (int32_t)batch_size
     );
@@ -537,7 +558,11 @@ torch::Tensor volume_render_bwd(
             rays_d.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
             grad_output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
             output.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits>(),
-            opt,
+            opt.rgb_padding,
+            opt.background_brightness,
+            opt.density_softplus,
+            opt.sigma_thresh,
+            opt.stop_thresh,
             (int32_t)batch_size
     );
     return output;

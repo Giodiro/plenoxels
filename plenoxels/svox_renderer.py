@@ -201,6 +201,15 @@ class SimpleVolumeRenderer(nn.Module):
 
         opts.sigma_thresh = 1e-2
         opts.stop_thresh = 1e-2
+
+        opts.step_size = 1.0
+        opts.format = 1
+        opts.basis_dim = 1
+        opts.ndc_width = 1
+        opts.ndc_height = 1
+        opts.ndc_focal = 1.0
+        opts.min_comp = 1
+        opts.max_comp = 1
         return opts
 
 
