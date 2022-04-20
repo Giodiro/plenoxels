@@ -33,7 +33,7 @@ from torch import nn, autograd
 from svox_helpers import DataFormat, N3TreeView, LocalIndex
 from warnings import warn
 try:
-    import csrc as _C
+    import plenoxels.c_ext as _C
 except ImportError:
     print("Failed to load C-extension")
     _C = None

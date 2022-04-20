@@ -12,13 +12,14 @@ _C.sh.degree = 2
 _C.sh.sh_encoder = "plenoxels"
 
 _C.optim = CN()
-_C.optim.batch_size = 4000
+_C.optim.batch_size = 1
 _C.optim.occupancy_penalty = 0.001
 _C.optim.profile = False
 _C.optim.num_epochs = 10
 _C.optim.progress_refresh_rate = 500
 _C.optim.eval_refresh_rate = 1200
 _C.optim.render_refresh_rate = 1
+_C.optim.lr = 1e7
 _C.optim.lr_sigma = None
 _C.optim.lr_rgb = None
 _C.optim.lr_decay = 10  # 10 * 1000 steps
@@ -36,7 +37,7 @@ _C.optim.adam = CN()
 _C.optim.adam.lr = 0.5
 
 _C.data = CN()
-_C.data.datadir = "/home/giacomo/plenoxels/lego"
+_C.data.datadir = "/home/giacomo/plenoxels/data/lego"
 _C.data.resolution = 128
 _C.data.downsample = 1.0
 _C.data.max_tr_frames = 10#None

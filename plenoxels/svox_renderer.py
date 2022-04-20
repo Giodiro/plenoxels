@@ -32,7 +32,7 @@ from warnings import warn
 
 from svox_helpers import DataFormat, LocalIndex
 try:
-    import csrc as _C
+    import plenoxels.c_ext as _C
 except ImportError:
     print("Failed to load C-extension")
     _C = None
@@ -107,6 +107,7 @@ class _VolumeRenderFunction(autograd.Function):
     @staticmethod
     def forward(ctx, data, tree, rays, opt):
         out = _VolumeRenderFunction.dispatch_vol_render(tree, rays.origins, rays.dirs, opt)
+        print("output rgb", out.ray_offsets)
         ctx.tree = tree
         ctx.rays = rays
         ctx.fwd_out = out
@@ -187,7 +188,7 @@ class SimpleVolumeRenderer(nn.Module):
             self.get_options()
         )
 
-    def _get_options(self):
+    def get_options(self):
         """
         Make RenderOptions struct to send to C++
         """

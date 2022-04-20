@@ -68,7 +68,9 @@ void declare_octree(py::module &m, const std::string &typestr) {
         .def("refine", &TOctree::refine_octree)
         .def("query", &TOctree::query_octree)
         .def("set", &TOctree::set_octree)
-        .def("query_interp", &TOctree::query_interp_octree);
+        .def("query_interp", &TOctree::query_interp_octree)
+        .def("train", &TOctree::train)
+        .def("eval", &TOctree::eval);
 
     std::string fn_name = std::string("volume_render") + typestr;
     m.def(fn_name.c_str(), &volume_render<scalar_t, branching, data_dim, out_data_dim>);

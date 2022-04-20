@@ -13,7 +13,7 @@ import svox
 import svox_renderer
 from synthetic_nerf_dataset import SyntheticNerfDataset
 from tc_plenoptimize import init_datasets, init_profiler, parse_config
-import csrc as _C
+import plenoxels.c_ext as _C
 
 
 def run_test_step(test_dset: SyntheticNerfDataset,
@@ -142,7 +142,9 @@ def train_interp_tree(cfg):
                 imgs = imgs.to(device=dev)
 
                 preds = renderer.forward(rays=svox_renderer.Rays(origins=rays_o, dirs=rays_d, viewdirs=rays_d))
+                print("preds", preds[:5])
                 loss = F.mse_loss(preds, imgs)
+                print("loss", loss)
                 loss.backward()
                 optim.step()
 

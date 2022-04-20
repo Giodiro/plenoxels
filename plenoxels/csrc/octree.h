@@ -31,7 +31,7 @@ struct Octree {
             (0.5 - 0.5 * this->scaling);
 
         data = torch::zeros({1, data_dim},
-            torch::dtype(data_dt).layout(torch::kStrided).device(device));
+            torch::dtype(data_dt).layout(torch::kStrided).device(device).requires_grad(true));
         child = torch::zeros({0, branching, branching, branching},
             torch::dtype(torch::kInt32).layout(torch::kStrided).device(device));
         is_child_leaf = torch::ones({0, branching, branching, branching},
@@ -89,11 +89,11 @@ struct Octree {
     float * scaling_ptr() {
         return scaling.data_ptr<float>();
     }
-    Octree<scalar_t, branching, data_dim> eval() {
-        return this;
+    Octree<scalar_t, branching, data_dim>& eval() {
+        return *this;
     }
-    Octree<scalar_t, branching, data_dim> train() {
-        return this;
+    Octree<scalar_t, branching, data_dim>& train() {
+        return *this;
     }
 };
 
@@ -108,6 +108,7 @@ torch::Tensor pack_index_3d(const torch::Tensor &leaves) {
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 void Octree<scalar_t, branching, data_dim>::_resize_add_cap(const int64_t num_new_internal)
 {
+    torch::NoGradGuard no_grad;
     printf("[Octree] Adding %ld nodes to tree\n", num_new_internal);
     child = torch::cat({
         child,
@@ -135,6 +136,7 @@ void Octree<scalar_t, branching, data_dim>::_resize_add_cap(const int64_t num_ne
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 void Octree<scalar_t, branching, data_dim>::refine_octree(const torch::optional<torch::Tensor> &opt_leaves)
 {
+    torch::NoGradGuard no_grad;
     torch::Tensor leaves;
     if (opt_leaves.has_value()) {  // Check validity of user-supplied leaves
         auto sel = opt_leaves.value().unbind(1);
@@ -202,7 +204,7 @@ torch::Tensor Octree<scalar_t, branching, data_dim>::query_octree (torch::Tensor
         return undefined;
     }
     // Create output tensor
-    torch::Tensor values_out = torch::empty({n_elements, data_dim}, data.options());
+    torch::Tensor values_out = torch::empty({n_elements, data_dim}, data.options().requires_grad(false));
     octree_query_kernel<scalar_t, branching, data_dim><<<n_blocks_linear(n_elements), n_threads_linear>>>(
         data.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits>(),
         child.packed_accessor32<int32_t, 4, torch::RestrictPtrTraits>(),
@@ -230,7 +232,7 @@ std::tuple<torch::Tensor, torch::Tensor> Octree<scalar_t, branching, data_dim>::
     torch::Tensor neighbor_ids = torch::full({n_elements, 8}, -1, torch::dtype(torch::kInt64).device(data.device()).layout(data.layout()));
 
     // Create output tensors
-    torch::Tensor values_out = torch::empty({n_elements, data_dim}, data.options());
+    torch::Tensor values_out = torch::empty({n_elements, data_dim}, data.options().requires_grad(false));
     torch::Tensor weights_out = torch::empty({n_elements, 8}, indices.options());
     octree_query_interp_kernel<scalar_t, branching, data_dim><<<n_blocks_linear(n_elements), n_threads_linear>>>(
         data.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits>(),
@@ -271,7 +273,7 @@ void Octree<scalar_t, branching, data_dim>::set_octree(torch::Tensor &indices, c
         for (int i = max_depth; i > 0; i--) {
             auto child_ids = (depth == torch::tensor({i}, depth.options())).nonzero().squeeze();
             auto parent_ids = parent.index({child_ids}).to(torch::kInt64);
-            data.index_put_({parent_ids}, torch::tensor({0}, data.options()));
+            data.index_put_({parent_ids}, torch::tensor({0}, data.options().requires_grad(false)));
             data.scatter_add_(
                 0, parent_ids.unsqueeze(-1).expand(parent_ids.size(0), data_dim), data.index({child_ids}));
             data.index({parent_ids}).div_(node_size);
