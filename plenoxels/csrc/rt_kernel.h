@@ -401,6 +401,7 @@ __global__ void gen_samples_kernel(
     float tmin, tmax;
     const float3 invdir = 1.0 / (ray_d + 1e-9);
     _dda_unit(ray_o, invdir, &tmin, &tmax);
+    printf("Gen-samples. tmin: %f, tmax: %f\n", tmin, tmax);
     if (tmax < 0 || tmin > tmax) { return; }
 
     float delta_t = 0;
@@ -409,6 +410,7 @@ __global__ void gen_samples_kernel(
     for (int32_t j = 0; j < max_intersections; j++) {
         stratified_sample_proposal<scalar_t, branching>(
             t_child, t_icf, ray_o, ray_d, invdir, opt.max_samples_per_node, &num_strat_samples, &delta_t, &t);
+        printf("Generated new sample t=%f, dt=%f\n", t, delta_t);
         if (t >= tmax) { break; }
         ray_offsets[i][j] = t;
         ray_steps[i][j] = delta_t;
@@ -457,7 +459,7 @@ RenderingOutput volume_render(
 
     printf("Gen-samples kernel complete. First few intersections follow\n");
     for (int i = 0; i < 5; i++) {
-        printf("t=%f, dt=%f\n", ray_offsets[0][i], ray_steps[0][i]);
+        printf("t=%f, dt=%f\n", ray_offsets[0][i].item<float>(), ray_steps[0][i].item<float>());
     }
     printf("\n");
 
