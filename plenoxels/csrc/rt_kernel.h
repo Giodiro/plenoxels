@@ -253,7 +253,6 @@ __device__ __inline__ void trace_ray(
     float tmin, tmax;
     float3 pos;
     scalar_t basis_fn[basis_dim];
-    const int out_data_dim = out.size(0);
 
     const scalar_t d_rgb_pad = 1 + 2 * opt.rgb_padding;
 
