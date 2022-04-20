@@ -478,14 +478,14 @@ RenderingOutput volume_render(
             output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
             (int32_t)batch_size
     );
-    return RenderingOutput(
+    return {
         /*output_rgb=*/output,
         /*interpolated_vals=*/interp_vals,
         /*interpolated_n_ids=*/interp_nids,
         /*interpolation_weights=*/interp_weights,
         /*ray_offsets=*/ray_offsets,
         /*ray_steps=*/ray_steps
-    );
+    };
 }
 
 
