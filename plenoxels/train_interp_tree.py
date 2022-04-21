@@ -86,8 +86,9 @@ def init_tree(tree_type, levels, sh_degree, scene_bbox, dtype, device):
     elif tree_type.lower() == "octree":
         model = _C.Octreef2d2(
             levels, True, device,
-            (scene_bbox[1] - scene_bbox[0]) / 2, (scene_bbox[1] + scene_bbox[0]) / 2
-        )
+            (scene_bbox[1] - scene_bbox[0]) / 2, (scene_bbox[1] + scene_bbox[0]) / 2,
+            1000
+        ).to(device)
         renderer = svox_renderer.SimpleVolumeRenderer(
             tree=model, background_brightness=1.0
         )
