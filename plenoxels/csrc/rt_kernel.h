@@ -441,7 +441,7 @@ __global__ void gen_samples_kernel(
 
 template <typename scalar_t, int32_t branching, int32_t data_dim, int32_t out_data_dim>
 RenderingOutput volume_render(
-    Octree<scalar_t, branching, data_dim> & tree,
+    OctreeCppSpec & tree,
     const torch::Tensor & rays_o,
     const torch::Tensor & rays_d,
     const RenderOptions & opt)
@@ -528,7 +528,7 @@ RenderingOutput volume_render(
 
 template <typename scalar_t, int32_t branching, int32_t data_dim, int32_t out_data_dim>
 torch::Tensor volume_render_bwd(
-    Octree<scalar_t, branching, data_dim> & tree,
+    OctreeCppSpec & tree,
     const torch::Tensor & rays_o,
     const torch::Tensor & rays_d,
     const torch::Tensor & grad_output,
