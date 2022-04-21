@@ -114,7 +114,7 @@ def train_interp_tree(cfg):
     tr_dset, tr_loader, ts_dset = init_datasets(cfg, dev)
 
     # Initialize model, optimizer
-    model, renderer = init_tree(tree_type, levels=3, sh_degree=sh_degree,
+    model, renderer = init_tree(tree_type, levels=5, sh_degree=sh_degree,
                                 scene_bbox=tr_dset.scene_bbox, dtype=torch.float32,
                                 device=torch.device('cuda:0'))
     optim = init_optimizer(tree_type, tree=model, optim_type=cfg.optim.optimizer, lr=cfg.optim.lr)

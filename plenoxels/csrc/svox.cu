@@ -31,6 +31,7 @@
 #include <vector>
 #include <string>
 
+//#define DEBUG
 #include "include/data_spec.hpp"
 #include "octree.h"
 #include "rt_kernel.h"
@@ -69,6 +70,7 @@ void declare_octree(py::module &m, const std::string &typestr) {
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    declare_octree<double, 2, 4, 3>(m, "d2d0");
     declare_octree<double, 2, 13, 3>(m, "d2d1");
     declare_octree<float, 2, 13, 3>(m, "f2d1");
     declare_octree<float, 4, 13, 3>(m, "f4d1");
@@ -101,7 +103,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         .def_readwrite("density_softplus", &RenderOptions::density_softplus)
         .def_readwrite("rgb_padding", &RenderOptions::rgb_padding);
 
-    py::class_<OctreeCppSpec<float>>(m, "OctreeCppSpec")
+    py::class_<OctreeCppSpec<float>>(m, "OctreeCppSpecf")
         .def(py::init<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, bool>())
         .def_readwrite("data", &OctreeCppSpec<float>::data)
         .def_readwrite("child", &OctreeCppSpec<float>::child)
@@ -111,4 +113,14 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         .def_readwrite("scaling", &OctreeCppSpec<float>::scaling)
         .def_readwrite("offset", &OctreeCppSpec<float>::offset)
         .def_readonly("parent_sum", &OctreeCppSpec<float>::parent_sum);
+    py::class_<OctreeCppSpec<double>>(m, "OctreeCppSpecd")
+        .def(py::init<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, bool>())
+        .def_readwrite("data", &OctreeCppSpec<double>::data)
+        .def_readwrite("child", &OctreeCppSpec<double>::child)
+        .def_readwrite("is_child_leaf", &OctreeCppSpec<double>::is_child_leaf)
+        .def_readwrite("parent", &OctreeCppSpec<double>::parent)
+        .def_readwrite("depth", &OctreeCppSpec<double>::depth)
+        .def_readwrite("scaling", &OctreeCppSpec<double>::scaling)
+        .def_readwrite("offset", &OctreeCppSpec<double>::offset)
+        .def_readonly("parent_sum", &OctreeCppSpec<double>::parent_sum);
 }

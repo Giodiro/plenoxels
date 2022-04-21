@@ -10,6 +10,7 @@
 #define _SOFTPLUS_M1(x) (logf(1 + expf((x) - 1)))
 #define _SIGMOID(x) (1 / (1 + expf(-(x))))
 
+using namespace torch::indexing;
 
 
 __device__ __inline__ float _get_delta_scale(
@@ -79,7 +80,7 @@ __device__ __inline__ void stratified_sample_proposal(
         // new sub-cube position
         relpos = ray_o + *t_inout * ray_d;
         // New subcube info pos will hold the current offset in the new subcube
-        scalar_t cube_sz;
+        float cube_sz;
         int64_t node_id;
         _dev_query_ninfo<scalar_t, branching>(t_child, t_icf, relpos, &cube_sz, &node_id);
 
@@ -226,8 +227,8 @@ __device__ __inline__ void trace_ray_backward(
                 printf("t=%f - setting sigma gradient to %f\n", t, grad_tree_val[data_dim - 1]);
             #endif
             _dev_query_interp_bwd<scalar_t, data_dim>(
-                /*parent=*/t_parent, /*grad=*/grad_data_out, /*weights=*/interp_weights.data(),
-                /*neighbor_ids=*/interp_nids.data(), /*grad_output=*/grad_tree_val);
+                /*parent=*/t_parent, /*grad=*/grad_data_out, /*weights=*/&interp_weights[i][0],
+                /*neighbor_ids=*/&interp_nids[i][0], /*grad_output=*/grad_tree_val);
         }
     }
 }  // trace_ray_backward
@@ -303,7 +304,6 @@ __device__ __inline__ void trace_ray(
         if (sigma > sigma_thresh) {
             const scalar_t att = expf(-delta_t * delta_scale * sigma);  // (1 - alpha)
             const scalar_t weight = light_intensity * (1.f - att);
-            light_intensity *= att;
 
             for (int j = 0, off = 0; j < out_data_dim; ++j, off += basis_dim) {
                 scalar_t tmp = 0.0;
@@ -312,6 +312,7 @@ __device__ __inline__ void trace_ray(
                 }
                 out[j] += weight * (_SIGMOID(tmp) * d_rgb_pad - rgb_padding);
             }
+            light_intensity *= att;
             if (light_intensity <= stop_thresh) {  // Full opacity, stop
                 scalar_t scale = 1.0 / (1.0 - light_intensity);
                 for (int j = 0; j < out_data_dim; ++j) { out[j] *= scale; }
@@ -486,7 +487,7 @@ RenderingOutput volume_render(
     torch::Tensor output = torch::empty({batch_size, out_data_dim}, data.options());
     torch::Tensor interp_vals = torch::empty({batch_size, n_intersections, data_dim}, data.options());
     torch::Tensor interp_nids = torch::full({batch_size, n_intersections, 8}, -1,
-        torch::dtype(torch::kInt64).device(data.device()).layout(data.layout()));
+        torch::dtype(torch::kInt64).device(data.device()));
     torch::Tensor interp_weights = torch::empty({batch_size, n_intersections, 8},
         torch::dtype(torch::kFloat32).device(data.device()).layout(data.layout()));
     torch::Tensor neighbor_coo = torch::empty({batch_size, 8, 3}, interp_weights.options());
@@ -494,7 +495,7 @@ RenderingOutput volume_render(
     // 3. Forward pass (compute)
     render_ray_kernel<scalar_t, branching, data_dim, out_data_dim>
         <<<n_blocks_linear<uint32_t>(batch_size, render_ray_n_threads), render_ray_n_threads>>>(
-            data.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits(),
+            data.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits>(),
             tree.child_acc(),
             tree.is_child_leaf_acc(),
             tree.parent_sum,
@@ -529,7 +530,6 @@ RenderingOutput volume_render(
 
 template <typename scalar_t, int32_t branching, int32_t data_dim, int32_t out_data_dim>
 torch::Tensor volume_render_bwd(
-    torch::Tensor
     OctreeCppSpec<scalar_t> & tree,
     const torch::Tensor & rays_o,
     const torch::Tensor & rays_d,

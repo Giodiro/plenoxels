@@ -329,10 +329,20 @@ __device__ __inline__ void _dev_query_interp_bwd(
     int64_t node_id;
     for (i = 0; i < 8; ++i) {
         node_id = neighbor_ids[i];
-        while (node_id > 0) {
+        #ifdef DEBUG
+            printf("Node ID at neighbor %d = %ld\n", i, node_id);
+        #endif
+        while (node_id >= 0) {
+            //printf("Grad-bwd of node %ld\n", node_id);
             for (j = 0; j < data_dim; ++j) {
                 atomicAdd(&grad[node_id][j], grad_output[j] * weights[i]);
             }
+            #ifdef DEBUG
+                printf("Grad at node %ld (weight %f) is ", node_id, weights[i]);
+                for (j = 0; j < data_dim; ++j) printf("%f ", grad[node_id][j]);
+                printf("\n");
+            #endif
+            //printf("Parent of node %ld: %ld\n", node_id, parent[node_id]);
             node_id = parent[node_id];
         }
     }
