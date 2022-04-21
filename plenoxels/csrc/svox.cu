@@ -100,14 +100,14 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         .def_readwrite("density_softplus", &RenderOptions::density_softplus)
         .def_readwrite("rgb_padding", &RenderOptions::rgb_padding);
 
-    py::class_<OctreeCppSpec>(m, "OctreeCppSpec")
+    py::class_<OctreeCppSpec<float>>(m, "OctreeCppSpec")
         .def(py::init<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, bool>())
-        .def_readwrite("data", &OctreeCppSpec::data)
-        .def_readwrite("child", &OctreeCppSpec::child)
-        .def_readwrite("is_child_leaf", &OctreeCppSpec::is_child_leaf)
-        .def_readwrite("parent", &OctreeCppSpec::parent)
-        .def_readwrite("depth", &OctreeCppSpec::depth)
-        .def_readwrite("scaling", &OctreeCppSpec::scaling)
-        .def_readwrite("offset", &OctreeCppSpec::offset)
-        .def_readonly("parent_sum", &OctreeCppSpec::parent_sum);
+        .def_readwrite("data", &OctreeCppSpec<float>::data)
+        .def_readwrite("child", &OctreeCppSpec<float>::child)
+        .def_readwrite("is_child_leaf", &OctreeCppSpec<float>::is_child_leaf)
+        .def_readwrite("parent", &OctreeCppSpec<float>::parent)
+        .def_readwrite("depth", &OctreeCppSpec<float>::depth)
+        .def_readwrite("scaling", &OctreeCppSpec<float>::scaling)
+        .def_readwrite("offset", &OctreeCppSpec<float>::offset)
+        .def_readonly("parent_sum", &OctreeCppSpec<float>::parent_sum);
 }

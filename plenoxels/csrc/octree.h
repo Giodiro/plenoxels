@@ -12,6 +12,7 @@
 
 using namespace torch::indexing;
 
+template<typename scalar_t>
 struct OctreeCppSpec {
     OctreeCppSpec(torch::Tensor data,
            torch::Tensor child,
