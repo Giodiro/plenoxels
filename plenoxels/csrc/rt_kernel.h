@@ -226,7 +226,10 @@ __device__ __inline__ void trace_ray_backward(
             #ifdef DEBUG
                 printf("t=%f - setting sigma gradient to %f\n", t, grad_tree_val[data_dim - 1]);
             #endif
-            _dev_query_interp_bwd<scalar_t, data_dim>(
+            printf("Grad at step %d: ", i);
+            for (int k = 0; k < data_dim; k++) {printf("%f ", grad_tree_val[k]);}
+            printf("\n");
+            _dev_query_single_outv_bwd<scalar_t, data_dim>(
                 /*parent=*/t_parent, /*grad=*/grad_data_out, /*weights=*/&interp_weights[i][0],
                 /*neighbor_ids=*/&interp_nids[i][0], /*grad_output=*/grad_tree_val);
         }
@@ -283,7 +286,7 @@ __device__ __inline__ void trace_ray(
         float delta_t = ray_steps[i];
         pos = ray_o + t * ray_d;
         scalar_t *tree_val = &interp_vals[i][0];
-        _dev_query_interp<scalar_t, branching, data_dim>(
+        _dev_query_single_outv<scalar_t, branching, data_dim>(
             t_data, t_child, t_icf, /*in_coo=*/pos, /*weights=*/&interp_weights[i][0],
             /*neighbor_coo=*/neighbor_coo, /*neighbor_ids=*/&interp_nids[i][0], /*out_val=*/&interp_vals[i][0],
             /*parent_sum=*/t_parent_sum);
@@ -314,10 +317,12 @@ __device__ __inline__ void trace_ray(
             }
             light_intensity *= att;
             if (light_intensity <= stop_thresh) {  // Full opacity, stop
+                printf("Stopping FWD due to low light intensity\n");
                 scalar_t scale = 1.0 / (1.0 - light_intensity);
                 for (int j = 0; j < out_data_dim; ++j) { out[j] *= scale; }
                 return;
             }
+            printf("Step %d - att=%f - weight=%f - light=%f\n", i, att, weight, light_intensity);
         }
     }
     for (int j = 0; j < out_data_dim; ++j) {

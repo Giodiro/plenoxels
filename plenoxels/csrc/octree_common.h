@@ -197,6 +197,64 @@ __device__ __inline__ scalar_t* _dev_query_single(
     }
 }
 
+template <typename scalar_t, int32_t branching, int32_t data_dim>
+__device__ __inline__ void _dev_query_single_outv(
+    Acc64<scalar_t, 2> data,
+    const Acc32<int32_t, 4> child,
+    const Acc32<bool, 4> is_child_leaf,
+    float3 & __restrict__ in_coo,
+    const float * __restrict__ weights,  // unused (for interface)
+    const torch::TensorAccessor<float, 2, torch::RestrictPtrTraits, int32_t> neighbor_coo,    // unused (for interface)
+    int64_t     * __restrict__ neighbor_ids,  // only first element gets set
+    scalar_t    * __restrict__ out_val,
+    const bool parent_sum
+)
+{
+    clamp_coord(coordinate, 0.0, 1.0 - 1e-9);
+
+    int32_t node_id = 0;
+    int32_t u, v, w, skip;
+    int32_t i;
+
+    if (parent_sum) {
+        for (i = 0; i < data_dim; i++) { out_val[i] = data[0][i]; }
+    } else {
+        for (i = 0; i < data_dim; i++) { out_val[i] = 0; }
+    }
+    while (true) {
+        traverse_tree_level<branching>(coordinate, &u, &v, &w);
+        skip = child[node_id][u][v][w];
+        if (parent_sum || is_child_leaf[node_id][u][v][w]) {
+            for (i = 0; i < data_dim; i++) {
+                out_val[i] += data[node_id + skip][i];
+            }
+        }
+        if (is_child_leaf[node_id][u][v][w]) {
+            neighbor_ids[0] = node_id + skip;
+            return;
+        }
+        node_id += skip;
+    }
+} // _dev_query_single_outv
+
+template <typename scalar_t, int32_t data_dim>
+__device__ __inline__ void _dev_query_single_outv_bwd(
+    const Acc32<int32_t, 1> parent,       // tree description
+    Acc64<scalar_t, 2> grad,
+    const float* __restrict__ weights,       // unused
+    const int64_t* __restrict__ neighbor_ids,   // Only first element used.
+    const scalar_t* __restrict__ grad_output)   // [data_dim].
+{
+    int32_t i, j;
+    int64_t node_id = neighbor_ids[0];
+    for (j = 0; j < data_dim; ++j) {
+        atomicAdd(&grad[node_id][j], grad_output[j]);
+    }
+//    while (node_id >= 0) {
+//        node_id = parent[node_id];
+//    }
+}
+
 
 __constant__
 static const float OFFSET[8][3] = {{-1, -1, -1}, {-1, -1, 0}, {-1, 0, -1}, {-1, 0, 0},

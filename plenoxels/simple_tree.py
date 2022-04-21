@@ -239,7 +239,7 @@ def init_render_opt(background_brightness: float = 1.0,
 def gradcheck():
     torch.manual_seed(42)
     tree = Octree(max_internal_nodes=1, initial_levels=1, sh_degree=0, render_opt=init_render_opt(),
-                  branching=2, radius=None, center=None, parent_sum=True, dtype=torch.float64).cuda()
+                  branching=2, radius=None, center=None, parent_sum=False, dtype=torch.float64).cuda()
     with torch.no_grad():
         tree.data.copy_(torch.randn_like(tree.data) + 2)
     rays_o = torch.zeros(1, 3).cuda()
