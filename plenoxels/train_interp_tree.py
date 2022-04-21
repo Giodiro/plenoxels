@@ -11,10 +11,9 @@ from tqdm import tqdm
 
 import svox
 import svox_renderer
-from plenoxels.csrc.simple_tree import Octree, init_render_opt
+from plenoxels.simple_tree import Octree, init_render_opt
 from synthetic_nerf_dataset import SyntheticNerfDataset
 from tc_plenoptimize import init_datasets, init_profiler, parse_config
-import plenoxels.c_ext as _C
 
 
 def run_test_step(test_dset: SyntheticNerfDataset,
