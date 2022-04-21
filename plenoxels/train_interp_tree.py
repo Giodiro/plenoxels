@@ -99,10 +99,8 @@ def init_tree(tree_type, levels, sh_degree, scene_bbox, dtype, device):
 
 
 def init_optimizer(tree_type, tree, optim_type, lr):
-    if tree_type.lower() == "n3tree":
+    if tree_type.lower() in {"n3tree", "octree"}:
         params = (tree.data, )
-    elif tree_type.lower() == "octree":
-        params = (tree.data[:tree.n_internal * 8 + 1], )
     else:
         raise RuntimeError(f"Tree type {tree_type} not recognized.")
 

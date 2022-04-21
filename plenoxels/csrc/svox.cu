@@ -55,7 +55,7 @@ void declare_octree(py::module &m, const std::string &typestr) {
     using TOctree = Octree<scalar_t, branching, data_dim>;
     std::string pyclass_name = std::string("Octree") + typestr;
     py::class_<TOctree>(m, pyclass_name.c_str())
-        .def(py::init<int32_t, bool, torch::Device, torch::optional<torch::Tensor>, torch::optional<torch::Tensor>>())
+        .def(py::init<int32_t, bool, torch::Device, torch::optional<torch::Tensor>, torch::optional<torch::Tensor>, int32_t>())
         .def_readonly("n_internal", &TOctree::n_internal)
         .def_readonly("max_depth", &TOctree::max_depth)
         .def_readonly("parent_sum", &TOctree::parent_sum)

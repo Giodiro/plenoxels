@@ -11,50 +11,47 @@
 using namespace torch::indexing;
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
-struct Octree {
+struct Octree : torch::nn::Module {
     Octree(int32_t levels,
            bool parent_sum,
            torch::Device device,
            torch::optional<torch::Tensor> radius,
-           torch::optional<torch::Tensor> center) : parent_sum(parent_sum) {
+           torch::optional<torch::Tensor> center,
+           int32_t max_internal_nodes) : parent_sum(parent_sum), max_internal_nodes(max_internal_nodes) {
         max_depth = 0;
         n_internal = 0;
 
         const auto data_dt = caffe2::TypeMeta::Make<scalar_t>().toScalarType();
 
         // 1 / (2 * radius); default: 1 (equiv. diameter = 1).
-        this->scaling = radius.has_value() ?
-            (0.5 / radius.value()).to(device) :
-            torch::tensor({1, 1, 1}, torch::dtype(torch::kFloat32).layout(torch::kStrided).device(device));
+        scaling = radius.has_value() ?
+            register_buffer("scaling", (0.5 / radius.value())) :
+            register_buffer("scaling", torch::tensor({1, 1, 1}, torch::kFloat32));
         // ??
-        this->offset = center.has_value() ?
-            (0.5 - center.value().to(device) * this->scaling) :
-            (0.5 - 0.5 * this->scaling);
+        offset = center.has_value() ?
+            register_buffer("offset", (0.5 - center.value() * scaling)) :
+            register_buffer("offset", (0.5 - 0.5 * scaling));
         std::cout << "scaling " << this->scaling << std::endl;
         std::cout << "offset " << this->offset << std::endl;
 
-        data = torch::zeros({1, data_dim},
-            torch::dtype(data_dt).layout(torch::kStrided).device(device).requires_grad(true));
-        child = torch::zeros({0, branching, branching, branching},
-            torch::dtype(torch::kInt32).layout(torch::kStrided).device(device));
-        is_child_leaf = torch::ones({0, branching, branching, branching},
-            torch::dtype(torch::kBool).layout(torch::kStrided).device(device));
-        parent = torch::tensor({-1},
-            torch::dtype(torch::kInt32).layout(torch::kStrided).device(device));
-        depth = torch::zeros({1},
-            torch::dtype(torch::kInt32).layout(torch::kStrided).device(device));
-
-        int64_t n_internal_prealloc = 0;
-        for (int i = 0; i < levels; i++) {
-            n_internal_prealloc += pow(node_size, i);
-        }
-        _resize_add_cap(n_internal_prealloc);
+        data = register_parameter("data",
+            torch::zeros({max_internal_nodes * node_size + 1, data_dim}, torch::dtype(data_dt)));
+        child = register_buffer("child",
+            torch::zeros({max_internal_nodes, branching, branching, branching}, torch::kInt32));
+        is_child_leaf = register_buffer("is_child_leaf",
+            torch::ones({max_internal_nodes, branching, branching, branching}, torch::kBool));
+        parent = register_buffer("parent",
+            torch::zeros({max_internal_nodes * node_size + 1}, torch::kInt32));
+        parent[0] = -1;
+        depth = register_buffer("depth",
+            torch::zeros({max_internal_nodes * node_size + 1}, torch::kInt32));
     }
 
     int64_t n_internal;
     int32_t max_depth;
+    int32_t max_internal_nodes;
     bool parent_sum;
-    const int32_t node_size = branching * branching * branching;
+    const constexpr int32_t node_size = branching * branching * branching;
 
     torch::Tensor data;
     torch::Tensor child;
@@ -92,6 +89,7 @@ struct Octree {
     float * scaling_ptr() {
         return scaling.data_ptr<float>();
     }
+
     Octree<scalar_t, branching, data_dim>& eval() {
         return *this;
     }
@@ -112,6 +110,10 @@ template <typename scalar_t, int32_t branching, int32_t data_dim>
 void Octree<scalar_t, branching, data_dim>::_resize_add_cap(const int64_t num_new_internal)
 {
     torch::NoGradGuard no_grad;
+    if (num_new_internal + n_internal > max_internal_nodes) {
+        throw new std::exception("Failed to resize tree: desired number of internal nodes exceeds maximum.");
+    }
+
     printf("[Octree] Adding %ld nodes to tree\n", num_new_internal);
     child = torch::cat({
         child,
@@ -119,7 +121,7 @@ void Octree<scalar_t, branching, data_dim>::_resize_add_cap(const int64_t num_ne
     });
     data = torch::cat({
         data,
-        torch::zeros({num_new_internal * branching * branching * branching, data_dim}, data.options())
+        torch::zeros({num_new_internal * node_size, data_dim}, data.options())
     });
     is_child_leaf = torch::cat({
         is_child_leaf,
@@ -127,11 +129,11 @@ void Octree<scalar_t, branching, data_dim>::_resize_add_cap(const int64_t num_ne
     });
     parent = torch::cat({
         parent,
-        torch::zeros({(int64_t)num_new_internal * branching * branching * branching}, parent.options())
+        torch::zeros({(int64_t)num_new_internal * node_size}, parent.options())
     });
     depth = torch::cat({
         depth,
-        torch::zeros({(int64_t)num_new_internal * branching * branching * branching}, depth.options())
+        torch::zeros({(int64_t)num_new_internal * node_size}, depth.options())
     });
 }
 
@@ -271,7 +273,6 @@ void Octree<scalar_t, branching, data_dim>::set_octree(torch::Tensor &indices, c
 
     // Set all parents to be their child's average (bottom to top)
     // Remove the average from the children
-    int32_t node_size = branching * branching * branching;
     if (update_avg) {
         for (int i = max_depth; i > 0; i--) {
             auto child_ids = (depth == torch::tensor({i}, depth.options())).nonzero().squeeze();
