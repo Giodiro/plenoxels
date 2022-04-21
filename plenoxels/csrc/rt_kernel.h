@@ -286,15 +286,17 @@ __device__ __inline__ void trace_ray(
             t_data, t_child, t_icf, /*in_coo=*/pos, /*weights=*/&interp_weights[i][0],
             /*neighbor_coo=*/neighbor_coo, /*neighbor_ids=*/&interp_nids[i][0], /*out_val=*/&interp_vals[i][0],
             /*parent_sum=*/t_parent_sum);
-        printf("%d - interpolation completed. Interpolated value: \n", i);
-        for (int dd = 0; dd < data_dim; dd++) {
-            printf("%f ", interp_vals[i][dd]);
-        }
-        printf("\n");
-        for (int dd = 0; dd < 8; dd++) {
-            printf("%ld  %f\n", interp_nids[i][dd], interp_vals[i][dd]);
-        }
-        printf("\n");
+        #ifdef DEBUG
+            printf("%d - interpolation completed. Interpolated value: \n", i);
+            for (int dd = 0; dd < data_dim; dd++) {
+                printf("%f ", interp_vals[i][dd]);
+            }
+            printf("\n");
+            for (int dd = 0; dd < 8; dd++) {
+                printf("%ld  %f\n", interp_nids[i][dd], interp_vals[i][dd]);
+            }
+            printf("\n");
+        #endif
 
         scalar_t sigma = interp_vals[i][data_dim - 1];
         if (density_softplus) { sigma = _SOFTPLUS_M1(sigma); }
@@ -309,7 +311,6 @@ __device__ __inline__ void trace_ray(
                     tmp += basis_fn[k] * interp_vals[i][off + k];
                 }
                 out[j] += weight * (_SIGMOID(tmp) * d_rgb_pad - rgb_padding);
-                printf("Setting output %d: %f\n", j, out[j]);
             }
             if (light_intensity <= stop_thresh) {  // Full opacity, stop
                 scalar_t scale = 1.0 / (1.0 - light_intensity);
@@ -457,7 +458,6 @@ RenderingOutput volume_render(
     torch::Tensor ray_offsets = torch::full({batch_size, n_intersections}, -1.0,
         torch::dtype(torch::kFloat32).device(tree.data.device()).layout(tree.data.layout()));
     torch::Tensor ray_steps = torch::full_like(ray_offsets, -1.0);
-    printf("Initialized ray_offsets(%ld, %ld) and ray_steps(%ld, %ld)\n", ray_offsets.size(0), ray_offsets.size(1), ray_steps.size(0), ray_steps.size(1));
 
     gen_samples_kernel<scalar_t, branching>
         <<<n_blocks_linear<uint32_t>(batch_size, gen_samples_n_threads), gen_samples_n_threads>>>(
@@ -473,12 +473,13 @@ RenderingOutput volume_render(
             opt.max_samples_per_node,
             (int32_t)batch_size  // TODO: It would be nice without this cast.
     );
-
-    printf("Gen-samples kernel complete. First few intersections follow\n");
-    for (int i = 0; i < 5; i++) {
-        printf("t=%f, dt=%f\n", ray_offsets[0][i].item<float>(), ray_steps[0][i].item<float>());
-    }
-    printf("\n");
+    #ifdef DEBUG
+        printf("Gen-samples kernel complete. First few intersections follow\n");
+        for (int i = 0; i < 5; i++) {
+            printf("t=%f, dt=%f\n", ray_offsets[0][i].item<float>(), ray_steps[0][i].item<float>());
+        }
+        printf("\n");
+    #endif
 
     // 2. Forward pass (allocate tensors)
     torch::Tensor output = torch::empty({batch_size, out_data_dim}, tree.data.options());
@@ -488,7 +489,6 @@ RenderingOutput volume_render(
     torch::Tensor interp_weights = torch::empty({batch_size, n_intersections, 8},
         torch::dtype(torch::kFloat32).device(tree.data.device()).layout(tree.data.layout()));
     torch::Tensor neighbor_coo = torch::empty({batch_size, 8, 3}, interp_weights.options());
-    printf("Forward pass tensors allocated.\n");
 
     // 3. Forward pass (compute)
     render_ray_kernel<scalar_t, branching, data_dim, out_data_dim>

@@ -4,8 +4,7 @@ import torch
 import torch.nn as nn
 
 import plenoxels.c_ext as c_ext
-import plenoxels.c_ext.OctreeCppSpec as OctreeCppSpec
-import plenoxels.c_ext.RenderOptions as RenderOptions
+from plenoxels.c_ext import OctreeCppSpec, RenderOptions
 
 OptTensor = Optional[torch.Tensor]
 
@@ -38,7 +37,7 @@ class Octree(nn.Module):
         self.register_buffer("scaling", 0.5 / radius)
         if center is None:
             center = torch.tensor([0.5, 0.5, 0.5])
-        self.register_buffer("center", 0.5 - center * self.scaling)
+        self.register_buffer("offset", 0.5 - center * self.scaling)
 
         data = torch.zeros(self.max_internal_nodes * self.node_size + 1, self.data_dim, dtype=torch.float32)
         child = torch.zeros(self.max_internal_nodes, self.b, self.b, self.b, dtype=torch.int32)
@@ -79,13 +78,13 @@ class Octree(nn.Module):
 
         new_child = (
             torch.arange(n_nodes, n_nodes_fin, dtype=torch.int32).view(-1, self.b, self.b, self.b)
-            - torch.arange(n_int, n_int + n_int_new).view(-1, 1, 1)
+            - torch.arange(n_int, n_int + n_int_new).view(-1, 1, 1, 1)
         )
         self.child[n_int: n_int + n_int_new] = new_child
         self.is_child_leaf[leaves[:, 0], leaves[:, 1], leaves[:, 2]] = False
         if n_int == 0:
-            self.parent_depth[n_nodes:n_nodes_fin, 0] = 0
-            self.parent_depth[n_nodes:n_nodes_fin, 1] = 1
+            self.parent[n_nodes:n_nodes_fin] = 0
+            self.depth[n_nodes:n_nodes_fin] = 1
         else:
             packed_leaves = pack_index_3d(leaves, self.b).repeat_interleave(self.node_size) + 1
             self.parent[n_nodes: n_nodes_fin] = packed_leaves
@@ -96,16 +95,18 @@ class Octree(nn.Module):
         self.n_internal += n_int_new
 
     def tree_spec(self) -> OctreeCppSpec:
-        return OctreeCppSpec(
-            data=self.data,
-            child=self.child,
-            is_child_leaf=self.is_child_leaf,
-            parent=self.parent,
-            depth=self.depth,
-            scaling=self.scaling,
-            offset=self.offset,
-            parent_sum=self.parent_sum,
-        )
+        if not hasattr(self, 'tree_spec_'):
+            self.tree_spec_ = OctreeCppSpec(
+                self.data,
+                self.child,
+                self.is_child_leaf,
+                self.parent,
+                self.depth,
+                self.scaling,
+                self.offset,
+                self.parent_sum,
+            )
+        return self.tree_spec_
 
     def forward(self, rays_o: torch.Tensor, rays_d: torch.Tensor):
         return VolumeRenderFunction.apply(
@@ -143,23 +144,26 @@ class VolumeRenderFunction(torch.autograd.Function):
                 opt: RenderOptions):
         out = VolumeRenderFunction.dispatch_vol_render(
             tree.tree_spec(), rays_o, rays_d, opt, dtype=tree.data.dtype, branching=tree.b, sh_degree=tree.sh_degree)
+        ctx.save_for_backward(
+            rays_o, rays_d, out.interpolated_vals, out.interpolated_n_ids, out.interpolation_weights, out.ray_offsets,
+            out.ray_steps
+        )
         ctx.tree = tree
-        ctx.rays_o = rays_o
-        ctx.rays_d = rays_d
         ctx.opt = opt
-        ctx.fwd_out = out
         return out.output_rgb
 
     @staticmethod
     def backward(ctx, grad_out):
         if ctx.needs_input_grad[0]:
+            rays_o, rays_d, interpolated_vals, interpolated_n_ids, interpolation_weights, ray_offsets, ray_steps = ctx.saved_tensors
             tree = ctx.tree
-            VolumeRenderFunction.dispatch_vol_render_bwd(
-                tree.tree_spec(), ctx.rays_o, ctx.rays_d, grad_out.contiguous(),
-                ctx.fwd_out.interpolated_vals, ctx.fwd_out.interpolated_n_ids,
-                ctx.fwd_out.interpolation_weights, ctx.fwd_out.ray_offsets, ctx.fwd_out.ray_steps,
+            out = VolumeRenderFunction.dispatch_vol_render_bwd(
+                tree.tree_spec(), rays_o, rays_d, grad_out.contiguous(),
+                interpolated_vals, interpolated_n_ids,
+                interpolation_weights, ray_offsets, ray_steps,
                 ctx.opt, dtype=tree.data.dtype, branching=tree.b, sh_degree=tree.sh_degree
-            ), None, None, None, None
+            )
+            return out, None, None, None, None
         return None, None, None, None, None
 
 

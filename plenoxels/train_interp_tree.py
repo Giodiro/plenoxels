@@ -85,10 +85,10 @@ def init_tree(tree_type, levels, sh_degree, scene_bbox, dtype, device):
         )
     elif tree_type.lower() == "octree":
         render_opt = init_render_opt(background_brightness=1.0)
-        model = Octree(max_internal_nodes=1000, initial_levels=levels, sh_degree=sh_degree,
+        model = Octree(max_internal_nodes=10000, initial_levels=levels, sh_degree=sh_degree,
                        branching=2, radius=(scene_bbox[1] - scene_bbox[0]) / 2,
                        center=(scene_bbox[1] + scene_bbox[0]) / 2, parent_sum=True,
-                       render_opt=render_opt)
+                       render_opt=render_opt).cuda()
         renderer = None
     else:
         raise RuntimeError(f"Tree type {tree_type} not recognized.")
@@ -114,7 +114,7 @@ def train_interp_tree(cfg):
     tr_dset, tr_loader, ts_dset = init_datasets(cfg, dev)
 
     # Initialize model, optimizer
-    model, renderer = init_tree(tree_type, levels=2, sh_degree=sh_degree,
+    model, renderer = init_tree(tree_type, levels=3, sh_degree=sh_degree,
                                 scene_bbox=tr_dset.scene_bbox, dtype=torch.float32,
                                 device=torch.device('cuda:0'))
     optim = init_optimizer(tree_type, tree=model, optim_type=cfg.optim.optimizer, lr=cfg.optim.lr)
@@ -139,14 +139,14 @@ def train_interp_tree(cfg):
                 rays_d = rays[:, 1].contiguous().to(device=dev)
                 imgs = imgs.to(device=dev)
 
-                print(model.is_child_leaf)
+                torch.autograd.gradcheck(lambda d: VolumeRenderFunction.apply(d, model, rays_o, rays_d, model.render_opt), inputs=[model.data])
+
+
                 if tree_type == "octree":
                     preds = model(rays_o=rays_o, rays_d=rays_d)
                 else:
                     preds = renderer.forward(rays=svox_renderer.Rays(origins=rays_o, dirs=rays_d, viewdirs=rays_d))
-                print("preds", preds[:5])
                 loss = F.mse_loss(preds, imgs)
-                print("loss", loss)
                 loss.backward()
                 optim.step()
 
@@ -157,6 +157,7 @@ def train_interp_tree(cfg):
                 if i % cfg.optim.progress_refresh_rate == 0:
                     print(f"Epoch {epoch} - iteration {i}: "
                           f"MSE {np.mean(mses):.4f} PSNR {np.mean(psnrs):.4f}")
+                    print(preds[:2])
                     psnrs, mses = [], []
 
                 if (i + 1) % cfg.optim.eval_refresh_rate == 0:

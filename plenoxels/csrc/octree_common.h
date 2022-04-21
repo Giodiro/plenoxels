@@ -48,7 +48,6 @@ __device__ __inline__ void interp_quad_3d_newt(
     p1~(0,0,0), p2~(0,0,1), p3~(0,1,0), p4~(1,0,0), p5~(0,1,1),
     p6~(1,0,1), p7~(1,1,0), p8~(1,1,1)
     */
-    printf("Interpolating coordinate %f %f %f\n", point->x, point->y, point->z);
     int32_t num_iter = 4;
     float3 stw = make_float3(0.49, 0.49, 0.49);
     float3 js = make_float3(0, 0, 0), jt = make_float3(0, 0, 0), jw = make_float3(0, 0, 0), r = make_float3(0, 0, 0);
@@ -109,7 +108,6 @@ __device__ __inline__ void interp_quad_3d_newt(
         stw.z = fmaf(inv_det_j, -det_other, stw.z);
         if (num_iter > 1)
             clamp_coord(stw, 1e-4, 1-1e-4);
-        printf("s %f - t %f - w %f\n", stw.x, stw.y, stw.z);
     }
     weights[0] = (1 - stw.x) * (1 - stw.y) * (1 - stw.z) ;
     weights[1] = (1 - stw.x) * (1 - stw.y) * stw.z       ;
@@ -279,19 +277,19 @@ __device__ __inline__ void _dev_query_interp(
                 neighbor_coo[i][2] = (floorf(in_coo.z * cube_sz + OFFSET2[i][2] + 1e-5) + 0.5) / cube_sz;
                 clamp_coord(&neighbor_coo[i][0], 1 / (cube_sz * branching), 1 - 1 / (cube_sz * branching));
 
-                //#ifdef DEBUG
+                #ifdef DEBUG
                     printf("Set valid neighbor %d: %ld, coordinate %f %f %f \n",
                         i, neighbor_ids[i], neighbor_coo[i][0], neighbor_coo[i][1], neighbor_coo[i][2]);
-                //#endif
+                #endif
             }
         }
 
         // Determine whether we have finished, and we must interpolate
         if (is_child_leaf[node_id][u][v][w]) {
             interp_quad_3d_newt(weights, &in_coo, neighbor_coo);
-            //#ifdef DEBUG
+            #ifdef DEBUG
                 printf("Weights: %f %f %f %f %f %f %f %f\n", weights[0], weights[1], weights[2], weights[3], weights[4], weights[5], weights[6], weights[7]);
-            //#endif
+            #endif
             for (j = 0; j < 8; j++) {
                 if (neighbor_ids[j] < 0) continue;
                 for (i = 0; i < data_dim; i++) {

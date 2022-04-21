@@ -12,11 +12,11 @@ _C.sh.degree = 2
 _C.sh.sh_encoder = "plenoxels"
 
 _C.optim = CN()
-_C.optim.batch_size = 1
+_C.optim.batch_size = 4000
 _C.optim.occupancy_penalty = 0.001
 _C.optim.profile = False
 _C.optim.num_epochs = 10
-_C.optim.progress_refresh_rate = 500
+_C.optim.progress_refresh_rate = 50
 _C.optim.eval_refresh_rate = 1200
 _C.optim.render_refresh_rate = 1
 _C.optim.lr = 1e7
