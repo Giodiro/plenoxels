@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 import svox
 import svox_renderer
-from plenoxels.simple_tree import Octree, init_render_opt
+from plenoxels.simple_tree import Octree, init_render_opt, VolumeRenderFunction
 from synthetic_nerf_dataset import SyntheticNerfDataset
 from tc_plenoptimize import init_datasets, init_profiler, parse_config
 
@@ -139,7 +139,8 @@ def train_interp_tree(cfg):
                 rays_d = rays[:, 1].contiguous().to(device=dev)
                 imgs = imgs.to(device=dev)
 
-                torch.autograd.gradcheck(lambda d: VolumeRenderFunction.apply(d, model, rays_o, rays_d, model.render_opt), inputs=[model.data])
+                torch.autograd.gradcheck(
+                    lambda d: VolumeRenderFunction.apply(d, model, rays_o, rays_d, model.render_opt), inputs=[model.data])
 
 
                 if tree_type == "octree":

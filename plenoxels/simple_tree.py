@@ -143,7 +143,7 @@ class VolumeRenderFunction(torch.autograd.Function):
                 rays_d: torch.Tensor,
                 opt: RenderOptions):
         out = VolumeRenderFunction.dispatch_vol_render(
-            tree.tree_spec(), rays_o, rays_d, opt, dtype=tree.data.dtype, branching=tree.b, sh_degree=tree.sh_degree)
+            data, tree.tree_spec(), rays_o, rays_d, opt, dtype=tree.data.dtype, branching=tree.b, sh_degree=tree.sh_degree)
         ctx.save_for_backward(
             rays_o, rays_d, out.interpolated_vals, out.interpolated_n_ids, out.interpolation_weights, out.ray_offsets,
             out.ray_steps

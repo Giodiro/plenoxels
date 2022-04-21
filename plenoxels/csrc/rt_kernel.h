@@ -442,12 +442,13 @@ __global__ void gen_samples_kernel(
 
 template <typename scalar_t, int32_t branching, int32_t data_dim, int32_t out_data_dim>
 RenderingOutput volume_render(
+    torch::Tensor & data,
     OctreeCppSpec<scalar_t> & tree,
     const torch::Tensor & rays_o,
     const torch::Tensor & rays_d,
     const RenderOptions & opt)
 {
-    DEVICE_GUARD(tree.data);
+    DEVICE_GUARD(data);
     const uint32_t batch_size = rays_o.size(0);
 
     const uint32_t gen_samples_n_threads = 128;
@@ -456,7 +457,7 @@ RenderingOutput volume_render(
     // 1. Generate samples
     const int32_t n_intersections = 1024;
     torch::Tensor ray_offsets = torch::full({batch_size, n_intersections}, -1.0,
-        torch::dtype(torch::kFloat32).device(tree.data.device()).layout(tree.data.layout()));
+        torch::dtype(torch::kFloat32).device(data.device()).layout(data.layout()));
     torch::Tensor ray_steps = torch::full_like(ray_offsets, -1.0);
 
     gen_samples_kernel<scalar_t, branching>
@@ -482,18 +483,18 @@ RenderingOutput volume_render(
     #endif
 
     // 2. Forward pass (allocate tensors)
-    torch::Tensor output = torch::empty({batch_size, out_data_dim}, tree.data.options());
-    torch::Tensor interp_vals = torch::empty({batch_size, n_intersections, data_dim}, tree.data.options());
+    torch::Tensor output = torch::empty({batch_size, out_data_dim}, data.options());
+    torch::Tensor interp_vals = torch::empty({batch_size, n_intersections, data_dim}, data.options());
     torch::Tensor interp_nids = torch::full({batch_size, n_intersections, 8}, -1,
-        torch::dtype(torch::kInt64).device(tree.data.device()).layout(tree.data.layout()));
+        torch::dtype(torch::kInt64).device(data.device()).layout(data.layout()));
     torch::Tensor interp_weights = torch::empty({batch_size, n_intersections, 8},
-        torch::dtype(torch::kFloat32).device(tree.data.device()).layout(tree.data.layout()));
+        torch::dtype(torch::kFloat32).device(data.device()).layout(data.layout()));
     torch::Tensor neighbor_coo = torch::empty({batch_size, 8, 3}, interp_weights.options());
 
     // 3. Forward pass (compute)
     render_ray_kernel<scalar_t, branching, data_dim, out_data_dim>
         <<<n_blocks_linear<uint32_t>(batch_size, render_ray_n_threads), render_ray_n_threads>>>(
-            tree.data_acc(),
+            data.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits(),
             tree.child_acc(),
             tree.is_child_leaf_acc(),
             tree.parent_sum,
@@ -528,6 +529,7 @@ RenderingOutput volume_render(
 
 template <typename scalar_t, int32_t branching, int32_t data_dim, int32_t out_data_dim>
 torch::Tensor volume_render_bwd(
+    torch::Tensor
     OctreeCppSpec<scalar_t> & tree,
     const torch::Tensor & rays_o,
     const torch::Tensor & rays_d,
