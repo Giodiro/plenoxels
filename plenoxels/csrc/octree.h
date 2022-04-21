@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdexcept>
+#include <string>
 #include <tuple>
 #include <iostream>
 #include <torch/extension.h>
@@ -42,7 +44,7 @@ struct Octree : torch::nn::Module {
             torch::ones({max_internal_nodes, branching, branching, branching}, torch::kBool));
         parent = register_buffer("parent",
             torch::zeros({max_internal_nodes * node_size + 1}, torch::kInt32));
-        parent[0] = -1;
+        parent.index_put_({0}, torch::tensor({-1}, parent.options()));  // parent of root node is -1.
         depth = register_buffer("depth",
             torch::zeros({max_internal_nodes * node_size + 1}, torch::kInt32));
     }
@@ -51,7 +53,7 @@ struct Octree : torch::nn::Module {
     int32_t max_depth;
     int32_t max_internal_nodes;
     bool parent_sum;
-    const constexpr int32_t node_size = branching * branching * branching;
+    const int32_t node_size = branching * branching * branching;
 
     torch::Tensor data;
     torch::Tensor child;
@@ -89,13 +91,6 @@ struct Octree : torch::nn::Module {
     float * scaling_ptr() {
         return scaling.data_ptr<float>();
     }
-
-    Octree<scalar_t, branching, data_dim>& eval() {
-        return *this;
-    }
-    Octree<scalar_t, branching, data_dim>& train() {
-        return *this;
-    }
 };
 
 
@@ -111,7 +106,7 @@ void Octree<scalar_t, branching, data_dim>::_resize_add_cap(const int64_t num_ne
 {
     torch::NoGradGuard no_grad;
     if (num_new_internal + n_internal > max_internal_nodes) {
-        throw new std::exception("Failed to resize tree: desired number of internal nodes exceeds maximum.");
+        throw std::runtime_error::runtime_error("Failed to resize tree: desired number of internal nodes exceeds maximum.");
     }
 
     printf("[Octree] Adding %ld nodes to tree\n", num_new_internal);
