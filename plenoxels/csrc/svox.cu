@@ -38,38 +38,26 @@
 namespace py = pybind11;
 using torch::Tensor;
 
-//QueryResult query_vertical(TreeSpec&, Tensor);
-//Tensor query_vertical_backward(TreeSpec&, Tensor, Tensor);
-//Tensor query_interp(TreeSpec& tree, Tensor indices);
-//void assign_vertical(TreeSpec&, Tensor, Tensor);
-//
-//Tensor volume_render(TreeSpec&, RaysSpec&, RenderOptions&);
-//Tensor volume_render_image(TreeSpec&, CameraSpec&, RenderOptions&);
-//Tensor volume_render_backward(TreeSpec&, RaysSpec&, RenderOptions&, Tensor);
-//Tensor volume_render_image_backward(TreeSpec&, CameraSpec&, RenderOptions&, Tensor);
-//
-//Tensor calc_corners(TreeSpec&, Tensor);
-
 template <typename scalar_t, int32_t branching, int32_t data_dim, int32_t out_data_dim>
 void declare_octree(py::module &m, const std::string &typestr) {
-    using TOctree = Octree<scalar_t, branching, data_dim>;
-    std::string pyclass_name = std::string("Octree") + typestr;
+//    using TOctree = Octree<scalar_t, branching, data_dim>;
+//    std::string pyclass_name = std::string("Octree") + typestr;
 //    py::class_<TOctree>(m, pyclass_name.c_str())
-    torch::python::bind_module<TOctree>(m, pyclass_name.c_str())
-        .def(py::init<int32_t, bool, torch::Device, torch::optional<torch::Tensor>, torch::optional<torch::Tensor>, int32_t>())
-        .def_readonly("n_internal", &TOctree::n_internal)
-        .def_readonly("max_depth", &TOctree::max_depth)
-        .def_readonly("parent_sum", &TOctree::parent_sum)
-        .def_readonly("node_size", &TOctree::node_size)
-        .def_readwrite("data", &TOctree::data)
-        .def_readwrite("child", &TOctree::child)
-        .def_readwrite("is_child_leaf", &TOctree::is_child_leaf)
-        .def_readwrite("parent", &TOctree::parent)
-        .def_readwrite("depth", &TOctree::depth)
-        .def("refine", &TOctree::refine_octree)
-        .def("query", &TOctree::query_octree)
-        .def("set", &TOctree::set_octree)
-        .def("query_interp", &TOctree::query_interp_octree);
+//    torch::python::bind_module<TOctree>(m, pyclass_name.c_str())
+//        .def(py::init<int32_t, bool, torch::Device, torch::optional<torch::Tensor>, torch::optional<torch::Tensor>, int32_t>())
+//        .def_readonly("n_internal", &TOctree::n_internal)
+//        .def_readonly("max_depth", &TOctree::max_depth)
+//        .def_readonly("parent_sum", &TOctree::parent_sum)
+//        .def_readonly("node_size", &TOctree::node_size)
+//        .def_readwrite("data", &TOctree::data)
+//        .def_readwrite("child", &TOctree::child)
+//        .def_readwrite("is_child_leaf", &TOctree::is_child_leaf)
+//        .def_readwrite("parent", &TOctree::parent)
+//        .def_readwrite("depth", &TOctree::depth)
+//        .def("refine", &TOctree::refine_octree)
+//        .def("query", &TOctree::query_octree)
+//        .def("set", &TOctree::set_octree)
+//        .def("query_interp", &TOctree::query_interp_octree);
 //        .def("train", &TOctree::train)
 //        .def("eval", &TOctree::eval);
 
@@ -111,4 +99,15 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         .def_readwrite("stop_thresh", &RenderOptions::stop_thresh)
         .def_readwrite("density_softplus", &RenderOptions::density_softplus)
         .def_readwrite("rgb_padding", &RenderOptions::rgb_padding);
+
+    py::class_<OctreeCppSpec>(m, "OctreeCppSpec")
+        .def(py::init<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, bool>())
+        .def_readwrite("data", &OctreeCppSpec::data)
+        .def_readwrite("child", &OctreeCppSpec::child)
+        .def_readwrite("is_child_leaf", &OctreeCppSpec::is_child_leaf)
+        .def_readwrite("parent", &OctreeCppSpec::parent)
+        .def_readwrite("depth", &OctreeCppSpec::depth)
+        .def_readwrite("scaling", &OctreeCppSpec::scaling)
+        .def_readwrite("offset", &OctreeCppSpec::offset)
+        .def_readonly("parent_sum", &OctreeCppSpec::parent_sum);
 }

@@ -39,7 +39,6 @@ __device__ __inline__ void traverse_tree_level(
 __device__ __inline__ void interp_quad_3d_newt(
     float * __restrict__ weights,
     const float3 * __restrict__ point,
-//    const torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> n
     const torch::TensorAccessor<float, 2, torch::RestrictPtrTraits, int32_t> n
 )
 {
@@ -127,8 +126,8 @@ __device__ __inline__ void interp_quad_3d_newt(
 // Device kernels
 template <typename scalar_t, int32_t branching>
 __device__ __inline__ void _dev_query_ninfo(
-    const torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> child,
-    const torch::PackedTensorAccessor32<bool, 4, torch::RestrictPtrTraits> is_child_leaf,
+    const Acc32<int32_t, 4> child,
+    const Acc32<bool, 4> is_child_leaf,
     float3& __restrict__ coordinate,
     float* __restrict__ cube_sz_out,
     int64_t* __restrict__ node_id_out)
@@ -150,9 +149,9 @@ __device__ __inline__ void _dev_query_ninfo(
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 __device__ __inline__ void _dev_query_sum(
-    torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> data,
-    const torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> child,
-    const torch::PackedTensorAccessor32<bool, 4, torch::RestrictPtrTraits> is_child_leaf,
+    Acc64<scalar_t, 2> data,
+    const Acc32<int32_t, 4> child,
+    const Acc32<bool, 4> is_child_leaf,
     float3& __restrict__ coordinate,
     scalar_t* __restrict__ out_val
 )
@@ -180,9 +179,9 @@ __device__ __inline__ void _dev_query_sum(
 
 template <typename scalar_t, int32_t branching>
 __device__ __inline__ scalar_t* _dev_query_single(
-    torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> data,
-    const torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> child,
-    const torch::PackedTensorAccessor32<bool, 4, torch::RestrictPtrTraits> is_child_leaf,
+    Acc64<scalar_t, 2> data,
+    const Acc32<int32_t, 4> child,
+    const Acc32<bool, 4> is_child_leaf,
     float3 & __restrict__ coordinate
 )
 {
@@ -217,7 +216,6 @@ __device__ __inline__ void _dev_query_interp(
     const float3& __restrict__ in_coo,     // query coordinate
     float    * __restrict__ weights,       // [8]. output parameter. Interpolation weights
     torch::TensorAccessor<float, 2, torch::RestrictPtrTraits, int32_t> neighbor_coo,    // [8,3]. output parameter (temp buffer). Coordinates of the neighbors
-//    torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> neighbor_coo,  // [8,3]. output parameter (temp buffer). Coordinates of the neighbors
     int64_t  * __restrict__ neighbor_ids,  // [8]. output parameter. Node IDs of the interpolation neighbors. Assumed to all be -1 on input.
     scalar_t * __restrict__ out_val,       // [data_dim]. output parameter. Interpolated value
     const bool parent_sum                                                                    // tree description
@@ -407,11 +405,11 @@ __global__ void octree_query_interp_kernel(
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 __global__ void octree_set_kernel(
-    torch::PackedTensorAccessor64<scalar_t, 2, torch::RestrictPtrTraits> tree_data,
-    const torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> child,
-    const torch::PackedTensorAccessor32<bool, 4, torch::RestrictPtrTraits> is_child_leaf,
-    torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> indices,
-    const torch::PackedTensorAccessor32<scalar_t, 2, torch::RestrictPtrTraits> values,
+    Acc64<scalar_t, 2> tree_data,
+    const Acc32<int32_t, 4> child,
+    const Acc32<bool, 4> is_child_leaf,
+    Acc32<float, 2> indices,
+    const Acc32<scalar_t, 2> values,
     const size_t n_elements
 )
 {

@@ -11,6 +11,7 @@ from tqdm import tqdm
 
 import svox
 import svox_renderer
+from plenoxels.csrc.simple_tree import Octree, init_render_opt
 from synthetic_nerf_dataset import SyntheticNerfDataset
 from tc_plenoptimize import init_datasets, init_profiler, parse_config
 import plenoxels.c_ext as _C
@@ -84,16 +85,12 @@ def init_tree(tree_type, levels, sh_degree, scene_bbox, dtype, device):
             background_brightness=1.0,
         )
     elif tree_type.lower() == "octree":
-        model = _C.Octreef2d2(
-            levels, True, device,
-            (scene_bbox[1] - scene_bbox[0]) / 2, (scene_bbox[1] + scene_bbox[0]) / 2,
-            1000
-        )#.to(device)
-        renderer = svox_renderer.SimpleVolumeRenderer(
-            tree=model, background_brightness=1.0
-        )
-        for i in range(levels):
-            model.refine(None)
+        render_opt = init_render_opt(background_brightness=1.0)
+        model = Octree(max_internal_nodes=1000, initial_levels=levels, sh_degree=sh_degree,
+                       branching=2, radius=(scene_bbox[1] - scene_bbox[0]) / 2,
+                       center=(scene_bbox[1] + scene_bbox[0]) / 2, parent_sum=True,
+                       render_opt=render_opt)
+        renderer = None
     else:
         raise RuntimeError(f"Tree type {tree_type} not recognized.")
     return model, renderer
@@ -112,15 +109,16 @@ def init_optimizer(tree_type, tree, optim_type, lr):
 
 
 def train_interp_tree(cfg):
+    tree_type = "octree"
     sh_degree = cfg.sh.degree
     dev = "cuda:0" if torch.cuda.is_available() else "cpu"
     tr_dset, tr_loader, ts_dset = init_datasets(cfg, dev)
 
     # Initialize model, optimizer
-    model, renderer = init_tree("octree", levels=2, sh_degree=sh_degree,
+    model, renderer = init_tree(tree_type, levels=2, sh_degree=sh_degree,
                                 scene_bbox=tr_dset.scene_bbox, dtype=torch.float32,
                                 device=torch.device('cuda:0'))
-    optim = init_optimizer("octree", tree=model, optim_type=cfg.optim.optimizer, lr=cfg.optim.lr)
+    optim = init_optimizer(tree_type, tree=model, optim_type=cfg.optim.optimizer, lr=cfg.optim.lr)
     # Initialize data
     with torch.autograd.no_grad():
         model.data[..., :-1].fill_(0.01)  # RGB
@@ -143,7 +141,10 @@ def train_interp_tree(cfg):
                 imgs = imgs.to(device=dev)
 
                 print(model.is_child_leaf)
-                preds = renderer.forward(rays=svox_renderer.Rays(origins=rays_o, dirs=rays_d, viewdirs=rays_d))
+                if tree_type == "octree":
+                    preds = model(rays_o=rays_o, rays_d=rays_d)
+                else:
+                    preds = renderer.forward(rays=svox_renderer.Rays(origins=rays_o, dirs=rays_d, viewdirs=rays_d))
                 print("preds", preds[:5])
                 loss = F.mse_loss(preds, imgs)
                 print("loss", loss)
