@@ -139,10 +139,6 @@ def train_interp_tree(cfg):
                 rays_d = rays[:, 1].contiguous().to(device=dev)
                 imgs = imgs.to(device=dev)
 
-                torch.autograd.gradcheck(
-                    lambda d: VolumeRenderFunction.apply(d, model, rays_o, rays_d, model.render_opt), inputs=[model.data])
-
-
                 if tree_type == "octree":
                     preds = model(rays_o=rays_o, rays_d=rays_d)
                 else:

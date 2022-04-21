@@ -19,6 +19,7 @@ class Octree(nn.Module):
                  radius: OptTensor = None,
                  center: OptTensor = None,
                  parent_sum: bool = True,
+                 dtype: torch.dtype = torch.float32
                  ):
         super().__init__()
 
@@ -31,6 +32,7 @@ class Octree(nn.Module):
         self.node_size = self.b ** 3
         self.parent_sum = parent_sum
         self.render_opt = render_opt
+        self.data_dt = dtype
 
         if radius is None:
             radius = torch.tensor([0.5, 0.5, 0.5])
@@ -39,7 +41,7 @@ class Octree(nn.Module):
             center = torch.tensor([0.5, 0.5, 0.5])
         self.register_buffer("offset", 0.5 - center * self.scaling)
 
-        data = torch.zeros(self.max_internal_nodes * self.node_size + 1, self.data_dim, dtype=torch.float32)
+        data = torch.zeros(self.max_internal_nodes * self.node_size + 1, self.data_dim, dtype=self.data_dt)
         child = torch.zeros(self.max_internal_nodes, self.b, self.b, self.b, dtype=torch.int32)
         is_child_leaf = torch.ones(self.max_internal_nodes, self.b, self.b, self.b, dtype=torch.bool)
         parent = torch.zeros(self.max_internal_nodes * self.node_size + 1, dtype=torch.int32)
@@ -216,3 +218,19 @@ def init_render_opt(background_brightness: float = 1.0,
     opts.max_comp = 1
 
     return opts
+
+
+def gradcheck():
+    tree = Octree(max_internal_nodes=9, initial_levels=2, sh_degree=1, render_opt=init_render_opt(),
+                  branching=2, radius=None, center=None, parent_sum=True)
+    print("n_internal", tree.n_internal)
+    rays_o = torch.zeros(5, 3)
+    rays_d = torch.abs(torch.randn(5, 3))
+    rays_d = rays_d / torch.linalg.norm(rays_d, dim=1)
+
+    torch.autograd.gradcheck(
+        lambda d: VolumeRenderFunction.apply(d, tree, rays_o, rays_d, tree.render_opt), inputs=[tree.data])
+
+
+if __name__ == "__main__":
+    gradcheck()
