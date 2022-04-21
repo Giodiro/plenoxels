@@ -184,6 +184,14 @@ __device__ __inline__ void trace_ray_backward(
             }
             light_intensity *= att;
             accum += weight * total_color;
+            if (light_intensity <= stop_thresh) {
+                scalar_t total_grad = 0.f;
+                for (int j = 0; j < out_data_dim; ++j) { total_grad += grad_output[j]; }
+                scalar_t scale = 1 / (1 - light_intensity);
+                acccum *= scale * total_grad;
+                light_intensity = 0;
+                break;
+            }
         }
     }
     scalar_t total_grad = 0.f;
@@ -232,6 +240,9 @@ __device__ __inline__ void trace_ray_backward(
             _dev_query_single_outv_bwd<scalar_t, data_dim>(
                 /*parent=*/t_parent, /*grad=*/grad_data_out, /*weights=*/&interp_weights[i][0],
                 /*neighbor_ids=*/&interp_nids[i][0], /*grad_output=*/grad_tree_val);
+            if (light_intensity <= stop_thresh) {
+                break;
+            }
         }
     }
 }  // trace_ray_backward
