@@ -1,16 +1,14 @@
 #pragma once
 
-#include <stdexcept>
-#include <string>
-#include <tuple>
-#include <iostream>
+//#include <stdexcept>
+//#include <string>
+//#include <tuple>
+//#include <iostream>
 #include <torch/extension.h>
-#include <math.h>
-#include <c10/util/typeid.h>
+//#include <math.h>
+//#include <c10/util/typeid.h>
 
-#include "octree_common.h"
-
-using namespace torch::indexing;
+//using namespace torch::indexing;
 
 template<typename scalar_t>
 struct OctreeCppSpec {

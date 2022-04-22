@@ -3,6 +3,8 @@
 #include <tuple>
 #include <torch/extension.h>
 #include "cuda_common.h"
+#include "octree.h"
+
 
 template <typename T, size_t N>
 using Acc32 = torch::GenericPackedTensorAccessor<T, N, torch::RestrictPtrTraits, int32_t>;
