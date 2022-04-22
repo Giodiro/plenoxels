@@ -585,11 +585,11 @@ void octree_set(
             auto parent_ids = tree.parent.index({child_ids}).to(torch::kInt64);
             tree.data.index_put_({parent_ids}, torch::tensor({0}, tree.data.options().requires_grad(false)));
             tree.data.scatter_add_(
-                0, parent_ids.unsqueeze(-1).expand(parent_ids.size(0), data_dim), tree.data.index({child_ids}));
+                0, parent_ids.unsqueeze(-1).expand({parent_ids.size(0), data_dim}), tree.data.index({child_ids}));
             tree.data.index({parent_ids}).div_(branching * branching * branching);
             if (tree.parent_sum) {
                 tree.data.scatter_add_(
-                    0, child_ids.unsqueeze(-1).expand(child_ids.size(0), data_dim), -tree.data.index({parent_ids}));
+                    0, child_ids.unsqueeze(-1).expand({child_ids.size(0), data_dim}), -tree.data.index({parent_ids}));
             }
         }
     }
