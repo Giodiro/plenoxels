@@ -578,7 +578,8 @@ void octree_set(
     // Set all parents to be their child's average (bottom to top)
     // Remove the average from the children
     if (update_avg) {
-        int32_t max_depth = tree.depth.max().item<int32_t>();
+        torch::Tensor max_depth_t = tree.depth.max();
+        int32_t max_depth = max_depth_t.item<int32_t>();
         for (int i = max_depth; i > 0; i--) {
             auto child_ids = (tree.depth == torch::tensor({i}, tree.depth.options())).nonzero().squeeze();
             auto parent_ids = tree.parent.index({child_ids}).to(torch::kInt64);
