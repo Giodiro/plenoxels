@@ -503,7 +503,7 @@ __global__ void octree_query_interp_kernel(
     );
 }
 
-template <typename scalar_t, int32_t banching, int32_t data_dim>
+template <typename scalar_t, int32_t branching, int32_t data_dim>
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> octree_query_interp(
     OctreeCppSpec<scalar_t> & tree,
     const torch::Tensor     & indices)
@@ -568,7 +568,7 @@ void octree_set(
     if (n_elements <= 0) {
         return;
     }
-    octree_set_kernel<scalar_t, branching, data_dim><<<n_blocks_linear<uint32>(n_elements, 128), 128>>>(
+    octree_set_kernel<scalar_t, branching, data_dim><<<n_blocks_linear<uint32_t>(n_elements, 128), 128>>>(
         tree.data_acc(), tree.child_acc(), tree.is_child_leaf_acc(),
         indices.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
         vals.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
@@ -578,14 +578,14 @@ void octree_set(
     // Set all parents to be their child's average (bottom to top)
     // Remove the average from the children
     if (update_avg) {
-        uint32_t max_depth = tree.depth.max();
+        int32_t max_depth = tree.depth.max().item<int32_t>();
         for (int i = max_depth; i > 0; i--) {
             auto child_ids = (tree.depth == torch::tensor({i}, tree.depth.options())).nonzero().squeeze();
             auto parent_ids = tree.parent.index({child_ids}).to(torch::kInt64);
             tree.data.index_put_({parent_ids}, torch::tensor({0}, tree.data.options().requires_grad(false)));
             tree.data.scatter_add_(
                 0, parent_ids.unsqueeze(-1).expand(parent_ids.size(0), data_dim), tree.data.index({child_ids}));
-            tree.data.index({parent_ids}).div_(banching * branching * branching);
+            tree.data.index({parent_ids}).div_(branching * branching * branching);
             if (tree.parent_sum) {
                 tree.data.scatter_add_(
                     0, child_ids.unsqueeze(-1).expand(child_ids.size(0), data_dim), -tree.data.index({parent_ids}));
