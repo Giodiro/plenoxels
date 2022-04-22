@@ -10,6 +10,13 @@
 
 //using namespace torch::indexing;
 
+
+template <typename T, size_t N>
+using Acc32 = torch::GenericPackedTensorAccessor<T, N, torch::RestrictPtrTraits, int32_t>;
+template <typename T, size_t N>
+using Acc64 = torch::GenericPackedTensorAccessor<T, N, torch::RestrictPtrTraits, int64_t>;
+
+
 template<typename scalar_t>
 struct OctreeCppSpec {
     OctreeCppSpec(torch::Tensor data,

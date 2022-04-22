@@ -6,11 +6,6 @@
 #include "octree.h"
 
 
-template <typename T, size_t N>
-using Acc32 = torch::GenericPackedTensorAccessor<T, N, torch::RestrictPtrTraits, int32_t>;
-template <typename T, size_t N>
-using Acc64 = torch::GenericPackedTensorAccessor<T, N, torch::RestrictPtrTraits, int64_t>;
-
 constexpr uint32_t n_threads_linear = 128;
 
 template <typename T>
