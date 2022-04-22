@@ -40,7 +40,10 @@ def run_test_step(test_dset: SyntheticNerfDataset,
                 rays_d = rays[b * batch_size: (b + 1) * batch_size, 1].contiguous().to(
                     device=device)
 
-                rgb_map_b = renderer.forward(rays=svox_renderer.Rays(origins=rays_o, dirs=rays_d, viewdirs=rays_d))
+                if renderer is not None:
+                    rgb_map_b = renderer.forward(rays=svox_renderer.Rays(origins=rays_o, dirs=rays_d, viewdirs=rays_d))
+                else:
+                    rgb_map_b = model.forward(rays_o=rays_o, rays_d=rays_d)
                 rgb_map.append(rgb_map_b.cpu())
                 # depth.append(depth_b.cpu())
             rgb_map = torch.stack(rgb_map, 0).reshape(test_dset.img_h, test_dset.img_w, 3)
@@ -85,10 +88,10 @@ def init_tree(tree_type, levels, sh_degree, scene_bbox, dtype, device):
         )
     elif tree_type.lower() == "octree":
         render_opt = init_render_opt(background_brightness=1.0)
-        model = Octree(max_internal_nodes=10000, initial_levels=levels, sh_degree=sh_degree,
+        model = Octree(max_internal_nodes=1000000, initial_levels=levels, sh_degree=sh_degree,
                        branching=2, radius=(scene_bbox[1] - scene_bbox[0]) / 2,
-                       center=(scene_bbox[1] + scene_bbox[0]) / 2, parent_sum=True,
-                       render_opt=render_opt).cuda()
+                       center=(scene_bbox[1] + scene_bbox[0]) / 2, parent_sum=False,
+                       render_opt=render_opt, dtype=torch.float32).cuda()
         renderer = None
     else:
         raise RuntimeError(f"Tree type {tree_type} not recognized.")
@@ -102,7 +105,7 @@ def init_optimizer(tree_type, tree, optim_type, lr):
         raise RuntimeError(f"Tree type {tree_type} not recognized.")
 
     if optim_type.lower() == "sgd":
-        return torch.optim.SGD(params=params, lr=lr)
+        return torch.optim.SGD(params=params, lr=lr, momentum=0.9)
     else:
         raise RuntimeError(f"Optimizer type {optim_type} not recognized.")
 
@@ -114,7 +117,7 @@ def train_interp_tree(cfg):
     tr_dset, tr_loader, ts_dset = init_datasets(cfg, dev)
 
     # Initialize model, optimizer
-    model, renderer = init_tree(tree_type, levels=5, sh_degree=sh_degree,
+    model, renderer = init_tree(tree_type, levels=7, sh_degree=sh_degree,
                                 scene_bbox=tr_dset.scene_bbox, dtype=torch.float32,
                                 device=torch.device('cuda:0'))
     optim = init_optimizer(tree_type, tree=model, optim_type=cfg.optim.optimizer, lr=cfg.optim.lr)
@@ -154,7 +157,6 @@ def train_interp_tree(cfg):
                 if i % cfg.optim.progress_refresh_rate == 0:
                     print(f"Epoch {epoch} - iteration {i}: "
                           f"MSE {np.mean(mses):.4f} PSNR {np.mean(psnrs):.4f}")
-                    print(preds[:2])
                     psnrs, mses = [], []
 
                 if (i + 1) % cfg.optim.eval_refresh_rate == 0:

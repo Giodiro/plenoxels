@@ -164,14 +164,12 @@ class VolumeRenderFunction(torch.autograd.Function):
         )
         ctx.tree = tree
         ctx.opt = opt
-        #print("output rgb", out.output_rgb)
         return out.output_rgb
 
     @staticmethod
     def backward(ctx, grad_out):
         if ctx.needs_input_grad[0]:
             rays_o, rays_d, interpolated_vals, interpolated_n_ids, interpolation_weights, ray_offsets, ray_steps = ctx.saved_tensors
-            #print("Neighbor IDS", (interpolated_n_ids != -1).float().sum())
             tree = ctx.tree
             out = VolumeRenderFunction.dispatch_vol_render_bwd(
                 tree.tree_spec(), rays_o, rays_d, grad_out.contiguous(),
@@ -179,8 +177,6 @@ class VolumeRenderFunction(torch.autograd.Function):
                 interpolation_weights, ray_offsets, ray_steps,
                 ctx.opt, dtype=tree.data.dtype, branching=tree.b, sh_degree=tree.sh_degree
             )
-            #print("grad_out", grad_out)
-            #print("grad", out)
             return out, None, None, None, None
         return None, None, None, None, None
 
@@ -238,12 +234,12 @@ def init_render_opt(background_brightness: float = 1.0,
 
 def gradcheck():
     torch.manual_seed(42)
-    tree = Octree(max_internal_nodes=1, initial_levels=1, sh_degree=0, render_opt=init_render_opt(),
-                  branching=2, radius=None, center=None, parent_sum=False, dtype=torch.float64).cuda()
+    tree = Octree(max_internal_nodes=11, initial_levels=2, sh_degree=1, render_opt=init_render_opt(),
+                  branching=2, radius=None, center=None, parent_sum=True, dtype=torch.float64).cuda()
     with torch.no_grad():
         tree.data.copy_(torch.randn_like(tree.data) + 2)
-    rays_o = torch.zeros(1, 3).cuda()
-    rays_d = torch.abs(torch.randn(1, 3)).cuda()
+    rays_o = torch.zeros(2, 3).cuda()
+    rays_d = torch.abs(torch.randn(2, 3)).cuda()
     rays_d = rays_d / torch.linalg.norm(rays_d, dim=1, keepdim=True)
 
     torch.autograd.gradcheck(

@@ -210,7 +210,7 @@ __device__ __inline__ void _dev_query_single_outv(
     const bool parent_sum
 )
 {
-    clamp_coord(coordinate, 0.0, 1.0 - 1e-9);
+    clamp_coord(in_coo, 0.0, 1.0 - 1e-9);
 
     int32_t node_id = 0;
     int32_t u, v, w, skip;
@@ -222,7 +222,7 @@ __device__ __inline__ void _dev_query_single_outv(
         for (i = 0; i < data_dim; i++) { out_val[i] = 0; }
     }
     while (true) {
-        traverse_tree_level<branching>(coordinate, &u, &v, &w);
+        traverse_tree_level<branching>(in_coo, &u, &v, &w);
         skip = child[node_id][u][v][w];
         if (parent_sum || is_child_leaf[node_id][u][v][w]) {
             for (i = 0; i < data_dim; i++) {
@@ -245,7 +245,7 @@ __device__ __inline__ void _dev_query_single_outv_bwd(
     const int64_t* __restrict__ neighbor_ids,   // Only first element used.
     const scalar_t* __restrict__ grad_output)   // [data_dim].
 {
-    int32_t i, j;
+    int32_t j;
     int64_t node_id = neighbor_ids[0];
     for (j = 0; j < data_dim; ++j) {
         atomicAdd(&grad[node_id][j], grad_output[j]);
@@ -372,6 +372,18 @@ __device__ __inline__ void _dev_query_interp(
 }
 
 
+__device__ __inline__ int32_t argmax_8arr(const int64_t *__restrict__ arr) {
+    int32_t o = 0;
+    if (arr[1] > arr[o]) o = 1;
+    if (arr[2] > arr[o]) o = 2;
+    if (arr[3] > arr[o]) o = 3;
+    if (arr[4] > arr[o]) o = 4;
+    if (arr[5] > arr[o]) o = 5;
+    if (arr[6] > arr[o]) o = 6;
+    if (arr[7] > arr[o]) o = 7;
+    return o;
+}
+
 /*
  *  Backward pass for Query Interpolate.
  */
@@ -385,23 +397,25 @@ __device__ __inline__ void _dev_query_interp_bwd(
 {
     int32_t i, j;
     int64_t node_id;
+    int32_t max_nid = argmax_8arr(neighbor_ids);
+
     for (i = 0; i < 8; ++i) {
         node_id = neighbor_ids[i];
-        #ifdef DEBUG
-            printf("Node ID at neighbor %d = %ld\n", i, node_id);
-        #endif
-        while (node_id >= 0) {
-            //printf("Grad-bwd of node %ld\n", node_id);
+        if (i == max_nid) {
+            bool is_parent = false;
+            while (node_id >= 0) {
+                for (j = 0; j < data_dim; ++j) {
+                    (is_parent) ?
+                        atomicAdd(&grad[node_id][j], grad_output[j]) :
+                        atomicAdd(&grad[node_id][j], grad_output[j] * weights[i]);
+                }
+                node_id = parent[node_id];
+                is_parent = true;
+            }
+        } else if (node_id >= 0) {
             for (j = 0; j < data_dim; ++j) {
                 atomicAdd(&grad[node_id][j], grad_output[j] * weights[i]);
             }
-            #ifdef DEBUG
-                printf("Grad at node %ld (weight %f) is ", node_id, weights[i]);
-                for (j = 0; j < data_dim; ++j) printf("%f ", grad[node_id][j]);
-                printf("\n");
-            #endif
-            //printf("Parent of node %ld: %ld\n", node_id, parent[node_id]);
-            node_id = parent[node_id];
         }
     }
 }

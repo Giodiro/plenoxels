@@ -19,7 +19,7 @@ _C.optim.num_epochs = 10
 _C.optim.progress_refresh_rate = 50
 _C.optim.eval_refresh_rate = 1200
 _C.optim.render_refresh_rate = 1
-_C.optim.lr = 1e1
+_C.optim.lr = 1e4
 _C.optim.lr_sigma = None
 _C.optim.lr_rgb = None
 _C.optim.lr_decay = 10  # 10 * 1000 steps
@@ -38,7 +38,7 @@ _C.optim.adam.lr = 0.5
 
 _C.data = CN()
 _C.data.datadir = "/home/giacomo/plenoxels/data/lego"
-_C.data.resolution = 128
+_C.data.resolution = 256
 _C.data.downsample = 1.0
 _C.data.max_tr_frames = 10#None
 _C.data.max_ts_frames = 2#None
