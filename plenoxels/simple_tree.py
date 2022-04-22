@@ -126,6 +126,20 @@ class Octree(nn.Module):
         return VolumeRenderFunction.apply(
             self.data, self, rays_o, rays_d, self.render_opt)
 
+    def dispatch_fn(self, *args, fn_name):
+        typed_fn_name = f"{fn_name}{get_c_template_str(self.data_dt, self.b, self.sh_degree)}"
+        fn = getattr(c_ext, typed_fn_name)
+        return fn(*args)
+
+    def set(self, indices, values, update_avg: bool = True) -> None:
+        self.dispatch_fn(self.tree_spec(), indices, values, update_avg, fn_name="octree_set")
+
+    def query(self, indices: torch.Tensor) -> torch.Tensor:
+        return self.dispatch_fn(self.tree_spec(), indices, fn_name="octree_query")
+
+    def query_interp(self, indices: torch.Tensor) -> torch.Tensor:
+        return self.dispatch_fn(self.tree_spec(), indices, fn_name="octree_query_interp")
+
 
 # noinspection PyMethodOverriding,PyAbstractClass
 class VolumeRenderFunction(torch.autograd.Function):

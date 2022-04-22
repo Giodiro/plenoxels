@@ -67,6 +67,15 @@ void declare_octree(py::module &m, const std::string &typestr) {
 
     fn_name = std::string("volume_render_bwd") + typestr;
     m.def(fn_name.c_str(), &volume_render_bwd<scalar_t, branching, data_dim, out_data_dim>);
+
+    fn_name = std::string("octree_query") + typestr;
+    m.def(fn_name.c_str(), &octree_query<scalar_t, branching, data_dim>);
+
+    fn_name = std::string("octree_query_interp") + typestr;
+    m.def(fn_name.c_str(), &octree_query_interp<scalar_t, branching, data_dim>);
+
+    fn_name = std::string("octree_set") + typestr;
+    m.def(fn_name.c_str(), &octree_set<scalar_t, branching, data_dim>);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {

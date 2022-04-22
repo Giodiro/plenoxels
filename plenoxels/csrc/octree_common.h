@@ -1,5 +1,6 @@
 #pragma once
 
+#include <tuple>
 #include <torch/extension.h>
 #include "cuda_common.h"
 
@@ -428,7 +429,7 @@ __global__ void octree_query_kernel(
     Acc64<scalar_t, 2> tree_data,
     const Acc32<int32_t, 4> child,
     const Acc32<bool, 4> is_child_leaf,
-    Acc32<float, 2> indices,
+    const Acc32<float, 2> indices,
     Acc32<scalar_t, 2> out_values,
     const int64_t n_elements,
     const bool parent_sum
@@ -454,11 +455,34 @@ __global__ void octree_query_kernel(
 
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
+torch::Tensor octree_query (
+    OctreeCppSpec<scalar_t> & tree,
+    const torch::Tensor & indices)
+{
+    int64_t n_elements = indices.size(0);
+    if (n_elements <= 0) {
+        torch::Tensor undefined;
+        return undefined;
+    }
+    // Create output tensor
+    torch::Tensor values_out = torch::empty({n_elements, data_dim}, tree.data.options().requires_grad(false));
+    octree_query_kernel<scalar_t, branching, data_dim><<<n_blocks_linear<uint32_t>(n_elements, 128), 128>>>(
+        tree.data_acc(), tree.child_acc(), tree.is_child_leaf_acc(),
+        indices.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
+        values_out.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+        n_elements,
+        tree.parent_sum
+    );
+    return values_out;
+}
+
+
+template <typename scalar_t, int32_t branching, int32_t data_dim>
 __global__ void octree_query_interp_kernel(
     Acc64<scalar_t, 2> tree_data,
     const Acc32<int32_t, 4> child,
     const Acc32<bool, 4> is_child_leaf,
-    Acc32<float, 2> indices,             // n_elements, 3
+    const Acc32<float, 2> indices,             // n_elements, 3
     Acc32<scalar_t, 2> out_values,       // n_elements, data_dim
     Acc32<float, 2> weights,             // n_elements, 8
     Acc32<float, 3> neighbor_coo,        // n_elements, 8, 3
@@ -482,13 +506,43 @@ __global__ void octree_query_interp_kernel(
     );
 }
 
+template <typename scalar_t, int32_t banching, int32_t data_dim>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> octree_query_interp(
+    OctreeCppSpec<scalar_t> & tree,
+    const torch::Tensor     & indices)
+{
+    int64_t n_elements = indices.size(0);
+    if (n_elements <= 0) {
+        torch::Tensor undefined;
+        return std::make_tuple(undefined, undefined, undefined);
+    }
+    // Temporary tensors
+    torch::Tensor neighbor_coo = torch::empty({n_elements, 8, 3}, torch::dtype(torch::kFloat32).device(tree.data.device()));
+    torch::Tensor neighbor_ids = torch::full({n_elements, 8}, -1, torch::dtype(torch::kInt64).device(tree.data.device()));
+    // Create output tensors
+    torch::Tensor values_out = torch::empty({n_elements, data_dim}, tree.data.options().requires_grad(false));
+    torch::Tensor weights_out = torch::empty({n_elements, 8}, indices.options());
+    // Call CUDA kernel
+    octree_query_interp_kernel<scalar_t, branching, data_dim><<<n_blocks_linear<uint32_t>(n_elements, 128), 128>>>(
+        tree.data_acc(), tree.child_acc(), tree.is_child_leaf_acc(),
+        indices.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
+        values_out.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+        weights_out.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
+        neighbor_coo.packed_accessor32<float, 3, torch::RestrictPtrTraits>(),
+        neighbor_ids.packed_accessor32<int64_t, 2, torch::RestrictPtrTraits>(),
+        n_elements,
+        tree.parent_sum
+    );
+    return std::make_tuple(values_out, weights_out, neighbor_ids);
+}
+
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
 __global__ void octree_set_kernel(
     Acc64<scalar_t, 2> tree_data,
     const Acc32<int32_t, 4> child,
     const Acc32<bool, 4> is_child_leaf,
-    Acc32<float, 2> indices,
+    const Acc32<float, 2> indices,
     const Acc32<scalar_t, 2> values,
     const size_t n_elements
 )
@@ -502,5 +556,43 @@ __global__ void octree_set_kernel(
     );
     for (int32_t j = 0; j < data_dim; j++) {
         data_at_coo[j] = values[i][j];
+    }
+}
+
+
+template <class scalar_t, int32_t branching, int32_t data_dim>
+void octree_set(
+    OctreeCppSpec<scalar_t> & tree,
+    const torch::Tensor &indices,
+    const torch::Tensor &vals,
+    const bool update_avg)
+{
+    int64_t n_elements = indices.size(0);
+    if (n_elements <= 0) {
+        return;
+    }
+    octree_set_kernel<scalar_t, branching, data_dim><<<n_blocks_linear<uint32>(n_elements, 128), 128>>>(
+        tree.data_acc(), tree.child_acc(), tree.is_child_leaf_acc(),
+        indices.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
+        vals.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+        n_elements
+    );
+
+    // Set all parents to be their child's average (bottom to top)
+    // Remove the average from the children
+    if (update_avg) {
+        uint32_t max_depth = tree.depth.max();
+        for (int i = max_depth; i > 0; i--) {
+            auto child_ids = (tree.depth == torch::tensor({i}, tree.depth.options())).nonzero().squeeze();
+            auto parent_ids = tree.parent.index({child_ids}).to(torch::kInt64);
+            tree.data.index_put_({parent_ids}, torch::tensor({0}, tree.data.options().requires_grad(false)));
+            tree.data.scatter_add_(
+                0, parent_ids.unsqueeze(-1).expand(parent_ids.size(0), data_dim), tree.data.index({child_ids}));
+            tree.data.index({parent_ids}).div_(banching * branching * branching);
+            if (tree.parent_sum) {
+                tree.data.scatter_add_(
+                    0, child_ids.unsqueeze(-1).expand(child_ids.size(0), data_dim), -tree.data.index({parent_ids}));
+            }
+        }
     }
 }
