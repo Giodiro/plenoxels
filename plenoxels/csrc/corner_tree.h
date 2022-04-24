@@ -140,7 +140,7 @@ __global__ void trace_ray(
             /*weights=*/&interp_weights[b][i][0], /*nid_ptr=*/&nid_ptrs[b][i]);
         for (int j = 0; j < 8; j++) {
             for (int k = 0; k < data_dim; k++) {
-                int * n_ptr = &t_nids[0][0][0][0][0] + nid_ptrs[b][i];
+                const int * n_ptr = &t_nids[0][0][0][0][0] + nid_ptrs[b][i];
                 interp_vals[b][i][k] += interp_weights[b][i][j] * t_data[n_ptr[j]][k];
             }
         }
@@ -189,7 +189,6 @@ __global__ void trace_ray_backward(
     const scalar_t d_rgb_pad = 1 + 2 * rgb_padding;
 
     float tmin, tmax;
-    float3 pos;
 
     _dda_unit(ray_o, invdir, &tmin, &tmax);
     if (tmax < 0 || tmin > tmax) {
@@ -202,7 +201,7 @@ __global__ void trace_ray_backward(
 
     scalar_t accum = 0.0;
     // PASS 1: Just to compute the accum variable. This could be merged with the fwd pass (if we knew grad_output)
-    light_intensity = 1.f;
+    scalar_t light_intensity = 1.f;
     for (int i = 0; i < ray_offsets.size(0); i++) {
         float t = ray_offsets[b][i];
         float delta_t = ray_steps[b][i] * delta_scale;
@@ -258,7 +257,7 @@ __global__ void trace_ray_backward(
                 printf("t=%f - setting sigma gradient to %f\n", t, grad_tree_val[data_dim - 1]);
             #endif
 
-            int * n_ptr = &t_nids[0][0][0][0][0] + nid_ptrs[b][i];
+            const int * n_ptr = &t_nids[0][0][0][0][0] + nid_ptrs[b][i];
             _dev_query_corners_bwd<scalar_t, data_dim>(
                 n_ptr, &interp_weights[b][i][0], grad_tree_val, grad_data_out);
 
