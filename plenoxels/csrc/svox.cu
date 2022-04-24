@@ -82,7 +82,7 @@ void declare_octree(py::module &m, const std::string &typestr) {
     std::string fn_name = std::string("ctree_render") + typestr;
     m.def(fn_name.c_str(), &corner_tree_render<scalar_t, branching, data_dim, out_data_dim>);
 
-    std::string fn_name = std::string("ctree_render_bwd") + typestr;
+    fn_name = std::string("ctree_render_bwd") + typestr;
     m.def(fn_name.c_str(), &corner_tree_render_bwd<scalar_t, branching, data_dim, out_data_dim>);
 }
 

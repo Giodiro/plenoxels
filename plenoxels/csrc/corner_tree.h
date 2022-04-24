@@ -87,7 +87,7 @@ __global__ void trace_ray(
     const Acc32<float, 2> ray_steps,
           Acc32<float, 3> interp_weights,
           Acc32<scalar_t, 3> interp_vals,
-          Acc32<scalar_t, 2> nid_ptrs,
+          Acc32<int, 2> nid_ptrs,
 //          int **          nid_ptrs,  // array of pointers into t_nids
     const Acc32<float, 2> rays_o,
     const Acc32<float, 2> rays_d,
@@ -160,7 +160,7 @@ __global__ void trace_ray_backward(
     const Acc32<float, 2> ray_steps,
     const Acc32<float, 3> interp_weights,
     const Acc32<scalar_t, 3> interp_vals,
-    const Acc32<scalar_t, 2> nid_ptrs,
+    const Acc32<int, 2> nid_ptrs,
 //    int ** nid_ptrs,  // array of pointers into t_nids
     const Acc32<scalar_t, 2> grad_output,
           Acc32<scalar_t, 2> grad_data_out,
@@ -315,10 +315,9 @@ RenderingOutput corner_tree_render(
 
     // 2. Forward pass (allocate tensors)
     torch::Tensor output = torch::empty({batch_size, out_data_dim}, data.options());
-    torch::Tensor interp_vals = torch::empty({batch_size, n_intersections, data_dim}, data.options());
-    int * interp_nid_ptrs[batch_size * n_intersections];
-    torch::Tensor interp_nid_ptrs = torch::empty({batch_size, n_intersections}, torch::dtype(torch::kInt32).device(data.device()));
-    torch::Tensor interp_weights = torch::empty({batch_size, n_intersections, 8},
+    torch::Tensor interp_vals = torch::empty({batch_size, opt.max_intersections, data_dim}, data.options());
+    torch::Tensor interp_nid_ptrs = torch::empty({batch_size, opt.max_intersections}, torch::dtype(torch::kInt32).device(data.device()));
+    torch::Tensor interp_weights = torch::empty({batch_size, opt.max_intersections, 8},
         torch::dtype(torch::kFloat32).device(data.device()).layout(data.layout()));
 
     // 3. Forward pass (compute)
@@ -348,7 +347,7 @@ RenderingOutput corner_tree_render(
     return {
         /*output_rgb=*/output,
         /*interpolated_vals=*/interp_vals,
-        /*interpolated_n_ids=*/interp_nids,
+        /*interpolated_n_ids=*/interp_nid_ptrs,
         /*interpolation_weights=*/interp_weights,
         /*ray_offsets=*/ray_offsets,
         /*ray_steps=*/ray_steps
@@ -378,7 +377,7 @@ torch::Tensor corner_tree_render_bwd(
 
     torch::Tensor output = torch::zeros_like(t_data);
 
-    trace_tree_backward<scalar_t, branching, data_dim, out_data_dim>
+    trace_ray_backward<scalar_t, branching, data_dim, out_data_dim>
         <<<n_blocks_linear<uint32_t>(batch_size, render_ray_n_threads), render_ray_n_threads>>>(
         t_nids.packed_accessor32<int, 5, torch::RestrictPtrTraits>(),
         t_offset.data_ptr<float>(),
