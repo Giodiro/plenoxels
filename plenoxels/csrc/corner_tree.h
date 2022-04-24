@@ -92,7 +92,6 @@ __global__ void trace_ray(
           Acc32<float, 3> interp_weights,
           Acc32<scalar_t, 3> interp_vals,
           Acc32<int, 2> nid_ptrs,
-//          int **          nid_ptrs,  // array of pointers into t_nids
     const Acc32<float, 2> rays_o,
     const Acc32<float, 2> rays_d,
     const int n_elements,
@@ -110,19 +109,9 @@ __global__ void trace_ray(
     float3 ray_o = make_float3(rays_o[b][0], rays_o[b][1], rays_o[b][2]),
            ray_d = make_float3(rays_d[b][0], rays_d[b][1], rays_d[b][2]);
     transform_coord(ray_o, t_offset, t_scaling);
-    const float3 invdir = 1.0 / (ray_d + 1e-9);
     const float delta_scale = _get_delta_scale(t_scaling, ray_d);
-
-    float tmin, tmax;
     float3 pos;
     scalar_t basis_fn[bd];
-
-    _dda_unit(ray_o, invdir, &tmin, &tmax);
-    if (tmax < 0 || tmin > tmax) {
-        // Ray doesn't hit box
-        for (int j = 0; j < out_data_dim; ++j) { out[b][j] = background_brightness; }
-        return;
-    }
 
     for (int j = 0; j < out_data_dim; ++j) { out[b][j] = 0.0f; }
     calc_sh_basis<scalar_t, bd>(ray_d, basis_fn);
@@ -131,8 +120,7 @@ __global__ void trace_ray(
     for (int i = 0; i < ray_offsets.size(1); i++) {
         const float t = ray_offsets[b][i];
         const float delta_t = ray_steps[b][i];
-        if (t < tmin) continue;
-        if (t >= tmax) break;
+        if (delta_t <= 0) break;
         pos = ray_o + t * ray_d;
 
         _dev_query_corners<scalar_t, branching>(
@@ -163,7 +151,6 @@ __global__ void trace_ray_backward(
     const Acc32<float, 3> interp_weights,
     const Acc32<scalar_t, 3> interp_vals,
     const Acc32<int, 2> nid_ptrs,
-//    int ** nid_ptrs,  // array of pointers into t_nids
     const Acc32<scalar_t, 2> grad_output,
           Acc32<scalar_t, 2> grad_data_out,
     const Acc32<float, 2> rays_o,
@@ -178,23 +165,10 @@ __global__ void trace_ray_backward(
     const int b = threadIdx.x + blockIdx.x * blockDim.x;  // element in batch
     if (b >= n_elements) return;
     const int bd = basis_dim(data_dim, out_data_dim);
-
-    float3 ray_o = make_float3(rays_o[b][0], rays_o[b][1], rays_o[b][2]),
-           ray_d = make_float3(rays_d[b][0], rays_d[b][1], rays_d[b][2]);
-    transform_coord(ray_o, t_offset, t_scaling);
-    const float3 invdir = 1.0 / (ray_d + 1e-9);
+    float3 ray_d = make_float3(rays_d[b][0], rays_d[b][1], rays_d[b][2]);
     const float delta_scale = _get_delta_scale(t_scaling, ray_d);
     scalar_t grad_tree_val[data_dim];
-
     const scalar_t d_rgb_pad = 1 + 2 * rgb_padding;
-
-    float tmin, tmax;
-
-    _dda_unit(ray_o, invdir, &tmin, &tmax);
-    if (tmax < 0 || tmin > tmax) {
-        // Ray doesn't hit box
-        return;
-    }
 
     scalar_t basis_fn[bd];
     calc_sh_basis<scalar_t, bd>(ray_d, basis_fn);
@@ -205,8 +179,7 @@ __global__ void trace_ray_backward(
     for (int i = 0; i < ray_offsets.size(0); i++) {
         float t = ray_offsets[b][i];
         float delta_t = ray_steps[b][i] * delta_scale;
-        if (t < tmin) continue;
-        if (t >= tmax) break;
+        if (delta_t <= 0) break;
 
         bwd_loop_p1<scalar_t, data_dim, out_data_dim>(
             &interp_vals[b][i][0], basis_fn, &grad_output[b][0], density_softplus,
@@ -224,8 +197,7 @@ __global__ void trace_ray_backward(
     for (int i = 0; i < ray_offsets.size(0); i++) {
         float t = ray_offsets[b][i];
         float delta_t = ray_steps[b][i] * delta_scale;
-        if (t < tmin) continue;
-        if (t >= tmax) break;
+        if (delta_t <= 0) break;
         // Zero-out gradient
         for (int j = 0; j < data_dim; ++j) { grad_tree_val[j] = 0; }
 
@@ -253,11 +225,11 @@ __global__ void trace_ray_backward(
             accum -= weight * total_color;
             grad_tree_val[data_dim - 1] = delta_t * (total_color * light_intensity - accum)
                 *  (density_softplus ? _SIGMOID(raw_sigma - 1) : 1);
-            #ifdef DEBUG
-                printf("t=%f - setting sigma gradient to %f\n", t, grad_tree_val[data_dim - 1]);
-            #endif
 
             const int * n_ptr = &t_nids[0][0][0][0][0] + nid_ptrs[b][i];
+            #ifdef DEBUG
+                printf("neighbor IDs = %d, ...\n", n_ptr[0]);
+            #endif
             _dev_query_corners_bwd<scalar_t, data_dim>(
                 n_ptr, &interp_weights[b][i][0], grad_tree_val, grad_data_out);
 

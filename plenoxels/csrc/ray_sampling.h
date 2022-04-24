@@ -108,6 +108,9 @@ __global__ void gen_samples_kernel(
         if (t >= tmax) { break; }
         ray_offsets[i][j] = t;
         ray_steps[i][j] = delta_t;
+        #ifdef DEBUG
+            printf("b=%d, sample=%d/%d t=%f, dt=%f\n", i, j, max_intersections t, delta_t);
+        #endif
     }
     if (t < tmax) {
         printf("[gen_samples_kernel] Warning: %d samples insufficient to fill cube. (tmin=%f, tmax=%f, t=%f)\n",
