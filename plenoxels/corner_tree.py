@@ -298,7 +298,7 @@ class CornerTreeRenderFn(torch.autograd.Function):
                 opt: RenderOptions):
         out = CornerTreeRenderFn.dispatch_vol_render(
             data, tree.child, tree.is_child_leaf, tree.nids, tree.offset, tree.scaling,
-            rays_o, rays_d, opt, dtype=tree.data.weight.dtype, branching=tree.b, sh_degree=tree.sh_degree)
+            rays_o, rays_d, opt, dtype=tree.data.weight.dtype, branching=2, sh_degree=tree.sh_degree)
         ctx.save_for_backward(
             rays_o, rays_d, out.interpolated_vals, out.interpolated_n_ids,
             out.interpolation_weights, out.ray_offsets,
@@ -317,7 +317,7 @@ class CornerTreeRenderFn(torch.autograd.Function):
                 tree.data.weight, tree.nids, tree.offset, tree.scaling, rays_o, rays_d,
                 grad_out.contiguous(), interpolated_vals, interpolated_n_ids, interpolation_weights,
                 ray_offsets, ray_steps, ctx.opt,
-                dtype=tree.data.dtype, branching=tree.b, sh_degree=tree.sh_degree
+                dtype=tree.data.weight.dtype, branching=2, sh_degree=tree.sh_degree
             )
             return out, None, None, None, None
         return None, None, None, None, None
