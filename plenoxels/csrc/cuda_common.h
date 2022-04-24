@@ -1,6 +1,10 @@
 #pragma once
 
 
+#define _SOFTPLUS_M1(x) (logf(1 + expf((x) - 1)))
+#define _SIGMOID(x) (1 / (1 + expf(-(x))))
+
+
 template <typename T>
 __host__ __device__ T div_round_up(T val, T divisor) {
 	return (val + divisor - 1) / divisor;
@@ -141,4 +145,43 @@ template<typename T>
 __host__ __device__ __inline__ static T _dot3(const T* __restrict__ u, const T* __restrict__ v)
 {
     return u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+}
+
+__device__ __inline__ float _get_delta_scale(
+    const float* __restrict__ scaling,
+    float3 & __restrict__ dir)
+{
+    dir.x *= scaling[0];
+    dir.y *= scaling[1];
+    dir.z *= scaling[2];
+    float delta_scale = 1.f / _norm<float>(dir.x, dir.y, dir.z);
+    dir.x *= delta_scale;
+    dir.y *= delta_scale;
+    dir.z *= delta_scale;
+    return delta_scale;
+}
+
+__device__ __inline__ void _dda_unit(
+        const float3& __restrict__ cen,
+        const float3& __restrict__ invdir,
+        float* __restrict__ tmin,
+        float* __restrict__ tmax)
+{
+    // Intersect unit AABB
+    float t1, t2;
+
+    t1 = -cen.x * invdir.x;
+    t2 = t1 + invdir.x;
+    *tmin = min(t1, t2);
+    *tmax = max(t1, t2);
+
+    t1 = -cen.y * invdir.y;
+    t2 = t1 + invdir.y;
+    *tmin = max(*tmin, min(t1, t2));
+    *tmax = min(*tmax, max(t1, t2));
+
+    t1 = -cen.z * invdir.z;
+    t2 = t1 + invdir.z;
+    *tmin = max(*tmin, min(t1, t2));
+    *tmax = min(*tmax, max(t1, t2));
 }

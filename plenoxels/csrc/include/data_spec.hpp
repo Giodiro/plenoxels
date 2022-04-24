@@ -108,6 +108,7 @@ struct RenderOptions {
     float step_size;
     float background_brightness;
     int max_samples_per_node;
+    int max_intersections;
 
     int format;
     int basis_dim;

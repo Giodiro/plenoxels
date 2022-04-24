@@ -173,6 +173,54 @@ __device__ __inline__ void _dev_query_sum(
 }
 
 
+template<typename scalar_t, int branching>
+__device__ __inline__ void _dev_query_corners(
+    const Acc32<int, 4>         child,
+    const Acc32<bool, 4>        is_child_leaf,
+    const Acc32<int, 5>         nids,
+          float3 & __restrict__ coordinate,
+          float  * __restrict__ weights,
+          int    * __restrict__ nid_ptr
+)
+{
+    int u, v, w;
+    int node_id = 0;
+    clamp_coord(coordinate, 0.0, 1.0 - 1e-9);
+    while (true) {
+        traverse_tree_level<branching>(coordinate, &u, &v, &w);
+        if (is_child_leaf[node_id][u][v][w]) {
+            weights[0] = (1 - coordinate.x) * (1 - coordinate.y) * (1 - coordinate.z);
+            weights[1] = (1 - coordinate.x) * (1 - coordinate.y) * coordinate.z;
+            weights[2] = (1 - coordinate.x) * coordinate.y       * (1 - coordinate.z);
+            weights[3] = (1 - coordinate.x) * coordinate.y       * coordinate.z;
+            weights[4] = coordinate.x       * (1 - coordinate.y) * (1 - coordinate.z);
+            weights[5] = coordinate.x       * (1 - coordinate.y) * coordinate.z;
+            weights[6] = coordinate.x       * coordinate.y       * (1 - coordinate.z);
+            weights[7] = coordinate.x       * coordinate.y       * coordinate.z;
+            *nid_ptr = (int)(&nids[node_id][u][v][w][0] - &nids[0][0][0][0][0]);
+            return;
+        }
+        node_id += child[node_id][u][v][w];
+    }
+}
+
+template<typename scalar_t, int data_dim>
+__device__ __inline__ void _dev_query_corners_bwd(
+    const int      * __restrict__ nid_ptr,
+    const float    * __restrict__ neighbor_w,
+    const scalar_t * __restrict__ grad_val,
+          Acc32<scalar_t, 2>      grad_output
+)
+{
+    for (int i = 0; i < 8; i++) {
+        for (int j = 0; j < data_dim; j++) {
+            atomicAdd(&grad_output[nid_ptr[i]][j], grad_val[j] * neighbor_w[i]);
+        }
+    }
+}
+
+
+
 template <typename scalar_t, int32_t branching>
 __device__ __inline__ scalar_t* _dev_query_single(
     Acc64<scalar_t, 2> data,

@@ -33,8 +33,10 @@
 
 //#define DEBUG
 #include "include/data_spec.hpp"
-#include "octree.h"
-#include "rt_kernel.h"
+//#include "octree.h"
+//#include "rt_kernel.h"
+#include "corner_tree.h"
+
 
 namespace py = pybind11;
 using torch::Tensor;
@@ -62,20 +64,26 @@ void declare_octree(py::module &m, const std::string &typestr) {
 //        .def("train", &TOctree::train)
 //        .def("eval", &TOctree::eval);
 
-    std::string fn_name = std::string("volume_render") + typestr;
-    m.def(fn_name.c_str(), &volume_render<scalar_t, branching, data_dim, out_data_dim>);
+//    std::string fn_name = std::string("volume_render") + typestr;
+//    m.def(fn_name.c_str(), &volume_render<scalar_t, branching, data_dim, out_data_dim>);
+//
+//    fn_name = std::string("volume_render_bwd") + typestr;
+//    m.def(fn_name.c_str(), &volume_render_bwd<scalar_t, branching, data_dim, out_data_dim>);
+//
+//    fn_name = std::string("octree_query") + typestr;
+//    m.def(fn_name.c_str(), &octree_query<scalar_t, branching, data_dim>);
+//
+//    fn_name = std::string("octree_query_interp") + typestr;
+//    m.def(fn_name.c_str(), &octree_query_interp<scalar_t, branching, data_dim>);
+//
+//    fn_name = std::string("octree_set") + typestr;
+//    m.def(fn_name.c_str(), &octree_set<scalar_t, branching, data_dim>);
 
-    fn_name = std::string("volume_render_bwd") + typestr;
-    m.def(fn_name.c_str(), &volume_render_bwd<scalar_t, branching, data_dim, out_data_dim>);
+    std::string fn_name = std::string("ctree_render") + typestr;
+    m.def(fn_name.c_str(), &corner_tree_render<scalar_t, branching, data_dim, out_data_dim>);
 
-    fn_name = std::string("octree_query") + typestr;
-    m.def(fn_name.c_str(), &octree_query<scalar_t, branching, data_dim>);
-
-    fn_name = std::string("octree_query_interp") + typestr;
-    m.def(fn_name.c_str(), &octree_query_interp<scalar_t, branching, data_dim>);
-
-    fn_name = std::string("octree_set") + typestr;
-    m.def(fn_name.c_str(), &octree_set<scalar_t, branching, data_dim>);
+    std::string fn_name = std::string("ctree_render_bwd") + typestr;
+    m.def(fn_name.c_str(), &corner_tree_render_bwd<scalar_t, branching, data_dim, out_data_dim>);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -112,24 +120,24 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         .def_readwrite("density_softplus", &RenderOptions::density_softplus)
         .def_readwrite("rgb_padding", &RenderOptions::rgb_padding);
 
-    py::class_<OctreeCppSpec<float>>(m, "OctreeCppSpecf")
-        .def(py::init<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, bool>())
-        .def_readwrite("data", &OctreeCppSpec<float>::data)
-        .def_readwrite("child", &OctreeCppSpec<float>::child)
-        .def_readwrite("is_child_leaf", &OctreeCppSpec<float>::is_child_leaf)
-        .def_readwrite("parent", &OctreeCppSpec<float>::parent)
-        .def_readwrite("depth", &OctreeCppSpec<float>::depth)
-        .def_readwrite("scaling", &OctreeCppSpec<float>::scaling)
-        .def_readwrite("offset", &OctreeCppSpec<float>::offset)
-        .def_readonly("parent_sum", &OctreeCppSpec<float>::parent_sum);
-    py::class_<OctreeCppSpec<double>>(m, "OctreeCppSpecd")
-        .def(py::init<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, bool>())
-        .def_readwrite("data", &OctreeCppSpec<double>::data)
-        .def_readwrite("child", &OctreeCppSpec<double>::child)
-        .def_readwrite("is_child_leaf", &OctreeCppSpec<double>::is_child_leaf)
-        .def_readwrite("parent", &OctreeCppSpec<double>::parent)
-        .def_readwrite("depth", &OctreeCppSpec<double>::depth)
-        .def_readwrite("scaling", &OctreeCppSpec<double>::scaling)
-        .def_readwrite("offset", &OctreeCppSpec<double>::offset)
-        .def_readonly("parent_sum", &OctreeCppSpec<double>::parent_sum);
+//    py::class_<OctreeCppSpec<float>>(m, "OctreeCppSpecf")
+//        .def(py::init<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, bool>())
+//        .def_readwrite("data", &OctreeCppSpec<float>::data)
+//        .def_readwrite("child", &OctreeCppSpec<float>::child)
+//        .def_readwrite("is_child_leaf", &OctreeCppSpec<float>::is_child_leaf)
+//        .def_readwrite("parent", &OctreeCppSpec<float>::parent)
+//        .def_readwrite("depth", &OctreeCppSpec<float>::depth)
+//        .def_readwrite("scaling", &OctreeCppSpec<float>::scaling)
+//        .def_readwrite("offset", &OctreeCppSpec<float>::offset)
+//        .def_readonly("parent_sum", &OctreeCppSpec<float>::parent_sum);
+//    py::class_<OctreeCppSpec<double>>(m, "OctreeCppSpecd")
+//        .def(py::init<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, bool>())
+//        .def_readwrite("data", &OctreeCppSpec<double>::data)
+//        .def_readwrite("child", &OctreeCppSpec<double>::child)
+//        .def_readwrite("is_child_leaf", &OctreeCppSpec<double>::is_child_leaf)
+//        .def_readwrite("parent", &OctreeCppSpec<double>::parent)
+//        .def_readwrite("depth", &OctreeCppSpec<double>::depth)
+//        .def_readwrite("scaling", &OctreeCppSpec<double>::scaling)
+//        .def_readwrite("offset", &OctreeCppSpec<double>::offset)
+//        .def_readonly("parent_sum", &OctreeCppSpec<double>::parent_sum);
 }
