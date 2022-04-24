@@ -19,18 +19,20 @@ constexpr int basis_dim(int data_dim, int out_data_dim) {
     return (data_dim - 1) / out_data_dim;
 }
 
-
 template <typename scalar_t, int data_dim, int out_data_dim>
 __device__ __inline__ void fwd_loop(const scalar_t * __restrict__ interp,
                                     const scalar_t * __restrict__ basis_fn,
                                     const bool density_softplus,
                                     const scalar_t sigma_thresh,
                                     const float dt,
-                                    float & __restrict__ light_intensity,
+                                    const float rgb_padding,
+                                    scalar_t & __restrict__ light_intensity,
                                     scalar_t * __restrict__ out)
 {
     const int bd = basis_dim(data_dim, out_data_dim);
     const scalar_t sigma = density_softplus ? _SOFTPLUS_M1(interp[data_dim - 1]) : interp[data_dim - 1];
+    const float d_rgb_pad = 1 + 2 * rgb_padding;
+
     if (sigma > sigma_thresh) {
         const scalar_t att = expf(-dt * sigma);  // (1 - alpha)
         const scalar_t weight = light_intensity * (1.f - att);
@@ -53,11 +55,13 @@ __device__ __inline__ void bwd_loop_p1(const scalar_t * __restrict__ interp,
                                        const bool density_softplus,
                                        const scalar_t sigma_thresh,
                                        const float dt,
-                                       float & __restrict__ light_intensity,
-                                       float & __restrict__ accum)
+                                       const float rgb_padding,
+                                       scalar_t & __restrict__ light_intensity,
+                                       scalar_t & __restrict__ accum)
 {
     const int bd = basis_dim(data_dim, out_data_dim);
     const scalar_t sigma = density_softplus ? _SOFTPLUS_M1(interp[data_dim - 1]) : interp[data_dim - 1];
+    const float d_rgb_pad = 1 + 2 * rgb_padding;
     if (sigma > sigma_thresh) {
         const scalar_t att = expf(-dt * sigma);
         const scalar_t weight = light_intensity * (1.f - att);
@@ -93,10 +97,10 @@ __global__ void trace_ray(
     const Acc32<float, 2> rays_d,
     const int n_elements,
     const float rgb_padding,
-    const float background_brightness,
+    const scalar_t background_brightness,
     const bool density_softplus,
-    const float sigma_thresh,
-    const float stop_thresh,
+    const scalar_t sigma_thresh,
+    const scalar_t stop_thresh,
           Acc32<scalar_t, 2> out)
 {
     const int b = threadIdx.x + blockIdx.x * blockDim.x;  // element in batch
@@ -108,8 +112,6 @@ __global__ void trace_ray(
     transform_coord(ray_o, t_offset, t_scaling);
     const float3 invdir = 1.0 / (ray_d + 1e-9);
     const float delta_scale = _get_delta_scale(t_scaling, ray_d);
-
-    const scalar_t d_rgb_pad = 1 + 2 * rgb_padding;
 
     float tmin, tmax;
     float3 pos;
@@ -136,14 +138,14 @@ __global__ void trace_ray(
         _dev_query_corners<scalar_t, branching>(
             t_child, t_icf, t_nids, pos,
             /*weights=*/&interp_weights[b][i][0], /*nid_ptr=*/&nid_ptrs[b][i]);
-        for (int j = 0; j < 8; j++) {0
+        for (int j = 0; j < 8; j++) {
             for (int k = 0; k < data_dim; k++) {
                 int * n_ptr = &t_nids[0][0][0][0][0] + nid_ptrs[b][i];
                 interp_vals[b][i][k] += interp_weights[b][i][j] * t_data[n_ptr[j]][k];
             }
         }
         fwd_loop<scalar_t, data_dim, out_data_dim>(&interp_vals[b][i][0], basis_fn, density_softplus, sigma_thresh,
-                                                   delta_t * delta_scale, light_intensity, &out[b][0]);
+                                                   delta_t * delta_scale, rgb_padding, light_intensity, &out[b][0]);
         if (light_intensity <= stop_thresh) { return; }  // Full opacity, stop
     }
     for (int j = 0; j < out_data_dim; ++j) { out[b][j] += light_intensity * background_brightness; }
@@ -168,10 +170,10 @@ __global__ void trace_ray_backward(
     const Acc32<float, 2> rays_d,
     const int n_elements,
     const float rgb_padding,
-    const float background_brightness,
+    const scalar_t background_brightness,
     const bool density_softplus,
-    const float sigma_thresh,
-    const float stop_thresh)
+    const scalar_t sigma_thresh,
+    const scalar_t stop_thresh)
 {
     const int b = threadIdx.x + blockIdx.x * blockDim.x;  // element in batch
     if (b >= n_elements) return;
@@ -209,7 +211,7 @@ __global__ void trace_ray_backward(
 
         bwd_loop_p1<scalar_t, data_dim, out_data_dim>(
             &interp_vals[b][i][0], basis_fn, &grad_output[b][0], density_softplus,
-            sigma_thresh, delta_t, light_intensity, accum);
+            sigma_thresh, delta_t, rgb_padding, light_intensity, accum);
         if (light_intensity <= stop_thresh) {
             light_intensity = 0;
             break;
@@ -338,10 +340,10 @@ RenderingOutput corner_tree_render(
         rays_d.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
         (int)batch_size,
         opt.rgb_padding,
-        opt.background_brightness,
+        (scalar_t)opt.background_brightness,
         opt.density_softplus,
-        opt.sigma_thresh,
-        opt.stop_thresh,
+        (scalar_t)opt.sigma_thresh,
+        (scalar_t)opt.stop_thresh,
         output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>()
     );
     return {
@@ -391,12 +393,12 @@ torch::Tensor corner_tree_render_bwd(
         output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
         rays_o.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
         rays_d.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
-        (int)batch_size
+        (int)batch_size,
         opt.rgb_padding,
-        opt.background_brightness,
+        (scalar_t)opt.background_brightness,
         opt.density_softplus,
-        opt.sigma_thresh,
-        opt.stop_thresh
+        (scalar_t)opt.sigma_thresh,
+        (scalar_t)opt.stop_thresh
     );
     return output;
 }
