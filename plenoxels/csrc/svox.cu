@@ -108,6 +108,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         .def_readwrite("step_size", &RenderOptions::step_size)
         .def_readwrite("background_brightness", &RenderOptions::background_brightness)
         .def_readwrite("max_samples_per_node", &RenderOptions::max_samples_per_node)
+        .def_readwrite("max_intersections", &RenderOptions::max_intersections)
         .def_readwrite("ndc_width", &RenderOptions::ndc_width)
         .def_readwrite("ndc_height", &RenderOptions::ndc_height)
         .def_readwrite("ndc_focal", &RenderOptions::ndc_focal)
