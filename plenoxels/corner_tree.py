@@ -13,6 +13,9 @@ def enc_pos(coo):
             coo[:, 2] * _corner_tree_max_side).long()
 
 
+from plenoxels.tc_plenoxel import plenoxel_sh_encoder
+
+
 class CornerTree(torch.nn.Module):
     def __init__(self,
                  sh_degree: int,
@@ -37,12 +40,12 @@ class CornerTree(torch.nn.Module):
         self.init_sigma = init_sigma
         self.sh_encoder = plenoxel_sh_encoder(sh_degree)
 
-        child = torch.empty(init_internal, 2, 2, 2, dtype=torch.long)
-        coords = torch.empty(init_internal, 2, 2, 2, 3)
-        nids = torch.empty(init_internal, 2, 2, 2, 8, dtype=torch.long)
-        depths = torch.empty(init_internal, dtype=torch.long)
+        child    = torch.empty(init_internal, 2, 2, 2, dtype=torch.long)
+        coords   = torch.empty(init_internal, 2, 2, 2, 3)
+        nids     = torch.empty(init_internal, 2, 2, 2, 8, dtype=torch.long)
+        depths   = torch.empty(init_internal, dtype=torch.long)
         is_child_leaf = torch.ones(init_internal, 2, 2, 2, dtype=torch.bool)
-        self.data = torch.nn.EmbeddingBag(1, self.data_dim, mode='sum')  # n_data, data_dim
+        self.data = torch.nn.EmbeddingBag(1, self.data_dim, mode='sum')           # n_data, data_dim
 
         offsets_3d = torch.tensor([[-1, -1, -1], [-1, -1, 1], [-1, 1, -1], [-1, 1, 1],
                                    [1, -1, -1], [1, -1, 1], [1, 1, -1], [1, 1, 1]])
@@ -89,11 +92,10 @@ class CornerTree(torch.nn.Module):
         # + 1 since it's the new leaf, and +1 to get half-voxel-size
         new_leaf_sizes = (1 / (2 ** (depths + 2))).unsqueeze(-1).unsqueeze(-1)
 
-        n_offsets = self.offsets_3d.unsqueeze(0).repeat(n_int_new, 1,
-                                                        1) * new_leaf_sizes  # [nl, 8, 3]
+        n_offsets = self.offsets_3d.unsqueeze(0).repeat(n_int_new, 1, 1) * new_leaf_sizes  # [nl, 8, 3]
         new_child = (
-                torch.arange(n_nodes, n_nodes_fin, dtype=torch.int32).view(-1, 2, 2, 2)
-                - torch.arange(n_int, n_int + n_int_new).view(-1, 1, 1, 1)
+            torch.arange(n_nodes, n_nodes_fin, dtype=torch.int32).view(-1, 2, 2, 2)
+            - torch.arange(n_int, n_int + n_int_new).view(-1, 1, 1, 1)
         )
         self.child[n_int: n_int + n_int_new] = new_child
         self.is_child_leaf[sel] = False
@@ -105,8 +107,7 @@ class CornerTree(torch.nn.Module):
         self.n_internal = n_int + n_int_new
 
         # From leaf center to corners (nl -> 8*nl=nc)
-        new_corners = (new_leaf_coo.view(-1, 1, 3) + n_offsets.repeat_interleave(8, dim=0)).view(-1,
-                                                                                                 3)
+        new_corners = (new_leaf_coo.view(-1, 1, 3) + n_offsets.repeat_interleave(8, dim=0)).view(-1, 3)
         new_corners_enc = enc_pos(new_corners)
         # Need to get all the encoded corner positions of the whole tree.
         if n_int > 0:
@@ -123,8 +124,7 @@ class CornerTree(torch.nn.Module):
         new_data[:, -1].fill_(self.init_sigma)
         if n_int > 0:
             new_data[torch.searchsorted(new_u_cor, self.ucoo), :] = self.data.weight
-        self.data = torch.nn.EmbeddingBag.from_pretrained(new_data, freeze=False, mode='sum',
-                                                          sparse=False)
+        self.data = torch.nn.EmbeddingBag.from_pretrained(new_data, freeze=False, mode='sum', sparse=False)
         self.ucoo = new_u_cor
         # TODO: parent data should be copied into the corresponding children
 
@@ -148,8 +148,7 @@ class CornerTree(torch.nn.Module):
                 sel = (node_ids[remain_indices], *(floor.long().T),)
                 deltas = self.child[sel]
 
-                term_mask = self.is_child_leaf[
-                    sel]  # terminate when nodes with 0 children encountered (leaves).
+                term_mask = self.is_child_leaf[sel]  # terminate when nodes with 0 children encountered (leaves).
                 term_indices = remain_indices[term_mask]
 
                 indices.scatter_(0, term_indices.unsqueeze(-1).repeat(1, 3), xy[term_mask])
@@ -161,6 +160,7 @@ class CornerTree(torch.nn.Module):
 
                 node_ids[remain_indices] += deltas
                 xy = xy[~term_mask]
+                floor = floor[~term_mask]
 
         xy = indices
         sel = (node_ids, *(floor_indices.long().T),)
@@ -168,18 +168,18 @@ class CornerTree(torch.nn.Module):
         weights = torch.stack((
             (1 - xy[:, 0]) * (1 - xy[:, 1]) * (1 - xy[:, 2]),
             (1 - xy[:, 0]) * (1 - xy[:, 1]) * (xy[:, 2]),
-            (1 - xy[:, 0]) * (xy[:, 1]) * (1 - xy[:, 2]),
-            (1 - xy[:, 0]) * (xy[:, 1]) * (xy[:, 2]),
-            (xy[:, 0]) * (1 - xy[:, 1]) * (1 - xy[:, 2]),
-            (xy[:, 0]) * (1 - xy[:, 1]) * (xy[:, 2]),
-            (xy[:, 0]) * (xy[:, 1]) * (1 - xy[:, 2]),
-            (xy[:, 0]) * (xy[:, 1]) * (xy[:, 2]),
+            (1 - xy[:, 0]) * (xy[:, 1])     * (1 - xy[:, 2]),
+            (1 - xy[:, 0]) * (xy[:, 1])     * (xy[:, 2]),
+            (xy[:, 0])     * (1 - xy[:, 1]) * (1 - xy[:, 2]),
+            (xy[:, 0])     * (1 - xy[:, 1]) * (xy[:, 2]),
+            (xy[:, 0])     * (xy[:, 1])     * (1 - xy[:, 2]),
+            (xy[:, 0])     * (xy[:, 1])     * (xy[:, 2]),
         ), dim=1)  # n, 8
         return self.data(sel_nids, per_sample_weights=weights)
 
     @torch.no_grad()
     def sample_proposal(self, rays_o, rays_d, max_samples):
-        #         rays_o = self.trasform_coords(rays_o)
+#         rays_o = self.trasform_coords(rays_o)
         # scale direction
         rays_d.mul_(self.scaling)
         delta_scale = 1 / torch.linalg.norm(rays_d, dim=1, keepdim=True)
@@ -190,10 +190,9 @@ class CornerTree(torch.nn.Module):
         offsets_neg = (self.aabb[0] - rays_o) / rays_d  # [batch, 3]
         offsets_in = torch.minimum(offsets_pos, offsets_neg)  # [batch, 3]
         start = torch.amax(offsets_in, dim=-1, keepdim=True)  # [batch, 1]
-        #         start.clamp_(min=self.near, max=self.far)  # [batch, 1]
-        steps = torch.arange(max_samples, dtype=torch.float32, device=self.child.device).unsqueeze(
-            0)  # [1, n_intrs]
-        steps = steps.repeat(rays_d.shape[0], 1)  # [batch, n_intrs]
+#         start.clamp_(min=self.near, max=self.far)  # [batch, 1]
+        steps = torch.arange(max_samples, dtype=torch.float32, device=self.child.device).unsqueeze(0)  # [1, n_intrs]
+        steps = steps.repeat(rays_d.shape[0], 1)   # [batch, n_intrs]
         intersections = start + steps * step_size  # [batch, n_intrs]
         dts = torch.diff(intersections, n=1, dim=1).mul(delta_scale)
         intersections = intersections[:, :-1]
@@ -217,21 +216,18 @@ class CornerTree(torch.nn.Module):
             interp.masked_scatter_(valid.unsqueeze(-1), interp_masked)
 
             sh_mult = self.sh_encoder(rays_d)  # [batch, ch/3]
-            sh_mult = sh_mult.unsqueeze(1).expand(batch, nintrs, -1).unsqueeze(
-                2)  # [batch, nintrs, 1, ch/3]
-            interp_rgb = interp[..., :-1].view(batch, nintrs, 3,
-                                               sh_mult.shape[-1])  # [batch, nintrs, 3, ch/3]
+            sh_mult = sh_mult.unsqueeze(1).expand(batch, nintrs, -1).unsqueeze(2)  # [batch, nintrs, 1, ch/3]
+            interp_rgb = interp[..., :-1].view(batch, nintrs, 3, sh_mult.shape[-1])  # [batch, nintrs, 3, ch/3]
             rgb = torch.sum(sh_mult * interp_rgb, dim=-1)  # [batch, nintrs, 3]
 
             sigma = interp[..., -1]  # [batch, n_intrs-1, 1]
 
             # Volumetric rendering
-            alpha = 1 - torch.exp(-torch.relu(sigma) * dt)  # alpha: [batch, n_intrs-1]
+            alpha = 1 - torch.exp(-torch.relu(sigma) * dt)            # alpha: [batch, n_intrs-1]
             cum_light = torch.cat((torch.ones(rgb.shape[0], 1, dtype=rgb.dtype, device=rgb.device),
-                                   torch.cumprod(1 - alpha[:, :-1] + 1e-10, dim=-1)),
-                                  dim=-1)  # [batch, n_intrs-1]
+                                   torch.cumprod(1 - alpha[:, :-1] + 1e-10, dim=-1)), dim=-1)  # [batch, n_intrs-1]
             abs_light = alpha * cum_light  # [batch, n_intersections - 1]
-            acc_map = abs_light.sum(-1)  # [batch]
+            acc_map = abs_light.sum(-1)    # [batch]
 
             # Accumulated color over the samples, ignoring background
             rgb = torch.sigmoid(rgb)  # [batch, n_intrs-1, 3]
