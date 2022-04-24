@@ -26,6 +26,7 @@ class CornerTree(torch.nn.Module):
                  init_rgb: float,
                  init_sigma: float):
         super().__init__()
+        self.sh_degree = sh_degree
         self.data_dim = 3 * (sh_degree + 1) ** 2 + 1
         # TODO: near and far should be transformed
         self.near = near
