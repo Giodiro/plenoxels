@@ -258,7 +258,15 @@ RenderingOutput corner_tree_render(
     const uint32_t gen_samples_n_threads = 128;
     const uint32_t render_ray_n_threads = 128;
 
+    auto gs_start = at::cuda::CUDAEvent(cudaEventDefault);
+    auto gs_end = at::cuda::CUDAEvent(cudaEventDefault);
+    auto alloc_start = at::cuda::CUDAEvent(cudaEventDefault);
+    auto alloc_end = at::cuda::CUDAEvent(cudaEventDefault);
+    auto fwd_start = at::cuda::CUDAEvent(cudaEventDefault);
+    auto fwd_end = at::cuda::CUDAEvent(cudaEventDefault);
+
     // 1. Generate samples
+    gs_start.record();
     torch::Tensor ray_offsets = torch::full({batch_size, opt.max_intersections}, -1.0,
         torch::dtype(torch::kFloat32).device(data.device()).layout(data.layout()));
     torch::Tensor ray_steps = torch::full_like(ray_offsets, -1.0);
@@ -284,15 +292,19 @@ RenderingOutput corner_tree_render(
         }
         printf("\n");
     #endif
+    gs_end.record();
 
     // 2. Forward pass (allocate tensors)
+    alloc_start.record();
     torch::Tensor output = torch::zeros({batch_size, out_data_dim}, data.options());
     torch::Tensor interp_vals = torch::zeros({batch_size, opt.max_intersections, data_dim}, data.options());
     torch::Tensor interp_nid_ptrs = torch::empty({batch_size, opt.max_intersections}, torch::dtype(torch::kInt32).device(data.device()));
     torch::Tensor interp_weights = torch::empty({batch_size, opt.max_intersections, 8},
         torch::dtype(torch::kFloat32).device(data.device()).layout(data.layout()));
+    alloc_end.record();
 
     // 3. Forward pass (compute)
+    fwd_start.record();
     trace_ray<scalar_t, branching, data_dim, out_data_dim>
     <<<n_blocks_linear<uint32_t>(batch_size, render_ray_n_threads), render_ray_n_threads>>>(
         data.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
@@ -316,6 +328,20 @@ RenderingOutput corner_tree_render(
         (scalar_t)opt.stop_thresh,
         output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>()
     );
+    fwd_end.record();
+
+    gs_start.synchronize();
+    gs_end.synchronize()
+    float gs_ela = gs_start.elapsed_time(gs_end);
+    alloc_start.synchronize();
+    alloc_end.synchronize();
+    float alloc_ela = alloc_start.elapsed_time(alloc_end);
+    fwd_start.synchronize();
+    fwd_end.synchronize();
+    float fwd_ela = fwd_start.elapsed_time(fwd_end);
+
+    printf("Forward timings(ms): Sampling=%f  Alloc=%f  Forward=%f\n", gs_ela, alloc_ela, fwd_ela);
+
     return {
         /*output_rgb=*/output,
         /*interpolated_vals=*/interp_vals,
@@ -324,6 +350,7 @@ RenderingOutput corner_tree_render(
         /*ray_offsets=*/ray_offsets,
         /*ray_steps=*/ray_steps
     };
+    auto stop3 = high_resolution_clock
 }
 
 
