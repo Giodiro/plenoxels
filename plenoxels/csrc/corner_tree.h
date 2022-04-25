@@ -16,6 +16,27 @@ template <typename T, size_t N>
 using Acc64 = torch::GenericPackedTensorAccessor<T, N, torch::RestrictPtrTraits, int64_t>;
 
 
+template <typename scalar_t>
+__device__ __inline__ scalar_t density_fwd(scalar_t sigma, const bool density_softplus) {
+    return density_softplus ? _SOFTPLUS_M1(sigma) : sigma;
+}
+
+template <typename scalar_t>
+__device__ __inline__ scalar_t density_bwd(scalar_t sigma, const bool density_softplus) {
+    return density_softplus ? _SIGMOID(sigma - 1) : 1;
+}
+
+template <typename scalar_t>
+__device__ __inline__ scalar_t rgb_fwd(scalar_t rgb_component, const float rgb_padding) {
+    return _SIGMOID(rgb_component) * (scalar_t)(1 + 2 * rgb_padding) - (scalar_t)rgb_padding;
+}
+
+template <typename scalar_t>
+__device__ __inline__ scalar_t rgb_bwd(scalar_t rgb_component, const float rgb_padding) {
+    const scalar_t sigmoid = _SIGMOID(rgb_component);
+    return sigmoid * (1.0 - sigmoid) * (1 + 2 * rgb_padding);
+}
+
 constexpr int basis_dim(int data_dim, int out_data_dim) {
     return (data_dim - 1) / out_data_dim;
 }
@@ -31,8 +52,7 @@ __device__ __inline__ void fwd_loop(const scalar_t * __restrict__ interp,
                                     scalar_t * __restrict__ out)
 {
     const int bd = basis_dim(data_dim, out_data_dim);
-    const scalar_t sigma = density_softplus ? _SOFTPLUS_M1(interp[data_dim - 1]) : interp[data_dim - 1];
-    const float d_rgb_pad = 1 + 2 * rgb_padding;
+    const scalar_t sigma = density_fwd<scalar_t>(interp[data_dim - 1], density_softplus);
 
     if (sigma > sigma_thresh) {
         const scalar_t att = expf(-dt * sigma);  // (1 - alpha)
@@ -43,7 +63,7 @@ __device__ __inline__ void fwd_loop(const scalar_t * __restrict__ interp,
             for (int k = 0; k < bd; ++k) {
                 tmp += basis_fn[k] * interp[off + k];
             }
-            out[j] += weight * (_SIGMOID(tmp) * d_rgb_pad - rgb_padding);
+            out[j] += weight * rgb_fwd<scalar_t>(tmp, rgb_padding);
         }
         light_intensity *= att;
     }
@@ -61,8 +81,7 @@ __device__ __inline__ void bwd_loop_p1(const scalar_t * __restrict__ interp,
                                        scalar_t & __restrict__ accum)
 {
     const int bd = basis_dim(data_dim, out_data_dim);
-    const scalar_t sigma = density_softplus ? _SOFTPLUS_M1(interp[data_dim - 1]) : interp[data_dim - 1];
-    const float d_rgb_pad = 1 + 2 * rgb_padding;
+    const scalar_t sigma = density_fwd<scalar_t>(interp[data_dim - 1], density_softplus);
     if (sigma > sigma_thresh) {
         const scalar_t att = expf(-dt * sigma);
         const scalar_t weight = light_intensity * (1.f - att);
@@ -72,7 +91,7 @@ __device__ __inline__ void bwd_loop_p1(const scalar_t * __restrict__ interp,
             for (int k = 0; k < bd; ++k) {
                 tmp += basis_fn[k] * interp[off + k];
             }
-            total_color += (_SIGMOID(tmp) * d_rgb_pad - rgb_padding) * grad_output[j];
+            total_color += rgb_fwd<scalar_t>(tmp, rgb_padding) * grad_output[j];
         }
         light_intensity *= att;
         accum += weight * total_color;
@@ -122,7 +141,6 @@ __global__ void trace_ray(
         const float delta_t = ray_steps[b][i];
         if (delta_t <= 0) break;
         pos = ray_o + t * ray_d;
-        //printf("b=%d, i=%d, Interpolating at coordinate %f %f %f (ray_o %f %f %f - ray_d %f %f %f)\n", b, i, pos.x, pos.y, pos.z, ray_o.x, ray_o.y, ray_o.z, ray_d.x, ray_d.y, ray_d.z);
         _dev_query_corners<scalar_t, branching>(
             t_child, t_icf, t_nids, pos,
             /*weights=*/&interp_weights[b][i][0], /*nid_ptr=*/&nid_ptrs[b][i]);
@@ -133,7 +151,7 @@ __global__ void trace_ray(
             }
         }
         fwd_loop<scalar_t, data_dim, out_data_dim>(&interp_vals[b][i][0], basis_fn, density_softplus, sigma_thresh,
-                                                   delta_t * delta_scale, rgb_padding, light_intensity, &out[b][0]);
+                                                   delta_t, rgb_padding, light_intensity, &out[b][0]);
         if (light_intensity <= stop_thresh) { return; }  // Full opacity, stop
     }
     for (int j = 0; j < out_data_dim; ++j) { out[b][j] += light_intensity * background_brightness; }
@@ -178,7 +196,7 @@ __global__ void trace_ray_backward(
     scalar_t light_intensity = 1.f;
     for (int i = 0; i < ray_offsets.size(0); i++) {
         float t = ray_offsets[b][i];
-        float delta_t = ray_steps[b][i] * delta_scale;
+        float delta_t = ray_steps[b][i];
         if (delta_t <= 0) break;
 
         bwd_loop_p1<scalar_t, data_dim, out_data_dim>(
@@ -196,14 +214,13 @@ __global__ void trace_ray_backward(
     light_intensity = 1.f;
     for (int i = 0; i < ray_offsets.size(0); i++) {
         float t = ray_offsets[b][i];
-        float delta_t = ray_steps[b][i] * delta_scale;
+        float delta_t = ray_steps[b][i];
         if (delta_t <= 0) break;
         // Zero-out gradient
         for (int j = 0; j < data_dim; ++j) { grad_tree_val[j] = 0; }
 
-        scalar_t sigma = interp_vals[b][i][data_dim - 1];
-        const scalar_t raw_sigma = sigma;  // needed for softplus-bwd
-        if (density_softplus) { sigma = _SOFTPLUS_M1(sigma); }
+        const scalar_t raw_sigma = interp_vals[b][i][data_dim - 1];
+        const scalar_t sigma = density_fwd<scalar_t>(raw_sigma, density_softplus);
         if (sigma > sigma_thresh) {
             const scalar_t att = expf(-delta_t * sigma);
             const scalar_t weight = light_intensity * (1.f - att);
@@ -214,22 +231,18 @@ __global__ void trace_ray_backward(
                 for (int k = 0; k < bd; ++k) {
                     tmp += basis_fn[k] * interp_vals[b][i][off + k];
                 }
-                const scalar_t sigmoid = _SIGMOID(tmp);
-                const scalar_t tmp2 = weight * sigmoid * (1.0 - sigmoid) * grad_output[b][j] * d_rgb_pad;
+                total_color += rgb_fwd<scalar_t>(tmp, rgb_padding) * grad_output[b][j];
+
+                const scalar_t tmp2 = rgb_bwd<scalar_t>(tmp, rgb_padding) * weight * grad_output[b][j];
                 for (int k = 0; k < bd; ++k) {
                     grad_tree_val[off + k] += basis_fn[k] * tmp2;
                 }
-                total_color += (sigmoid * d_rgb_pad - rgb_padding) * grad_output[b][j];
             }
             light_intensity *= att;
             accum -= weight * total_color;
-            grad_tree_val[data_dim - 1] = delta_t * (total_color * light_intensity - accum)
-                *  (density_softplus ? _SIGMOID(raw_sigma - 1) : 1);
+            grad_tree_val[data_dim - 1] = delta_t * (total_color * light_intensity - accum) * density_bwd<scalar_t>(raw_sigma, density_softplus);
 
             const int * n_ptr = &t_nids[0][0][0][0][0] + nid_ptrs[b][i];
-            #ifdef DEBUG
-                printf("neighbor IDs = %d, ...\n", n_ptr[0]);
-            #endif
             _dev_query_corners_bwd<scalar_t, data_dim>(
                 n_ptr, &interp_weights[b][i][0], grad_tree_val, grad_data_out);
 

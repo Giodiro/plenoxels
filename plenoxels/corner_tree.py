@@ -163,7 +163,6 @@ class CornerTree(torch.nn.Module):
 
                 node_ids[remain_indices] += deltas
                 xy = xy[~term_mask]
-                floor = floor[~term_mask]
 
         xy = indices
         sel = (node_ids, *(floor_indices.long().T),)
@@ -179,6 +178,27 @@ class CornerTree(torch.nn.Module):
             (xy[:, 0])     * (xy[:, 1])     * (xy[:, 2]),
         ), dim=1)  # n, 8
         return self.data(sel_nids, per_sample_weights=weights), weights
+
+    @torch.no_grad()
+    def density_frequency(self):
+        # The 'frequency' of density. This is going to be some kind of local derivative of the density, to identify
+        # locations where it is more important to have a high resolution.
+        # 0. The data should have a value (float?) for each cell in the tree, indicating the frequency in that cell.
+
+        # We cannot sample the 0-1 cube uniformly, since we would over-represent large cells (in which we're not particularly interested).
+        # As a first go we can calculate it in all cells.
+
+        leaf_sel = self.is_child_leaf[:self.n_internal].nonzero(as_tuple=True)  # n_leaves, 4
+        n_leaves = leaf_sel[0].shape[0]
+        neigh_sel = self.nids[leaf_sel]
+        w1 = torch.tensor([[-1, -1, 1, 1, -1, -1, 1, 1]], dtype=torch.float, device=self.child.device)
+        w2 = torch.tensor([[1, 1, 1, 1, -1, -1, -1, -1]], dtype=torch.float, device=self.child.device)
+        w3 = torch.tensor([[1, -1, 1, -1, 1, -1, 1, -1]], dtype=torch.float, device=self.child.device)
+        gx = self.data(neigh_sel, per_sample_weights=w1.expand(n_leaves, -1))[:, -1].abs()
+        gy = self.data(neigh_sel, per_sample_weights=w2.expand(n_leaves, -1))[:, -1].abs()
+        gz = self.data(neigh_sel, per_sample_weights=w3.expand(n_leaves, -1))[:, -1].abs()
+        g = gx + gy + gz
+        return g
 
     @torch.no_grad()
     def sample_proposal(self, rays_o, rays_d, max_samples):

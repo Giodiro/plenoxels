@@ -104,7 +104,7 @@ __global__ void gen_samples_kernel(
         if (t_new >= tmax || num_strat_samples < 0) { break; }
         if (t_new - t <= 0) { continue; }
         ray_offsets[i][j] = t;
-        ray_steps[i][j] = t_new - t;  // forward delta t.
+        ray_steps[i][j] = (t_new - t) * delta_scale;  // forward delta t.
         t = t_new;
         j++;
     }
