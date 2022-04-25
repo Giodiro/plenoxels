@@ -32,38 +32,14 @@ __device__ __inline__ void stratified_sample_proposal(
         float cube_sz;
         int64_t node_id;
         _dev_query_ninfo<scalar_t, branching>(t_child, t_icf, relpos, &cube_sz, &node_id);
-
-        t1 = (-relpos.x + 1.0) / cube_sz * invdir.x;
-        t2 = (-relpos.x - 1.0) / cube_sz * invdir.x;
-        subcube_tmin = min(t1, t2);
-        subcube_tmax = max(t1, t2);
-        t1 = (-relpos.y + 1.0) / cube_sz * invdir.y;
-        t2 = (-relpos.y - 1.0) / cube_sz * invdir.y;
-        subcube_tmin = max(subcube_tmin, min(t1, t2));
-        subcube_tmax = min(subcube_tmax, max(t1, t2));
-        t1 = (-relpos.z + 1.0) / cube_sz * invdir.z;
-        t2 = (-relpos.z - 1.0) / cube_sz * invdir.z;
-        subcube_tmin = max(subcube_tmin, min(t1, t2));
-        subcube_tmax = min(subcube_tmax, max(t1, t2));
-
-        // Old code for more clarity.
-        /*for (int j = 0; j < 3; ++j) {
-            // first part gets the center of the cube, then go to its edges.
-            // invariant l <= pos[j] <= r
-            l = (pos[j] - relpos[j] / cube_sz) - (1.0 / cube_sz);
-            r = (pos[j] - relpos[j] / cube_sz) + (1.0 / cube_sz);
-            t1 = (r - pos[j]) * invdir[j];
-            t2 = (l - pos[j]) * invdir[j];
-            subcube_tmin = max(subcube_tmin, min(t1, t2));
-            subcube_tmax = min(subcube_tmax, max(t1, t2));
-        }*/
+        _dda_unit(relpos, invdir, &subcube_tmin, &subcube_tmax);
 
         // Calculate the number of samples needed in the new sub-cube
-        *n_samples_inout = ceilf(max_samples * (subcube_tmax - subcube_tmin) * cube_sz / 1.7320508075688772);
+        *n_samples_inout = ceilf(max_samples * (subcube_tmax - subcube_tmin) / 1.7321);
         // Compute step-size for the new sub-cube
-        *dt_inout = (subcube_tmax - subcube_tmin) / *n_samples_inout;
+        *dt_inout = (subcube_tmax - subcube_tmin) / *n_samples_inout / cube_sz;
         // Correct sub-cube start position to be in middle of first delta_t-long segment
-        *t_inout += subcube_tmin + *dt_inout / 2;
+        *t_inout += subcube_tmin / cube_sz + *dt_inout / 2;
     } else {
         *t_inout += *dt_inout;
     }
@@ -95,22 +71,22 @@ __global__ void gen_samples_kernel(
 
     const float delta_scale = _get_delta_scale(t_scaling, ray_d);
     float tmin, tmax;
+
     const float3 invdir = 1.0 / (ray_d + 1e-9);
     _dda_unit(ray_o, invdir, &tmin, &tmax);
     if (tmax < 0 || tmin > tmax) { return; }
 
-    float delta_t = 0;
     int32_t num_strat_samples = 0;
-    float t = tmin;
+    float t = tmin,
+          t_new = tmin,
+          delta_t = 0;
     for (int j = 0; j < max_intersections; j++) {
         stratified_sample_proposal<scalar_t, branching>(
-            t_child, t_icf, ray_o, ray_d, invdir, max_samples_per_node, &num_strat_samples, &delta_t, &t);
-        if (t >= tmax) { break; }
+            t_child, t_icf, ray_o, ray_d, invdir, max_samples_per_node, &num_strat_samples, &delta_t, &t_new);
+        if (t_new >= tmax) { break; }
         ray_offsets[i][j] = t;
-        ray_steps[i][j] = delta_t;
-        #ifdef DEBUG
-            printf("b=%d, sample=%d/%d t=%f, dt=%f\n", i, j, max_intersections t, delta_t);
-        #endif
+        ray_steps[i][j] = t_new - t;  // forward delta t.
+        t = t_new;
     }
     if (t < tmax) {
         printf("[gen_samples_kernel] Warning: %d samples insufficient to fill cube. (tmin=%f, tmax=%f, t=%f)\n",
