@@ -22,7 +22,7 @@ __device__ __inline__ void stratified_sample_proposal(
         3. Once there are no more samples go to the next subcube (adding some small amount to tmax) and repeat
     */
     float3 relpos;
-    scalar_t t1, t2, subcube_tmin, subcube_tmax;
+    float t1, t2, subcube_tmin, subcube_tmax;
     if (*n_samples_inout == 0) {
         // advance to new sub-cube
         *t_inout += *dt_inout / 2 + 1e-4;
