@@ -22,7 +22,7 @@ __device__ __inline__ void stratified_sample_proposal(
         3. Once there are no more samples go to the next subcube (adding some small amount to tmax) and repeat
     */
     float3 relpos;
-    float t1, t2, subcube_tmin, subcube_tmax;
+    float s_tmin, s_tmax;
     if (*n_samples_inout == 0) {
         // advance to new sub-cube
         *t_inout += *dt_inout / 2 + 1e-4;
@@ -32,14 +32,22 @@ __device__ __inline__ void stratified_sample_proposal(
         float cube_sz;
         int64_t node_id;
         _dev_query_ninfo<scalar_t, branching>(t_child, t_icf, relpos, &cube_sz, &node_id);
-        _dda_unit(relpos, invdir, &subcube_tmin, &subcube_tmax);
+        _dda_unit(relpos, invdir, &s_tmin, &s_tmax);
+        s_size = (s_tmax - s_tmin) / cube_sz;
+        if (s_size < 1e-4) {
+            *t_inout += s_tmax + 1e-4;
+            *dt_inout = 0;
+            *n_samples_inout = 0;
+            printf("s_size too small. Node ID=%ld - s_tmin=%f s_tmax=%f\n", node_id, s_tmin, s_tmax);
+            return;
+        }
 
         // Calculate the number of samples needed in the new sub-cube
-        *n_samples_inout = ceilf(max_samples * (subcube_tmax - subcube_tmin) / 1.7321);
+        *n_samples_inout = ceilf(max_samples * s_size * cube_sz / 1.7321);
         // Compute step-size for the new sub-cube
-        *dt_inout = (subcube_tmax - subcube_tmin) / *n_samples_inout / cube_sz;
+        *dt_inout = s_size / *n_samples_inout;
         // Correct sub-cube start position to be in middle of first delta_t-long segment
-        *t_inout += subcube_tmin / cube_sz + *dt_inout / 2;
+        *t_inout += s_tmin / cube_sz + *dt_inout / 2;
     } else {
         *t_inout += *dt_inout;
     }
@@ -71,7 +79,6 @@ __global__ void gen_samples_kernel(
 
     const float delta_scale = _get_delta_scale(t_scaling, ray_d);
     float tmin, tmax;
-
     const float3 invdir = 1.0 / (ray_d + 1e-9);
     _dda_unit(ray_o, invdir, &tmin, &tmax);
     if (tmax < 0 || tmin > tmax) { return; }
