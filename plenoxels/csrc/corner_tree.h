@@ -113,7 +113,6 @@ __global__ void trace_ray(
     float3 pos;
     scalar_t basis_fn[bd];
 
-    for (int j = 0; j < out_data_dim; ++j) { out[b][j] = 0.0f; }
     calc_sh_basis<scalar_t, bd>(ray_d, basis_fn);
 
     scalar_t light_intensity = 1.f;
@@ -122,7 +121,7 @@ __global__ void trace_ray(
         const float delta_t = ray_steps[b][i];
         if (delta_t <= 0) break;
         pos = ray_o + t * ray_d;
-
+        //printf("b=%d, i=%d, Interpolating at coordinate %f %f %f (ray_o %f %f %f - ray_d %f %f %f)\n", b, i, pos.x, pos.y, pos.z, ray_o.x, ray_o.y, ray_o.z, ray_d.x, ray_d.y, ray_d.z);
         _dev_query_corners<scalar_t, branching>(
             t_child, t_icf, t_nids, pos,
             /*weights=*/&interp_weights[b][i][0], /*nid_ptr=*/&nid_ptrs[b][i]);
@@ -287,8 +286,8 @@ RenderingOutput corner_tree_render(
     #endif
 
     // 2. Forward pass (allocate tensors)
-    torch::Tensor output = torch::empty({batch_size, out_data_dim}, data.options());
-    torch::Tensor interp_vals = torch::empty({batch_size, opt.max_intersections, data_dim}, data.options());
+    torch::Tensor output = torch::zeros({batch_size, out_data_dim}, data.options());
+    torch::Tensor interp_vals = torch::zeros({batch_size, opt.max_intersections, data_dim}, data.options());
     torch::Tensor interp_nid_ptrs = torch::empty({batch_size, opt.max_intersections}, torch::dtype(torch::kInt32).device(data.device()));
     torch::Tensor interp_weights = torch::empty({batch_size, opt.max_intersections, 8},
         torch::dtype(torch::kFloat32).device(data.device()).layout(data.layout()));

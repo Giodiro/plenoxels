@@ -132,11 +132,13 @@ class CornerTree(torch.nn.Module):
         # New neighbor indices
         self.nids[:n_int + n_int_new] = new_cor_idx.view(-1, 2, 2, 2, 8)
 
-    def query(self, indices):
+    def query(self, indices, normalize=True):
         n = indices.shape[0]
 
         with torch.autograd.no_grad():
-            indices = self.trasform_coords(indices)
+            if normalize:
+                indices = self.trasform_coords(indices)
+            indices.clamp_(0.0, 1 - 1e-6)
             node_ids = torch.zeros(n, dtype=torch.long, device=indices.device)
             remain_indices = torch.arange(n, dtype=torch.long, device=indices.device)
             floor_indices = torch.zeros(n, 3, dtype=torch.float, device=indices.device)
@@ -176,11 +178,10 @@ class CornerTree(torch.nn.Module):
             (xy[:, 0])     * (xy[:, 1])     * (1 - xy[:, 2]),
             (xy[:, 0])     * (xy[:, 1])     * (xy[:, 2]),
         ), dim=1)  # n, 8
-        return self.data(sel_nids, per_sample_weights=weights)
+        return self.data(sel_nids, per_sample_weights=weights), weights
 
     @torch.no_grad()
     def sample_proposal(self, rays_o, rays_d, max_samples):
-#         rays_o = self.trasform_coords(rays_o)
         # scale direction
         rays_d.mul_(self.scaling)
         delta_scale = 1 / torch.linalg.norm(rays_d, dim=1, keepdim=True)
@@ -202,16 +203,27 @@ class CornerTree(torch.nn.Module):
         return points, dts, points_valid
 
     def forward(self, rays_o, rays_d, use_ext: bool):
+        use_ext_sample = True
         if use_ext:
             bb = 1.0 if self.white_bkgd else 0.0
             opt = init_render_opt(background_brightness=bb, density_softplus=False, rgb_padding=0.0)
             return CornerTreeRenderFn.apply(self.data.weight, self, rays_o, rays_d, opt)
         else:
-            # NOTE: sample_proposal modifies rays_d.
-            pts, dt, valid = self.sample_proposal(rays_o, rays_d, self.num_samples)
+            if use_ext_sample:
+                with torch.no_grad():
+                    bb = 1.0 if self.white_bkgd else 0.0
+                    opt = init_render_opt(background_brightness=bb, density_softplus=False, rgb_padding=0.0)
+                    c_out = CornerTreeRenderFn.apply(self.data.weight, self, rays_o, rays_d, opt)
+                    offsets = c_out.ray_offsets
+                    dt = c_out.ray_steps
+                    valid = dt > 0
+                    pts = self.trasform_coords(rays_o).unsqueeze(1) + offsets.unsqueeze(-1) * rays_d.unsqueeze(1)
+            else:
+                # NOTE: sample_proposal modifies rays_d.
+                pts, dt, valid = self.sample_proposal(rays_o, rays_d, self.num_samples)
             batch, nintrs = pts.shape[:2]
 
-            interp_masked = self.query(pts[valid].view(-1, 3))
+            interp_masked, iweights = self.query(pts[valid].view(-1, 3), normalize=not use_ext_sample)
             interp = torch.zeros(batch, nintrs, self.data_dim,
                                  dtype=torch.float32, device=interp_masked.device)
             interp.masked_scatter_(valid.unsqueeze(-1), interp_masked)
@@ -223,8 +235,8 @@ class CornerTree(torch.nn.Module):
 
             sigma = interp[..., -1]  # [batch, n_intrs-1, 1]
 
-            # Volumetric rendering
-            alpha = 1 - torch.exp(-torch.relu(sigma) * dt)            # alpha: [batch, n_intrs-1]
+            # Volumetric rendering TODO: * 2.6 needs to be computed.
+            alpha = 1 - torch.exp(-torch.relu(sigma) * dt * 2.6)            # alpha: [batch, n_intrs-1]
             cum_light = torch.cat((torch.ones(rgb.shape[0], 1, dtype=rgb.dtype, device=rgb.device),
                                    torch.cumprod(1 - alpha[:, :-1] + 1e-10, dim=-1)), dim=-1)  # [batch, n_intrs-1]
             abs_light = alpha * cum_light  # [batch, n_intersections - 1]
@@ -238,7 +250,7 @@ class CornerTree(torch.nn.Module):
                 # Including the white background in the final color
                 rgb_map = rgb_map + (1. - acc_map.unsqueeze(1))
 
-            return rgb_map
+            return rgb_map, pts, dt, valid, iweights, interp
 
 
 def init_render_opt(background_brightness: float = 1.0,
@@ -246,14 +258,14 @@ def init_render_opt(background_brightness: float = 1.0,
                     rgb_padding: float = 0.0) -> RenderOptions:
     opts = RenderOptions()
     opts.background_brightness = background_brightness
-    opts.max_samples_per_node = 1
-    opts.max_intersections = 256
+    opts.max_samples_per_node = 3
+    opts.max_intersections = 512
 
     opts.density_softplus = density_softplus
     opts.rgb_padding = rgb_padding
 
-    opts.sigma_thresh = 1e-2
-    opts.stop_thresh = 1e-2
+    opts.sigma_thresh = 1e-8
+    opts.stop_thresh = 1e-8
 
     # Following are unused
     opts.step_size = 1.0
@@ -298,7 +310,7 @@ class CornerTreeRenderFn(torch.autograd.Function):
                 rays_d: torch.Tensor,
                 opt: RenderOptions):
         out = CornerTreeRenderFn.dispatch_vol_render(
-            data, tree.child, tree.is_child_leaf, tree.nids, tree.offset, tree.scaling,
+            data, tree.child.to(dtype=torch.int), tree.is_child_leaf, tree.nids.to(dtype=torch.int), tree.offset, tree.scaling,
             rays_o, rays_d, opt, dtype=tree.data.weight.dtype, branching=2, sh_degree=tree.sh_degree)
         ctx.save_for_backward(
             rays_o, rays_d, out.interpolated_vals, out.interpolated_n_ids,
@@ -315,7 +327,7 @@ class CornerTreeRenderFn(torch.autograd.Function):
             rays_o, rays_d, interpolated_vals, interpolated_n_ids, interpolation_weights, ray_offsets, ray_steps = ctx.saved_tensors
             tree = ctx.tree
             out = CornerTreeRenderFn.dispatch_vol_render_bwd(
-                tree.data.weight, tree.nids, tree.offset, tree.scaling, rays_o, rays_d,
+                tree.data.weight, tree.nids.to(dtype=torch.int), tree.offset, tree.scaling, rays_o, rays_d,
                 grad_out.contiguous(), interpolated_vals, interpolated_n_ids, interpolation_weights,
                 ray_offsets, ray_steps, ctx.opt,
                 dtype=tree.data.weight.dtype, branching=2, sh_degree=tree.sh_degree
