@@ -1,6 +1,7 @@
 #pragma once
 
 #include <torch/extension.h>
+#include <ATen/cuda/CUDAEvent.h>
 
 #include "ray_sampling.h"
 #include "include/data_spec.hpp"
@@ -331,7 +332,7 @@ RenderingOutput corner_tree_render(
     fwd_end.record();
 
     gs_start.synchronize();
-    gs_end.synchronize()
+    gs_end.synchronize();
     float gs_ela = gs_start.elapsed_time(gs_end);
     alloc_start.synchronize();
     alloc_end.synchronize();
@@ -350,7 +351,6 @@ RenderingOutput corner_tree_render(
         /*ray_offsets=*/ray_offsets,
         /*ray_steps=*/ray_steps
     };
-    auto stop3 = high_resolution_clock
 }
 
 

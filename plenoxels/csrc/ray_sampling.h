@@ -22,28 +22,37 @@ __device__ __inline__ void stratified_sample_proposal(
         3. Once there are no more samples go to the next subcube (adding some small amount to tmax) and repeat
     */
     float3 relpos;
-    float s_tmin, s_tmax, s_size;
+    int64_t node_id;
+    float s_tmin, s_tmax, s_size, cube_sz;
     if (*n_samples_inout == 0) {
         // advance to new sub-cube
-        *t_inout += *dt_inout / 2 + 1e-4;
+        *t_inout += *dt_inout / 2 + 2e-4;
         // new sub-cube position
         relpos = ray_o + *t_inout * ray_d;
         // New subcube info pos will hold the current offset in the new subcube
-        float cube_sz;
-        int64_t node_id;
         _dev_query_ninfo<scalar_t, branching>(t_child, t_icf, relpos, &cube_sz, &node_id);
         _dda_unit(relpos, invdir, &s_tmin, &s_tmax);
-        s_size = (s_tmax - s_tmin) / cube_sz;
-        if (s_size < 1e-4) {
-            *t_inout += s_tmax + 1e-4;
-            *dt_inout = 0;
-            *n_samples_inout = 0;
-            printf("s_size too small. Node ID=%ld - s_tmin=%f s_tmax=%f\n", node_id, s_tmin, s_tmax);
+        if (s_tmax < 1e-8) {
+            *n_samples_inout = -1;
             return;
         }
 
+        s_size = (s_tmax - s_tmin) / cube_sz;
+        if (s_size < 1e-4) {
+                        *t_inout += s_tmax + 1e-4;
+                                    *dt_inout = 0;
+                                                *n_samples_inout = 0;
+                                                            printf("s_size too small. Node ID=%ld - s_tmin=%f s_tmax=%f\n", node_id, s_tmin, s_tmax);
+                                                                        return;
+                                                                                }
+
         // Calculate the number of samples needed in the new sub-cube
         *n_samples_inout = ceilf(max_samples * s_size * cube_sz / 1.7321);
+
+
+        //printf("dt=%f - t=%f - relpos=%f %f %f - s_tmin=%f - s_tmax=%f - cube_sz=%f   --  new dt=%f  new t=%f\n",
+        //        *dt_inout, *t_inout, relpos.x, relpos.y, relpos.z, s_tmin, s_tmax, cube_sz, s_size / *n_samples_inout,
+        //        *t_inout + s_tmin / cube_sz + s_size / *n_samples_inout);
         // Compute step-size for the new sub-cube
         *dt_inout = s_size / *n_samples_inout;
         // Correct sub-cube start position to be in middle of first delta_t-long segment
@@ -83,19 +92,23 @@ __global__ void gen_samples_kernel(
     _dda_unit(ray_o, invdir, &tmin, &tmax);
     if (tmax < 0 || tmin > tmax) { return; }
 
+    //printf("ray_o: %f %f %f - ray_d: %f %f %f - tmin: %f - tmax %f\n", ray_o.x, ray_o.y, ray_o.z, ray_d.x, ray_d.y, ray_d.z, tmin, tmax);
     int32_t num_strat_samples = 0;
     float t = tmin,
           t_new = tmin,
           delta_t = 0;
-    for (int j = 0; j < max_intersections; j++) {
+    int j = 0;
+    while (j < max_intersections) {
         stratified_sample_proposal<scalar_t, branching>(
             t_child, t_icf, ray_o, ray_d, invdir, max_samples_per_node, &num_strat_samples, &delta_t, &t_new);
-        if (t_new >= tmax) { break; }
+        if (t_new >= tmax || num_strat_samples < 0) { break; }
+        if (t_new - t <= 0) { continue; }
         ray_offsets[i][j] = t;
         ray_steps[i][j] = t_new - t;  // forward delta t.
         t = t_new;
+        j++;
     }
-    if (t < tmax) {
+    if (t_new < tmax) {
         printf("[gen_samples_kernel] Warning: %d samples insufficient to fill cube. (tmin=%f, tmax=%f, t=%f)\n",
             max_intersections, tmin, tmax, t);
     }

@@ -264,8 +264,8 @@ def init_render_opt(background_brightness: float = 1.0,
     opts.density_softplus = density_softplus
     opts.rgb_padding = rgb_padding
 
-    opts.sigma_thresh = 1e-8
-    opts.stop_thresh = 1e-8
+    opts.sigma_thresh = 1e-3
+    opts.stop_thresh = 1e-3
 
     # Following are unused
     opts.step_size = 1.0
