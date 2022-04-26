@@ -312,7 +312,7 @@ RenderingOutput corner_tree_render(
     alloc_start.record();
     torch::Tensor output = torch::zeros({batch_size, out_data_dim}, data.options());
     torch::Tensor interp_vals = torch::zeros({batch_size, opt.max_intersections, data_dim}, data.options());
-    torch::Tensor interp_nid_ptrs = torch::empty({batch_size, opt.max_intersections}, torch::dtype(torch::kInt32).device(data.device()));
+    torch::Tensor interp_nid_ptrs = torch::zeros({batch_size, opt.max_intersections}, torch::dtype(torch::kInt32).device(data.device()));
     torch::Tensor interp_weights = torch::empty({batch_size, opt.max_intersections, 8},
         torch::dtype(torch::kFloat32).device(data.device()).layout(data.layout()));
     alloc_end.record();

@@ -79,7 +79,7 @@ class CornerTree(torch.nn.Module):
             leaves = self.is_child_leaf[:self.n_internal].nonzero(as_tuple=False)  # n_leaves, 4
         else:
             leaves_valid = (
-                self.is_child_leaf[leaves[:, 0], leaves[:, 1], leaves[:, 2]] &
+                self.is_child_leaf[leaves[:, 0], leaves[:, 1], leaves[:, 2], leaves[:, 3]] &
                 (leaves[:, 0] < self.n_internal)
             )
             leaves = leaves[leaves_valid]
@@ -133,15 +133,15 @@ class CornerTree(torch.nn.Module):
             # We only care about the 'new_corners' (which were added at this iteration)
             num_old_corners = corners_enc.size(0) - new_corners_enc.size(0)
             new_corners_uniq_idx = u_idx[u_idx > num_old_corners] - num_old_corners
-            new_data.scatter_(
-                0,
-                torch.searchsorted(new_u_cor, new_corners_enc[new_corners_uniq_idx]).unsqueeze(-1).expand(-1, self.data_dim),
-                self.query(new_corners[new_corners_uniq_idx])
-            )
+            scatter_idx = torch.searchsorted(new_u_cor, new_corners_enc[new_corners_uniq_idx]).unsqueeze(-1).expand(-1, self.data_dim)
+            scatter_data = self.query(new_corners[new_corners_uniq_idx])[0]
+            print("Copying %d interp points" % (scatter_data.shape[0]))
+            new_data.scatter_(0, scatter_idx, scatter_data)
         else:
             new_data[:, :-1].fill_(self.init_rgb)
             new_data[:, -1].fill_(self.init_sigma)
         if n_int > 0:
+            print("Copying %f existing points" % (self.data.weight.shape[0]))
             new_data.scatter_(
                 0,
                 torch.searchsorted(new_u_cor, self.ucoo).unsqueeze(-1).expand(-1, self.data_dim),
@@ -176,7 +176,7 @@ class CornerTree(torch.nn.Module):
 
             term_nids = self.nids[sel][term_mask]
             term_vals = values[term_indices]
-            self.data.weight.scatter_(0, term_nids.view(-1).unsqueeze(-1).expand(-1, self.data_dim), term_vals)
+            self.data.weight.scatter_(0, term_nids.view(-1).unsqueeze(-1).expand(-1, self.data_dim), term_vals.repeat(8, 1))
 
             remain_indices = remain_indices[~term_mask]
             node_ids[remain_indices] += deltas
@@ -211,7 +211,7 @@ class CornerTree(torch.nn.Module):
                 if not remain_indices.numel():
                     break
 
-                node_ids[remain_indices] += deltas
+                node_ids[remain_indices] += deltas[~term_mask]
                 xy = xy[~term_mask]
 
         xy = indices
