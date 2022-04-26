@@ -67,7 +67,7 @@ class CornerTree(torch.nn.Module):
         return self.offset + coords * self.scaling
 
     @torch.no_grad()
-    def refine(self, leaves=None):
+    def refine(self, leaves=None, copy_interp_data=False):
         # 1. figure out the coordinates of the leaves. This is non-trivial, likely requires traeversing the tree.
         # 2. split the leaves. Add child, is_child_leaf, parent, depth.
 
@@ -77,32 +77,38 @@ class CornerTree(torch.nn.Module):
         # 6. Run whatever is below
         if leaves is None:
             leaves = self.is_child_leaf[:self.n_internal].nonzero(as_tuple=False)  # n_leaves, 4
+        else:
+            leaves_valid = (
+                self.is_child_leaf[leaves[:, 0], leaves[:, 1], leaves[:, 2]] &
+                (leaves[:, 0] < self.n_internal)
+            )
+            leaves = leaves[leaves_valid]
         sel = (leaves[:, 0], leaves[:, 1], leaves[:, 2], leaves[:, 3])
 
+        dev = self.child.device
         n_int = self.n_internal
         n_nodes = self.n_internal * 8 + 1
         n_int_new = leaves.shape[0] if n_int > 0 else 1
         n_nodes_fin = n_nodes + n_int_new * 8
         print(f"{n_int=}, {n_nodes=}, {n_int_new=}, {n_nodes_fin=}")
         if n_int_new + n_int > self.child.shape[0]:
-            raise RuntimeError(f"Not enough data-space for refinement. "
+            raise MemoryError(f"Not enough data-space for refinement. "
                                f"Need {n_int_new + n_int}, Have {self.child.shape[0]}")
 
-        leaf_coo = self.coords[sel] if n_int > 0 else torch.tensor([[0.5, 0.5, 0.5]])
-        depths = self.depths[sel[0]] if n_int > 0 else torch.tensor([0])
+        leaf_coo = self.coords[sel] if n_int > 0 else torch.tensor([[0.5, 0.5, 0.5]], device=dev)
+        depths = self.depths[sel[0]] if n_int > 0 else torch.tensor([0], device=dev)
         # + 1 since it's the new leaf, and +1 to get half-voxel-size
         new_leaf_sizes = (1 / (2 ** (depths + 2))).unsqueeze(-1).unsqueeze(-1)
 
-        n_offsets = self.offsets_3d.unsqueeze(0).repeat(n_int_new, 1, 1) * new_leaf_sizes  # [nl, 8, 3]
+        n_offsets = self.offsets_3d.unsqueeze(0).repeat(n_int_new, 1, 1).to(new_leaf_sizes.device) * new_leaf_sizes  # [nl, 8, 3]
         new_child = (
-            torch.arange(n_nodes, n_nodes_fin, dtype=torch.int32).view(-1, 2, 2, 2)
-            - torch.arange(n_int, n_int + n_int_new).view(-1, 1, 1, 1)
+            torch.arange(n_nodes, n_nodes_fin, dtype=self.child.device, device=dev).view(-1, 2, 2, 2)
+            - torch.arange(n_int, n_int + n_int_new, dtype=self.child.device, device=dev).view(-1, 1, 1, 1)
         )
         # Coordinates of new leaf centers
         new_leaf_coo = leaf_coo.unsqueeze(1) + n_offsets  # [nl, 8, 3]
         # From center to corners of new leafs (nl -> 8*nl=nc)
         new_corners = (new_leaf_coo.view(-1, 1, 3) + n_offsets.repeat_interleave(8, dim=0)).view(-1, 3)
-
         # Encoded corner coordinates (of new leafs and of the old tree)
         new_corners_enc = enc_pos(new_corners)
         if n_int > 0:
@@ -113,30 +119,42 @@ class CornerTree(torch.nn.Module):
         new_u_cor, new_cor_idx = torch.unique(corners_enc, return_inverse=True, sorted=True)
         print(f"Deduped corner coordinates from {corners_enc.shape[0]} to {new_u_cor.shape[0]}")
 
-
-
-        self.coords[n_int: n_int + n_int_new] = new_leaf_coo.view(-1, 2, 2, 2, 3)
-        self.depths[n_int: n_int + n_int_new] = depths + 1
-
-        self.child[n_int: n_int + n_int_new] = new_child
-        self.is_child_leaf[sel] = False
-
-        self.n_internal = n_int + n_int_new
-
-
-
-        # Update the tree-data: create new tensor, copy the old data into it (with changed indices).
-        new_data = torch.zeros(new_u_cor.shape[0], self.data_dim)
-        new_data[:, :-1].fill_(self.init_rgb)
-        new_data[:, -1].fill_(self.init_sigma)
+        # Update the tree-data:
+        # a. create new tensor,
+        # b. copy interpolated data from old tree into it,
+        # c. copy exact old data into it (with changed indices).
+        new_data = torch.empty(new_u_cor.shape[0], self.data_dim, device=dev)
+        if copy_interp_data:
+            # unique index (https://github.com/pytorch/pytorch/issues/36748)
+            # Index of same size as the unique corners, indexes the original array.
+            perm = torch.arange(new_cor_idx.size(0), dtype=new_cor_idx.dtype, device=new_cor_idx.device)
+            inverse, perm = new_cor_idx.flip([0]), perm.flip([0])
+            u_idx = inverse.new_empty(new_u_cor.size(0)).scatter_(0, inverse, perm)
+            # We only care about the 'new_corners' (which were added at this iteration)
+            num_old_corners = corners_enc.size(0) - new_corners_enc.size(0)
+            new_corners_uniq_idx = u_idx[u_idx > num_old_corners] - num_old_corners
+            new_data.scatter_(
+                0,
+                torch.searchsorted(new_u_cor, new_corners_enc[new_corners_uniq_idx]).unsqueeze(-1).expand(-1, self.data_dim),
+                self.query(new_corners[new_corners_uniq_idx])
+            )
+        else:
+            new_data[:, :-1].fill_(self.init_rgb)
+            new_data[:, -1].fill_(self.init_sigma)
         if n_int > 0:
-            new_data[torch.searchsorted(new_u_cor, self.ucoo), :] = self.data.weight
+            new_data.scatter_(
+                0,
+                torch.searchsorted(new_u_cor, self.ucoo).unsqueeze(-1).expand(-1, self.data_dim),
+                self.data.weight
+            )
         self.data = torch.nn.EmbeddingBag.from_pretrained(new_data, freeze=False, mode='sum', sparse=False)
         self.ucoo = new_u_cor
-        # TODO: parent data should be copied into the corresponding children
-
-        # New neighbor indices
         self.nids[:n_int + n_int_new] = new_cor_idx.view(-1, 2, 2, 2, 8)
+        self.coords[n_int: n_int + n_int_new] = new_leaf_coo.view(-1, 2, 2, 2, 3)
+        self.depths[n_int: n_int + n_int_new] = depths + 1
+        self.child[n_int: n_int + n_int_new] = new_child
+        self.is_child_leaf[sel] = False
+        self.n_internal = n_int + n_int_new
 
     def query(self, indices, normalize=True):
         n = indices.shape[0]
