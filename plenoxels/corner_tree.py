@@ -156,6 +156,32 @@ class CornerTree(torch.nn.Module):
         self.is_child_leaf[sel] = False
         self.n_internal = n_int + n_int_new
 
+    @torch.no_grad()
+    def set(self, indices, values, normalize=True):
+        n = indices.shape[0]
+        if normalize:
+            indices = self.trasform_coords(indices)
+        indices.clamp_(0.0, 1 - 1e-6)
+        remain_indices = torch.arange(n, dtype=torch.long, device=indices.device)
+        node_ids = torch.zeros(n, dtype=torch.long, device=indices.device)
+        while remain_indices.numel():
+            indices *= 2
+            floor = torch.floor(indices).clamp_max_(1)
+            indices -= floor
+            sel = (node_ids[remain_indices], *(floor.long().T),)
+            deltas = self.child[sel]
+
+            term_mask = self.is_child_leaf[sel]  # terminate when nodes with 0 children encountered (leaves).
+            term_indices = remain_indices[term_mask]
+
+            term_nids = self.nids[sel][term_mask]
+            term_vals = values[term_indices]
+            self.data.weight.scatter_(0, term_nids.view(-1).unsqueeze(-1).expand(-1, self.data_dim), term_vals)
+
+            remain_indices = remain_indices[~term_mask]
+            node_ids[remain_indices] += deltas
+            indices = indices[~term_mask]
+
     def query(self, indices, normalize=True):
         n = indices.shape[0]
 
