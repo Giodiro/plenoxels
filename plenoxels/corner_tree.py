@@ -102,8 +102,8 @@ class CornerTree(torch.nn.Module):
 
         n_offsets = self.offsets_3d.unsqueeze(0).repeat(n_int_new, 1, 1).to(new_leaf_sizes.device) * new_leaf_sizes  # [nl, 8, 3]
         new_child = (
-            torch.arange(n_nodes, n_nodes_fin, dtype=self.child.device, device=dev).view(-1, 2, 2, 2)
-            - torch.arange(n_int, n_int + n_int_new, dtype=self.child.device, device=dev).view(-1, 1, 1, 1)
+            torch.arange(n_nodes, n_nodes_fin, dtype=self.child.dtype, device=dev).view(-1, 2, 2, 2)
+            - torch.arange(n_int, n_int + n_int_new, dtype=self.child.dtype, device=dev).view(-1, 1, 1, 1)
         )
         # Coordinates of new leaf centers
         new_leaf_coo = leaf_coo.unsqueeze(1) + n_offsets  # [nl, 8, 3]
