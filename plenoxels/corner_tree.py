@@ -98,19 +98,13 @@ class CornerTree(torch.nn.Module):
             torch.arange(n_nodes, n_nodes_fin, dtype=torch.int32).view(-1, 2, 2, 2)
             - torch.arange(n_int, n_int + n_int_new).view(-1, 1, 1, 1)
         )
-        self.child[n_int: n_int + n_int_new] = new_child
-        self.is_child_leaf[sel] = False
-
+        # Coordinates of new leaf centers
         new_leaf_coo = leaf_coo.unsqueeze(1) + n_offsets  # [nl, 8, 3]
-        self.coords[n_int: n_int + n_int_new] = new_leaf_coo.view(-1, 2, 2, 2, 3)
-        self.depths[n_int: n_int + n_int_new] = depths + 1
-
-        self.n_internal = n_int + n_int_new
-
-        # From leaf center to corners (nl -> 8*nl=nc)
+        # From center to corners of new leafs (nl -> 8*nl=nc)
         new_corners = (new_leaf_coo.view(-1, 1, 3) + n_offsets.repeat_interleave(8, dim=0)).view(-1, 3)
+
+        # Encoded corner coordinates (of new leafs and of the old tree)
         new_corners_enc = enc_pos(new_corners)
-        # Need to get all the encoded corner positions of the whole tree.
         if n_int > 0:
             corners_enc = torch.cat((self.ucoo[self.nids[:n_int].view(-1)], new_corners_enc))
         else:
@@ -118,6 +112,18 @@ class CornerTree(torch.nn.Module):
 
         new_u_cor, new_cor_idx = torch.unique(corners_enc, return_inverse=True, sorted=True)
         print(f"Deduped corner coordinates from {corners_enc.shape[0]} to {new_u_cor.shape[0]}")
+
+
+
+        self.coords[n_int: n_int + n_int_new] = new_leaf_coo.view(-1, 2, 2, 2, 3)
+        self.depths[n_int: n_int + n_int_new] = depths + 1
+
+        self.child[n_int: n_int + n_int_new] = new_child
+        self.is_child_leaf[sel] = False
+
+        self.n_internal = n_int + n_int_new
+
+
 
         # Update the tree-data: create new tensor, copy the old data into it (with changed indices).
         new_data = torch.zeros(new_u_cor.shape[0], self.data_dim)
