@@ -103,7 +103,6 @@ template <typename scalar_t, int branching, int data_dim, int out_data_dim>
 __global__ void trace_ray(
     const Acc32<scalar_t, 2> t_data,
     const Acc32<int, 4> t_child,
-    const Acc32<bool, 4> t_icf,
     const Acc32<int, 5> t_nids,
     const float* __restrict__ t_offset,
     const float* __restrict__ t_scaling,
@@ -142,7 +141,7 @@ __global__ void trace_ray(
         if (delta_t <= 0) break;
         pos = ray_o + t * ray_d;
         _dev_query_corners<scalar_t, branching>(
-            t_child, t_icf, t_nids, pos,
+            t_child, t_nids, pos,
             /*weights=*/&interp_weights[b][i][0], /*nid_ptr=*/&nid_ptrs[b][i]);
         for (int j = 0; j < 8; j++) {
             for (int k = 0; k < data_dim; k++) {
@@ -258,7 +257,6 @@ template <typename scalar_t, int32_t branching, int32_t data_dim, int32_t out_da
 RenderingOutput corner_tree_render(
     const torch::Tensor & data,
     const torch::Tensor & t_child,
-    const torch::Tensor & t_icf,
     const torch::Tensor & t_nids,
     const torch::Tensor & t_offset,
     const torch::Tensor & t_scaling,
@@ -288,7 +286,6 @@ RenderingOutput corner_tree_render(
     gen_samples_kernel<scalar_t, branching>
         <<<n_blocks_linear<uint32_t>(batch_size, gen_samples_n_threads), gen_samples_n_threads>>>(
             t_child.packed_accessor32<int, 4, torch::RestrictPtrTraits>(),
-            t_icf.packed_accessor32<bool, 4, torch::RestrictPtrTraits>(),
             t_offset.data_ptr<float>(),
             t_scaling.data_ptr<float>(),
             rays_o.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
@@ -323,7 +320,6 @@ RenderingOutput corner_tree_render(
     <<<n_blocks_linear<uint32_t>(batch_size, render_ray_n_threads), render_ray_n_threads>>>(
         data.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
         t_child.packed_accessor32<int, 4, torch::RestrictPtrTraits>(),
-        t_icf.packed_accessor32<bool, 4, torch::RestrictPtrTraits>(),
         t_nids.packed_accessor32<int, 5, torch::RestrictPtrTraits>(),
         t_offset.data_ptr<float>(),
         t_scaling.data_ptr<float>(),

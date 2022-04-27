@@ -45,7 +45,6 @@ class CornerTree(torch.nn.Module):
         coords   = torch.empty(init_internal, 2, 2, 2, 3)
         nids     = torch.empty(init_internal, 2, 2, 2, 8, dtype=torch.long)
         depths   = torch.empty(init_internal, dtype=torch.long)
-        is_child_leaf = torch.ones(init_internal, 2, 2, 2, dtype=torch.bool)
         self.data = torch.nn.EmbeddingBag(1, self.data_dim, mode='sum')           # n_data, data_dim
 
         offsets_3d = torch.tensor([[-1, -1, -1], [-1, -1, 1], [-1, 1, -1], [-1, 1, 1],
@@ -58,7 +57,6 @@ class CornerTree(torch.nn.Module):
         self.register_buffer("coords", coords)
         self.register_buffer("nids", nids)
         self.register_buffer("depths", depths)
-        self.register_buffer("is_child_leaf", is_child_leaf)
         self.register_buffer("ucoo", torch.tensor([]))
         self.n_internal = 0
 
@@ -69,17 +67,17 @@ class CornerTree(torch.nn.Module):
     @torch.no_grad()
     def refine(self, leaves=None, copy_interp_data=False):
         # 1. figure out the coordinates of the leaves. This is non-trivial, likely requires traeversing the tree.
-        # 2. split the leaves. Add child, is_child_leaf, parent, depth.
+        # 2. split the leaves. Add child, parent, depth.
 
         # 3. For each new leaf calculate coordinates of its neighbors.
         # 4. encode neighbor coordinates, and append to existing coordinates
         # 5. Unique with inverse.
         # 6. Run whatever is below
         if leaves is None:
-            leaves = self.is_child_leaf[:self.n_internal].nonzero(as_tuple=False)  # n_leaves, 4
+            leaves = (self.child[:self.n_internal] < 0).nonzero(as_tuple=False)
         else:
             leaves_valid = (
-                self.is_child_leaf[leaves[:, 0], leaves[:, 1], leaves[:, 2], leaves[:, 3]] &
+                (self.child[leaves[:, 0], leaves[:, 1], leaves[:, 2], leaves[:, 3]] < 0) &
                 (leaves[:, 0] < self.n_internal)
             )
             leaves = leaves[leaves_valid]
@@ -99,12 +97,7 @@ class CornerTree(torch.nn.Module):
         depths = self.depths[sel[0]] if n_int > 0 else torch.tensor([0], device=dev)
         # + 1 since it's the new leaf, and +1 to get half-voxel-size
         new_leaf_sizes = (1 / (2 ** (depths + 2))).unsqueeze(-1).unsqueeze(-1)
-
         n_offsets = self.offsets_3d.unsqueeze(0).repeat(n_int_new, 1, 1).to(new_leaf_sizes.device) * new_leaf_sizes  # [nl, 8, 3]
-        new_child = (
-            torch.arange(n_nodes, n_nodes_fin, dtype=self.child.dtype, device=dev).view(-1, 2, 2, 2)
-            - torch.arange(n_int, n_int + n_int_new, dtype=self.child.dtype, device=dev).view(-1, 1, 1, 1)
-        )
         # Coordinates of new leaf centers
         new_leaf_coo = leaf_coo.unsqueeze(1) + n_offsets  # [nl, 8, 3]
         # From center to corners of new leafs (nl -> 8*nl=nc)
@@ -124,6 +117,14 @@ class CornerTree(torch.nn.Module):
         # b. copy interpolated data from old tree into it,
         # c. copy exact old data into it (with changed indices).
         new_data = torch.empty(new_u_cor.shape[0], self.data_dim, device=dev)
+        new_data[:, -1].fill_(self.init_sigma)
+        new_data[:, :-1].fill_(self.init_rgb)
+        if n_int > 0:
+            new_data.scatter_(
+                0,
+                torch.searchsorted(new_u_cor, self.ucoo).unsqueeze(-1).expand(-1, self.data_dim),
+                self.data.weight
+            )
         if copy_interp_data:
             # unique index (https://github.com/pytorch/pytorch/issues/36748)
             # Index of same size as the unique corners, indexes the original array.
@@ -137,23 +138,13 @@ class CornerTree(torch.nn.Module):
             scatter_data = self.query(new_corners[new_corners_uniq_idx])[0]
             print("Copying %d interp points" % (scatter_data.shape[0]))
             new_data.scatter_(0, scatter_idx, scatter_data)
-        else:
-            new_data[:, :-1].fill_(self.init_rgb)
-            new_data[:, -1].fill_(self.init_sigma)
-        if n_int > 0:
-            print("Copying %f existing points" % (self.data.weight.shape[0]))
-            new_data.scatter_(
-                0,
-                torch.searchsorted(new_u_cor, self.ucoo).unsqueeze(-1).expand(-1, self.data_dim),
-                self.data.weight
-            )
         self.data = torch.nn.EmbeddingBag.from_pretrained(new_data, freeze=False, mode='sum', sparse=False)
         self.ucoo = new_u_cor
         self.nids[:n_int + n_int_new] = new_cor_idx.view(-1, 2, 2, 2, 8)
         self.coords[n_int: n_int + n_int_new] = new_leaf_coo.view(-1, 2, 2, 2, 3)
         self.depths[n_int: n_int + n_int_new] = depths + 1
-        self.child[n_int: n_int + n_int_new] = new_child
-        self.is_child_leaf[sel] = False
+        self.child[n_int: n_int + n_int_new] = -1
+        self.child[sel] = torch.arange(n_int, n_int + n_int_new) - sel[0]
         self.n_internal = n_int + n_int_new
 
     @torch.no_grad()
@@ -171,7 +162,7 @@ class CornerTree(torch.nn.Module):
             sel = (node_ids[remain_indices], *(floor.long().T),)
             deltas = self.child[sel]
 
-            term_mask = self.is_child_leaf[sel]  # terminate when nodes with 0 children encountered (leaves).
+            term_mask = deltas < 0  # terminate when nodes with 0 children encountered (leaves).
             term_indices = remain_indices[term_mask]
 
             term_nids = self.nids[sel][term_mask]
@@ -201,7 +192,7 @@ class CornerTree(torch.nn.Module):
                 sel = (node_ids[remain_indices], *(floor.long().T),)
                 deltas = self.child[sel]
 
-                term_mask = self.is_child_leaf[sel]  # terminate when nodes with 0 children encountered (leaves).
+                term_mask = deltas < 0  # terminate when nodes with 0 children encountered (leaves).
                 term_indices = remain_indices[term_mask]
 
                 indices.scatter_(0, term_indices.unsqueeze(-1).repeat(1, 3), xy[term_mask])
@@ -237,8 +228,7 @@ class CornerTree(torch.nn.Module):
 
         # We cannot sample the 0-1 cube uniformly, since we would over-represent large cells (in which we're not particularly interested).
         # As a first go we can calculate it in all cells.
-
-        leaf_sel = self.is_child_leaf[:self.n_internal].nonzero(as_tuple=True)  # n_leaves, 4
+        leaf_sel = (self.child[:self.n_internal] < 0).nonzero(as_tuple=True)  # n_leaves, 4
         n_leaves = leaf_sel[0].shape[0]
         neigh_sel = self.nids[leaf_sel]
         w1 = torch.tensor([[-1, -1, 1, 1, -1, -1, 1, 1]], dtype=torch.float, device=self.child.device)

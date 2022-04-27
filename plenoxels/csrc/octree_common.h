@@ -176,7 +176,6 @@ __device__ __inline__ void _dev_query_sum(
 template<typename scalar_t, int branching>
 __device__ __inline__ void _dev_query_corners(
     const Acc32<int, 4>         child,
-    const Acc32<bool, 4>        is_child_leaf,
     const Acc32<int, 5>         nids,
           float3 & __restrict__ coordinate,
           float  * __restrict__ weights,
@@ -184,11 +183,12 @@ __device__ __inline__ void _dev_query_corners(
 )
 {
     int u, v, w;
-    int node_id = 0;
+    int node_id = 0, skip;
     clamp_coord(coordinate, 0.0, 1.0 - 1e-6);
     while (true) {
         traverse_tree_level<branching>(coordinate, &u, &v, &w);
-        if (is_child_leaf[node_id][u][v][w]) {
+        skip = child[node_id][u][v][w];
+        if (skip < 0) {
             weights[0] = (1 - coordinate.x) * (1 - coordinate.y) * (1 - coordinate.z);
             weights[1] = (1 - coordinate.x) * (1 - coordinate.y) * coordinate.z;
             weights[2] = (1 - coordinate.x) * coordinate.y       * (1 - coordinate.z);
@@ -200,7 +200,7 @@ __device__ __inline__ void _dev_query_corners(
             *nid_ptr = (int)(&nids[node_id][u][v][w][0] - &nids[0][0][0][0][0]);
             return;
         }
-        node_id += child[node_id][u][v][w];
+        node_id += skip;
     }
 }
 
