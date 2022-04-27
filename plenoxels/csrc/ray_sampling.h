@@ -6,7 +6,6 @@
 template <typename scalar_t, int32_t branching>
 __device__ __inline__ void stratified_sample_proposal(
     const torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> t_child,
-    const torch::PackedTensorAccessor32<bool, 4, torch::RestrictPtrTraits> t_icf,  // is_child_leaf
     const float3 & __restrict__ ray_o,
     const float3 & __restrict__ ray_d,
     const float3 & __restrict__ invdir,
@@ -30,7 +29,7 @@ __device__ __inline__ void stratified_sample_proposal(
         // new sub-cube position
         relpos = ray_o + *t_inout * ray_d;
         // New subcube info pos will hold the current offset in the new subcube
-        _dev_query_ninfo<scalar_t, branching>(t_child, t_icf, relpos, &cube_sz, &node_id);
+        _dev_query_ninfo<scalar_t, branching>(t_child, relpos, &cube_sz, &node_id);
         _dda_unit(relpos, invdir, &s_tmin, &s_tmax);
         if (s_tmax < 1e-8) {
             *n_samples_inout = -1;
@@ -68,7 +67,6 @@ __device__ __inline__ void stratified_sample_proposal(
 template <typename scalar_t, int32_t branching>
 __global__ void gen_samples_kernel(
     const torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> t_child,
-    const torch::PackedTensorAccessor32<bool, 4, torch::RestrictPtrTraits> t_icf,   // is_child_leaf
     const float* __restrict__ t_offset,
     const float* __restrict__ t_scaling,
     const torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> rays_o, // batch_size, 3
@@ -100,7 +98,7 @@ __global__ void gen_samples_kernel(
     int j = 0;
     while (j < max_intersections) {
         stratified_sample_proposal<scalar_t, branching>(
-            t_child, t_icf, ray_o, ray_d, invdir, max_samples_per_node, &num_strat_samples, &delta_t, &t_new);
+            t_child, ray_o, ray_d, invdir, max_samples_per_node, &num_strat_samples, &delta_t, &t_new);
         if (t_new >= tmax || num_strat_samples < 0) { break; }
         if (t_new - t <= 0) { continue; }
         ray_offsets[i][j] = t;

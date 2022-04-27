@@ -185,7 +185,6 @@ __global__ void trace_ray_backward(
     float3 ray_d = make_float3(rays_d[b][0], rays_d[b][1], rays_d[b][2]);
     const float delta_scale = _get_delta_scale(t_scaling, ray_d);
     scalar_t grad_tree_val[data_dim];
-    const scalar_t d_rgb_pad = 1 + 2 * rgb_padding;
 
     scalar_t basis_fn[bd];
     calc_sh_basis<scalar_t, bd>(ray_d, basis_fn);

@@ -141,6 +141,26 @@ __device__ __inline__ void _dev_query_ninfo(
         *cube_sz_out *= branching; // TODO: Check if multiplication to be performed before or after returning
     }
 }
+template <typename scalar_t, int32_t branching>
+__device__ __inline__ void _dev_query_ninfo(
+    const Acc32<int32_t, 4> child,
+    float3& __restrict__ coordinate,
+    float* __restrict__ cube_sz_out,
+    int64_t* __restrict__ node_id_out)
+{
+    clamp_coord(coordinate, 0.0, 1.0 - 1e-9);
+
+    int32_t u, v, w, skip;
+    *cube_sz_out = branching;
+    *node_id_out = 0;
+    while (true) {
+        traverse_tree_level<branching>(coordinate, &u, &v, &w);
+        skip = child[*node_id_out][u][v][w];
+        if (skip < 0) { return; }
+        *node_id_out += skip;
+        *cube_sz_out *= branching; // TODO: Check if multiplication to be performed before or after returning
+    }
+}
 
 
 template <typename scalar_t, int32_t branching, int32_t data_dim>
