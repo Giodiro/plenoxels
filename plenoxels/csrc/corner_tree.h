@@ -331,8 +331,8 @@ RenderingOutput corner_tree_render(
 
     // 3. Interpolate at each valid intersction
     interpolate_start.record();
-    const int grid_height = div_round_up(batch_size, 128);
-    const int grid_width = div_round_up(opt.max_intersections, 128);
+    const int grid_height = div_round_up<int>(batch_size, 128);
+    const int grid_width = div_round_up<int>(opt.max_intersections, 128);
     const dim3 dimGrid(grid_height, grid_width);
     const dim3 dimBlock(128, 128);
     fetch_interpolate<scalar_t, branching, data_dim>
