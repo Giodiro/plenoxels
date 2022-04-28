@@ -113,7 +113,7 @@ __global__ void fetch_interpolate(
 {
     const int intrs_id = threadIdx.y + blockIdx.y * blockDim.y;
     float3 pos;
-    const int * nid_start_ptr = &t_nids[0][0][0][0][0];
+    const int * const nid_start_ptr = &t_nids[0][0][0][0][0];
 
     int batch_id = threadIdx.x + blockIdx.x * blockDim.x;
     for (; batch_id < n_batches; batch_id += gridDim.x) {
@@ -123,12 +123,12 @@ __global__ void fetch_interpolate(
         _dev_query_corners<scalar_t, branching>(
             t_child, t_nids, pos,
             /*weights=*/&interp_weights[batch_id][intrs_id][0], /*nid_ptr=*/&nid_ptrs[batch_id][intrs_id]);
-        int * n_ptr = nid_start_ptr + nid_ptrs[batch_id][intrs_id];
+        const int * n_ptr = nid_start_ptr + nid_ptrs[batch_id][intrs_id];
         #pragma unroll 8
         for (int j = 0; j < 8; j++) {
             #pragma unroll data_dim
             for (int k = 0; k < data_dim; k++) {
-                interp_vals[batch_id][intrs_id][k] += interp_weights[batch_id][intrs_id][j] * t_data[n_ptr][k];
+                interp_vals[batch_id][intrs_id][k] += interp_weights[batch_id][intrs_id][j] * t_data[*n_ptr][k];
             }
             n_ptr++;
         }
@@ -193,7 +193,7 @@ __global__ void trace_ray_backward(
     if (b >= n_elements) return;
     const int bd = basis_dim(data_dim, out_data_dim);
     const int n_intrs = n_steps[b];
-    const int * t_nids_start = &t_nids[0][0][0][0][0]
+    const int * const t_nids_start = &t_nids[0][0][0][0][0];
     const float3 ray_d = make_float3(rays_d_norm[b][0], rays_d_norm[b][1], rays_d_norm[b][2]);
     scalar_t grad_tree_val[data_dim];
     scalar_t basis_fn[bd];
@@ -289,7 +289,7 @@ RenderingOutput corner_tree_render(
 
     // 1. Generate samples
     gs_start.record();
-    auto ray_steps = torch::full_like({batch_size, opt.max_intersections}, -1.0,
+    auto ray_steps = torch::full({batch_size, opt.max_intersections}, -1.0,
             torch::dtype(torch::kFloat32).device(data.device()));
     auto num_intersections = torch::zeros({batch_size}, torch::dtype(torch::kInt32).device(data.device()));
     auto positions = torch::empty({batch_size, opt.max_intersections, 3},
@@ -331,8 +331,8 @@ RenderingOutput corner_tree_render(
 
     // 3. Interpolate at each valid intersction
     interpolate_start.record();
-    const int grid_height = ceildiv(batch_size, 128);
-    const int grid_width = ceildiv(opt.max_intersections, 128);
+    const int grid_height = div_round_up(batch_size, 128);
+    const int grid_width = div_round_up(opt.max_intersections, 128);
     const dim3 dimGrid(grid_height, grid_width);
     const dim3 dimBlock(128, 128);
     fetch_interpolate<scalar_t, branching, data_dim>
@@ -407,7 +407,7 @@ torch::Tensor corner_tree_render_bwd(
     const RenderOptions & opt)
 {
     DEVICE_GUARD(t_data);
-    const uint32_t batch_size = rays_o.size(0);
+    const uint32_t batch_size = rays_d_norm.size(0);
     const uint32_t render_ray_n_threads = 128;
 
     torch::Tensor output = torch::zeros_like(t_data);
