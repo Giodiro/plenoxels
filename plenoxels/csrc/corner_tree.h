@@ -279,6 +279,8 @@ __global__ void trace_ray_backward(
     }
 }
 
+#define block_size_2d 32
+
 
 template <typename scalar_t, int32_t branching, int32_t data_dim, int32_t out_data_dim>
 RenderingOutput corner_tree_render(
@@ -350,10 +352,11 @@ RenderingOutput corner_tree_render(
 
     // 3. Interpolate at each valid intersction
     interpolate_start.record();
-    const int grid_height = div_round_up<int>(batch_size, 128);
-    const int grid_width = div_round_up<int>(opt.max_intersections, 128);
+    const int grid_height = div_round_up<int>(batch_size, block_size_2d);
+    const int grid_width = div_round_up<int>(opt.max_intersections, block_size_2d);
     const dim3 dimGrid(grid_height, grid_width);
-    const dim3 dimBlock(128, 128);
+    const dim3 dimBlock(block_size_2d, block_size_2d);
+    printf("grid height = %d grid witdh = %d\n", grid_height, grid_width);
     fetch_interpolate<scalar_t, branching, data_dim>
         <<<dimGrid, dimBlock>>>(
             data.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
