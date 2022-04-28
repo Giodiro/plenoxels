@@ -204,6 +204,7 @@ __device__ __inline__ void _dev_query_corners(
 {
     int u, v, w;
     int node_id = 0, skip;
+    const int * const nid_start_ptr = &nids[0][0][0][0][0];
     clamp_coord(coordinate, 0.0, 1.0 - 1e-6);
     while (true) {
         traverse_tree_level<branching>(coordinate, &u, &v, &w);
@@ -217,7 +218,7 @@ __device__ __inline__ void _dev_query_corners(
             weights[5] = coordinate.x       * (1 - coordinate.y) * coordinate.z;
             weights[6] = coordinate.x       * coordinate.y       * (1 - coordinate.z);
             weights[7] = coordinate.x       * coordinate.y       * coordinate.z;
-            *nid_ptr = (int)(&nids[node_id][u][v][w][0] - &nids[0][0][0][0][0]);
+            *nid_ptr = (int)(&nids[node_id][u][v][w][0] - nid_start_ptr);
             return;
         }
         node_id += skip;

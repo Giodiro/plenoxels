@@ -114,23 +114,42 @@ __global__ void fetch_interpolate(
     const int intrs_id = threadIdx.y + blockIdx.y * blockDim.y;
     float3 pos;
     const int * const nid_start_ptr = &t_nids[0][0][0][0][0];
+    scalar_t *interp_val[data_dim];
 
     int batch_id = threadIdx.x + blockIdx.x * blockDim.x;
     for (; batch_id < n_batches; batch_id += gridDim.x) {
         if (intrs_id >= n_steps[batch_id]) continue;
-
         pos = make_float3(ray_pos[batch_id][intrs_id][0], ray_pos[batch_id][intrs_id][1], ray_pos[batch_id][intrs_id][2]);
+        const float * c_interp_weights = &interp_weights[batch_id][intrs_id][0];
         _dev_query_corners<scalar_t, branching>(
             t_child, t_nids, pos,
-            /*weights=*/&interp_weights[batch_id][intrs_id][0], /*nid_ptr=*/&nid_ptrs[batch_id][intrs_id]);
+            /*weights=*/c_interp_weights, /*nid_ptr=*/&nid_ptrs[batch_id][intrs_id]);
         const int * n_ptr = nid_start_ptr + nid_ptrs[batch_id][intrs_id];
-        #pragma unroll 8
-        for (int j = 0; j < 8; j++) {
-            #pragma unroll data_dim
-            for (int k = 0; k < data_dim; k++) {
-                interp_vals[batch_id][intrs_id][k] += interp_weights[batch_id][intrs_id][j] * t_data[*n_ptr][k];
-            }
-            n_ptr++;
+
+        for (int k = 0; k < data_dim; k++) {
+            interp_val[k] = c_interp_weights[0], t_data[*n_ptr][k];
+        }
+        for (int k = 0; k < data_dim; k++) {
+            interp_val[k] = fmaf(c_interp_weights[1], t_data[*(n_ptr + 1)][k], interp_val[k]);
+        }
+        for (int k = 0; k < data_dim; k++) {
+            interp_val[k] = fmaf(c_interp_weights[2], t_data[*(n_ptr + 2)][k], interp_val[k]);
+        }
+        for (int k = 0; k < data_dim; k++) {
+            interp_val[k] = fmaf(c_interp_weights[3], t_data[*(n_ptr + 3)][k], interp_val[k]);
+        }
+        for (int k = 0; k < data_dim; k++) {
+            interp_val[k] = fmaf(c_interp_weights[4], t_data[*(n_ptr + 4)][k], interp_val[k]);
+        }
+        for (int k = 0; k < data_dim; k++) {
+            interp_val[k] = fmaf(c_interp_weights[5], t_data[*(n_ptr + 5)][k], interp_val[k]);
+        }
+        for (int k = 0; k < data_dim; k++) {
+            interp_val[k] = fmaf(c_interp_weights[6], t_data[*(n_ptr + 6)][k], interp_val[k]);
+        }
+        for (int k = 0; k < data_dim; k++) {
+            interp_val[k] = fmaf(c_interp_weights[7], t_data[*(n_ptr + 7)][k], interp_val[k]);
+            interp_vals[batch_id][intrs_id][k] = interp_val[k];
         }
     }
 }
