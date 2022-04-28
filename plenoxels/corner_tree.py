@@ -135,7 +135,7 @@ class CornerTree(torch.nn.Module):
             num_old_corners = corners_enc.size(0) - new_corners_enc.size(0)
             new_corners_uniq_idx = u_idx[u_idx > num_old_corners] - num_old_corners
             scatter_idx = torch.searchsorted(new_u_cor, new_corners_enc[new_corners_uniq_idx]).unsqueeze(-1).expand(-1, self.data_dim)
-            scatter_data = self.query(new_corners[new_corners_uniq_idx])[0]
+            scatter_data = self.query(new_corners[new_corners_uniq_idx], normalize=False)[0]
             print("Copying %d interp points" % (scatter_data.shape[0]))
             new_data.scatter_(0, scatter_idx, scatter_data)
         self.data = torch.nn.EmbeddingBag.from_pretrained(new_data, freeze=False, mode='sum', sparse=False)
@@ -144,7 +144,7 @@ class CornerTree(torch.nn.Module):
         self.coords[n_int: n_int + n_int_new] = new_leaf_coo.view(-1, 2, 2, 2, 3)
         self.depths[n_int: n_int + n_int_new] = depths + 1
         self.child[n_int: n_int + n_int_new] = -1
-        self.child[sel] = torch.arange(n_int, n_int + n_int_new) - sel[0]
+        self.child[sel] = torch.arange(n_int, n_int + n_int_new, device=self.child.device, dtype=self.child.dtype) - sel[0]
         self.n_internal = n_int + n_int_new
 
     @torch.no_grad()
@@ -263,7 +263,7 @@ class CornerTree(torch.nn.Module):
         return points, dts, points_valid
 
     def forward(self, rays_o, rays_d, use_ext: bool):
-        use_ext_sample = True
+        use_ext_sample = False
         if use_ext:
             bb = 1.0 if self.white_bkgd else 0.0
             opt = init_render_opt(background_brightness=bb, density_softplus=False, rgb_padding=0.0)
@@ -310,7 +310,7 @@ class CornerTree(torch.nn.Module):
                 # Including the white background in the final color
                 rgb_map = rgb_map + (1. - acc_map.unsqueeze(1))
 
-            return rgb_map, pts, dt, valid, iweights, interp
+            return rgb_map#, pts, dt, valid, iweights, interp
 
 
 def init_render_opt(background_brightness: float = 1.0,
@@ -370,7 +370,7 @@ class CornerTreeRenderFn(torch.autograd.Function):
                 rays_d: torch.Tensor,
                 opt: RenderOptions):
         out = CornerTreeRenderFn.dispatch_vol_render(
-            data, tree.child.to(dtype=torch.int), tree.is_child_leaf, tree.nids.to(dtype=torch.int), tree.offset, tree.scaling,
+            data, tree.child.to(dtype=torch.int), tree.nids.to(dtype=torch.int), tree.offset, tree.scaling,
             rays_o, rays_d, opt, dtype=tree.data.weight.dtype, branching=2, sh_degree=tree.sh_degree)
         ctx.save_for_backward(
             out.rays_d_norm, out.num_intersections, out.ray_steps,
