@@ -129,11 +129,13 @@ struct RenderOptions {
 
 struct RenderingOutput {
     torch::Tensor output_rgb;
+    torch::Tensor ray_steps;
+    torch::Tensor rays_d_norm;
+    torch::Tensor intersection_pos;
+    torch::Tensor intersection_num;
     torch::Tensor interpolated_vals;
     torch::Tensor interpolated_n_ids;
     torch::Tensor interpolation_weights;
-    torch::Tensor ray_offsets;
-    torch::Tensor ray_steps;
 };
 
 using QueryResult = std::tuple<torch::Tensor, torch::Tensor>;

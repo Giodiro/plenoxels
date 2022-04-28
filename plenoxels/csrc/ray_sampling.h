@@ -25,7 +25,7 @@ __device__ __inline__ void stratified_sample_proposal(
     float s_tmin, s_tmax, s_size, cube_sz;
     if (*n_samples_inout == 0) {
         // advance to new sub-cube
-        *t_inout += *dt_inout / 2 + 2e-4;
+        *t_inout += *dt_inout / 2 + 1e-4;
         // new sub-cube position
         relpos = ray_o + *t_inout * ray_d;
         // New subcube info pos will hold the current offset in the new subcube
@@ -36,24 +36,23 @@ __device__ __inline__ void stratified_sample_proposal(
             return;
         }
 
-        s_size = (s_tmax - s_tmin) / cube_sz;
+        s_size = (s_tmax - s_tmin);
         if (s_size < 1e-4) {
-                        *t_inout += s_tmax + 1e-4;
-                                    *dt_inout = 0;
-                                                *n_samples_inout = 0;
-                                                            printf("s_size too small. Node ID=%ld - s_tmin=%f s_tmax=%f\n", node_id, s_tmin, s_tmax);
-                                                                        return;
-                                                                                }
+            *t_inout += s_tmax + 1e-4;
+            *dt_inout = 0;
+            *n_samples_inout = 0;
+            printf("s_size too small. Node ID=%ld - s_tmin=%f s_tmax=%f\n", node_id, s_tmin, s_tmax);
+            return;
+        }
 
         // Calculate the number of samples needed in the new sub-cube
-        *n_samples_inout = ceilf(max_samples * s_size * cube_sz / 1.7321);
-
+        *n_samples_inout = ceilf(max_samples * s_size / 1.7321);
 
         //printf("dt=%f - t=%f - relpos=%f %f %f - s_tmin=%f - s_tmax=%f - cube_sz=%f   --  new dt=%f  new t=%f\n",
         //        *dt_inout, *t_inout, relpos.x, relpos.y, relpos.z, s_tmin, s_tmax, cube_sz, s_size / *n_samples_inout,
         //        *t_inout + s_tmin / cube_sz + s_size / *n_samples_inout);
         // Compute step-size for the new sub-cube
-        *dt_inout = s_size / *n_samples_inout;
+        *dt_inout = s_size / (cube_sz * (*n_samples_inout));
         // Correct sub-cube start position to be in middle of first delta_t-long segment
         *t_inout += s_tmin / cube_sz + *dt_inout / 2;
     } else {
@@ -69,10 +68,13 @@ __global__ void gen_samples_kernel(
     const torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> t_child,
     const float* __restrict__ t_offset,
     const float* __restrict__ t_scaling,
-    const torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> rays_o, // batch_size, 3
-    const torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> rays_d, // batch_size, 3
-    torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> ray_offsets,  // batch_size, n_intersections
-    torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> ray_steps,    // batch_size, n_intersections
+    const torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> rays_o,     // batch_size, 3
+    const torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> rays_d,     // batch_size, 3
+//    torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> ray_offsets,      // batch_size, n_intersections
+    torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> ray_steps,        // batch_size, n_intersections
+    torch::PackedTensorAccessor32<int, 1, torch::RestrictPtrTraits> num_intersections,  // batch_size
+    torch::PackedTensorAccessor32<float, 3, torch::RestrictPtrTraits> intrs_pos,        // batch_size, n_intersections, 3
+    torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> rays_d_norm,      // batch_size, 3
     const int32_t max_intersections,
     const int32_t max_samples_per_node,
     const int32_t n_elements)
@@ -85,10 +87,16 @@ __global__ void gen_samples_kernel(
     transform_coord(ray_o, t_offset, t_scaling);
 
     const float delta_scale = _get_delta_scale(t_scaling, ray_d);
+    rays_d_norm[i][0] = ray_d.x;
+    rays_d_norm[i][1] = ray_d.y;
+    rays_d_norm[i][1] = ray_d.z;
     float tmin, tmax;
     const float3 invdir = 1.0 / (ray_d + 1e-9);
     _dda_unit(ray_o, invdir, &tmin, &tmax);
-    if (tmax < 0 || tmin > tmax) { return; }
+    if (tmax < 0 || tmin > tmax) {
+        num_intersections[i] = 0;
+        return;
+    }
 
     //printf("ray_o: %f %f %f - ray_d: %f %f %f - tmin: %f - tmax %f\n", ray_o.x, ray_o.y, ray_o.z, ray_d.x, ray_d.y, ray_d.z, tmin, tmax);
     int32_t num_strat_samples = 0;
@@ -101,11 +109,15 @@ __global__ void gen_samples_kernel(
             t_child, ray_o, ray_d, invdir, max_samples_per_node, &num_strat_samples, &delta_t, &t_new);
         if (t_new >= tmax || num_strat_samples < 0) { break; }
         if (t_new - t <= 0) { continue; }
-        ray_offsets[i][j] = t;
+//        ray_offsets[i][j] = t;
+        intrs_pos[i][j][0] = ray_o.x + t * ray_d.x;
+        intrs_pos[i][j][1] = ray_o.y + t * ray_d.y;
+        intrs_pos[i][j][2] = ray_o.z + t * ray_d.z;
         ray_steps[i][j] = (t_new - t) * delta_scale;  // forward delta t.
         t = t_new;
         j++;
     }
+    num_intersections[i] = j;
     if (t_new < tmax) {
         printf("[gen_samples_kernel] Warning: %d samples insufficient to fill cube. (tmin=%f, tmax=%f, t=%f)\n",
             max_intersections, tmin, tmax, t);

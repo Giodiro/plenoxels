@@ -88,20 +88,23 @@ void declare_octree(py::module &m, const std::string &typestr) {
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     declare_octree<double, 2, 4, 3>(m, "d2d0");
-    declare_octree<double, 2, 13, 3>(m, "d2d1");
+//    declare_octree<double, 2, 13, 3>(m, "d2d1");
+    declare_octree<float, 2, 4, 3>(m, "f2d0");
     declare_octree<float, 2, 13, 3>(m, "f2d1");
-    declare_octree<float, 4, 13, 3>(m, "f4d1");
+//    declare_octree<float, 4, 13, 3>(m, "f4d1");
     declare_octree<float, 2, 28, 3>(m, "f2d2");
-    declare_octree<float, 4, 28, 3>(m, "f4d2");
+//    declare_octree<float, 4, 28, 3>(m, "f4d2");
 
     py::class_<RenderingOutput>(m, "RenderOutput")
         .def(py::init<>())
         .def_readonly("output_rgb", &RenderingOutput::output_rgb)
+        .def_readonly("ray_steps", &RenderingOutput::ray_steps)
+        .def_readonly("rays_d_norm", &RenderingOutput::rays_d_norm)
+        .def_readonly("intersection_pos", &RenderingOutput::intersection_pos)
+        .def_readonly("intersection_num", &RenderingOutput::intersection_num)
         .def_readonly("interpolated_vals", &RenderingOutput::interpolated_vals)
         .def_readonly("interpolated_n_ids", &RenderingOutput::interpolated_n_ids)
-        .def_readonly("interpolation_weights", &RenderingOutput::interpolation_weights)
-        .def_readonly("ray_offsets", &RenderingOutput::ray_offsets)
-        .def_readonly("ray_steps", &RenderingOutput::ray_steps);
+        .def_readonly("interpolation_weights", &RenderingOutput::interpolation_weights);
 
     py::class_<RenderOptions>(m, "RenderOptions")
         .def(py::init<>())

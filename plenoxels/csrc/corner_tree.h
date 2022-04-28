@@ -99,20 +99,49 @@ __device__ __inline__ void bwd_loop_p1(const scalar_t * __restrict__ interp,
 }
 
 
-template <typename scalar_t, int branching, int data_dim, int out_data_dim>
-__global__ void trace_ray(
+template <typename scalar_t, int branching, int data_dim>
+__global__ void fetch_interpolate(
     const Acc32<scalar_t, 2> t_data,
     const Acc32<int, 4> t_child,
     const Acc32<int, 5> t_nids,
-    const float* __restrict__ t_offset,
-    const float* __restrict__ t_scaling,
-    const Acc32<float, 2> ray_offsets,
-    const Acc32<float, 2> ray_steps,
+    const Acc32<float, 3> ray_pos,
           Acc32<float, 3> interp_weights,
           Acc32<scalar_t, 3> interp_vals,
           Acc32<int, 2> nid_ptrs,
-    const Acc32<float, 2> rays_o,
-    const Acc32<float, 2> rays_d,
+    const Acc32<int, 1> n_steps,
+    const int n_batches)
+{
+    const int intrs_id = threadIdx.y + blockIdx.y * blockDim.y;
+    float3 pos;
+    const int * nid_start_ptr = &t_nids[0][0][0][0][0];
+
+    int batch_id = threadIdx.x + blockIdx.x * blockDim.x;
+    for (; batch_id < n_batches; batch_id += gridDim.x) {
+        if (intrs_id >= n_steps[batch_id]) continue;
+
+        pos = make_float3(ray_pos[batch_id][intrs_id][0], ray_pos[batch_id][intrs_id][1], ray_pos[batch_id][intrs_id][2]);
+        _dev_query_corners<scalar_t, branching>(
+            t_child, t_nids, pos,
+            /*weights=*/&interp_weights[batch_id][intrs_id][0], /*nid_ptr=*/&nid_ptrs[batch_id][intrs_id]);
+        int * n_ptr = nid_start_ptr + nid_ptrs[batch_id][intrs_id];
+        #pragma unroll 8
+        for (int j = 0; j < 8; j++) {
+            #pragma unroll data_dim
+            for (int k = 0; k < data_dim; k++) {
+                interp_vals[batch_id][intrs_id][k] += interp_weights[batch_id][intrs_id][j] * t_data[n_ptr][k];
+            }
+            n_ptr++;
+        }
+    }
+}
+
+
+template <typename scalar_t, int branching, int data_dim, int out_data_dim>
+__global__ void trace_ray(
+    const Acc32<float, 2> ray_steps,
+    const Acc32<int, 1> n_steps,
+    const Acc32<float, 2> rays_d_norm,
+    const Acc32<scalar_t, 3> interp_vals,
     const int n_elements,
     const float rgb_padding,
     const scalar_t background_brightness,
@@ -124,31 +153,15 @@ __global__ void trace_ray(
     const int b = threadIdx.x + blockIdx.x * blockDim.x;  // element in batch
     if (b >= n_elements) return;
     const int bd = basis_dim(data_dim, out_data_dim);
-
-    float3 ray_o = make_float3(rays_o[b][0], rays_o[b][1], rays_o[b][2]),
-           ray_d = make_float3(rays_d[b][0], rays_d[b][1], rays_d[b][2]);
-    transform_coord(ray_o, t_offset, t_scaling);
-    const float delta_scale = _get_delta_scale(t_scaling, ray_d);
-    float3 pos;
+    const int n_intrs = n_steps[b];
+    const float3 ray_d = make_float3(rays_d_norm[b][0], rays_d_norm[b][1], rays_d_norm[b][2]);
     scalar_t basis_fn[bd];
-
     calc_sh_basis<scalar_t, bd>(ray_d, basis_fn);
 
     scalar_t light_intensity = 1.f;
-    for (int i = 0; i < ray_offsets.size(1); i++) {
-        const float t = ray_offsets[b][i];
+    for (int i = 0; i < n_intrs; i++) {
         const float delta_t = ray_steps[b][i];
-        if (delta_t <= 0) break;
-        pos = ray_o + t * ray_d;
-        _dev_query_corners<scalar_t, branching>(
-            t_child, t_nids, pos,
-            /*weights=*/&interp_weights[b][i][0], /*nid_ptr=*/&nid_ptrs[b][i]);
-        for (int j = 0; j < 8; j++) {
-            for (int k = 0; k < data_dim; k++) {
-                const int * n_ptr = &t_nids[0][0][0][0][0] + nid_ptrs[b][i];
-                interp_vals[b][i][k] += interp_weights[b][i][j] * t_data[n_ptr[j]][k];
-            }
-        }
+        if (delta_t <= 0) break;  // TODO: Unnecessary
         fwd_loop<scalar_t, data_dim, out_data_dim>(&interp_vals[b][i][0], basis_fn, density_softplus, sigma_thresh,
                                                    delta_t, rgb_padding, light_intensity, &out[b][0]);
         if (light_intensity <= stop_thresh) { return; }  // Full opacity, stop
@@ -161,17 +174,14 @@ __global__ void trace_ray(
 template <typename scalar_t, int branching, int data_dim, int out_data_dim>
 __global__ void trace_ray_backward(
     const Acc32<int, 5> t_nids,
-    const float* __restrict__ t_offset,
-    const float* __restrict__ t_scaling,
-    const Acc32<float, 2> ray_offsets,
     const Acc32<float, 2> ray_steps,
     const Acc32<float, 3> interp_weights,
     const Acc32<scalar_t, 3> interp_vals,
     const Acc32<int, 2> nid_ptrs,
+    const Acc32<int, 1> n_steps,
     const Acc32<scalar_t, 2> grad_output,
           Acc32<scalar_t, 2> grad_data_out,
-    const Acc32<float, 2> rays_o,
-    const Acc32<float, 2> rays_d,
+    const Acc32<float, 2> rays_d_norm,
     const int n_elements,
     const float rgb_padding,
     const scalar_t background_brightness,
@@ -182,18 +192,18 @@ __global__ void trace_ray_backward(
     const int b = threadIdx.x + blockIdx.x * blockDim.x;  // element in batch
     if (b >= n_elements) return;
     const int bd = basis_dim(data_dim, out_data_dim);
-    float3 ray_d = make_float3(rays_d[b][0], rays_d[b][1], rays_d[b][2]);
-    const float delta_scale = _get_delta_scale(t_scaling, ray_d);
+    const int n_intrs = n_steps[b];
+    const int * t_nids_start = &t_nids[0][0][0][0][0]
+    const float3 ray_d = make_float3(rays_d_norm[b][0], rays_d_norm[b][1], rays_d_norm[b][2]);
     scalar_t grad_tree_val[data_dim];
-
     scalar_t basis_fn[bd];
     calc_sh_basis<scalar_t, bd>(ray_d, basis_fn);
+
 
     scalar_t accum = 0.0;
     // PASS 1: Just to compute the accum variable. This could be merged with the fwd pass (if we knew grad_output)
     scalar_t light_intensity = 1.f;
-    for (int i = 0; i < ray_offsets.size(0); i++) {
-        float t = ray_offsets[b][i];
+    for (int i = 0; i < n_intrs; i++) {
         float delta_t = ray_steps[b][i];
         if (delta_t <= 0) break;
 
@@ -210,8 +220,7 @@ __global__ void trace_ray_backward(
     accum += light_intensity * background_brightness * total_grad;
     // PASS 2: Actually compute the gradient
     light_intensity = 1.f;
-    for (int i = 0; i < ray_offsets.size(0); i++) {
-        float t = ray_offsets[b][i];
+    for (int i = 0; i < n_intrs; i++) {
         float delta_t = ray_steps[b][i];
         if (delta_t <= 0) break;
         // Zero-out gradient
@@ -240,7 +249,7 @@ __global__ void trace_ray_backward(
             accum -= weight * total_color;
             grad_tree_val[data_dim - 1] = delta_t * (total_color * light_intensity - accum) * density_bwd<scalar_t>(raw_sigma, density_softplus);
 
-            const int * n_ptr = &t_nids[0][0][0][0][0] + nid_ptrs[b][i];
+            const int * n_ptr = t_nids_start + nid_ptrs[b][i];
             _dev_query_corners_bwd<scalar_t, data_dim>(
                 n_ptr, &interp_weights[b][i][0], grad_tree_val, grad_data_out);
 
@@ -273,14 +282,19 @@ RenderingOutput corner_tree_render(
     auto gs_end = at::cuda::CUDAEvent(cudaEventDefault);
     auto alloc_start = at::cuda::CUDAEvent(cudaEventDefault);
     auto alloc_end = at::cuda::CUDAEvent(cudaEventDefault);
+    auto interpolate_start = at::cuda::CUDAEvent(cudaEventDefault);
+    auto interpolate_end = at::cuda::CUDAEvent(cudaEventDefault);
     auto fwd_start = at::cuda::CUDAEvent(cudaEventDefault);
     auto fwd_end = at::cuda::CUDAEvent(cudaEventDefault);
 
     // 1. Generate samples
     gs_start.record();
-    torch::Tensor ray_offsets = torch::full({batch_size, opt.max_intersections}, -1.0,
-        torch::dtype(torch::kFloat32).device(data.device()).layout(data.layout()));
-    torch::Tensor ray_steps = torch::full_like(ray_offsets, -1.0);
+    auto ray_steps = torch::full_like({batch_size, opt.max_intersections}, -1.0,
+            torch::dtype(torch::kFloat32).device(data.device()));
+    auto num_intersections = torch::zeros({batch_size}, torch::dtype(torch::kInt32).device(data.device()));
+    auto positions = torch::empty({batch_size, opt.max_intersections, 3},
+            torch::dtype(torch::kFloat32).device(data.device()));
+    auto rays_d_norm = torch::empty_like(rays_d);
 
     gen_samples_kernel<scalar_t, branching>
         <<<n_blocks_linear<uint32_t>(batch_size, gen_samples_n_threads), gen_samples_n_threads>>>(
@@ -289,8 +303,10 @@ RenderingOutput corner_tree_render(
             t_scaling.data_ptr<float>(),
             rays_o.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
             rays_d.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
-            ray_offsets.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
             ray_steps.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
+            num_intersections.packed_accessor32<int, 1, torch::RestrictPtrTraits>(),
+            positions.packed_accessor32<float, 3, torch::RestrictPtrTraits>(),
+            rays_d_norm.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
             opt.max_intersections,
             opt.max_samples_per_node,
             (int)batch_size  // TODO: It would be nice without this cast.
@@ -313,30 +329,40 @@ RenderingOutput corner_tree_render(
         torch::dtype(torch::kFloat32).device(data.device()).layout(data.layout()));
     alloc_end.record();
 
+    // 3. Interpolate at each valid intersction
+    interpolate_start.record();
+    const int grid_height = ceildiv(batch_size, 128);
+    const int grid_width = ceildiv(opt.max_intersections, 128);
+    const dim3 dimGrid(grid_height, grid_width);
+    const dim3 dimBlock(128, 128);
+    fetch_interpolate<scalar_t, branching, data_dim>
+        <<<dimGrid, dimBlock>>>(
+            data.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+            t_child.packed_accessor32<int, 4, torch::RestrictPtrTraits>(),
+            t_nids.packed_accessor32<int, 5, torch::RestrictPtrTraits>(),
+            positions.packed_accessor32<float, 3, torch::RestrictPtrTraits>(),
+            interp_weights.packed_accessor32<float, 3, torch::RestrictPtrTraits>(),
+            interp_vals.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
+            interp_nid_ptrs.packed_accessor32<int, 2, torch::RestrictPtrTraits>(),
+            num_intersections.packed_accessor32<int, 1, torch::RestrictPtrTraits>(),
+            (int)batch_size);
+    interpolate_end.record();
+
     // 3. Forward pass (compute)
     fwd_start.record();
     trace_ray<scalar_t, branching, data_dim, out_data_dim>
-    <<<n_blocks_linear<uint32_t>(batch_size, render_ray_n_threads), render_ray_n_threads>>>(
-        data.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-        t_child.packed_accessor32<int, 4, torch::RestrictPtrTraits>(),
-        t_nids.packed_accessor32<int, 5, torch::RestrictPtrTraits>(),
-        t_offset.data_ptr<float>(),
-        t_scaling.data_ptr<float>(),
-        ray_offsets.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
-        ray_steps.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
-        interp_weights.packed_accessor32<float, 3, torch::RestrictPtrTraits>(),
-        interp_vals.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
-        interp_nid_ptrs.packed_accessor32<int, 2, torch::RestrictPtrTraits>(),
-        rays_o.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
-        rays_d.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
-        (int)batch_size,
-        opt.rgb_padding,
-        (scalar_t)opt.background_brightness,
-        opt.density_softplus,
-        (scalar_t)opt.sigma_thresh,
-        (scalar_t)opt.stop_thresh,
-        output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>()
-    );
+        <<<n_blocks_linear<uint32_t>(batch_size, render_ray_n_threads), render_ray_n_threads>>>(
+            ray_steps.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
+            num_intersections.packed_accessor32<int, 1, torch::RestrictPtrTraits>(),
+            rays_d_norm.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
+            interp_vals.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
+            (int)batch_size,
+            opt.rgb_padding,
+            (scalar_t)opt.background_brightness,
+            opt.density_softplus,
+            (scalar_t)opt.sigma_thresh,
+            (scalar_t)opt.stop_thresh,
+            output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>());
     fwd_end.record();
 
     gs_start.synchronize();
@@ -345,19 +371,24 @@ RenderingOutput corner_tree_render(
     alloc_start.synchronize();
     alloc_end.synchronize();
     float alloc_ela = alloc_start.elapsed_time(alloc_end);
+    interpolate_start.synchronize();
+    interpolate_end.synchronize();
+    float interpolate_ela = interpolate_start.elapsed_time(interpolate_end);
     fwd_start.synchronize();
     fwd_end.synchronize();
     float fwd_ela = fwd_start.elapsed_time(fwd_end);
 
-    printf("Forward timings(ms): Sampling=%f  Alloc=%f  Forward=%f\n", gs_ela, alloc_ela, fwd_ela);
+    printf("Forward timings(ms): Sampling=%f  Alloc=%f  Interpolate=%f  Forward=%f\n", gs_ela, alloc_ela, interpolate_ela, fwd_ela);
 
     return {
         /*output_rgb=*/output,
+        /*ray_steps=*/ray_steps,
+        /*rays_d_norm=*/rays_d_norm,
+        /*intersection_pos=*/positions,
+        /*intersection_num=*/num_intersections,
         /*interpolated_vals=*/interp_vals,
         /*interpolated_n_ids=*/interp_nid_ptrs,
         /*interpolation_weights=*/interp_weights,
-        /*ray_offsets=*/ray_offsets,
-        /*ray_steps=*/ray_steps
     };
 }
 
@@ -366,15 +397,12 @@ template <typename scalar_t, int32_t branching, int32_t data_dim, int32_t out_da
 torch::Tensor corner_tree_render_bwd(
     const torch::Tensor & t_data,
     const torch::Tensor & t_nids,
-    const torch::Tensor & t_offset,
-    const torch::Tensor & t_scaling,
-    const torch::Tensor & rays_o,
-    const torch::Tensor & rays_d,
+    const torch::Tensor & rays_d_norm,
+    const torch::Tensor & num_intersections,
     const torch::Tensor & grad_output,
     const torch::Tensor & interp_vals,
     const torch::Tensor & interp_nid_ptrs,
     const torch::Tensor & interp_weights,
-    const torch::Tensor & ray_offsets,
     const torch::Tensor & ray_steps,
     const RenderOptions & opt)
 {
@@ -387,17 +415,14 @@ torch::Tensor corner_tree_render_bwd(
     trace_ray_backward<scalar_t, branching, data_dim, out_data_dim>
         <<<n_blocks_linear<uint32_t>(batch_size, render_ray_n_threads), render_ray_n_threads>>>(
         t_nids.packed_accessor32<int, 5, torch::RestrictPtrTraits>(),
-        t_offset.data_ptr<float>(),
-        t_scaling.data_ptr<float>(),
-        ray_offsets.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
         ray_steps.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
         interp_weights.packed_accessor32<float, 3, torch::RestrictPtrTraits>(),
         interp_vals.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
         interp_nid_ptrs.packed_accessor32<int, 2, torch::RestrictPtrTraits>(),
+        num_intersections.packed_accessor32<int, 1, torch::RestrictPtrTraits>(),
         grad_output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
         output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-        rays_o.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
-        rays_d.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
+        rays_d_norm.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
         (int)batch_size,
         opt.rgb_padding,
         (scalar_t)opt.background_brightness,

@@ -373,9 +373,8 @@ class CornerTreeRenderFn(torch.autograd.Function):
             data, tree.child.to(dtype=torch.int), tree.is_child_leaf, tree.nids.to(dtype=torch.int), tree.offset, tree.scaling,
             rays_o, rays_d, opt, dtype=tree.data.weight.dtype, branching=2, sh_degree=tree.sh_degree)
         ctx.save_for_backward(
-            rays_o, rays_d, out.interpolated_vals, out.interpolated_n_ids,
-            out.interpolation_weights, out.ray_offsets,
-            out.ray_steps
+            out.rays_d_norm, out.num_intersections, out.ray_steps,
+            out.interpolated_vals, out.interpolated_n_ids, out.interpolation_weights,
         )
         ctx.tree = tree
         ctx.opt = opt
@@ -384,12 +383,12 @@ class CornerTreeRenderFn(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_out):
         if ctx.needs_input_grad[0]:
-            rays_o, rays_d, interpolated_vals, interpolated_n_ids, interpolation_weights, ray_offsets, ray_steps = ctx.saved_tensors
+            rays_d_norm, n_intrs, ray_steps, interpolated_vals, interpolated_n_ids, interpolation_weights = ctx.saved_tensors
             tree = ctx.tree
             out = CornerTreeRenderFn.dispatch_vol_render_bwd(
-                tree.data.weight, tree.nids.to(dtype=torch.int), tree.offset, tree.scaling, rays_o, rays_d,
+                tree.data.weight, tree.nids.to(dtype=torch.int), rays_d_norm, n_intrs,
                 grad_out.contiguous(), interpolated_vals, interpolated_n_ids, interpolation_weights,
-                ray_offsets, ray_steps, ctx.opt,
+                ray_steps, ctx.opt,
                 dtype=tree.data.weight.dtype, branching=2, sh_degree=tree.sh_degree
             )
             return out, None, None, None, None

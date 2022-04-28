@@ -115,7 +115,7 @@ def get_intersections(rays_o: torch.Tensor,
                       aabb: torch.Tensor,
                       step_size: float,
                       n_samples: int,
-                      near: float,
+                         near: float,
                       far: float) -> torch.Tensor:
     with torch.autograd.no_grad():
         dev, dt = rays_o.device, rays_o.dtype
@@ -521,7 +521,7 @@ class IrregularGrid(AbstractNerF):
             self.grid_data, dim=0, index=neighbor_idxs.view(-1, 1).expand(1, self.grid_data.shape[-1]))
         neighbor_data = neighbor_data.view(neighbor_idxs.shape[0], 27, -1)  # [n_keep, 27, n_ch]
 
-        # Sum on the 27 axis. [1, 8, 27, 1] * [n_keep, 1, 27, n_ch] => [n_keep, 8, 27, n_ch]
+        # Sum on the 27 axis. [1, 8, 27, 1] * [n_keep, 1, 27, n_ch] => [n_keep, 8, n_ch]
         new_data = torch.einsum('betc,betc->bec',
                                 self.split_weights.view(1, 8, 27, 1), neighbor_data.unsqueeze(1))
         new_data = new_data.reshape(-1, new_data.shape[-1])  # [n_keep * 8, n_ch]
