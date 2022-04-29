@@ -111,45 +111,53 @@ __global__ void fetch_interpolate(
     const Acc32<int, 1> n_steps,
     const int n_batches)
 {
-    const int intrs_id = threadIdx.y + blockIdx.y * blockDim.y;
-    float3 pos;
+    const int b = threadIdx.x + blockIdx.x * blockDim.x;  // element in batch
+    if (b >= n_batches) return;
+
+    const int n_intrs = n_steps[b];
     const int * const nid_start_ptr = &t_nids[0][0][0][0][0];
-    scalar_t *interp_val[data_dim];
+    float3 pos;
+    scalar_t interp_val[data_dim];
 
-    int batch_id = threadIdx.x + blockIdx.x * blockDim.x;
-    for (; batch_id < n_batches; batch_id += gridDim.x) {
-        if (intrs_id >= n_steps[batch_id]) continue;
-        pos = make_float3(ray_pos[batch_id][intrs_id][0], ray_pos[batch_id][intrs_id][1], ray_pos[batch_id][intrs_id][2]);
-        const float * c_interp_weights = &interp_weights[batch_id][intrs_id][0];
+    for (int i = 0; i < n_intrs; i++) {
+        pos = make_float3(ray_pos[b][i][0], ray_pos[b][i][1], ray_pos[b][i][2]);
+        float * const c_interp_weights = &interp_weights[b][i][0];
         _dev_query_corners<scalar_t, branching>(
-            t_child, t_nids, pos,
-            /*weights=*/c_interp_weights, /*nid_ptr=*/&nid_ptrs[batch_id][intrs_id]);
-        const int * n_ptr = nid_start_ptr + nid_ptrs[batch_id][intrs_id];
-
+                t_child, t_nids, pos,
+                /*weights=*/c_interp_weights, /*nid_ptr=*/&nid_ptrs[b][i]);
+        const int * n_ptr = nid_start_ptr + nid_ptrs[b][i];
+        #pragma unroll data_dim
         for (int k = 0; k < data_dim; k++) {
             interp_val[k] = c_interp_weights[0], t_data[*n_ptr][k];
         }
+        #pragma unroll data_dim
         for (int k = 0; k < data_dim; k++) {
             interp_val[k] = fmaf(c_interp_weights[1], t_data[*(n_ptr + 1)][k], interp_val[k]);
         }
+        #pragma unroll data_dim
         for (int k = 0; k < data_dim; k++) {
             interp_val[k] = fmaf(c_interp_weights[2], t_data[*(n_ptr + 2)][k], interp_val[k]);
         }
+        #pragma unroll data_dim
         for (int k = 0; k < data_dim; k++) {
             interp_val[k] = fmaf(c_interp_weights[3], t_data[*(n_ptr + 3)][k], interp_val[k]);
         }
+        #pragma unroll data_dim
         for (int k = 0; k < data_dim; k++) {
             interp_val[k] = fmaf(c_interp_weights[4], t_data[*(n_ptr + 4)][k], interp_val[k]);
         }
+        #pragma unroll data_dim
         for (int k = 0; k < data_dim; k++) {
             interp_val[k] = fmaf(c_interp_weights[5], t_data[*(n_ptr + 5)][k], interp_val[k]);
         }
+        #pragma unroll data_dim
         for (int k = 0; k < data_dim; k++) {
             interp_val[k] = fmaf(c_interp_weights[6], t_data[*(n_ptr + 6)][k], interp_val[k]);
         }
+        #pragma unroll data_dim
         for (int k = 0; k < data_dim; k++) {
             interp_val[k] = fmaf(c_interp_weights[7], t_data[*(n_ptr + 7)][k], interp_val[k]);
-            interp_vals[batch_id][intrs_id][k] = interp_val[k];
+            interp_vals[b][i][k] = interp_val[k];
         }
     }
 }
@@ -352,13 +360,8 @@ RenderingOutput corner_tree_render(
 
     // 3. Interpolate at each valid intersction
     interpolate_start.record();
-    const int grid_height = div_round_up<int>(batch_size, block_size_2d);
-    const int grid_width = div_round_up<int>(opt.max_intersections, block_size_2d);
-    const dim3 dimGrid(grid_height, grid_width);
-    const dim3 dimBlock(block_size_2d, block_size_2d);
-    printf("grid height = %d grid witdh = %d\n", grid_height, grid_width);
     fetch_interpolate<scalar_t, branching, data_dim>
-        <<<dimGrid, dimBlock>>>(
+        <<<n_blocks_linear<uint32_t>(batch_size, 128), 128>>>(
             data.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
             t_child.packed_accessor32<int, 4, torch::RestrictPtrTraits>(),
             t_nids.packed_accessor32<int, 5, torch::RestrictPtrTraits>(),

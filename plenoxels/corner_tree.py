@@ -318,7 +318,7 @@ def init_render_opt(background_brightness: float = 1.0,
                     rgb_padding: float = 0.0) -> RenderOptions:
     opts = RenderOptions()
     opts.background_brightness = background_brightness
-    opts.max_samples_per_node = 3
+    opts.max_samples_per_node = 2
     opts.max_intersections = 512
 
     opts.density_softplus = density_softplus
@@ -373,11 +373,13 @@ class CornerTreeRenderFn(torch.autograd.Function):
             data, tree.child.to(dtype=torch.int), tree.nids.to(dtype=torch.int), tree.offset, tree.scaling,
             rays_o, rays_d, opt, dtype=tree.data.weight.dtype, branching=2, sh_degree=tree.sh_degree)
         ctx.save_for_backward(
-            out.rays_d_norm, out.num_intersections, out.ray_steps,
+            out.rays_d_norm, out.intersection_num, out.ray_steps,
             out.interpolated_vals, out.interpolated_n_ids, out.interpolation_weights,
         )
         ctx.tree = tree
         ctx.opt = opt
+        with torch.no_grad():
+            CornerTreeRenderFn.lastctx = out
         return out.output_rgb
 
     @staticmethod

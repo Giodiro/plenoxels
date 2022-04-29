@@ -198,8 +198,8 @@ __device__ __inline__ void _dev_query_corners(
     const Acc32<int, 4>         child,
     const Acc32<int, 5>         nids,
           float3 & __restrict__ coordinate,
-          float  * __restrict__ weights,
-          int    * __restrict__ nid_ptr
+          float  * const __restrict__ weights,
+          int    * const __restrict__ nid_ptr
 )
 {
     int u, v, w;

@@ -21,7 +21,7 @@ ext_modules = [
         ],
         extra_compile_args={
             "cxx": ["-std=c++14", "-g"],
-            "nvcc": ["-std=c++14", "-g"]
+            "nvcc": ["-std=c++14", "--ptxas-options=-v", "-keep", "-lineinfo"]
         },
     )
 ]
