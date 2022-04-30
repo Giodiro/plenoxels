@@ -241,9 +241,9 @@ __global__ void ray_loss_kernel(
         const float alpha = 1.f - __expf(-sigma * delta_t);
         const float weight = alpha * light_intensity;
         const float3 rgb = sh_to_rgb(apply_sh<bd>(basis_fn, &interp_vals[b][i]), rgb_padding);
-        rgb_ray[0] += weights * rgb.x;
-        rgb_ray[1] += weights * rgb.y;
-        rgb_ray[2] += weights * rgb.z;
+        rgb_ray[0] += weight * rgb.x;
+        rgb_ray[1] += weight * rgb.y;
+        rgb_ray[2] += weight * rgb.z;
 
         light_intensity *= 1.f - alpha;
         if (light_intensity <= stop_thresh) { break; }
@@ -254,8 +254,8 @@ __global__ void ray_loss_kernel(
 
     // Loss & Gradient of the loss
     float3 diff = make_float3(rgb_ray[0] - targets[b][0], rgb_ray[1] - targets[b][1], rgb_ray[2] - targets[b][2]);
-    float3 loss = make_float3(diff[0] * diff[0], diff[1] * diff[1], diff[2] * diff[2]);
-    float3 grad = make_float3(2.0f * diff[0], 2.0f * diff[1], 2.0f * diff[2]);
+    float3 loss = make_float3(diff.x * diff.x, diff.y * diff.y, diff.z * diff.z);
+    float3 grad = make_float3(2.0f * diff.x, 2.0f * diff.y, 2.0f * diff.z);
 
     // Backward
     float3 rgb_ray2 = make_float3(0., 0., 0.);
@@ -276,7 +276,7 @@ __global__ void ray_loss_kernel(
 		const float3 dloss_by_drgb = weight * grad;
 		apply_sh_bwd<bd>(basis_fn, sh_to_rgb_backward(dloss_by_drgb, rgb_padding), &grad_tree_val);
         // Gradient wrt Sigma inputs
-		const float3 suffix = rgb_ray - rgb_ray2;
+		const float3 suffix = make_float3(rgb_ray[0] - rgb_ray2.x, rgb_ray[1] - rgb_ray2.y, rgb_ray[2] - rgb_ray2.z);
         const float sigma_derivative = density_bwd(sigma, density_softplus);
         const float dloss_by_dsigma = sigma_derivative * delta_t * dot(grad, light_intensity * rgb - suffix);
         grad_tree_val[data_dim - 1] = dloss_by_dsigma;
