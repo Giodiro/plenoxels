@@ -411,7 +411,7 @@ __global__ void trace_ray_backward(
 
 template <int branching, int data_dim>
 RenderingOutput corner_tree_loss_grad(
-    const torch::Tensor & data,
+    torch::Tensor & data,
     const torch::Tensor & t_child,
     const torch::Tensor & t_nids,
     const torch::Tensor & t_offset,
@@ -509,7 +509,7 @@ RenderingOutput corner_tree_loss_grad(
     );
     fwd_end.record();
 
-    data.grad = data_grad;
+    data.mutable_grad() = data_grad;
     return {
         /*output_rgb=*/output,
         /*ray_steps=*/ray_steps,
