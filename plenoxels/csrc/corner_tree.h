@@ -241,7 +241,7 @@ __global__ void ray_loss_kernel(
         const float sigma = density_fwd(interp_vals[b][i][data_dim - 1], density_softplus);
         const float alpha = 1.f - __expf(-sigma * delta_t);
         const float weight = alpha * light_intensity;
-        const float3 rgb = sh_to_rgb(apply_sh<bd>(basis_fn, &interp_vals[b][i]), rgb_padding);
+        const float3 rgb = sh_to_rgb(apply_sh<bd>(basis_fn, &interp_vals[b][i][0]), rgb_padding);
         rgb_ray[0] += weight * rgb.x;
         rgb_ray[1] += weight * rgb.y;
         rgb_ray[2] += weight * rgb.z;
@@ -267,7 +267,7 @@ __global__ void ray_loss_kernel(
         const float sigma = density_fwd(raw_sigma, density_softplus);
         const float alpha = 1.f - __expf(-sigma * delta_t);
         const float weight = alpha * light_intensity;
-        const float3 sh_out = apply_sh<bd>(basis_fn, &interp_vals[b][j]);
+        const float3 sh_out = apply_sh<bd>(basis_fn, &interp_vals[b][j][0]);
         const float3 rgb = sh_to_rgb(sh_out, rgb_padding);
 		rgb_ray2 += weight * rgb;
 		light_intensity *= 1.f - alpha;
@@ -276,7 +276,7 @@ __global__ void ray_loss_kernel(
 
         // Gradient wrt RGB inputs
 		const float3 dloss_by_drgb = weight * grad;
-		apply_sh_bwd<bd>(basis_fn, sh_to_rgb_backward(sh_out, rgb_padding) * dloss_by_drgb, &grad_tree_val);
+		apply_sh_bwd<bd>(basis_fn, sh_to_rgb_backward(sh_out, rgb_padding) * dloss_by_drgb, grad_tree_val);
         // Gradient wrt Sigma inputs
 		const float3 suffix = make_float3(rgb_ray[0] - rgb_ray2.x, rgb_ray[1] - rgb_ray2.y, rgb_ray[2] - rgb_ray2.z);
         const float sigma_derivative = density_bwd(sigma, density_softplus);
@@ -410,7 +410,7 @@ __global__ void trace_ray_backward(
 
 
 template <int branching, int data_dim>
-void corner_tree_loss_grad(
+RenderingOutput corner_tree_loss_grad(
     const torch::Tensor & data,
     const torch::Tensor & t_child,
     const torch::Tensor & t_nids,
@@ -469,7 +469,7 @@ void corner_tree_loss_grad(
     torch::Tensor interp_nid_ptrs = torch::zeros({batch_size, opt.max_intersections}, torch::dtype(torch::kInt32).device(data.device()));
     torch::Tensor interp_weights = torch::empty({batch_size, opt.max_intersections, 8},
         torch::dtype(torch::kFloat32).device(data.device()).layout(data.layout()));
-    torch::Tensor data_grad = torch::zeros_like(t_data);
+    torch::Tensor data_grad = torch::zeros_like(data);
     alloc_end.record();
 
     // 3. Interpolate at each valid intersction
@@ -505,11 +505,21 @@ void corner_tree_loss_grad(
             opt.sigma_thresh,
             opt.stop_thresh,
             output.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
-            data_grad.packed_accessor32<float, 2, torch::RestrictPtrTraits>();
+            data_grad.packed_accessor32<float, 2, torch::RestrictPtrTraits>()
     );
     fwd_end.record();
 
     data.grad = data_grad;
+    return {
+        /*output_rgb=*/output,
+        /*ray_steps=*/ray_steps,
+        /*rays_d_norm=*/rays_d_norm,
+        /*intersection_pos=*/positions,
+        /*intersection_num=*/num_intersections,
+        /*interpolated_vals=*/interp_vals,
+        /*interpolated_n_ids=*/interp_nid_ptrs,
+        /*interpolation_weights=*/interp_weights,
+    };
 }
 
 
