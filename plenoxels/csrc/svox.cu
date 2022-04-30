@@ -41,7 +41,7 @@
 namespace py = pybind11;
 using torch::Tensor;
 
-template <typename scalar_t, int32_t branching, int32_t data_dim, int32_t out_data_dim>
+template <int32_t branching, int32_t data_dim>
 void declare_octree(py::module &m, const std::string &typestr) {
 //    using TOctree = Octree<scalar_t, branching, data_dim>;
 //    std::string pyclass_name = std::string("Octree") + typestr;
@@ -80,19 +80,17 @@ void declare_octree(py::module &m, const std::string &typestr) {
 //    m.def(fn_name.c_str(), &octree_set<scalar_t, branching, data_dim>);
 
     std::string fn_name = std::string("ctree_render") + typestr;
-    m.def(fn_name.c_str(), &corner_tree_render<scalar_t, branching, data_dim, out_data_dim>);
+    m.def(fn_name.c_str(), &corner_tree_render<branching, data_dim>);
 
     fn_name = std::string("ctree_render_bwd") + typestr;
-    m.def(fn_name.c_str(), &corner_tree_render_bwd<scalar_t, branching, data_dim, out_data_dim>);
+    m.def(fn_name.c_str(), &corner_tree_render_bwd<branching, data_dim>);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    declare_octree<double, 2, 4, 3>(m, "d2d0");
-//    declare_octree<double, 2, 13, 3>(m, "d2d1");
-    declare_octree<float, 2, 4, 3>(m, "f2d0");
-    declare_octree<float, 2, 13, 3>(m, "f2d1");
+    declare_octree<2, 4>(m, "f2d0");
+    declare_octree<2, 13>(m, "f2d1");
 //    declare_octree<float, 4, 13, 3>(m, "f4d1");
-    declare_octree<float, 2, 28, 3>(m, "f2d2");
+    declare_octree<2, 28>(m, "f2d2");
 //    declare_octree<float, 4, 28, 3>(m, "f4d2");
 
     py::class_<RenderingOutput>(m, "RenderOutput")
