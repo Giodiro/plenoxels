@@ -36,10 +36,10 @@ __device__ __constant__ const float C4[] = {
 
 
 // Calculate basis functions depending on format, for given view directions
-template <typename scalar_t, int basis_dim>
+template <int basis_dim>
 __device__ __inline__ void calc_sh_basis(
     const float3& __restrict__ dir,
-    scalar_t* __restrict__ out)
+    float* __restrict__ out)
 {
     out[0] = C0;
     const float xx = dir.x * dir.x, yy = dir.y * dir.y, zz = dir.z * dir.z;
