@@ -64,17 +64,17 @@ __device__ __inline__ void apply_sh_bwd(const float  * const __restrict__ basis_
 __device__ __inline__ float3 sh_to_rgb(const float3 & __restrict__ sh_output,
                                        const float rgb_padding)
 {
-    float3 out;
-    out.x = _SIGMOID(sh_output.x) * (1 + 2 * rgb_padding) - rgb_padding;
-    out.y = _SIGMOID(sh_output.y) * (1 + 2 * rgb_padding) - rgb_padding;
-    out.z = _SIGMOID(sh_output.z) * (1 + 2 * rgb_padding) - rgb_padding;
-    return out;
+    return make_float3(
+        _SIGMOID(sh_output.x) * (1 + 2 * rgb_padding) - rgb_padding,
+        _SIGMOID(sh_output.y) * (1 + 2 * rgb_padding) - rgb_padding,
+        _SIGMOID(sh_output.z) * (1 + 2 * rgb_padding) - rgb_padding
+    );
 }
 
 __device__ __inline__ float3 sh_to_rgb_backward(const float3 & __restrict__ sh_output,
                                                 const float rgb_padding)
 {
-    float3 out;
+    float3 out = make_float3(0.0, 0.0, 0.0);
     float sigmoid = _SIGMOID(sh_output.x);
     out.x = sigmoid * (1.0 - sigmoid) * (1 + 2 * rgb_padding);
     sigmoid = _SIGMOID(sh_output.y);
@@ -102,7 +102,6 @@ __device__ __inline__ void fwd_loop(const float * __restrict__ interp,
 {
     const int bd = basis_dim(data_dim, 3);
     const float sigma = density_fwd(interp[data_dim - 1], density_softplus);
-
     if (sigma > sigma_thresh) {
         const float att = expf(-dt * sigma);  // (1 - alpha)
         const float weight = light_intensity * (1.f - att);
@@ -388,9 +387,9 @@ __global__ void trace_ray_backward(
 
             // Gradient wrt RGB inputs
 		    const float3 dloss_by_drgb = make_float3(weight * grad_output[b][0], weight * grad_output[b][1], weight * grad_output[b][2]);
-		    apply_sh_bwd<bd>(basis_fn, sh_to_rgb_backward(dloss_by_drgb, rgb_padding), grad_tree_val);
+		    apply_sh_bwd<bd>(basis_fn, sh_to_rgb_backward(rgb, rgb_padding) * dloss_by_drgb, grad_tree_val);
             // Gradient wrt Sigma inputs
-            const float sigma_derivative = density_bwd(sigma, density_softplus);
+            const float sigma_derivative = density_bwd(raw_sigma, density_softplus);
             grad_tree_val[data_dim - 1] = sigma_derivative * delta_t * (total_color * light_intensity - accum);
 
             const int * n_ptr = t_nids_start + nid_ptrs[b][i];
