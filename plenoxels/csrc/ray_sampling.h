@@ -3,7 +3,7 @@
 #include "octree_common.h"
 
 
-template <typename scalar_t, int32_t branching>
+template <int32_t branching>
 __device__ __inline__ void stratified_sample_proposal(
     const torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> t_child,
     const float3 & __restrict__ ray_o,
@@ -34,14 +34,8 @@ __device__ __inline__ void stratified_sample_proposal(
         // new sub-cube position
         relpos = ray_o + t_inout * ray_d;
         // New subcube info pos will hold the current offset in the new subcube
-        _dev_query_ninfo<scalar_t, branching>(t_child, relpos, &cube_sz, &node_id);
+        _dev_query_ninfo<branching>(t_child, relpos, &cube_sz, &node_id);
         _dda_unit(relpos, invdir, &s_tmin, &s_tmax);
-        /*if (s_tmax < 1e-8) {
-            *n_samples_inout = -1;
-            printf("s_tmax is tiny. Exiting. dt=%f, t=%f, s_tmin=%f, s_tmax=%f, relpos=%f %f %f, cube_sz=%f\n",
-                    *dt_inout, *t_inout, s_tmin, s_tmax, relpos.x, relpos.y, relpos.z, cube_sz);
-            return;
-        }*/
 
         s_size = (s_tmax - s_tmin);
         if (s_size < 1e-4) {
@@ -70,14 +64,13 @@ __device__ __inline__ void stratified_sample_proposal(
 
 
 
-template <typename scalar_t, int32_t branching>
+template <int32_t branching>
 __global__ void gen_samples_kernel(
     const torch::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> t_child,
     const float* __restrict__ t_offset,
     const float* __restrict__ t_scaling,
     const torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> rays_o,     // batch_size, 3
     const torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> rays_d,     // batch_size, 3
-//    torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> ray_offsets,      // batch_size, n_intersections
     torch::PackedTensorAccessor32<float, 2, torch::RestrictPtrTraits> ray_steps,        // batch_size, n_intersections
     torch::PackedTensorAccessor32<int, 1, torch::RestrictPtrTraits> num_intersections,  // batch_size
     torch::PackedTensorAccessor32<float, 3, torch::RestrictPtrTraits> intrs_pos,        // batch_size, n_intersections, 3
@@ -105,18 +98,16 @@ __global__ void gen_samples_kernel(
         return;
     }
 
-    //printf("ray_o: %f %f %f - ray_d: %f %f %f - tmin: %f - tmax %f\n", ray_o.x, ray_o.y, ray_o.z, ray_d.x, ray_d.y, ray_d.z, tmin, tmax);
     int32_t num_strat_samples = 0;
     float t = tmin,
           t_new = tmin,
           delta_t = 0;
     int j = 0;
     while (j < max_intersections) {
-        stratified_sample_proposal<scalar_t, branching>(
+        stratified_sample_proposal<branching>(
             t_child, ray_o, ray_d, invdir, tmax, max_samples_per_node, num_strat_samples, delta_t, t_new);
         if (t_new >= tmax || num_strat_samples < 0) { break; }
         if (t_new - t <= 0) { continue; }
-//        ray_offsets[i][j] = t;
         intrs_pos[i][j][0] = ray_o.x + t * ray_d.x;
         intrs_pos[i][j][1] = ray_o.y + t * ray_d.y;
         intrs_pos[i][j][2] = ray_o.z + t * ray_d.z;

@@ -16,97 +16,136 @@ template <typename T, size_t N>
 using Acc64 = torch::GenericPackedTensorAccessor<T, N, torch::RestrictPtrTraits, int64_t>;
 
 
-template <typename scalar_t>
-__device__ __inline__ scalar_t density_fwd(scalar_t sigma, const bool density_softplus) {
+__device__ __inline__ float density_fwd(float sigma, const bool density_softplus) {
     return density_softplus ? _SOFTPLUS_M1(sigma) : sigma;
 }
 
-template <typename scalar_t>
-__device__ __inline__ scalar_t density_bwd(scalar_t sigma, const bool density_softplus) {
+__device__ __inline__ float density_bwd(float sigma, const bool density_softplus) {
     return density_softplus ? _SIGMOID(sigma - 1) : 1;
 }
 
-template <typename scalar_t>
-__device__ __inline__ scalar_t rgb_fwd(scalar_t rgb_component, const float rgb_padding) {
-    return _SIGMOID(rgb_component) * (scalar_t)(1 + 2 * rgb_padding) - (scalar_t)rgb_padding;
+
+template <int bd>
+__device__ __inline__ float3 apply_sh(const float * const __restrict__ basis_fn,
+                                      const float * const __restrict__ values)
+{
+    float3 out = make_float3(0.0, 0.0, 0.0);
+    int k = 0, bk;
+    for (bk = 0; bk < bd; k++, bk++) {
+        out.x += basis_fn[bk] * values[k];
+    }
+    for (bk = 0; bk < bd; k++, bk++) {
+        out.y += basis_fn[bk] * values[k];
+    }
+    for (bk = 0; bk < bd; k++, bk++) {
+        out.z += basis_fn[bk] * values[k];
+    }
+    return out;
 }
 
-template <typename scalar_t>
-__device__ __inline__ scalar_t rgb_bwd(scalar_t rgb_component, const float rgb_padding) {
-    const scalar_t sigmoid = _SIGMOID(rgb_component);
-    return sigmoid * (1.0 - sigmoid) * (1 + 2 * rgb_padding);
+template <int bd>
+__device__ __inline__ void apply_sh_bwd(const float  * const __restrict__ basis_fn,
+                                        const float3 &       __restrict__ grad_output,
+                                              float  * const __restrict__ out)
+{
+    int k = 0, bk;
+    for (bk = 0; bk < bd; k++, bk++) {
+        out[k] += basis_fn[bk] * grad_output.x;
+    }
+    for (bk = 0; bk < bd; k++, bk++) {
+        out[k] += basis_fn[bk] * grad_output.y;
+    }
+    for (bk = 0; bk < bd; k++, bk++) {
+        out[k] += basis_fn[bk] * grad_output.z;
+    }
 }
+
+
+__device__ __inline__ float3 sh_to_rgb(const float3 & __restrict__ sh_output,
+                                       const float rgb_padding)
+{
+    float3 out;
+    out.x = _SIGMOID(sh_output.x) * (1 + 2 * rgb_padding) - rgb_padding;
+    out.y = _SIGMOID(sh_output.y) * (1 + 2 * rgb_padding) - rgb_padding;
+    out.z = _SIGMOID(sh_output.z) * (1 + 2 * rgb_padding) - rgb_padding;
+    return out;
+}
+
+__device__ __inline__ float3 sh_to_rgb_backward(const float3 & __restrict__ sh_output,
+                                                const float rgb_padding)
+{
+    float3 out;
+    float sigmoid = _SIGMOID(sh_output.x);
+    out.x = sigmoid * (1.0 - sigmoid) * (1 + 2 * rgb_padding);
+    sigmoid = _SIGMOID(sh_output.y);
+    out.y = sigmoid * (1.0 - sigmoid) * (1 + 2 * rgb_padding);
+    sigmoid = _SIGMOID(sh_output.z);
+    out.z = sigmoid * (1.0 - sigmoid) * (1 + 2 * rgb_padding);
+    return out;
+}
+
 
 constexpr int basis_dim(int data_dim, int out_data_dim) {
     return (data_dim - 1) / out_data_dim;
 }
 
-template <typename scalar_t, int data_dim, int out_data_dim>
-__device__ __inline__ void fwd_loop(const scalar_t * __restrict__ interp,
-                                    const scalar_t * __restrict__ basis_fn,
+
+template <int data_dim>
+__device__ __inline__ void fwd_loop(const float * __restrict__ interp,
+                                    const float * __restrict__ basis_fn,
                                     const bool density_softplus,
-                                    const scalar_t sigma_thresh,
+                                    const float sigma_thresh,
                                     const float dt,
                                     const float rgb_padding,
-                                    scalar_t & __restrict__ light_intensity,
-                                    scalar_t * __restrict__ out)
+                                    float & __restrict__ light_intensity,
+                                    float * __restrict__ out)
 {
-    const int bd = basis_dim(data_dim, out_data_dim);
-    const scalar_t sigma = density_fwd<scalar_t>(interp[data_dim - 1], density_softplus);
+    const int bd = basis_dim(data_dim, 3);
+    const float sigma = density_fwd(interp[data_dim - 1], density_softplus);
 
     if (sigma > sigma_thresh) {
-        const scalar_t att = expf(-dt * sigma);  // (1 - alpha)
-        const scalar_t weight = light_intensity * (1.f - att);
-
-        for (int j = 0, off = 0; j < out_data_dim; ++j, off += bd) {
-            scalar_t tmp = 0.0;
-            for (int k = 0; k < bd; ++k) {
-                tmp += basis_fn[k] * interp[off + k];
-            }
-            out[j] += weight * rgb_fwd<scalar_t>(tmp, rgb_padding);
-        }
+        const float att = expf(-dt * sigma);  // (1 - alpha)
+        const float weight = light_intensity * (1.f - att);
+        const float3 rgb = sh_to_rgb(apply_sh<bd>(basis_fn, interp), rgb_padding);
+        out[0] += weights * rgb.x;
+        out[1] += weights * rgb.y;
+        out[2] += weights * rgb.z;
         light_intensity *= att;
     }
 }
 
-template <typename scalar_t, int data_dim, int out_data_dim>
-__device__ __inline__ void bwd_loop_p1(const scalar_t * __restrict__ interp,
-                                       const scalar_t * __restrict__ basis_fn,
-                                       const scalar_t * __restrict__ grad_output,
+template <int data_dim>
+__device__ __inline__ void bwd_loop_p1(const float * __restrict__ interp,
+                                       const float * __restrict__ basis_fn,
+                                       const float * __restrict__ grad_output,
                                        const bool density_softplus,
-                                       const scalar_t sigma_thresh,
+                                       const float sigma_thresh,
                                        const float dt,
                                        const float rgb_padding,
-                                       scalar_t & __restrict__ light_intensity,
-                                       scalar_t & __restrict__ accum)
+                                       float & __restrict__ light_intensity,
+                                       float & __restrict__ accum)
 {
-    const int bd = basis_dim(data_dim, out_data_dim);
-    const scalar_t sigma = density_fwd<scalar_t>(interp[data_dim - 1], density_softplus);
+    const int bd = basis_dim(data_dim, 3);
+    const float sigma = density_fwd(interp[data_dim - 1], density_softplus);
     if (sigma > sigma_thresh) {
-        const scalar_t att = expf(-dt * sigma);
-        const scalar_t weight = light_intensity * (1.f - att);
-        scalar_t total_color = 0.f;
-        for (int j = 0, off = 0; j < out_data_dim; ++j, off += bd) {
-            scalar_t tmp = 0.0;
-            for (int k = 0; k < bd; ++k) {
-                tmp += basis_fn[k] * interp[off + k];
-            }
-            total_color += rgb_fwd<scalar_t>(tmp, rgb_padding) * grad_output[j];
-        }
+        const float att = expf(-dt * sigma);
+        const float weight = light_intensity * (1.f - att);
+        const float3 rgb = sh_to_rgb(apply_sh<bd>(basis_fn, interp), rgb_padding);
+        const float total_color = rgb.x * grad_output[0] + rgb.y * grad_output[1] + rgb.z * grad_output[2];
         light_intensity *= att;
         accum += weight * total_color;
     }
 }
 
 
-template <typename scalar_t, int branching, int data_dim>
+template <int branching, int data_dim>
 __global__ void fetch_interpolate(
-    const Acc32<scalar_t, 2> t_data,
+    const Acc32<float, 2> t_data,
     const Acc32<int, 4> t_child,
     const Acc32<int, 5> t_nids,
     const Acc32<float, 3> ray_pos,
           Acc32<float, 3> interp_weights,
-          Acc32<scalar_t, 3> interp_vals,
+          Acc32<float, 3> interp_vals,
           Acc32<int, 2> nid_ptrs,
     const Acc32<int, 1> n_steps,
     const int n_batches)
@@ -117,12 +156,12 @@ __global__ void fetch_interpolate(
     const int n_intrs = n_steps[b];
     const int * const nid_start_ptr = &t_nids[0][0][0][0][0];
     float3 pos;
-    scalar_t interp_val[data_dim];
+    float interp_val[data_dim];
 
     for (int i = 0; i < n_intrs; i++) {
         pos = make_float3(ray_pos[b][i][0], ray_pos[b][i][1], ray_pos[b][i][2]);
         float * const c_interp_weights = &interp_weights[b][i][0];
-        _dev_query_corners<scalar_t, branching>(
+        _dev_query_corners<branching>(
                 t_child, t_nids, pos,
                 /*weights=*/c_interp_weights, /*nid_ptr=*/&nid_ptrs[b][i]);
         const int * n_ptr = nid_start_ptr + nid_ptrs[b][i];
@@ -163,78 +202,163 @@ __global__ void fetch_interpolate(
 }
 
 
-template <typename scalar_t, int branching, int data_dim, int out_data_dim>
+template <int branching, int data_dim>
+__global__ void ray_loss_kernel(
+    const Acc32<int, 5> t_nids,
+    const Acc32<float, 2> ray_steps,
+    const Acc32<float, 3> interp_weights,
+    const Acc32<float, 3> interp_vals,
+    const Acc32<int, 2> nid_ptrs,
+    const Acc32<int, 1> n_steps,
+    const Acc32<float, 2> rays_d_norm,
+    const Acc32<float, 2> targets,
+    const int n_elements,
+    const float rgb_padding,
+    const float background_brightness,
+    const bool density_softplus,
+    const float sigma_thresh,
+    const float stop_thresh,
+          Acc32<float, 2> out,
+          Acc32<float, 2> grad_data_out)
+{
+    const int b = threadIdx.x + blockIdx.x * blockDim.x;  // element in batch
+    if (b >= n_elements) return;
+    const int bd = basis_dim(data_dim, 3);
+    const int * const t_nids_start = &t_nids[0][0][0][0][0];
+    const int n_intrs = n_steps[b];
+    const float3 ray_d = make_float3(rays_d_norm[b][0], rays_d_norm[b][1], rays_d_norm[b][2]);
+    float basis_fn[bd];
+    calc_sh_basis<bd>(ray_d, basis_fn);
+
+    float * rgb_ray = &out[b][0];
+
+    // Forward
+    float light_intensity = 1.f;
+    int i = 0;
+    for (; i < n_intrs; i++) {
+        const float delta_t = ray_steps[b][i];
+        const float sigma = density_fwd(interp_vals[b][i][data_dim - 1], density_softplus);
+        const float alpha = 1.f - __expf(-sigma * delta_t);
+        const float weight = alpha * light_intensity;
+        const float3 rgb = sh_to_rgb(apply_sh<bd>(basis_fn, &interp_vals[b][i]), rgb_padding);
+        rgb_ray[0] += weights * rgb.x;
+        rgb_ray[1] += weights * rgb.y;
+        rgb_ray[2] += weights * rgb.z;
+
+        light_intensity *= 1.f - alpha;
+        if (light_intensity <= stop_thresh) { break; }
+    }
+    if (i == n_intrs) {
+        for (int j = 0; j < 3; ++j) { rgb_ray[j] += light_intensity * background_brightness; }
+    }
+
+    // Loss & Gradient of the loss
+    float3 diff = make_float3(rgb_ray[0] - targets[b][0], rgb_ray[1] - targets[b][1], rgb_ray[2] - targets[b][2]);
+    float3 loss = make_float3(diff[0] * diff[0], diff[1] * diff[1], diff[2] * diff[2]);
+    float3 grad = make_float3(2.0f * diff[0], 2.0f * diff[1], 2.0f * diff[2]);
+
+    // Backward
+    float3 rgb_ray2 = make_float3(0., 0., 0.);
+    light_intensity = 1.f;
+    for (int j = 0; j < i; j++) {
+        const float delta_t = ray_steps[b][j];
+        const float raw_sigma = interp_vals[b][j][data_dim - 1];
+        const float sigma = density_fwd(raw_sigma, density_softplus);
+        const float alpha = 1.f - __expf(-sigma * delta_t);
+        const float weight = alpha * light_intensity;
+        const float3 rgb = sh_to_rgb(apply_sh<bd>(basis_fn, &interp_vals[b][j]), rgb_padding);
+		rgb_ray2 += weight * rgb;
+		light_intensity *= 1.f - alpha;
+
+		float grad_tree_val[data_dim];
+
+        // Gradient wrt RGB inputs
+		const float3 dloss_by_drgb = weight * grad;
+		apply_sh_bwd<bd>(basis_fn, sh_to_rgb_backward(dloss_by_drgb, rgb_padding), &grad_tree_val);
+        // Gradient wrt Sigma inputs
+		const float3 suffix = rgb_ray - rgb_ray2;
+        const float sigma_derivative = density_bwd(sigma, density_softplus);
+        const float dloss_by_dsigma = sigma_derivative * delta_t * dot(grad, light_intensity * rgb - suffix);
+        grad_tree_val[data_dim - 1] = dloss_by_dsigma;
+
+        const int * n_ptr = t_nids_start + nid_ptrs[b][j];
+        _dev_query_corners_bwd<data_dim>(
+            n_ptr, &interp_weights[b][j][0], grad_tree_val, grad_data_out);
+    }
+}
+
+
+
+template <int branching, int data_dim>
 __global__ void trace_ray(
     const Acc32<float, 2> ray_steps,
     const Acc32<int, 1> n_steps,
     const Acc32<float, 2> rays_d_norm,
-    const Acc32<scalar_t, 3> interp_vals,
+    const Acc32<float, 3> interp_vals,
     const int n_elements,
     const float rgb_padding,
-    const scalar_t background_brightness,
+    const float background_brightness,
     const bool density_softplus,
-    const scalar_t sigma_thresh,
-    const scalar_t stop_thresh,
-          Acc32<scalar_t, 2> out)
+    const float sigma_thresh,
+    const float stop_thresh,
+          Acc32<float, 2> out)
 {
     const int b = threadIdx.x + blockIdx.x * blockDim.x;  // element in batch
     if (b >= n_elements) return;
-    const int bd = basis_dim(data_dim, out_data_dim);
+    const int bd = basis_dim(data_dim, 3);
     const int n_intrs = n_steps[b];
     const float3 ray_d = make_float3(rays_d_norm[b][0], rays_d_norm[b][1], rays_d_norm[b][2]);
-    scalar_t basis_fn[bd];
-    calc_sh_basis<scalar_t, bd>(ray_d, basis_fn);
+    float basis_fn[bd];
+    calc_sh_basis<bd>(ray_d, basis_fn);
 
-    scalar_t light_intensity = 1.f;
+    float light_intensity = 1.f;
     for (int i = 0; i < n_intrs; i++) {
         const float delta_t = ray_steps[b][i];
-        if (delta_t <= 0) break;  // TODO: Unnecessary
-        fwd_loop<scalar_t, data_dim, out_data_dim>(&interp_vals[b][i][0], basis_fn, density_softplus, sigma_thresh,
-                                                   delta_t, rgb_padding, light_intensity, &out[b][0]);
+        fwd_loop<data_dim>(&interp_vals[b][i][0], basis_fn, density_softplus, sigma_thresh,
+                           delta_t, rgb_padding, light_intensity, &out[b][0]);
         if (light_intensity <= stop_thresh) { return; }  // Full opacity, stop
     }
-    for (int j = 0; j < out_data_dim; ++j) { out[b][j] += light_intensity * background_brightness; }
+    for (int j = 0; j < 3; ++j) { out[b][j] += light_intensity * background_brightness; }
 }  // trace ray
 
 
 
-template <typename scalar_t, int branching, int data_dim, int out_data_dim>
+template <int branching, int data_dim>
 __global__ void trace_ray_backward(
     const Acc32<int, 5> t_nids,
     const Acc32<float, 2> ray_steps,
     const Acc32<float, 3> interp_weights,
-    const Acc32<scalar_t, 3> interp_vals,
+    const Acc32<float, 3> interp_vals,
     const Acc32<int, 2> nid_ptrs,
     const Acc32<int, 1> n_steps,
-    const Acc32<scalar_t, 2> grad_output,
-          Acc32<scalar_t, 2> grad_data_out,
+    const Acc32<float, 2> grad_output,
+          Acc32<float, 2> grad_data_out,
     const Acc32<float, 2> rays_d_norm,
     const int n_elements,
     const float rgb_padding,
-    const scalar_t background_brightness,
+    const float background_brightness,
     const bool density_softplus,
-    const scalar_t sigma_thresh,
-    const scalar_t stop_thresh)
+    const float sigma_thresh,
+    const float stop_thresh)
 {
     const int b = threadIdx.x + blockIdx.x * blockDim.x;  // element in batch
     if (b >= n_elements) return;
-    const int bd = basis_dim(data_dim, out_data_dim);
+    const int bd = basis_dim(data_dim, 3);
     const int n_intrs = n_steps[b];
     const int * const t_nids_start = &t_nids[0][0][0][0][0];
     const float3 ray_d = make_float3(rays_d_norm[b][0], rays_d_norm[b][1], rays_d_norm[b][2]);
-    scalar_t grad_tree_val[data_dim];
-    scalar_t basis_fn[bd];
-    calc_sh_basis<scalar_t, bd>(ray_d, basis_fn);
+    float grad_tree_val[data_dim];
+    float basis_fn[bd];
+    calc_sh_basis<bd>(ray_d, basis_fn);
 
-
-    scalar_t accum = 0.0;
+    float accum = 0.0;
     // PASS 1: Just to compute the accum variable. This could be merged with the fwd pass (if we knew grad_output)
-    scalar_t light_intensity = 1.f;
+    float light_intensity = 1.f;
     for (int i = 0; i < n_intrs; i++) {
         float delta_t = ray_steps[b][i];
         if (delta_t <= 0) break;
 
-        bwd_loop_p1<scalar_t, data_dim, out_data_dim>(
+        bwd_loop_p1<data_dim>(
             &interp_vals[b][i][0], basis_fn, &grad_output[b][0], density_softplus,
             sigma_thresh, delta_t, rgb_padding, light_intensity, accum);
         if (light_intensity <= stop_thresh) {
@@ -242,47 +366,38 @@ __global__ void trace_ray_backward(
             break;
         }
     }
-    scalar_t total_grad = 0.f;
-    for (int j = 0; j < out_data_dim; ++j) { total_grad += grad_output[b][j]; }
+    float total_grad = 0.f;
+    for (int j = 0; j < 3; ++j) { total_grad += grad_output[b][j]; }
     accum += light_intensity * background_brightness * total_grad;
     // PASS 2: Actually compute the gradient
     light_intensity = 1.f;
     for (int i = 0; i < n_intrs; i++) {
         float delta_t = ray_steps[b][i];
-        if (delta_t <= 0) break;
         // Zero-out gradient
         for (int j = 0; j < data_dim; ++j) { grad_tree_val[j] = 0; }
 
-        const scalar_t raw_sigma = interp_vals[b][i][data_dim - 1];
-        const scalar_t sigma = density_fwd<scalar_t>(raw_sigma, density_softplus);
+        const float raw_sigma = interp_vals[b][i][data_dim - 1];
+        const float sigma = density_fwd(raw_sigma, density_softplus);
         if (sigma > sigma_thresh) {
-            const scalar_t att = expf(-delta_t * sigma);
-            const scalar_t weight = light_intensity * (1.f - att);
-
-            scalar_t total_color = 0.f;
-            for (int j = 0, off = 0; j < out_data_dim; ++j, off += bd) {
-                scalar_t tmp = 0.0;
-                for (int k = 0; k < bd; ++k) {
-                    tmp += basis_fn[k] * interp_vals[b][i][off + k];
-                }
-                total_color += rgb_fwd<scalar_t>(tmp, rgb_padding) * grad_output[b][j];
-
-                const scalar_t tmp2 = rgb_bwd<scalar_t>(tmp, rgb_padding) * weight * grad_output[b][j];
-                for (int k = 0; k < bd; ++k) {
-                    grad_tree_val[off + k] += basis_fn[k] * tmp2;
-                }
-            }
+            const float att = expf(-delta_t * sigma);
+            const float weight = light_intensity * (1.f - att);
+            const float3 rgb = sh_to_rgb(apply_sh<bd>(basis_fn, &interp_vals[b][i]), rgb_padding);
+            const float total_color = rgb.x * grad_output[b][0] + rgb.y * grad_output[b][1] + rgb.z * grad_output[b][2];
             light_intensity *= att;
             accum -= weight * total_color;
-            grad_tree_val[data_dim - 1] = delta_t * (total_color * light_intensity - accum) * density_bwd<scalar_t>(raw_sigma, density_softplus);
+
+            // Gradient wrt RGB inputs
+		    const float3 dloss_by_drgb = make_float3(weight * grad_output[b][0], weight * grad_output[b][1], weight * grad_output[b][2]);
+		    apply_sh_bwd<bd>(basis_fn, sh_to_rgb_backward(dloss_by_drgb, rgb_padding), &grad_tree_val);
+            // Gradient wrt Sigma inputs
+            const float sigma_derivative = density_bwd(sigma, density_softplus);
+            grad_tree_val[data_dim - 1] = sigma_derivative * delta_t * (total_color * light_intensity - accum);
 
             const int * n_ptr = t_nids_start + nid_ptrs[b][i];
-            _dev_query_corners_bwd<scalar_t, data_dim>(
+            _dev_query_corners_bwd<data_dim>(
                 n_ptr, &interp_weights[b][i][0], grad_tree_val, grad_data_out);
 
-            if (light_intensity <= stop_thresh) {
-                break;
-            }
+            if (light_intensity <= stop_thresh) { break; }
         }
     }
 }
@@ -290,7 +405,7 @@ __global__ void trace_ray_backward(
 #define block_size_2d 32
 
 
-template <typename scalar_t, int32_t branching, int32_t data_dim, int32_t out_data_dim>
+template <int32_t branching, int32_t data_dim>
 RenderingOutput corner_tree_render(
     const torch::Tensor & data,
     const torch::Tensor & t_child,
@@ -325,7 +440,7 @@ RenderingOutput corner_tree_render(
             torch::dtype(torch::kFloat32).device(data.device()));
     auto rays_d_norm = torch::empty_like(rays_d);
 
-    gen_samples_kernel<scalar_t, branching>
+    gen_samples_kernel<branching>
         <<<n_blocks_linear<uint32_t>(batch_size, gen_samples_n_threads), gen_samples_n_threads>>>(
             t_child.packed_accessor32<int, 4, torch::RestrictPtrTraits>(),
             t_offset.data_ptr<float>(),
@@ -351,7 +466,7 @@ RenderingOutput corner_tree_render(
 
     // 2. Forward pass (allocate tensors)
     alloc_start.record();
-    torch::Tensor output = torch::zeros({batch_size, out_data_dim}, data.options());
+    torch::Tensor output = torch::zeros({batch_size, 3}, data.options());
     torch::Tensor interp_vals = torch::zeros({batch_size, opt.max_intersections, data_dim}, data.options());
     torch::Tensor interp_nid_ptrs = torch::zeros({batch_size, opt.max_intersections}, torch::dtype(torch::kInt32).device(data.device()));
     torch::Tensor interp_weights = torch::empty({batch_size, opt.max_intersections, 8},
@@ -360,14 +475,14 @@ RenderingOutput corner_tree_render(
 
     // 3. Interpolate at each valid intersction
     interpolate_start.record();
-    fetch_interpolate<scalar_t, branching, data_dim>
+    fetch_interpolate<branching, data_dim>
         <<<n_blocks_linear<uint32_t>(batch_size, 128), 128>>>(
-            data.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+            data.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
             t_child.packed_accessor32<int, 4, torch::RestrictPtrTraits>(),
             t_nids.packed_accessor32<int, 5, torch::RestrictPtrTraits>(),
             positions.packed_accessor32<float, 3, torch::RestrictPtrTraits>(),
             interp_weights.packed_accessor32<float, 3, torch::RestrictPtrTraits>(),
-            interp_vals.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
+            interp_vals.packed_accessor32<float, 3, torch::RestrictPtrTraits>(),
             interp_nid_ptrs.packed_accessor32<int, 2, torch::RestrictPtrTraits>(),
             num_intersections.packed_accessor32<int, 1, torch::RestrictPtrTraits>(),
             (int)batch_size);
@@ -375,19 +490,19 @@ RenderingOutput corner_tree_render(
 
     // 3. Forward pass (compute)
     fwd_start.record();
-    trace_ray<scalar_t, branching, data_dim, out_data_dim>
+    trace_ray<branching, data_dim>
         <<<n_blocks_linear<uint32_t>(batch_size, render_ray_n_threads), render_ray_n_threads>>>(
             ray_steps.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
             num_intersections.packed_accessor32<int, 1, torch::RestrictPtrTraits>(),
             rays_d_norm.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
-            interp_vals.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
+            interp_vals.packed_accessor32<float, 3, torch::RestrictPtrTraits>(),
             (int)batch_size,
             opt.rgb_padding,
-            (scalar_t)opt.background_brightness,
+            opt.background_brightness,
             opt.density_softplus,
-            (scalar_t)opt.sigma_thresh,
-            (scalar_t)opt.stop_thresh,
-            output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>());
+            opt.sigma_thresh,
+            opt.stop_thresh,
+            output.packed_accessor32<float, 2, torch::RestrictPtrTraits>());
     fwd_end.record();
 
     gs_start.synchronize();
@@ -418,7 +533,7 @@ RenderingOutput corner_tree_render(
 }
 
 
-template <typename scalar_t, int32_t branching, int32_t data_dim, int32_t out_data_dim>
+template <int32_t branching, int32_t data_dim>
 torch::Tensor corner_tree_render_bwd(
     const torch::Tensor & t_data,
     const torch::Tensor & t_nids,
@@ -437,23 +552,23 @@ torch::Tensor corner_tree_render_bwd(
 
     torch::Tensor output = torch::zeros_like(t_data);
 
-    trace_ray_backward<scalar_t, branching, data_dim, out_data_dim>
+    trace_ray_backward<branching, data_dim>
         <<<n_blocks_linear<uint32_t>(batch_size, render_ray_n_threads), render_ray_n_threads>>>(
         t_nids.packed_accessor32<int, 5, torch::RestrictPtrTraits>(),
         ray_steps.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
         interp_weights.packed_accessor32<float, 3, torch::RestrictPtrTraits>(),
-        interp_vals.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
+        interp_vals.packed_accessor32<float, 3, torch::RestrictPtrTraits>(),
         interp_nid_ptrs.packed_accessor32<int, 2, torch::RestrictPtrTraits>(),
         num_intersections.packed_accessor32<int, 1, torch::RestrictPtrTraits>(),
-        grad_output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-        output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+        grad_output.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
+        output.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
         rays_d_norm.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
         (int)batch_size,
         opt.rgb_padding,
-        (scalar_t)opt.background_brightness,
+        opt.background_brightness,
         opt.density_softplus,
-        (scalar_t)opt.sigma_thresh,
-        (scalar_t)opt.stop_thresh
+        opt.sigma_thresh,
+        opt.stop_thresh
     );
     return output;
 }

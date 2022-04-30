@@ -55,6 +55,14 @@ __device__ __inline__ float3 operator+(const float &a, const float3 &b) {
     return make_float3(a+b.x, a+b.y, a+b.z);
 }
 
+__device__ __inline__ float3 operator +=(float3 & __restrict__ a, const float3 & __restrict__ b) {
+    a.x += b.x;
+    a.y += b.y;
+    a.z += b.z;
+    return a;
+}
+
+
 __device__ __inline__ float3 operator-(const float3 &a, const float3 &b) {
     return make_float3(a.x-b.x, a.y-b.y, a.z-b.z);
 }
@@ -91,6 +99,10 @@ __device__ __inline__ float3 operator*(const float3 &a, const float &b) {
 }
 __device__ __inline__ float3 operator*(const float &a, const float3 &b) {
     return make_float3(a*b.x, a*b.y, a*b.z);
+}
+
+__device__ __inline__ float dot(const float3 & a, const float3 & b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
 

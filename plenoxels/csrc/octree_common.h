@@ -141,7 +141,7 @@ __device__ __inline__ void _dev_query_ninfo(
         *cube_sz_out *= branching; // TODO: Check if multiplication to be performed before or after returning
     }
 }
-template <typename scalar_t, int32_t branching>
+template <int32_t branching>
 __device__ __inline__ void _dev_query_ninfo(
     const Acc32<int32_t, 4> child,
     float3& __restrict__ coordinate,
@@ -193,7 +193,7 @@ __device__ __inline__ void _dev_query_sum(
 }
 
 
-template<typename scalar_t, int branching>
+template<int branching>
 __device__ __inline__ void _dev_query_corners(
     const Acc32<int, 4>         child,
     const Acc32<int, 5>         nids,
@@ -225,12 +225,12 @@ __device__ __inline__ void _dev_query_corners(
     }
 }
 
-template<typename scalar_t, int data_dim>
+template<int data_dim>
 __device__ __inline__ void _dev_query_corners_bwd(
     const int      * __restrict__ nid_ptr,
     const float    * __restrict__ neighbor_w,
-    const scalar_t * __restrict__ grad_val,
-          Acc32<scalar_t, 2>      grad_output
+    const float * __restrict__ grad_val,
+          Acc32<float, 2>      grad_output
 )
 {
     for (int i = 0; i < 8; i++) {
