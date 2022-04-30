@@ -254,9 +254,9 @@ __global__ void ray_loss_kernel(
     }
 
     // Loss & Gradient of the loss
-    float3 diff = make_float3(rgb_ray[0] - targets[b][0], rgb_ray[1] - targets[b][1], rgb_ray[2] - targets[b][2]);
-    float3 loss = make_float3(diff.x * diff.x, diff.y * diff.y, diff.z * diff.z);
-    float3 grad = make_float3(2.0f * diff.x, 2.0f * diff.y, 2.0f * diff.z);
+    const float3 diff = make_float3(rgb_ray[0] - targets[b][0], rgb_ray[1] - targets[b][1], rgb_ray[2] - targets[b][2]);
+    const float3 loss = make_float3(diff.x * diff.x, diff.y * diff.y, diff.z * diff.z);
+    const float3 grad = make_float3(2.0f * diff.x, 2.0f * diff.y, 2.0f * diff.z);
 
     // Backward
     float3 rgb_ray2 = make_float3(0., 0., 0.);
@@ -267,7 +267,8 @@ __global__ void ray_loss_kernel(
         const float sigma = density_fwd(raw_sigma, density_softplus);
         const float alpha = 1.f - __expf(-sigma * delta_t);
         const float weight = alpha * light_intensity;
-        const float3 rgb = sh_to_rgb(apply_sh<bd>(basis_fn, &interp_vals[b][j]), rgb_padding);
+        const float3 sh_out = apply_sh<bd>(basis_fn, &interp_vals[b][j]);
+        const float3 rgb = sh_to_rgb(sh_out, rgb_padding);
 		rgb_ray2 += weight * rgb;
 		light_intensity *= 1.f - alpha;
 
@@ -275,7 +276,7 @@ __global__ void ray_loss_kernel(
 
         // Gradient wrt RGB inputs
 		const float3 dloss_by_drgb = weight * grad;
-		apply_sh_bwd<bd>(basis_fn, sh_to_rgb_backward(dloss_by_drgb, rgb_padding), &grad_tree_val);
+		apply_sh_bwd<bd>(basis_fn, sh_to_rgb_backward(sh_out, rgb_padding) * dloss_by_drgb, &grad_tree_val);
         // Gradient wrt Sigma inputs
 		const float3 suffix = make_float3(rgb_ray[0] - rgb_ray2.x, rgb_ray[1] - rgb_ray2.y, rgb_ray[2] - rgb_ray2.z);
         const float sigma_derivative = density_bwd(sigma, density_softplus);
@@ -407,7 +408,109 @@ __global__ void trace_ray_backward(
     }
 }
 
-#define block_size_2d 32
+
+template <int branching, int data_dim>
+void corner_tree_loss_grad(
+    const torch::Tensor & data,
+    const torch::Tensor & t_child,
+    const torch::Tensor & t_nids,
+    const torch::Tensor & t_offset,
+    const torch::Tensor & t_scaling,
+    const torch::Tensor & rays_o,
+    const torch::Tensor & rays_d,
+    const torch::Tensor & targets,
+    const RenderOptions & opt)
+{
+    DEVICE_GUARD(data);
+    const uint32_t batch_size = rays_o.size(0);
+
+    const uint32_t gen_samples_n_threads = 128;
+    const uint32_t render_ray_n_threads = 128;
+
+    auto gs_start = at::cuda::CUDAEvent(cudaEventDefault);
+    auto gs_end = at::cuda::CUDAEvent(cudaEventDefault);
+    auto alloc_start = at::cuda::CUDAEvent(cudaEventDefault);
+    auto alloc_end = at::cuda::CUDAEvent(cudaEventDefault);
+    auto interpolate_start = at::cuda::CUDAEvent(cudaEventDefault);
+    auto interpolate_end = at::cuda::CUDAEvent(cudaEventDefault);
+    auto fwd_start = at::cuda::CUDAEvent(cudaEventDefault);
+    auto fwd_end = at::cuda::CUDAEvent(cudaEventDefault);
+
+    // 1. Generate samples
+    gs_start.record();
+    auto ray_steps = torch::full({batch_size, opt.max_intersections}, -1.0,
+            torch::dtype(torch::kFloat32).device(data.device()));
+    auto num_intersections = torch::zeros({batch_size}, torch::dtype(torch::kInt32).device(data.device()));
+    auto positions = torch::empty({batch_size, opt.max_intersections, 3},
+            torch::dtype(torch::kFloat32).device(data.device()));
+    auto rays_d_norm = torch::empty_like(rays_d);
+
+    gen_samples_kernel<branching>
+        <<<n_blocks_linear<uint32_t>(batch_size, gen_samples_n_threads), gen_samples_n_threads>>>(
+            t_child.packed_accessor32<int, 4, torch::RestrictPtrTraits>(),
+            t_offset.data_ptr<float>(),
+            t_scaling.data_ptr<float>(),
+            rays_o.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
+            rays_d.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
+            ray_steps.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
+            num_intersections.packed_accessor32<int, 1, torch::RestrictPtrTraits>(),
+            positions.packed_accessor32<float, 3, torch::RestrictPtrTraits>(),
+            rays_d_norm.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
+            opt.max_intersections,
+            opt.max_samples_per_node,
+            (int)batch_size  // TODO: It would be nice without this cast.
+    );
+    gs_end.record();
+
+    // 2. Forward pass (allocate tensors)
+    alloc_start.record();
+    torch::Tensor output = torch::zeros({batch_size, 3}, data.options());
+    torch::Tensor interp_vals = torch::zeros({batch_size, opt.max_intersections, data_dim}, data.options());
+    torch::Tensor interp_nid_ptrs = torch::zeros({batch_size, opt.max_intersections}, torch::dtype(torch::kInt32).device(data.device()));
+    torch::Tensor interp_weights = torch::empty({batch_size, opt.max_intersections, 8},
+        torch::dtype(torch::kFloat32).device(data.device()).layout(data.layout()));
+    torch::Tensor data_grad = torch::zeros_like(t_data);
+    alloc_end.record();
+
+    // 3. Interpolate at each valid intersction
+    interpolate_start.record();
+    fetch_interpolate<branching, data_dim>
+        <<<n_blocks_linear<uint32_t>(batch_size, 128), 128>>>(
+            data.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
+            t_child.packed_accessor32<int, 4, torch::RestrictPtrTraits>(),
+            t_nids.packed_accessor32<int, 5, torch::RestrictPtrTraits>(),
+            positions.packed_accessor32<float, 3, torch::RestrictPtrTraits>(),
+            interp_weights.packed_accessor32<float, 3, torch::RestrictPtrTraits>(),
+            interp_vals.packed_accessor32<float, 3, torch::RestrictPtrTraits>(),
+            interp_nid_ptrs.packed_accessor32<int, 2, torch::RestrictPtrTraits>(),
+            num_intersections.packed_accessor32<int, 1, torch::RestrictPtrTraits>(),
+            (int)batch_size);
+    interpolate_end.record();
+
+    fwd_start.record();
+    ray_loss_kernel<branching, data_dim>
+        <<<n_blocks_linear<uint32_t>(batch_size, 128), 128>>>(
+            t_nids.packed_accessor32<int, 5, torch::RestrictPtrTraits>(),
+            ray_steps.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
+            interp_weights.packed_accessor32<float, 3, torch::RestrictPtrTraits>(),
+            interp_vals.packed_accessor32<float, 3, torch::RestrictPtrTraits>(),
+            interp_nid_ptrs.packed_accessor32<int, 2, torch::RestrictPtrTraits>(),
+            num_intersections.packed_accessor32<int, 1, torch::RestrictPtrTraits>(),
+            rays_d_norm.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
+            targets.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
+            (int)batch_size,
+            opt.rgb_padding,
+            opt.background_brightness,
+            opt.density_softplus,
+            opt.sigma_thresh,
+            opt.stop_thresh,
+            output.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
+            data_grad.packed_accessor32<float, 2, torch::RestrictPtrTraits>();
+    );
+    fwd_end.record();
+
+    data.grad = data_grad;
+}
 
 
 template <int32_t branching, int32_t data_dim>

@@ -262,6 +262,14 @@ class CornerTree(torch.nn.Module):
         points_valid = ((points > self.aabb[0]) & (points < self.aabb[1])).all(-1)
         return points, dts, points_valid
 
+    def forward_fast(self, rays_o, rays_d, targets):
+        bb = 1.0 if self.white_bkgd else 0.0
+        opt = init_render_opt(background_brightness=bb, density_softplus=False, rgb_padding=0.0)
+        fn_name = f"ctree_loss_grad{get_c_template_str(self.data.weight.dtype, 2, self.sh_degree)}"
+        fn = getattr(c_ext, fn_name)
+        return fn(self.data.weight, self.child.to(dtype=torch.int), self.nids.to(dtype=torch.int),
+                  self.offset, self.scaling, rays_o, rays_d, targets, opt)
+
     def forward(self, rays_o, rays_d, use_ext: bool):
         use_ext_sample = False
         if use_ext:
