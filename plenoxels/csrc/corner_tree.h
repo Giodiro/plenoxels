@@ -372,6 +372,7 @@ __global__ void trace_ray_backward(
     light_intensity = 1.f;
     for (int i = 0; i < n_intrs; i++) {
         float delta_t = ray_steps[b][i];
+        if (delta_t <= 0) break;
         // Zero-out gradient
         for (int j = 0; j < data_dim; ++j) { grad_tree_val[j] = 0; }
 
@@ -380,14 +381,15 @@ __global__ void trace_ray_backward(
         if (sigma > sigma_thresh) {
             const float att = expf(-delta_t * sigma);
             const float weight = light_intensity * (1.f - att);
-            const float3 rgb = sh_to_rgb(apply_sh<bd>(basis_fn, &interp_vals[b][i][0]), rgb_padding);
+            const float3 sh_out = apply_sh<bd>(basis_fn, &interp_vals[b][i][0]);
+            const float3 rgb = sh_to_rgb(sh_out, rgb_padding);
             const float total_color = rgb.x * grad_output[b][0] + rgb.y * grad_output[b][1] + rgb.z * grad_output[b][2];
             light_intensity *= att;
             accum -= weight * total_color;
 
             // Gradient wrt RGB inputs
 		    const float3 dloss_by_drgb = make_float3(weight * grad_output[b][0], weight * grad_output[b][1], weight * grad_output[b][2]);
-		    apply_sh_bwd<bd>(basis_fn, sh_to_rgb_backward(rgb, rgb_padding) * dloss_by_drgb, grad_tree_val);
+		    apply_sh_bwd<bd>(basis_fn, sh_to_rgb_backward(sh_out, rgb_padding) * dloss_by_drgb, grad_tree_val);
             // Gradient wrt Sigma inputs
             const float sigma_derivative = density_bwd(raw_sigma, density_softplus);
             grad_tree_val[data_dim - 1] = sigma_derivative * delta_t * (total_color * light_intensity - accum);
