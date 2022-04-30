@@ -131,7 +131,7 @@ __device__ __inline__ void bwd_loop_p1(const float * __restrict__ interp,
         const float att = expf(-dt * sigma);
         const float weight = light_intensity * (1.f - att);
         const float3 sh_out = apply_sh<bd>(basis_fn, interp);
-        const float3 rgb = sh_to_rgb(sh_output, rgb_padding);
+        const float3 rgb = sh_to_rgb(sh_out, rgb_padding);
         const float total_color = rgb.x * grad_output[0] + rgb.y * grad_output[1] + rgb.z * grad_output[2];
         light_intensity *= att;
         accum += weight * total_color;
@@ -392,7 +392,7 @@ __global__ void trace_ray_backward(
 
             // Gradient wrt RGB inputs
 		    const float3 dloss_by_drgb = make_float3(weight * grad_output[b][0], weight * grad_output[b][1], weight * grad_output[b][2]);
-		    const float3 rgb_bwd = sh_to_rgb_backward(sh_out, rgb_padding)
+		    const float3 rgb_bwd = sh_to_rgb_backward(sh_out, rgb_padding);
 		    apply_sh_bwd<bd>(basis_fn, rgb_bwd * dloss_by_drgb, grad_tree_val);
             // Gradient wrt Sigma inputs
             const float sigma_derivative = density_bwd(raw_sigma, density_softplus);
