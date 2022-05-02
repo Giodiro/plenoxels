@@ -19,7 +19,7 @@ _C.optim.num_epochs = 10
 _C.optim.progress_refresh_rate = 50
 _C.optim.eval_refresh_rate = 1200
 _C.optim.render_refresh_rate = 1
-_C.optim.lr = 1e4
+_C.optim.lr = 1e6
 _C.optim.lr_sigma = None
 _C.optim.lr_rgb = None
 _C.optim.lr_decay = 10  # 10 * 1000 steps
@@ -37,7 +37,7 @@ _C.optim.adam = CN()
 _C.optim.adam.lr = 0.5
 
 _C.data = CN()
-_C.data.datadir = "/home/giacomo/plenoxels/data/lego"
+_C.data.datadir = ["/home/giacomo/plenoxels/data/lego", "/home/giacomo/plenoxels/data/drums", ]
 _C.data.resolution = 256
 _C.data.downsample = 1.0
 _C.data.max_tr_frames = 10#None
@@ -60,6 +60,14 @@ _C.irreg_grid.voxel_mul = 2.0
 
 _C.hash_grid = CN()
 _C.hash_grid.log2_hashmap_size = 19
+
+_C.multi_sr = CN()
+_C.multi_sr.high_resolution = 512
+_C.multi_sr.low_resolution = 128
+_C.multi_sr.sr_lr = 1e-3
+_C.multi_sr.momentum = 0.9
+_C.multi_sr.weight_decay = 1e-4
+_C.multi_sr.use_amp = False
 
 
 def get_cfg_defaults():
