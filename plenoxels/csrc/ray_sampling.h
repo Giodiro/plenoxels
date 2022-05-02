@@ -89,7 +89,7 @@ __global__ void gen_samples_kernel(
     const float delta_scale = _get_delta_scale(t_scaling, ray_d);
     rays_d_norm[i][0] = ray_d.x;
     rays_d_norm[i][1] = ray_d.y;
-    rays_d_norm[i][1] = ray_d.z;
+    rays_d_norm[i][2] = ray_d.z;
     float tmin, tmax;
     const float3 invdir = 1.0 / (ray_d + 1e-9);
     _dda_unit(ray_o, invdir, &tmin, &tmax);

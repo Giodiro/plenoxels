@@ -50,13 +50,13 @@ __device__ __inline__ void apply_sh_bwd(const float  * const __restrict__ basis_
 {
     int k = 0, bk;
     for (bk = 0; bk < bd; k++, bk++) {
-        out[k] += basis_fn[bk] * grad_output.x;
+        out[k] = basis_fn[bk] * grad_output.x;
     }
     for (bk = 0; bk < bd; k++, bk++) {
-        out[k] += basis_fn[bk] * grad_output.y;
+        out[k] = basis_fn[bk] * grad_output.y;
     }
     for (bk = 0; bk < bd; k++, bk++) {
-        out[k] += basis_fn[bk] * grad_output.z;
+        out[k] = basis_fn[bk] * grad_output.z;
     }
 }
 
@@ -168,7 +168,7 @@ __global__ void fetch_interpolate(
         const int * n_ptr = nid_start_ptr + nid_ptrs[b][i];
         #pragma unroll data_dim
         for (int k = 0; k < data_dim; k++) {
-            interp_val[k] = c_interp_weights[0], t_data[*n_ptr][k];
+            interp_val[k] = c_interp_weights[0] * t_data[*n_ptr][k];
         }
         #pragma unroll data_dim
         for (int k = 0; k < data_dim; k++) {
@@ -213,6 +213,7 @@ __global__ void ray_loss_kernel(
     const Acc32<int, 1> n_steps,
     const Acc32<float, 2> rays_d_norm,
     const Acc32<float, 2> targets,
+    float * __restrict__ loss_output,
     const int n_elements,
     const float rgb_padding,
     const float background_brightness,
@@ -254,9 +255,13 @@ __global__ void ray_loss_kernel(
     }
 
     // Loss & Gradient of the loss
+    const float loss_scale = 1 / (float)n_elements;
     const float3 diff = make_float3(rgb_ray[0] - targets[b][0], rgb_ray[1] - targets[b][1], rgb_ray[2] - targets[b][2]);
     const float3 loss = make_float3(diff.x * diff.x, diff.y * diff.y, diff.z * diff.z);
     const float3 grad = make_float3(2.0f * diff.x, 2.0f * diff.y, 2.0f * diff.z);
+    if (loss_output) {
+        loss_output[b] = (loss.x + loss.y + loss.z) / (3 * (float)n_elements);
+    }
 
     // Backward
     float3 rgb_ray2 = make_float3(0., 0., 0.);
@@ -275,13 +280,15 @@ __global__ void ray_loss_kernel(
 		float grad_tree_val[data_dim];
 
         // Gradient wrt RGB inputs
-		const float3 dloss_by_drgb = weight * grad;
-		apply_sh_bwd<bd>(basis_fn, sh_to_rgb_backward(sh_out, rgb_padding) * dloss_by_drgb, grad_tree_val);
+        const float3 dl_drgb = loss_scale * weight * grad * sh_to_rgb_backward(sh_out, rgb_padding);
+		apply_sh_bwd<bd>(basis_fn, dl_drgb, grad_tree_val);
         // Gradient wrt Sigma inputs
 		const float3 suffix = make_float3(rgb_ray[0] - rgb_ray2.x, rgb_ray[1] - rgb_ray2.y, rgb_ray[2] - rgb_ray2.z);
-        const float sigma_derivative = density_bwd(sigma, density_softplus);
-        const float dloss_by_dsigma = sigma_derivative * delta_t * dot(grad, light_intensity * rgb - suffix);
-        grad_tree_val[data_dim - 1] = dloss_by_dsigma;
+
+        const float dl_dsigma = loss_scale * (
+            density_bwd(raw_sigma, density_softplus) * delta_t * dot(grad, light_intensity * rgb - suffix)
+        );
+        grad_tree_val[data_dim - 1] = dl_dsigma;
 
         const int * n_ptr = t_nids_start + nid_ptrs[b][j];
         _dev_query_corners_bwd<data_dim>(
@@ -470,6 +477,7 @@ RenderingOutput corner_tree_loss_grad(
     torch::Tensor interp_weights = torch::empty({batch_size, opt.max_intersections, 8},
         torch::dtype(torch::kFloat32).device(data.device()).layout(data.layout()));
     torch::Tensor data_grad = torch::zeros_like(data);
+    torch::Tensor loss_output = torch::empty({batch_size}, data.options());
     alloc_end.record();
 
     // 3. Interpolate at each valid intersction
@@ -498,6 +506,7 @@ RenderingOutput corner_tree_loss_grad(
             num_intersections.packed_accessor32<int, 1, torch::RestrictPtrTraits>(),
             rays_d_norm.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
             targets.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
+            loss_output.data_ptr<float>(),
             (int)batch_size,
             opt.rgb_padding,
             opt.background_brightness,
@@ -510,6 +519,23 @@ RenderingOutput corner_tree_loss_grad(
     fwd_end.record();
 
     data.mutable_grad() = data_grad;
+
+    gs_start.synchronize();
+    gs_end.synchronize();
+    float gs_ela = gs_start.elapsed_time(gs_end);
+    alloc_start.synchronize();
+    alloc_end.synchronize();
+    float alloc_ela = alloc_start.elapsed_time(alloc_end);
+    interpolate_start.synchronize();
+    interpolate_end.synchronize();
+    float interpolate_ela = interpolate_start.elapsed_time(interpolate_end);
+    fwd_start.synchronize();
+    fwd_end.synchronize();
+    float fwd_ela = fwd_start.elapsed_time(fwd_end);
+
+    torch::Tensor loss = loss_output.sum();
+    printf("Forward timings(ms): Sampling=%f  Alloc=%f  Interpolate=%f  Forward=%f -- Loss=%f\n", gs_ela, alloc_ela, interpolate_ela, fwd_ela, loss.item<float>());
+
     return {
         /*output_rgb=*/output,
         /*ray_steps=*/ray_steps,

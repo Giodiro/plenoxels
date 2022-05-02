@@ -271,21 +271,20 @@ class CornerTree(torch.nn.Module):
                   self.offset, self.scaling, rays_o, rays_d, targets, opt)
 
     def forward(self, rays_o, rays_d, use_ext: bool):
-        use_ext_sample = False
+        use_ext_sample = True
         if use_ext:
             bb = 1.0 if self.white_bkgd else 0.0
             opt = init_render_opt(background_brightness=bb, density_softplus=False, rgb_padding=0.0)
-            return CornerTreeRenderFn.apply(self.data.weight, self, rays_o, rays_d, opt)
+            return CornerTreeRenderFn.apply(self.data.weight, self, rays_o, rays_d, opt, False)
         else:
             if use_ext_sample:
                 with torch.no_grad():
                     bb = 1.0 if self.white_bkgd else 0.0
                     opt = init_render_opt(background_brightness=bb, density_softplus=False, rgb_padding=0.0)
-                    c_out = CornerTreeRenderFn.apply(self.data.weight, self, rays_o, rays_d, opt)
-                    offsets = c_out.ray_offsets
+                    c_out = CornerTreeRenderFn.apply(self.data.weight, self, rays_o, rays_d, opt, True)
                     dt = c_out.ray_steps
                     valid = dt > 0
-                    pts = self.trasform_coords(rays_o).unsqueeze(1) + offsets.unsqueeze(-1) * rays_d.unsqueeze(1)
+                    pts = c_out.intersection_pos
             else:
                 # NOTE: sample_proposal modifies rays_d.
                 pts, dt, valid = self.sample_proposal(rays_o, rays_d, self.num_samples)
@@ -304,7 +303,7 @@ class CornerTree(torch.nn.Module):
             sigma = interp[..., -1]  # [batch, n_intrs-1, 1]
 
             # Volumetric rendering TODO: * 2.6 needs to be computed.
-            alpha = 1 - torch.exp(-torch.relu(sigma) * dt * 2.6)            # alpha: [batch, n_intrs-1]
+            alpha = 1 - torch.exp(-torch.relu(sigma) * dt)            # alpha: [batch, n_intrs-1]
             cum_light = torch.cat((torch.ones(rgb.shape[0], 1, dtype=rgb.dtype, device=rgb.device),
                                    torch.cumprod(1 - alpha[:, :-1] + 1e-10, dim=-1)), dim=-1)  # [batch, n_intrs-1]
             abs_light = alpha * cum_light  # [batch, n_intersections - 1]
@@ -332,8 +331,8 @@ def init_render_opt(background_brightness: float = 1.0,
     opts.density_softplus = density_softplus
     opts.rgb_padding = rgb_padding
 
-    opts.sigma_thresh = 1e-3
-    opts.stop_thresh = 1e-3
+    opts.sigma_thresh = 0
+    opts.stop_thresh = 0
 
     # Following are unused
     opts.step_size = 1.0
@@ -376,7 +375,8 @@ class CornerTreeRenderFn(torch.autograd.Function):
                 tree: CornerTree,
                 rays_o: torch.Tensor,
                 rays_d: torch.Tensor,
-                opt: RenderOptions):
+                opt: RenderOptions,
+                need_all_out: bool):
         out = CornerTreeRenderFn.dispatch_vol_render(
             data, tree.child.to(dtype=torch.int), tree.nids.to(dtype=torch.int), tree.offset, tree.scaling,
             rays_o, rays_d, opt, dtype=tree.data.weight.dtype, branching=2, sh_degree=tree.sh_degree)
@@ -386,8 +386,10 @@ class CornerTreeRenderFn(torch.autograd.Function):
         )
         ctx.tree = tree
         ctx.opt = opt
-        with torch.no_grad():
-            CornerTreeRenderFn.lastctx = out
+        #with torch.no_grad():
+        #    CornerTreeRenderFn.lastctx = out
+        if need_all_out:
+            return out
         return out.output_rgb
 
     @staticmethod
@@ -401,8 +403,8 @@ class CornerTreeRenderFn(torch.autograd.Function):
                 ray_steps, ctx.opt,
                 dtype=tree.data.weight.dtype, branching=2, sh_degree=tree.sh_degree
             )
-            return out, None, None, None, None
-        return None, None, None, None, None
+            return out, None, None, None, None, None
+        return None, None, None, None, None, None
 
 
 def get_c_template_str(dtype, branching, sh_degree) -> str:
