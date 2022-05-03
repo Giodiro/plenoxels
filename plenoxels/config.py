@@ -69,6 +69,7 @@ _C.multi_sr.momentum = 0.9
 _C.multi_sr.weight_decay = 1e-4
 _C.multi_sr.use_amp = False
 _C.multi_sr.tree_height = 6
+_C.multi_sr.sr_model = "fsrcnn"
 
 
 def get_cfg_defaults():

@@ -6,6 +6,7 @@ import torch
 
 from plenoxels.corner_tree import CornerTree
 from plenoxels.fsrcnn import FSRCNN
+from plenoxels.swin_ir import SwinIR
 from plenoxels.synthetic_nerf_dataset import MultiSyntheticNerfDataset
 from plenoxels.tc_plenoptimize import parse_config
 
@@ -35,7 +36,23 @@ def init_plenoxels(cfg, tr_dset):
 def init_sr(cfg):
     upscale = cfg.multi_sr.high_resolution / cfg.multi_sr.low_resolution
     assert abs(upscale - int(upscale)) < 1e-9
-    sr = FSRCNN(upscale_factor=int(upscale))
+    if cfg.multi_sr.sr_model.lower() == "fsrcnn":
+        sr = FSRCNN(upscale_factor=int(upscale))
+    elif cfg.multi_sr.sr_model.lower() == "swin-ir":
+        sr = SwinIR(upscale=upscale,
+                    in_chans=3,
+                    img_size=(cfg.multi_sr.low_resolution, cfg.multi_sr.low_resolution),
+                    window_size=8,                     # always same from paper
+                    img_range=1.,                      # we use float images
+                    depths=[6, 6, 6, 6],               # from paper (lightweight config)
+                    embed_dim=60,                      # from paper (lightweight config)
+                    num_heads=[6, 6, 6, 6],            # from paper (lightweight config)
+                    mlp_ratio=2,                       # from paper (lightweight config)
+                    upsampler="pixelshuffledirect",    # from paper (lightweight config)
+                    resi_connection="1conv",           # from paper (lightweight config)
+                    )
+    else:
+        raise RuntimeError("model type not understood")
     return sr
 
 
