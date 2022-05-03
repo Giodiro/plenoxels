@@ -23,6 +23,7 @@ def get_rays(H: int, W: int, focal, c2w) -> torch.Tensor:
         of rays
     """
     i, j = torch.meshgrid(torch.arange(W) + 0.5, torch.arange(H) + 0.5, indexing='xy')
+
     dirs = torch.stack([
         (i - W * 0.5) / focal,
         -(j - H * 0.5) / focal,
@@ -92,8 +93,8 @@ class SyntheticNerfDataset(TensorDataset):
     def low_pass(self, imgs):
         out = torch.empty_like(imgs)
         for i in range(imgs.shape[0]):
+            img = self.tensor2pil(imgs[i].permute(2, 0, 1))  # t2p expects C, H, W image
             if self.resolution * 2 < self.img_w:
-                img = self.tensor2pil(imgs[i].permute(2, 0, 1))  # t2p expects C, H, W image
                 img = img.resize((self.resolution * 2, self.resolution * 2), Image.LANCZOS)
                 img = img.resize((self.img_w, self.img_h), Image.LANCZOS)
             out[i] = self.pil2tensor(img).permute(1, 2, 0)  # [H, W, C]]
@@ -156,8 +157,9 @@ class MultiSyntheticNerfDataset(TensorDataset):
         self.focal = torch.cat(all_focal, 0)
         self.scene_ids = torch.cat(all_scene_ids, 0)
 
-        self.imgs_lr, self.rays = self.init_rays()
+        self.rays = self.init_rays()
         self.imgs_hr = self.imgs_hr.reshape(self.imgs_hr.shape[0], -1, 3)  # [N, H*W, 3]
+        self.imgs_lr = self.imgs_lr.reshape(self.imgs_lr.shape[0], -1, 3)  # [N, H*W, 3]
         super().__init__(self.rays, self.imgs_lr, self.imgs_hr, self.scene_ids)
 
     def process_img(self, img: PIL.Image):
@@ -189,21 +191,19 @@ class MultiSyntheticNerfDataset(TensorDataset):
         imgs_lr = torch.stack(imgs_lr, 0)  # [N, H, W, 3]
         imgs_hr = torch.stack(imgs_hr, 0)  # [N, H, W, 3]
         poses = torch.stack(poses, 0)  # [N, ????]
-        return imgs_lr, imgs_hr, poses, focal
+        return imgs_lr, imgs_hr, poses, torch.tensor(focal).repeat(imgs_lr.shape[0])
 
     def init_rays(self):
         assert self.imgs_lr is not None and self.poses is not None and self.focal is not None
         # Low-pass the images at required resolution
         num_frames = self.imgs_lr.shape[0]
-        imgs = self.imgs_lr.view(num_frames, -1, 3)  # [N, H*W, 3]
-        imgs = self.imgs_lr.view(-1, 3)  # [N*H*W, 3]
 
         # Rays
         rays = torch.stack(
-            [get_rays(self.low_resolution, self.low_resolution, self.focal, p)
-             for p in self.poses[:, :3, :4]], 0)  # [N, ro+rd, H, W, 3]
+            [get_rays(self.low_resolution, self.low_resolution, self.focal[i], self.poses[i, :3, :4])
+             for i in range(num_frames)], 0)  # [N, ro+rd, H, W, 3]
         # Merge H, W dimensions
         rays = rays.permute(0, 2, 3, 1, 4).reshape(num_frames, -1, 2, 3)  # [N, H*W, ro+rd, 3]
         rays = rays.to(dtype=torch.float32)
 
-        return imgs, rays
+        return rays

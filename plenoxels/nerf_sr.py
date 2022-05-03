@@ -43,20 +43,25 @@ def run_epoch(plenoxel_list, super_res, dset, loss_fn, optim_list, grad_scaler):
     dev = "cuda"
     psnr, mse, lr_mse = [], [], []
     e_start = time.time()
-    for data, i in enumerate(dset):
-        rays, pxls_lr, pxls_hr, scene_id = data
+    data_ids = np.random.permutation(len(dset))
+    for did in data_ids:
+        rays, pxls_lr, pxls_hr, scene_id = dset[did]
         scene_id = scene_id.item()
-        print("Scene: %d" % (scene_id))
+        #print("Scene: %d" % (scene_id))
         rays_o = rays[:, 0].contiguous().to(dev)
         rays_d = rays[:, 1].contiguous().to(dev)
         rays_d.div_(torch.linalg.norm(rays_d, dim=1, keepdim=True))
+        pxls_hr = pxls_hr.to(dev)
+        pxls_lr = pxls_lr.to(dev)
         plenoxel = plenoxel_list[scene_id]
-        optim = optim_list[scene_id] if optim_list is not None else None
+        #optim = optim_list[scene_id] if optim_list is not None else None
+        optim = optim_list
 
         with torch.cuda.amp.autocast(enabled=grad_scaler is not None):
             pred_pxls_lr = plenoxel(rays_o, rays_d, use_ext=True)
-            pred_pxls_hr = super_res(pred_pxls_lr)
-            loss = loss_fn(pred_pxls_hr, pxls_hr)
+            pred_pxls_lr_cnn = pred_pxls_lr.view(1, dset.low_resolution, dset.low_resolution, 3).permute(0, 3, 1, 2).contiguous()
+            pred_pxls_hr = super_res(pred_pxls_lr_cnn).view(3, -1).T
+            loss = loss_fn(pred_pxls_hr, pxls_hr) + loss_fn(pred_pxls_lr, pxls_lr)
 
         if optim:
             if grad_scaler is None:
@@ -71,7 +76,7 @@ def run_epoch(plenoxel_list, super_res, dset, loss_fn, optim_list, grad_scaler):
         with torch.no_grad():
             psnr.append(-10.0 * math.log(loss.item()) / math.log(10.0))
             mse.append(loss.item())
-            lr_mse.append(loss_fn(pred_pxls_lr, pxls_lr))
+            lr_mse.append(loss_fn(pred_pxls_lr, pxls_lr).item())
 
     return {
         "mse": np.mean(mse),  # Final MSE
@@ -88,18 +93,21 @@ def train(cfg):
 
     loss = torch.nn.MSELoss()
 
-    optimizer_list = [torch.optim.SGD([
-        {"params": plenoxels.parameters(), "lr": cfg.optim.lr},
+    params = [
         {"params": sr.feature_extraction.parameters()},
         {"params": sr.shrink.parameters()},
         {"params": sr.map.parameters()},
         {"params": sr.expand.parameters()},
-        {"params": sr.deconv.parameters(), "lr": cfg.multi_sr.sr_lr * 0.1}],
+        {"params": sr.deconv.parameters(), "lr": cfg.multi_sr.sr_lr * 0.1},
+    ]
+    for plenoxels in plenoxels_list:
+        params.append({"params": plenoxels.parameters(), "lr": cfg.optim.lr})
+
+    optimizer_list = torch.optim.SGD(params,
         lr=cfg.multi_sr.sr_lr,
         momentum=cfg.multi_sr.momentum,
-        weight_decay=cfg.multi_sr.model_weight_decay)
-        for plenoxels in plenoxels_list
-    ]
+        weight_decay=cfg.multi_sr.weight_decay
+        )
     scaler = None
     if cfg.multi_sr.use_amp:
         scaler = torch.cuda.amp.GradScaler()
@@ -119,15 +127,15 @@ def train(cfg):
             "time": [],
         },
     }
-    for epoch in range(cfg.cifar_fc.num_epochs):
+    for epoch in range(cfg.optim.num_epochs):
         [plenoxels.train() for plenoxels in plenoxels_list]
         sr.train()
-        tr_rs = run_epoch(plenoxels_list, sr, tr_dset, loss, optim=optimizer_list, grad_scaler=scaler)
+        tr_rs = run_epoch(plenoxels_list, sr, tr_dset, loss, optim_list=optimizer_list, grad_scaler=scaler)
 
         [plenoxels.eval() for plenoxels in plenoxels_list]
         sr.eval()
         with torch.no_grad():
-            ts_rs = run_epoch(plenoxels_list, sr, ts_dset, loss, optim=None, grad_scaler=scaler)
+            ts_rs = run_epoch(plenoxels_list, sr, ts_dset, loss, optim_list=None, grad_scaler=scaler)
 
         rs["train"]["mse"].append(tr_rs["mse"])
         rs["train"]["psnr"].append(tr_rs["psnr"])

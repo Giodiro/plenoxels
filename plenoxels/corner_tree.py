@@ -1,3 +1,4 @@
+from typing import Optional
 import torch
 
 from plenoxels.tc_plenoxel import plenoxel_sh_encoder
@@ -239,6 +240,24 @@ class CornerTree(torch.nn.Module):
         gz = self.data(neigh_sel, per_sample_weights=w3.expand(n_leaves, -1))[:, -1].abs()
         g = gx + gy + gz
         return g
+
+    @torch.no_grad()
+    def refine_density(self, threshold: Optional[float] = None, quantile: Optional[float] = None, verbose: bool = False):
+        if threshold is None and quantile is None:
+            raise ValueError("threshold or quantile must be specified")
+        if threshold is not None and quantile is not None:
+            raise ValueError("Only one of threshold and quantile can be specified")
+
+        density = self.density_frequency()
+        all_leaves = (self.child[:self.n_internal] < 0).nonzero(as_tuple=False)  # n_leaves, 4
+        if quantile is not None:
+            threshold = torch.quantile(density, quantile)
+        if verbose:
+            qs = torch.quantile(density, torch.tensor([0.1, 0.3, 0.5, 0.7, 0.9], device=density.device))
+            print(f"Density 10%={qs[0]:.2f} 30%={qs[1]:.2f} 50%={qs[2]:.2f} 70%={qs[3]:.2f} 90%={qs[4]:.2f}")
+
+        high_complexity_leaves = all_leaves[density > threshold]
+        self.refine(high_complexity_leaves, copy_interp_data=True)
 
     @torch.no_grad()
     def sample_proposal(self, rays_o, rays_d, max_samples):

@@ -662,7 +662,7 @@ RenderingOutput corner_tree_render(
     fwd_end.synchronize();
     float fwd_ela = fwd_start.elapsed_time(fwd_end);
 
-    printf("Forward timings(ms): Sampling=%f  Alloc=%f  Interpolate=%f  Forward=%f\n", gs_ela, alloc_ela, interpolate_ela, fwd_ela);
+    //printf("Forward timings(ms): Sampling=%f  Alloc=%f  Interpolate=%f  Forward=%f\n", gs_ela, alloc_ela, interpolate_ela, fwd_ela);
 
     return {
         /*output_rgb=*/output,
