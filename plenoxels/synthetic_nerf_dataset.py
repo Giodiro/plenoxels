@@ -221,7 +221,7 @@ class MultiSyntheticNerfDatasetv2(MultiSyntheticNerfDataset):
         super().__init__(datadirs, split, low_resolution, high_resolution, max_frames)
         self.patch_size = patch_size
         scale_factor = high_resolution / low_resolution
-        assert abs(scale_factor - int(scale_factor)) < 1e-9
+        assert abs(scale_factor - int(scale_factor)) < 1e-9, f"{scale_factor=} is not an integer"
         self.scale_factor = int(scale_factor)
         self.l_patch_size = self.patch_size // self.scale_factor
 
@@ -235,8 +235,8 @@ class MultiSyntheticNerfDatasetv2(MultiSyntheticNerfDataset):
             # Randomly crop the low-res patch
             rnd_h = random.randint(0, max(0, self.low_resolution - self.l_patch_size))
             rnd_w = random.randint(0, max(0, self.low_resolution - self.l_patch_size))
-            l_img = l_img[rnd_h: rnd_w + self.l_patch_size, rnd_w: rnd_w + self.l_patch_size, :]
-            rays = rays[rnd_h: rnd_w + self.l_patch_size, rnd_w: rnd_w + self.l_patch_size, ...]
+            l_img = l_img[rnd_h: rnd_h + self.l_patch_size, rnd_w: rnd_w + self.l_patch_size, :]
+            rays = rays[rnd_h: rnd_h + self.l_patch_size, rnd_w: rnd_w + self.l_patch_size, ...]
             # Crop the high-res patch correspondingly
             rnd_h_highres = int(rnd_h * self.scale_factor)
             rnd_w_highres = int(rnd_w * self.scale_factor)

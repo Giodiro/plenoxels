@@ -72,6 +72,13 @@ _C.multi_sr.use_amp = False
 _C.multi_sr.tree_height = 6
 _C.multi_sr.sr_model = "fsrcnn"
 _C.multi_sr.patch_size = 64
+_C.multi_sr.batch_size = 4
+
+_C.corner_tree = CN()
+_C.corner_tree.max_samples_per_node = 2
+_C.corner_tree.max_intersections = 512
+_C.corner_tree.sigma_thresh = 1e-4
+_C.corner_tree.stop_thresh = 1e-4
 
 
 def get_cfg_defaults():

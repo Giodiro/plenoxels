@@ -25,7 +25,11 @@ class CornerTree(torch.nn.Module):
                  near: float,
                  far: float,
                  init_rgb: float,
-                 init_sigma: float):
+                 init_sigma: float,
+                 max_samples_per_node: int = 2,
+                 max_intersections: int = 512,
+                 sigma_thresh: float = 1e-4,
+                 stop_thresh: float = 1e-4):
         super().__init__()
         self.sh_degree = sh_degree
         self.data_dim = 3 * (sh_degree + 1) ** 2 + 1
@@ -41,6 +45,10 @@ class CornerTree(torch.nn.Module):
         self.init_rgb = init_rgb
         self.init_sigma = init_sigma
         self.sh_encoder = plenoxel_sh_encoder(sh_degree)
+        self.max_samples_per_node = max_samples_per_node
+        self.max_intersections = max_intersections
+        self.sigma_thresh = sigma_thresh
+        self.stop_thresh = stop_thresh
 
         child    = torch.empty(init_internal, 2, 2, 2, dtype=torch.long)
         coords   = torch.empty(init_internal, 2, 2, 2, 3)
@@ -283,7 +291,7 @@ class CornerTree(torch.nn.Module):
 
     def forward_fast(self, rays_o, rays_d, targets):
         bb = 1.0 if self.white_bkgd else 0.0
-        opt = init_render_opt(background_brightness=bb, density_softplus=False, rgb_padding=0.0)
+        opt = init_render_opt(background_brightness=bb, density_softplus=False, rgb_padding=0.0, max_samples_per_node=self.max_samples_per_node, max_intersections=self.max_intersections, sigma_thresh=self.sigma_thresh, stop_thresh=self.stop_thresh)
         fn_name = f"ctree_loss_grad{get_c_template_str(self.data.weight.dtype, 2, self.sh_degree)}"
         fn = getattr(c_ext, fn_name)
         return fn(self.data.weight, self.child.to(dtype=torch.int), self.nids.to(dtype=torch.int),
@@ -293,13 +301,13 @@ class CornerTree(torch.nn.Module):
         use_ext_sample = True
         if use_ext:
             bb = 1.0 if self.white_bkgd else 0.0
-            opt = init_render_opt(background_brightness=bb, density_softplus=False, rgb_padding=0.0)
+            opt = init_render_opt(background_brightness=bb, density_softplus=False, rgb_padding=0.0, max_samples_per_node=self.max_samples_per_node, max_intersections=self.max_intersections, sigma_thresh=self.sigma_thresh, stop_thresh=self.stop_thresh)
             return CornerTreeRenderFn.apply(self.data.weight, self, rays_o, rays_d, opt, False)
         else:
             if use_ext_sample:
                 with torch.no_grad():
                     bb = 1.0 if self.white_bkgd else 0.0
-                    opt = init_render_opt(background_brightness=bb, density_softplus=False, rgb_padding=0.0)
+                    opt = init_render_opt(background_brightness=bb, density_softplus=False, rgb_padding=0.0, max_samples_per_node=self.max_samples_per_node, max_intersections=self.max_intersections, sigma_thresh=self.sigma_thresh, stop_thresh=self.stop_thresh)
                     c_out = CornerTreeRenderFn.apply(self.data.weight, self, rays_o, rays_d, opt, True)
                     dt = c_out.ray_steps
                     valid = dt > 0
@@ -341,17 +349,21 @@ class CornerTree(torch.nn.Module):
 
 def init_render_opt(background_brightness: float = 1.0,
                     density_softplus: bool = False,
-                    rgb_padding: float = 0.0) -> RenderOptions:
+                    rgb_padding: float = 0.0,
+                    max_samples_per_node: int = 2,
+                    max_intersections: int = 512,
+                    sigma_thresh: float = 1e-4,
+                    stop_thresh: float = 1e-4) -> RenderOptions:
     opts = RenderOptions()
     opts.background_brightness = background_brightness
-    opts.max_samples_per_node = 2
-    opts.max_intersections = 512
+    opts.max_samples_per_node = max_samples_per_node
+    opts.max_intersections = max_intersections
 
     opts.density_softplus = density_softplus
     opts.rgb_padding = rgb_padding
 
-    opts.sigma_thresh = 0
-    opts.stop_thresh = 0
+    opts.sigma_thresh = sigma_thresh
+    opts.stop_thresh = stop_thresh
 
     # Following are unused
     opts.step_size = 1.0
