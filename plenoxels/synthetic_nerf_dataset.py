@@ -1,5 +1,6 @@
 import json
 import os
+import random
 from typing import Tuple, Optional, List
 
 import PIL
@@ -157,7 +158,7 @@ class MultiSyntheticNerfDataset(TensorDataset):
         self.focal = torch.cat(all_focal, 0)
         self.scene_ids = torch.cat(all_scene_ids, 0)
 
-        self.rays = self.init_rays()
+        self.rays = self.init_rays()  # [N, H*W, ro+rd, 3]
         self.imgs_hr = self.imgs_hr.reshape(self.imgs_hr.shape[0], -1, 3)  # [N, H*W, 3]
         self.imgs_lr = self.imgs_lr.reshape(self.imgs_lr.shape[0], -1, 3)  # [N, H*W, 3]
         super().__init__(self.rays, self.imgs_lr, self.imgs_hr, self.scene_ids)
@@ -207,3 +208,43 @@ class MultiSyntheticNerfDataset(TensorDataset):
         rays = rays.to(dtype=torch.float32)
 
         return rays
+
+
+class MultiSyntheticNerfDatasetv2(MultiSyntheticNerfDataset):
+    def __init__(self,
+                 datadirs: List[str],
+                 split: str,
+                 low_resolution: int,
+                 high_resolution: int,
+                 patch_size: int,
+                 max_frames: Optional[int] = None):
+        super().__init__(datadirs, split, low_resolution, high_resolution, max_frames)
+        self.patch_size = patch_size
+        scale_factor = high_resolution / low_resolution
+        assert abs(scale_factor - int(scale_factor)) < 1e-9
+        self.scale_factor = int(scale_factor)
+        self.l_patch_size = self.patch_size // self.scale_factor
+
+    def __getitem__(self, idx):
+        h_img = self.imgs_hr[idx].view(self.high_resolution, self.high_resolution, 3)
+        l_img = self.imgs_lr[idx].view(self.low_resolution, self.low_resolution, 3)
+        rays = self.rays[idx].view(self.low_resolution, self.low_resolution, 2, 3)
+        scene_id = self.scene_ids[idx]
+
+        if self.split == 'train':
+            # Randomly crop the low-res patch
+            rnd_h = random.randint(0, max(0, self.low_resolution - self.l_patch_size))
+            rnd_w = random.randint(0, max(0, self.low_resolution - self.l_patch_size))
+            l_img = l_img[rnd_h: rnd_w + self.l_patch_size, rnd_w: rnd_w + self.l_patch_size, :]
+            rays = rays[rnd_h: rnd_w + self.l_patch_size, rnd_w: rnd_w + self.l_patch_size, ...]
+            # Crop the high-res patch correspondingly
+            rnd_h_highres = int(rnd_h * self.scale_factor)
+            rnd_w_highres = int(rnd_w * self.scale_factor)
+            h_img = h_img[rnd_h_highres: rnd_h_highres + self.patch_size, rnd_w_highres: rnd_w_highres + self.patch_size, :]
+
+        return {
+            "scene_id": scene_id,
+            "low": l_img,
+            "high": h_img,
+            "rays": rays
+        }

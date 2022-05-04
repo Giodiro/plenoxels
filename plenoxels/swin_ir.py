@@ -12,6 +12,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
 
+# See https://github.com/cszn/KAIR/blob/master/main_train_psnr.py
+# https://github.com/cszn/KAIR/blob/88164a013c9e393a379744f13a22b90839d1a2ef/models/model_plain.py#L16
+# Configuration https://github.com/cszn/KAIR/blob/master/options/swinir/train_swinir_sr_lightweight.json
+# README https://github.com/cszn/KAIR/blob/master/docs/README_SwinIR.md
+# https://github.com/JingyunLiang/SwinIR
+
 
 # From PyTorch internals (copied from timm
 def _ntuple(n):

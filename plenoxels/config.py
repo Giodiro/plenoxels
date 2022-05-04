@@ -37,7 +37,8 @@ _C.optim.adam = CN()
 _C.optim.adam.lr = 0.5
 
 _C.data = CN()
-_C.data.datadir = ["/home/giacomo/plenoxels/data/lego"]#, "/home/giacomo/plenoxels/data/drums", ]
+_C.data.datadir = ["/data/DATASETS/SyntheticNerf/lego", "/data/DATASETS/SyntheticNerf/drums", ]
+_C.data.test_datadir = ["", ]
 _C.data.resolution = 256
 _C.data.downsample = 1.0
 _C.data.max_tr_frames = None
@@ -70,6 +71,7 @@ _C.multi_sr.weight_decay = 1e-4
 _C.multi_sr.use_amp = False
 _C.multi_sr.tree_height = 6
 _C.multi_sr.sr_model = "fsrcnn"
+_C.multi_sr.patch_size = 64
 
 
 def get_cfg_defaults():

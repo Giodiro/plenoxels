@@ -3,11 +3,12 @@ import time
 
 import numpy as np
 import torch
+from torch.utils.data import DataLoader
 
 from plenoxels.corner_tree import CornerTree
 from plenoxels.fsrcnn import FSRCNN
 from plenoxels.swin_ir import SwinIR
-from plenoxels.synthetic_nerf_dataset import MultiSyntheticNerfDataset
+from plenoxels.synthetic_nerf_dataset import MultiSyntheticNerfDataset, MultiSyntheticNerfDatasetv2
 from plenoxels.tc_plenoptimize import parse_config
 
 
@@ -18,10 +19,29 @@ def init_multi_dset(cfg):
         cfg.data.datadir, split='train', low_resolution=cfg.multi_sr.low_resolution,
         high_resolution=cfg.multi_sr.high_resolution, max_frames=cfg.data.max_tr_frames)
     ts_dset = MultiSyntheticNerfDataset(
-        cfg.data.datadir, split='test', low_resolution=cfg.multi_sr.low_resolution,
+        cfg.data.test_datadir, split='test', low_resolution=cfg.multi_sr.low_resolution,
         high_resolution=cfg.multi_sr.high_resolution, max_frames=cfg.data.max_ts_frames)
 
     return tr_dset, ts_dset
+
+
+def init_multi_dset_v2(cfg):
+    assert isinstance(cfg.data.datadir, list), "Need to provide multiple data-directories"
+
+    tr_dset = MultiSyntheticNerfDatasetv2(
+        cfg.data.datadir, split='train', low_resolution=cfg.multi_sr.low_resolution,
+        high_resolution=cfg.multi_sr.high_resolution, max_frames=cfg.data.max_tr_frames,
+        patch_size=cfg.multi_sr.patch_size)
+    ts_dset = MultiSyntheticNerfDatasetv2(
+        cfg.data.test_datadir, split='test', low_resolution=cfg.multi_sr.low_resolution,
+        high_resolution=cfg.multi_sr.high_resolution, max_frames=cfg.data.max_ts_frames,
+        patch_size=cfg.multi_sr.patch_size)
+    tr_loader = DataLoader(tr_dset, batch_size=cfg.multi_sr.batch_size, pin_memory=True,
+                           drop_last=False, shuffle=True)
+    ts_loader = DataLoader(ts_dset, batch_size=cfg.multi_sr.batch_size, pin_memory=True,
+                           drop_last=False, shuffle=True)
+
+    return tr_dset, ts_dset, tr_loader, ts_loader
 
 
 def init_plenoxels(cfg, tr_dset):
@@ -39,9 +59,9 @@ def init_sr(cfg):
     if cfg.multi_sr.sr_model.lower() == "fsrcnn":
         sr = FSRCNN(upscale_factor=int(upscale))
     elif cfg.multi_sr.sr_model.lower() == "swin-ir":
-        sr = SwinIR(upscale=upscale,
+        sr = SwinIR(upscale=int(upscale),
                     in_chans=3,
-                    img_size=(cfg.multi_sr.low_resolution, cfg.multi_sr.low_resolution),
+                    img_size=(cfg.multi_sr.patch_size, cfg.multi_sr.patch_size),
                     window_size=8,                     # always same from paper
                     img_range=1.,                      # we use float images
                     depths=[6, 6, 6, 6],               # from paper (lightweight config)
@@ -54,6 +74,81 @@ def init_sr(cfg):
     else:
         raise RuntimeError("model type not understood")
     return sr
+
+
+def run_tree_epoch(plenoxel_list, loader, loss_fn, optim):
+    dev = "cuda"
+    psnr, mse = [], []
+    e_start = time.time()
+
+    for i, data in enumerate(loader):
+        num_scenes = len(data['scene_id'])
+        lr = data['low'].view(-1, 3).to(dev)  # N*H*W, 3
+
+        rays_o = data['rays'][:, :, :, 0, :].view(num_scenes, -1, 3).contiguous().to(dev)
+        rays_d = data['rays'][:, :, :, 1, :].view(num_scenes, -1, 3).contiguous().to(dev)
+        for j, s_id in enumerate(data['scene_id']):
+            pred_lr = plenoxel_list[s_id](rays_o[j], rays_d[j], use_ext=True)
+            loss = loss_fn(pred_lr, lr[j])
+            if optim is not None:
+                optim.zero_grad()
+                loss.backward()
+                optim.step()
+
+            with torch.no_grad():
+                mse.append(loss.item())
+                psnr.append(-10.0 * math.log(mse[-1]) / math.log(10.0))
+
+    return {
+        "mse": np.mean(mse),
+        "psnr": np.mean(psnr),
+        "time": time.time() - e_start,
+    }
+
+
+def run_sr_epoch(plenoxel_list, sr, loader, loss_fn, optim, grad_scaler):
+    dev = "cuda"
+    psnr, mse = [], []
+    e_start = time.time()
+
+    for i, data in enumerate(loader):
+        num_scenes = len(data['scene_id'])
+        l_patch_size = data['low'].shape[1]
+
+        hr = data['high'].permute(0, 3, 1, 2).to(dev)  # N, 3, nH, nW
+
+        rays_o = data['rays'][:, :, :, 0, :].view(num_scenes, -1, 3).contiguous().to(dev)
+        rays_d = data['rays'][:, :, :, 1, :].view(num_scenes, -1, 3).contiguous().to(dev)
+        with torch.no_grad():
+            pred_lr = []
+            for j, s_id in enumerate(data['scene_id']):
+                pred_lr.append(
+                    plenoxel_list[s_id](rays_o[j], rays_d[j], use_ext=True)
+                        .reshape(l_patch_size, l_patch_size, 3).permute(2, 0, 1)
+                )
+            pred_lr = torch.stack(pred_lr, 0)  # N, 3, H, W
+        pred_hr = sr(pred_lr)  # N, 3, nH, nW
+        loss = loss_fn(pred_hr, hr)
+
+        if optim:
+            optim.zero_grad()
+            if grad_scaler is None:
+                loss.backward()
+                optim.step()
+            else:
+                grad_scaler.scale(loss).backward()
+                grad_scaler.step(optim)
+                grad_scaler.update()
+
+        with torch.no_grad():
+            psnr.append(-10.0 * math.log(loss.item()) / math.log(10.0))
+            mse.append(loss.item())
+
+    return {
+        "mse": np.mean(mse),
+        "psnr": np.mean(psnr),
+        "time": time.time() - e_start,
+    }
 
 
 def run_epoch(plenoxel_list, super_res, dset, loss_fn, optim_list, grad_scaler):
