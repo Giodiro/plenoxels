@@ -39,7 +39,7 @@ def init_sr(cfg):
     if cfg.multi_sr.sr_model.lower() == "fsrcnn":
         sr = FSRCNN(upscale_factor=int(upscale))
     elif cfg.multi_sr.sr_model.lower() == "swin-ir":
-        sr = SwinIR(upscale=upscale,
+        sr = SwinIR(upscale=int(upscale),
                     in_chans=3,
                     img_size=(cfg.multi_sr.low_resolution, cfg.multi_sr.low_resolution),
                     window_size=8,                     # always same from paper
