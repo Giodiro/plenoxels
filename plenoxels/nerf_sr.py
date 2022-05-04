@@ -156,7 +156,49 @@ def run_sr_epoch(plenoxel_list, sr, loader, loss_fn, optim, grad_scaler):
     }
 
 
-def run_epoch(plenoxel_list, super_res, dset, loss_fn, optim_list, grad_scaler):
+# noinspection DuplicatedCode
+def run_joint_epoch(plenoxel_list, sr, loader, joint_loss_fn, optim, grad_scaler):
+    dev = "cuda"
+    psnr, mse = [], []
+    e_start = time.time()
+
+    for i, data in enumerate(loader):
+        num_scenes = len(data['scene_id'])
+        l_patch_size = data['low'].shape[1]
+
+        lr = data['low'].permute(0, 3, 1, 2).to(dev)   # N, 3, H, W
+        hr = data['high'].permute(0, 3, 1, 2).to(dev)  # N, 3, nH, nW
+
+        rays_o = data['rays'][:, :, :, 0, :].view(num_scenes, -1, 3).contiguous().to(dev)
+        rays_d = data['rays'][:, :, :, 1, :].view(num_scenes, -1, 3).contiguous().to(dev)
+        for j, s_id in enumerate(data['scene_id']):
+            pred_lr = (
+                plenoxel_list[s_id](rays_o[j], rays_d[j], use_ext=True)
+                .reshape(l_patch_size, l_patch_size, 3).permute(2, 0, 1)
+                .unsqueeze(0)
+            )  # 1, 3, H, W
+            pred_hr = sr(pred_lr)
+            loss = joint_loss_fn(pred_lr.squeeze(), lr[j], pred_hr.squeeze(), hr[j])
+            if optim is not None:
+                optim.zero_grad()
+                if grad_scaler is None:
+                    loss.backward()
+                    optim.step()
+                else:
+                    grad_scaler.scale(loss).backward()
+                    grad_scaler.step(optim)
+                    grad_scaler.update()
+            with torch.no_grad():
+                mse.append(loss.item())
+                psnr.append(-10.0 * math.log(mse[-1]) / math.log(10.0))
+
+    return {
+        "mse": np.mean(mse),
+        "psnr": np.mean(psnr),
+        "time": time.time() - e_start,
+    }
+
+def run_epoch_old(plenoxel_list, super_res, dset, loss_fn, optim_list, grad_scaler):
     dev = "cuda"
     psnr, mse, lr_mse = [], [], []
     e_start = time.time()
