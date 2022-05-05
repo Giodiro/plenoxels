@@ -549,6 +549,53 @@ RenderingOutput corner_tree_loss_grad(
 }
 
 
+template <int branching, int data_dim>
+RenderingOutput gen_samples(
+    const torch::Tensor & t_child,
+    const torch::Tensor & t_offset,
+    const torch::Tensor & t_scaling,
+    const torch::Tensor & rays_o,
+    const torch::Tensor & rays_d,
+    const RenderOptions & opt)
+{
+    DEVICE_GUARD(data);
+    const uint32_t batch_size = rays_o.size(0);
+
+    auto ray_steps = torch::full({batch_size, opt.max_intersections}, -1.0,
+            torch::dtype(torch::kFloat32).device(data.device()));
+    auto num_intersections = torch::zeros({batch_size}, torch::dtype(torch::kInt32).device(data.device()));
+    auto positions = torch::empty({batch_size, opt.max_intersections, 3},
+            torch::dtype(torch::kFloat32).device(data.device()));
+    auto rays_d_norm = torch::empty_like(rays_d);
+
+    gen_samples_kernel<branching>
+        <<<n_blocks_linear<uint32_t>(batch_size, gen_samples_n_threads), gen_samples_n_threads>>>(
+            t_child.packed_accessor32<int, 4, torch::RestrictPtrTraits>(),
+            t_offset.data_ptr<float>(),
+            t_scaling.data_ptr<float>(),
+            rays_o.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
+            rays_d.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
+            ray_steps.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
+            num_intersections.packed_accessor32<int, 1, torch::RestrictPtrTraits>(),
+            positions.packed_accessor32<float, 3, torch::RestrictPtrTraits>(),
+            rays_d_norm.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),
+            opt.max_intersections,
+            opt.max_samples_per_node,
+            (int)batch_size
+    );
+    return {
+        /*output_rgb=*/undefined,
+        /*ray_steps=*/ray_steps,
+        /*rays_d_norm=*/rays_d_norm,
+        /*intersection_pos=*/positions,
+        /*intersection_num=*/num_intersections,
+        /*interpolated_vals=*/undefined,
+        /*interpolated_n_ids=*/undefined,
+        /*interpolation_weights=*/undefined
+    };
+}
+
+
 template <int32_t branching, int32_t data_dim>
 RenderingOutput corner_tree_render(
     const torch::Tensor & data,

@@ -268,53 +268,71 @@ class CornerTree(torch.nn.Module):
         self.refine(high_complexity_leaves, copy_interp_data=True)
 
     @torch.no_grad()
-    def sample_proposal(self, rays_o, rays_d, max_samples):
-        # scale direction
-        rays_d.mul_(self.scaling)
-        delta_scale = 1 / torch.linalg.norm(rays_d, dim=1, keepdim=True)
-        rays_d.mul_(delta_scale)
-        step_size = 1 / max_samples
+    def sample_proposal(self, rays_o, rays_d, max_samples, use_ext_sample: bool):
+        if use_ext_sample:
+            fn_name = f"ctree_gen_samples{get_c_template_str(self.data.weight.dtype, 2, self.sh_degree)}"
+            fn = getattr(c_ext, fn_name)
+            c_out = fn(self.child.to(dtype=torch.int), self.offset, self.scaling, rays_o, rays_d, self.get_opt())
+            dts = c_out.ray_steps
+            points_valid = dts > 0
+            points = c_out.intersection_pos
+        else:
+            # scale direction
+            rays_d.mul_(self.scaling)
+            delta_scale = 1 / torch.linalg.norm(rays_d, dim=1, keepdim=True)
+            rays_d.mul_(delta_scale)
+            step_size = 1 / max_samples
 
-        offsets_pos = (self.aabb[1] - rays_o) / rays_d  # [batch, 3]
-        offsets_neg = (self.aabb[0] - rays_o) / rays_d  # [batch, 3]
-        offsets_in = torch.minimum(offsets_pos, offsets_neg)  # [batch, 3]
-        start = torch.amax(offsets_in, dim=-1, keepdim=True)  # [batch, 1]
-#         start.clamp_(min=self.near, max=self.far)  # [batch, 1]
-        steps = torch.arange(max_samples, dtype=torch.float32, device=self.child.device).unsqueeze(0)  # [1, n_intrs]
-        steps = steps.repeat(rays_d.shape[0], 1)   # [batch, n_intrs]
-        intersections = start + steps * step_size  # [batch, n_intrs]
-        dts = torch.diff(intersections, n=1, dim=1).mul(delta_scale)
-        intersections = intersections[:, :-1]
-        points = rays_o.unsqueeze(1) + intersections.unsqueeze(2) * rays_d.unsqueeze(1)
-        points_valid = ((points > self.aabb[0]) & (points < self.aabb[1])).all(-1)
+            offsets_pos = (self.aabb[1] - rays_o) / rays_d  # [batch, 3]
+            offsets_neg = (self.aabb[0] - rays_o) / rays_d  # [batch, 3]
+            offsets_in = torch.minimum(offsets_pos, offsets_neg)  # [batch, 3]
+            start = torch.amax(offsets_in, dim=-1, keepdim=True)  # [batch, 1]
+    #         start.clamp_(min=self.near, max=self.far)  # [batch, 1]
+            steps = torch.arange(max_samples, dtype=torch.float32, device=self.child.device).unsqueeze(0)  # [1, n_intrs]
+            steps = steps.repeat(rays_d.shape[0], 1)   # [batch, n_intrs]
+            intersections = start + steps * step_size  # [batch, n_intrs]
+            dts = torch.diff(intersections, n=1, dim=1).mul(delta_scale)
+            intersections = intersections[:, :-1]
+            points = rays_o.unsqueeze(1) + intersections.unsqueeze(2) * rays_d.unsqueeze(1)
+            points_valid = ((points > self.aabb[0]) & (points < self.aabb[1])).all(-1)
         return points, dts, points_valid
 
     def forward_fast(self, rays_o, rays_d, targets):
-        bb = 1.0 if self.white_bkgd else 0.0
-        opt = init_render_opt(background_brightness=bb, density_softplus=False, rgb_padding=0.0, max_samples_per_node=self.max_samples_per_node, max_intersections=self.max_intersections, sigma_thresh=self.sigma_thresh, stop_thresh=self.stop_thresh)
         fn_name = f"ctree_loss_grad{get_c_template_str(self.data.weight.dtype, 2, self.sh_degree)}"
         fn = getattr(c_ext, fn_name)
         return fn(self.data.weight, self.child.to(dtype=torch.int), self.nids.to(dtype=torch.int),
-                  self.offset, self.scaling, rays_o, rays_d, targets, opt)
+                  self.offset, self.scaling, rays_o, rays_d, targets, self.get_opt())
 
-    def forward(self, rays_o, rays_d, use_ext: bool):
-        use_ext_sample = True
+    def vol_render(self, interp, rays_d, dt):
+        batch, nintrs = interp.shape[0], interp.shape[1]
+        sh_mult = self.sh_encoder(rays_d)  # [batch, ch/3]
+        sh_mult = sh_mult.unsqueeze(1).expand(batch, nintrs, -1).unsqueeze(2)  # [batch, nintrs, 1, ch/3]
+        interp_rgb = interp[..., :-1].view(batch, nintrs, 3, sh_mult.shape[-1])  # [batch, nintrs, 3, ch/3]
+        rgb = torch.sum(sh_mult * interp_rgb, dim=-1)  # [batch, nintrs, 3]
+
+        sigma = interp[..., -1]  # [batch, n_intrs-1, 1]
+
+        # Volumetric rendering TODO: * 2.6 needs to be computed.
+        alpha = 1 - torch.exp(-torch.relu(sigma) * dt)            # alpha: [batch, n_intrs-1]
+        cum_light = torch.cat((torch.ones(rgb.shape[0], 1, dtype=rgb.dtype, device=rgb.device),
+                               torch.cumprod(1 - alpha[:, :-1] + 1e-10, dim=-1)), dim=-1)  # [batch, n_intrs-1]
+        abs_light = alpha * cum_light  # [batch, n_intersections - 1]
+        acc_map = abs_light.sum(-1)    # [batch]
+
+        # Accumulated color over the samples, ignoring background
+        rgb = torch.sigmoid(rgb)  # [batch, n_intrs-1, 3]
+        rgb_map = (abs_light.unsqueeze(-1) * rgb).sum(dim=-2)  # [batch, 3]
+
+        if self.white_bkgd:
+            # Including the white background in the final color
+            rgb_map = rgb_map + (1. - acc_map.unsqueeze(1))
+        return rgb_map#, pts, dt, valid, iweights, interp
+
+    def forward(self, rays_o, rays_d, use_ext: bool, use_ext_sample=True):
         if use_ext:
-            bb = 1.0 if self.white_bkgd else 0.0
-            opt = init_render_opt(background_brightness=bb, density_softplus=False, rgb_padding=0.0, max_samples_per_node=self.max_samples_per_node, max_intersections=self.max_intersections, sigma_thresh=self.sigma_thresh, stop_thresh=self.stop_thresh)
-            return CornerTreeRenderFn.apply(self.data.weight, self, rays_o, rays_d, opt, False)
+            return CornerTreeRenderFn.apply(self.data.weight, self, rays_o, rays_d, self.get_opt(), False)
         else:
-            if use_ext_sample:
-                with torch.no_grad():
-                    bb = 1.0 if self.white_bkgd else 0.0
-                    opt = init_render_opt(background_brightness=bb, density_softplus=False, rgb_padding=0.0, max_samples_per_node=self.max_samples_per_node, max_intersections=self.max_intersections, sigma_thresh=self.sigma_thresh, stop_thresh=self.stop_thresh)
-                    c_out = CornerTreeRenderFn.apply(self.data.weight, self, rays_o, rays_d, opt, True)
-                    dt = c_out.ray_steps
-                    valid = dt > 0
-                    pts = c_out.intersection_pos
-            else:
-                # NOTE: sample_proposal modifies rays_d.
-                pts, dt, valid = self.sample_proposal(rays_o, rays_d, self.num_samples)
+            pts, dt, valid = self.sample_proposal(rays_o, rays_d, self.num_samples, use_ext_sample=use_ext_sample)
             batch, nintrs = pts.shape[:2]
 
             interp_masked, iweights = self.query(pts[valid].view(-1, 3), normalize=not use_ext_sample)
@@ -322,29 +340,34 @@ class CornerTree(torch.nn.Module):
                                  dtype=torch.float32, device=interp_masked.device)
             interp.masked_scatter_(valid.unsqueeze(-1), interp_masked)
 
-            sh_mult = self.sh_encoder(rays_d)  # [batch, ch/3]
-            sh_mult = sh_mult.unsqueeze(1).expand(batch, nintrs, -1).unsqueeze(2)  # [batch, nintrs, 1, ch/3]
-            interp_rgb = interp[..., :-1].view(batch, nintrs, 3, sh_mult.shape[-1])  # [batch, nintrs, 3, ch/3]
-            rgb = torch.sum(sh_mult * interp_rgb, dim=-1)  # [batch, nintrs, 3]
+            return self.vol_render(interp=interp, rays_d=rays_d, dt=dt)
 
-            sigma = interp[..., -1]  # [batch, n_intrs-1, 1]
+    def get_opt(self):
+        bb = 1.0 if self.white_bkgd else 0.0
+        return init_render_opt(
+            background_brightness=bb, density_softplus=False, rgb_padding=0.0,
+            max_samples_per_node=self.max_samples_per_node,
+            max_intersections=self.max_intersections, sigma_thresh=self.sigma_thresh,
+            stop_thresh=self.stop_thresh)
 
-            # Volumetric rendering TODO: * 2.6 needs to be computed.
-            alpha = 1 - torch.exp(-torch.relu(sigma) * dt)            # alpha: [batch, n_intrs-1]
-            cum_light = torch.cat((torch.ones(rgb.shape[0], 1, dtype=rgb.dtype, device=rgb.device),
-                                   torch.cumprod(1 - alpha[:, :-1] + 1e-10, dim=-1)), dim=-1)  # [batch, n_intrs-1]
-            abs_light = alpha * cum_light  # [batch, n_intersections - 1]
-            acc_map = abs_light.sum(-1)    # [batch]
 
-            # Accumulated color over the samples, ignoring background
-            rgb = torch.sigmoid(rgb)  # [batch, n_intrs-1, 3]
-            rgb_map = (abs_light.unsqueeze(-1) * rgb).sum(dim=-2)  # [batch, 3]
+class QuantizedCornerTree(torch.nn.Module):
+    def __init__(self, tree, quantizer):
+        super(QuantizedCornerTree, self).__init__()
+        self.tree = tree
+        self.quantizer = quantizer
 
-            if self.white_bkgd:
-                # Including the white background in the final color
-                rgb_map = rgb_map + (1. - acc_map.unsqueeze(1))
+    def forward(self, rays_o, rays_d):
+        pts, dt, valid = self.tree.sample_proposal(rays_o, rays_d, None, use_ext_sample=True)
+        batch, nintrs = pts.shape[:2]
+        interp_masked, iweights = self.tree.query(pts[valid].view(-1, 3), normalize=False)
+        loss, interp_quantized, perplexity, _ = self.quantizer(interp_masked)
 
-            return rgb_map#, pts, dt, valid, iweights, interp
+        interp = torch.zeros(batch, nintrs, self.data_dim,
+                             dtype=torch.float32, device=interp_quantized.device)
+        interp.masked_scatter_(valid.unsqueeze(-1), interp_quantized)
+        rgb_out = self.tree.vol_render(interp, rays_d, dt)
+        return loss, perplexity, rgb_out
 
 
 def init_render_opt(background_brightness: float = 1.0,
