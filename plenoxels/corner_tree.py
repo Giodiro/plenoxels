@@ -363,7 +363,7 @@ class QuantizedCornerTree(torch.nn.Module):
         interp_masked, iweights = self.tree.query(pts[valid].view(-1, 3), normalize=False)
         loss, interp_quantized, perplexity, _ = self.quantizer(interp_masked)
 
-        interp = torch.zeros(batch, nintrs, self.data_dim,
+        interp = torch.zeros(batch, nintrs, self.tree.data_dim,
                              dtype=torch.float32, device=interp_quantized.device)
         interp.masked_scatter_(valid.unsqueeze(-1), interp_quantized)
         rgb_out = self.tree.vol_render(interp, rays_d, dt)
