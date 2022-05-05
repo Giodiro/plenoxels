@@ -182,7 +182,7 @@ class CornerTree(torch.nn.Module):
             node_ids[remain_indices] += deltas
             indices = indices[~term_mask]
 
-    def query(self, indices, normalize=True):
+    def query(self, indices, normalize=True, fetch_data=True):
         n = indices.shape[0]
 
         with torch.autograd.no_grad():
@@ -227,6 +227,8 @@ class CornerTree(torch.nn.Module):
             (xy[:, 0])     * (xy[:, 1])     * (1 - xy[:, 2]),
             (xy[:, 0])     * (xy[:, 1])     * (xy[:, 2]),
         ), dim=1)  # n, 8
+        if not fetch_data:
+            return sel_nids, weights
         return self.data(sel_nids, per_sample_weights=weights), weights
 
     @torch.no_grad()
@@ -360,14 +362,19 @@ class QuantizedCornerTree(torch.nn.Module):
     def forward(self, rays_o, rays_d):
         pts, dt, valid = self.tree.sample_proposal(rays_o, rays_d, None, use_ext_sample=True)
         batch, nintrs = pts.shape[:2]
-        interp_masked, iweights = self.tree.query(pts[valid].view(-1, 3), normalize=False)
-        loss, interp_quantized, perplexity, _ = self.quantizer(interp_masked)
+        sel_nids, iweights = self.tree.query(pts[valid].view(-1, 3), normalize=False, fetch_data=False)
+        sel_data = self.tree.data.weight[sel_nids.view(-1), :]
+        vq_loss, sel_data_quantized, perplexity, _ = self.quantizer(sel_data).view(sel_nids.shape[0], 8, -1)  # N, 8, dim
+        sel_data_interp = (sel_data_quantized * iweights.unsqueeze(-1)).sum(1)  # N, dim
+
+        # interp_masked, iweights = self.tree.query(pts[valid].view(-1, 3), normalize=False)
+        # loss, interp_quantized, perplexity, _ = self.quantizer(interp_masked)
 
         interp = torch.zeros(batch, nintrs, self.tree.data_dim,
-                             dtype=torch.float32, device=interp_quantized.device)
-        interp.masked_scatter_(valid.unsqueeze(-1), interp_quantized)
+                             dtype=torch.float32, device=sel_data_interp.device)
+        interp.masked_scatter_(valid.unsqueeze(-1), sel_data_interp)
         rgb_out = self.tree.vol_render(interp, rays_d, dt)
-        return loss, perplexity, rgb_out
+        return vq_loss, perplexity, rgb_out
 
 
 def init_render_opt(background_brightness: float = 1.0,
