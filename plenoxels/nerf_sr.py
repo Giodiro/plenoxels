@@ -3,6 +3,7 @@ import time
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from plenoxels.corner_tree import CornerTree
@@ -113,7 +114,7 @@ def run_tree_epoch(plenoxel_list, loader, loss_fn, optim):
 
 def run_sr_epoch(plenoxel_list, sr, loader, loss_fn, optim, grad_scaler):
     dev = "cuda"
-    psnr, mse = [], []
+    psnr, mse, losses = [], [], []
     e_start = time.time()
 
     for i, data in enumerate(loader):
@@ -146,7 +147,8 @@ def run_sr_epoch(plenoxel_list, sr, loader, loss_fn, optim, grad_scaler):
                 grad_scaler.update()
 
         with torch.no_grad():
-            mse.append(loss.item())
+            losses.append(loss.item())
+            mse.append(F.mse_loss(pred_hr, hr).item())
             psnr.append(-10.0 * math.log(mse[-1]) / math.log(10.0))
 
     return {
