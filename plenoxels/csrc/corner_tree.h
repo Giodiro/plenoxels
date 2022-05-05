@@ -563,9 +563,9 @@ RenderingOutput gen_samples(
 
     auto ray_steps = torch::full({batch_size, opt.max_intersections}, -1.0,
             torch::dtype(torch::kFloat32).device(t_child.device()));
-    auto num_intersections = torch::zeros({batch_size}, torch::dtype(torch::kInt32).device(data.device()));
+    auto num_intersections = torch::zeros({batch_size}, torch::dtype(torch::kInt32).device(t_child.device()));
     auto positions = torch::empty({batch_size, opt.max_intersections, 3},
-            torch::dtype(torch::kFloat32).device(data.device()));
+            torch::dtype(torch::kFloat32).device(t_child.device()));
     auto rays_d_norm = torch::empty_like(rays_d);
 
     gen_samples_kernel<branching>
