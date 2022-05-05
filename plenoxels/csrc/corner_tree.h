@@ -558,7 +558,7 @@ RenderingOutput gen_samples(
     const torch::Tensor & rays_d,
     const RenderOptions & opt)
 {
-    DEVICE_GUARD(data);
+    DEVICE_GUARD(t_child);
     const uint32_t batch_size = rays_o.size(0);
 
     auto ray_steps = torch::full({batch_size, opt.max_intersections}, -1.0,
@@ -569,7 +569,7 @@ RenderingOutput gen_samples(
     auto rays_d_norm = torch::empty_like(rays_d);
 
     gen_samples_kernel<branching>
-        <<<n_blocks_linear<uint32_t>(batch_size, gen_samples_n_threads), gen_samples_n_threads>>>(
+        <<<n_blocks_linear<uint32_t>(batch_size, 128), 128>>>(
             t_child.packed_accessor32<int, 4, torch::RestrictPtrTraits>(),
             t_offset.data_ptr<float>(),
             t_scaling.data_ptr<float>(),
@@ -583,6 +583,7 @@ RenderingOutput gen_samples(
             opt.max_samples_per_node,
             (int)batch_size
     );
+    torch::Tensor undefined;
     return {
         /*output_rgb=*/undefined,
         /*ray_steps=*/ray_steps,
