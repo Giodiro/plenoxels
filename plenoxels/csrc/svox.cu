@@ -87,6 +87,9 @@ void declare_octree(py::module &m, const std::string &typestr) {
 
     fn_name = std::string("ctree_loss_grad") + typestr;
     m.def(fn_name.c_str(), &corner_tree_loss_grad<branching, data_dim>);
+
+    fn_name = std::string("ctree_gen_samples") + typestr;
+    m.def(fn_name.c_str(), &gen_samples<branching, data_dim>);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
