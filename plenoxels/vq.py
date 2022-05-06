@@ -3,6 +3,46 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+class VectorQuantizer(nn.Module):
+    def __init__(self, num_embeddings, embedding_dim, commitment_cost):
+        super(VectorQuantizer, self).__init__()
+
+        self.embedding_dim = embedding_dim
+        self.num_embeddings = num_embeddings
+
+        self.embedding = nn.Embedding(self.num_embeddings, self.embedding_dim)
+        self.embedding.weight.data.uniform_(-1 / self.num_embeddings, 1 / self.num_embeddings)
+        self.commitment_cost = commitment_cost
+
+    def forward(self, inputs):
+        # Flatten input
+        flat_input = inputs.view(-1, self.embedding_dim)
+
+        # Calculate distances
+        distances = (torch.sum(flat_input**2, dim=1, keepdim=True)
+                     + torch.sum(self.embedding.weight ** 2, dim=1)
+                     - 2 * torch.matmul(flat_input, self.embedding.weight.T))
+
+        # Encoding
+        encoding_indices = torch.argmin(distances, dim=1).unsqueeze(1)
+        encodings = torch.zeros(encoding_indices.shape[0], self.num_embeddings, device=inputs.device)
+        encodings.scatter_(1, encoding_indices, 1)
+
+        # Quantize and unflatten
+        quantized = torch.matmul(encodings, self.embedding.weight).view(inputs.shape)
+
+        # Loss
+        e_latent_loss = F.mse_loss(quantized.detach(), inputs)
+        q_latent_loss = F.mse_loss(quantized, inputs.detach())
+        loss = q_latent_loss + self.commitment_cost * e_latent_loss
+
+        quantized = inputs + (quantized - inputs).detach()
+        avg_probs = torch.mean(encodings, dim=0)
+        perplexity = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-10)))
+
+        return loss, quantized, perplexity, encodings
+
+
 class VectorQuantizerEMA(nn.Module):
     """
     https://github.com/zalandoresearch/pytorch-vq-vae/blob/master/vq-vae.ipynb
@@ -44,7 +84,6 @@ class VectorQuantizerEMA(nn.Module):
 
                 dw = encodings.T @ flat_inputs  # N, D
                 self.ema_w -= (1 - self.decay) * (self.ema_w - dw)
-                #self.ema_w = nn.Parameter(self.ema_w * self.decay + (1 - self.decay) * dw)
                 normalised_ema_w = self.ema_w / self.ema_cluster_size.view(-1, 1)
                 self.w.weight = nn.Parameter(normalised_ema_w)
 

@@ -104,13 +104,18 @@ class CornerTree(torch.nn.Module):
 
         leaf_coo = self.coords[sel] if n_int > 0 else torch.tensor([[0.5, 0.5, 0.5]], device=dev)
         depths = self.depths[sel[0]] if n_int > 0 else torch.tensor([0], device=dev)
+        self.depths[n_int: n_int + n_int_new] = depths + 1
         # + 1 since it's the new leaf, and +1 to get half-voxel-size
         new_leaf_sizes = (1 / (2 ** (depths + 2))).unsqueeze(-1).unsqueeze(-1)
+        del depths
         n_offsets = self.offsets_3d.unsqueeze(0).repeat(n_int_new, 1, 1).to(new_leaf_sizes.device) * new_leaf_sizes  # [nl, 8, 3]
         # Coordinates of new leaf centers
         new_leaf_coo = leaf_coo.unsqueeze(1) + n_offsets  # [nl, 8, 3]
+        del leaf_coo
+        self.coords[n_int: n_int + n_int_new].copy_(new_leaf_coo.view(-1, 2, 2, 2, 3))
         # From center to corners of new leafs (nl -> 8*nl=nc)
         new_corners = (new_leaf_coo.view(-1, 1, 3) + n_offsets.repeat_interleave(8, dim=0)).view(-1, 3)
+        del new_leaf_coo
         # Encoded corner coordinates (of new leafs and of the old tree)
         new_corners_enc = enc_pos(new_corners)
         if n_int > 0:
@@ -120,11 +125,12 @@ class CornerTree(torch.nn.Module):
 
         new_u_cor, new_cor_idx = torch.unique(corners_enc, return_inverse=True, sorted=True)
         print(f"Deduped corner coordinates from {corners_enc.shape[0]} to {new_u_cor.shape[0]}")
+        del corners_enc
 
         # Update the tree-data:
         # a. create new tensor,
-        # b. copy interpolated data from old tree into it,
-        # c. copy exact old data into it (with changed indices).
+        # b. copy exact old data into it (with changed indices).
+        # c. copy interpolated data from old tree into it,
         new_data = torch.empty(new_u_cor.shape[0], self.data_dim, device=dev)
         new_data[:, -1].fill_(self.init_sigma)
         new_data[:, :-1].fill_(self.init_rgb)
@@ -140,8 +146,9 @@ class CornerTree(torch.nn.Module):
             perm = torch.arange(new_cor_idx.size(0), dtype=new_cor_idx.dtype, device=new_cor_idx.device)
             inverse, perm = new_cor_idx.flip([0]), perm.flip([0])
             u_idx = inverse.new_empty(new_u_cor.size(0)).scatter_(0, inverse, perm)
+            del inverse, perm
             # We only care about the 'new_corners' (which were added at this iteration)
-            num_old_corners = corners_enc.size(0) - new_corners_enc.size(0)
+            num_old_corners = new_cor_idx.size(0) - new_corners_enc.size(0)
             new_corners_uniq_idx = u_idx[u_idx > num_old_corners] - num_old_corners
             scatter_idx = torch.searchsorted(new_u_cor, new_corners_enc[new_corners_uniq_idx]).unsqueeze(-1).expand(-1, self.data_dim)
             scatter_data = self.query(new_corners[new_corners_uniq_idx], normalize=False)[0]
@@ -150,8 +157,6 @@ class CornerTree(torch.nn.Module):
         self.data = torch.nn.EmbeddingBag.from_pretrained(new_data, freeze=False, mode='sum', sparse=False)
         self.ucoo = new_u_cor
         self.nids[:n_int + n_int_new] = new_cor_idx.view(-1, 2, 2, 2, 8)
-        self.coords[n_int: n_int + n_int_new] = new_leaf_coo.view(-1, 2, 2, 2, 3)
-        self.depths[n_int: n_int + n_int_new] = depths + 1
         self.child[n_int: n_int + n_int_new] = -1
         self.child[sel] = torch.arange(n_int, n_int + n_int_new, device=self.child.device, dtype=self.child.dtype) - sel[0]
         self.n_internal = n_int + n_int_new

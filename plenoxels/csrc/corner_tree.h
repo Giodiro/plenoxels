@@ -32,13 +32,13 @@ __device__ __inline__ float3 apply_sh(const float * const __restrict__ basis_fn,
     float3 out = make_float3(0.0, 0.0, 0.0);
     int k = 0, bk;
     for (bk = 0; bk < bd; k++, bk++) {
-        out.x += basis_fn[bk] * values[k];
+        out.x = fmaf(basis_fn[bk], values[k], out.x);
     }
     for (bk = 0; bk < bd; k++, bk++) {
-        out.y += basis_fn[bk] * values[k];
+        out.y = fmaf(basis_fn[bk], values[k], out.y);
     }
     for (bk = 0; bk < bd; k++, bk++) {
-        out.z += basis_fn[bk] * values[k];
+        out.z = fmaf(basis_fn[bk], values[k], out.z);
     }
     return out;
 }
@@ -103,7 +103,7 @@ __device__ __inline__ void fwd_loop(const float * __restrict__ interp,
     const int bd = basis_dim(data_dim, 3);
     const float sigma = density_fwd(interp[data_dim - 1], density_softplus);
     if (sigma > sigma_thresh) {
-        const float att = expf(-dt * sigma);  // (1 - alpha)
+        const float att = __expf(-dt * sigma);  // (1 - alpha)
         const float weight = light_intensity * (1.f - att);
         const float3 sh_out = apply_sh<bd>(basis_fn, interp);
         const float3 rgb = sh_to_rgb(sh_out, rgb_padding);
@@ -128,13 +128,13 @@ __device__ __inline__ void bwd_loop_p1(const float * __restrict__ interp,
     const int bd = basis_dim(data_dim, 3);
     const float sigma = density_fwd(interp[data_dim - 1], density_softplus);
     if (sigma > sigma_thresh) {
-        const float att = expf(-dt * sigma);
+        const float att = __expf(-dt * sigma);
         const float weight = light_intensity * (1.f - att);
         const float3 sh_out = apply_sh<bd>(basis_fn, interp);
         const float3 rgb = sh_to_rgb(sh_out, rgb_padding);
         const float total_color = rgb.x * grad_output[0] + rgb.y * grad_output[1] + rgb.z * grad_output[2];
         light_intensity *= att;
-        accum += weight * total_color;
+        accum = fmaf(weight, total_color, accum);
     }
 }
 
@@ -156,6 +156,8 @@ __global__ void fetch_interpolate(
 
     const int n_intrs = n_steps[b];
     const int * const nid_start_ptr = &t_nids[0][0][0][0][0];
+    int nid_ptr_offset;
+
     float3 pos;
     float interp_val[data_dim];
 
@@ -164,41 +166,51 @@ __global__ void fetch_interpolate(
         float * const c_interp_weights = &interp_weights[b][i][0];
         _dev_query_corners<branching>(
                 t_child, t_nids, pos,
-                /*weights=*/c_interp_weights, /*nid_ptr=*/&nid_ptrs[b][i]);
-        const int * n_ptr = nid_start_ptr + nid_ptrs[b][i];
+                /*weights=*/c_interp_weights, /*nid_ptr=*/&nid_ptr_offset);//&nid_ptrs[b][i]);
+        int * n_ptr = nid_start_ptr + nid_ptr_offset;
         #pragma unroll data_dim
         for (int k = 0; k < data_dim; k++) {
             interp_val[k] = c_interp_weights[0] * t_data[*n_ptr][k];
         }
+        n_ptr += 1;
         #pragma unroll data_dim
         for (int k = 0; k < data_dim; k++) {
-            interp_val[k] = fmaf(c_interp_weights[1], t_data[*(n_ptr + 1)][k], interp_val[k]);
+            interp_val[k] = fmaf(c_interp_weights[1], t_data[*n_ptr][k], interp_val[k]);
         }
+        n_ptr += 1;
         #pragma unroll data_dim
         for (int k = 0; k < data_dim; k++) {
-            interp_val[k] = fmaf(c_interp_weights[2], t_data[*(n_ptr + 2)][k], interp_val[k]);
+            interp_val[k] = fmaf(c_interp_weights[2], t_data[*n_ptr][k], interp_val[k]);
         }
+        n_ptr += 1;
         #pragma unroll data_dim
         for (int k = 0; k < data_dim; k++) {
-            interp_val[k] = fmaf(c_interp_weights[3], t_data[*(n_ptr + 3)][k], interp_val[k]);
+            interp_val[k] = fmaf(c_interp_weights[3], t_data[*n_ptr][k], interp_val[k]);
         }
+        n_ptr += 1;
         #pragma unroll data_dim
         for (int k = 0; k < data_dim; k++) {
-            interp_val[k] = fmaf(c_interp_weights[4], t_data[*(n_ptr + 4)][k], interp_val[k]);
+            interp_val[k] = fmaf(c_interp_weights[4], t_data[*n_ptr][k], interp_val[k]);
         }
+        n_ptr += 1;
         #pragma unroll data_dim
         for (int k = 0; k < data_dim; k++) {
-            interp_val[k] = fmaf(c_interp_weights[5], t_data[*(n_ptr + 5)][k], interp_val[k]);
+            interp_val[k] = fmaf(c_interp_weights[5], t_data[*n_ptr][k], interp_val[k]);
         }
+        n_ptr += 1;
         #pragma unroll data_dim
         for (int k = 0; k < data_dim; k++) {
-            interp_val[k] = fmaf(c_interp_weights[6], t_data[*(n_ptr + 6)][k], interp_val[k]);
+            interp_val[k] = fmaf(c_interp_weights[6], t_data[*n_ptr][k], interp_val[k]);
         }
+        n_ptr += 1;
         #pragma unroll data_dim
         for (int k = 0; k < data_dim; k++) {
-            interp_val[k] = fmaf(c_interp_weights[7], t_data[*(n_ptr + 7)][k], interp_val[k]);
+            interp_val[k] = fmaf(c_interp_weights[7], t_data[*n_ptr][k], interp_val[k]);
+            // Write final result to global memory
             interp_vals[b][i][k] = interp_val[k];
         }
+        // Write neighbor-ID pointer offset to global memory
+        nid_ptrs[b][i] = nid_ptr_offset;
     }
 }
 
@@ -365,9 +377,8 @@ __global__ void trace_ray_backward(
     // PASS 1: Just to compute the accum variable. This could be merged with the fwd pass (if we knew grad_output)
     float light_intensity = 1.f;
     for (int i = 0; i < n_intrs; i++) {
-        float delta_t = ray_steps[b][i];
-        if (delta_t <= 0) break;
-
+        const float delta_t = ray_steps[b][i];
+        // Essentially updates the accum variable
         bwd_loop_p1<data_dim>(
             &interp_vals[b][i][0], basis_fn, &grad_output[b][0], density_softplus,
             sigma_thresh, delta_t, rgb_padding, light_intensity, accum);
@@ -383,25 +394,26 @@ __global__ void trace_ray_backward(
     light_intensity = 1.f;
     for (int i = 0; i < n_intrs; i++) {
         float delta_t = ray_steps[b][i];
-        if (delta_t <= 0) break;
         // Zero-out gradient
         for (int j = 0; j < data_dim; ++j) { grad_tree_val[j] = 0; }
 
         const float raw_sigma = interp_vals[b][i][data_dim - 1];
         const float sigma = density_fwd(raw_sigma, density_softplus);
         if (sigma > sigma_thresh) {
-            const float att = expf(-delta_t * sigma);
+            const float att = __expf(-delta_t * sigma);
             const float weight = light_intensity * (1.f - att);
             const float3 sh_out = apply_sh<bd>(basis_fn, &interp_vals[b][i][0]);
             const float3 rgb = sh_to_rgb(sh_out, rgb_padding);
             const float total_color = rgb.x * grad_output[b][0] + rgb.y * grad_output[b][1] + rgb.z * grad_output[b][2];
             light_intensity *= att;
-            accum -= weight * total_color;
+            accum = fmaf(-weight, total_color, accum);
 
             // Gradient wrt RGB inputs
-		    const float3 dloss_by_drgb = make_float3(weight * grad_output[b][0], weight * grad_output[b][1], weight * grad_output[b][2]);
-		    const float3 rgb_bwd = sh_to_rgb_backward(sh_out, rgb_padding);
-		    apply_sh_bwd<bd>(basis_fn, rgb_bwd * dloss_by_drgb, grad_tree_val);
+		    float3 rgb_bwd = sh_to_rgb_backward(sh_out, rgb_padding);
+		    rgb_bwd.x = rgb_bwd.x * weight * grad_output[b][0];
+		    rgb_bwd.y = rgb_bwd.y * weight * grad_output[b][1];
+		    rgb_bwd.z = rgb_bwd.z * weight * grad_output[b][2];
+		    apply_sh_bwd<bd>(basis_fn, rgb_bwd, grad_tree_val);
             // Gradient wrt Sigma inputs
             const float sigma_derivative = density_bwd(raw_sigma, density_softplus);
             grad_tree_val[data_dim - 1] = sigma_derivative * delta_t * (total_color * light_intensity - accum);

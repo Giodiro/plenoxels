@@ -1,8 +1,8 @@
 #pragma once
 
 
-#define _SOFTPLUS_M1(x) (logf(1 + expf((x) - 1)))
-#define _SIGMOID(x) (1 / (1 + expf(-(x))))
+#define _SOFTPLUS_M1(x) (__logf(1 + __expf((x) - 1)))
+#define _SIGMOID(x) (1 / (1 + __expf(-(x))))
 
 
 template <typename T>
