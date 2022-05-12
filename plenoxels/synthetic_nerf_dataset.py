@@ -63,9 +63,9 @@ class SyntheticNerfDataset(TensorDataset):
         else:
             self.orig_imgs, self.poses, self.focal = self.load_from_disk()
 
-        self.imgs, self.rays = self.init_rays()
+        self.imgs, self.rays_o, self.rays_d = self.init_rays()
 
-        super().__init__(self.rays, self.imgs)
+        super().__init__(self.rays_o, self.rays_d, self.imgs)
 
     def load_from_disk(self):
         with open(os.path.join(self.datadir, f"transforms_{self.split}.json"), 'r') as f:
@@ -113,13 +113,16 @@ class SyntheticNerfDataset(TensorDataset):
             [get_rays(self.img_h, self.img_w, self.focal, p)
              for p in self.poses[:, :3, :4]], 0)  # [N, ro+rd, H, W, 3]
         # Merge N, H, W dimensions
-        rays = rays.permute(0, 2, 3, 1, 4).reshape(-1, 2, 3)  # [N*H*W, ro+rd, 3]
-        rays = rays.to(dtype=torch.float32).contiguous()
+        rays_o = rays[:, 0, ...].reshape(-1, 3)  # [N*H*W, 3]
+        rays_o = rays_o.to(dtype=torch.float32).contiguous()
+        rays_d = rays[:, 1, ...].reshape(-1, 3)  # [N*H*W, 3]
+        rays_d = rays_d.to(dtype=torch.float32).contiguous()
 
         if self.split == "test":
             imgs = imgs.view(num_frames, self.img_w * self.img_h, 3)  # [N, H*W, 3]
-            rays = rays.view(num_frames, self.img_w * self.img_h, 2, 3)  # [N, H*W, 2, 3]
-        return imgs, rays
+            rays_o = rays_o.view(num_frames, self.img_w * self.img_h, 3)  # [N, H*W, 3]
+            rays_d = rays_d.view(num_frames, self.img_w * self.img_h, 3)  # [N, H*W, 3]
+        return imgs, rays_o, rays_d
 
     def update_resolution(self, new_reso):
         init_data = {"orig_imgs": self.orig_imgs, "poses": self.poses, "focal": self.focal}
