@@ -369,7 +369,8 @@ class QuantizedCornerTree(torch.nn.Module):
         batch, nintrs = pts.shape[:2]
         sel_nids, iweights = self.tree.query(pts[valid].view(-1, 3), normalize=False, fetch_data=False)
         sel_data = self.tree.data.weight[sel_nids.view(-1), :]
-        vq_loss, sel_data_quantized, perplexity, _ = self.quantizer(sel_data).view(sel_nids.shape[0], 8, -1)  # N, 8, dim
+        vq_loss, sel_data_quantized, perplexity, _ = self.quantizer(sel_data)
+        sel_data_quantized = sel_data_quantized.view(sel_nids.shape[0], 8, -1)  # N, 8, dim
         sel_data_interp = (sel_data_quantized * iweights.unsqueeze(-1)).sum(1)  # N, dim
 
         # interp_masked, iweights = self.tree.query(pts[valid].view(-1, 3), normalize=False)
