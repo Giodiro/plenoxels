@@ -39,13 +39,14 @@ class RegularGrid(nn.Module):
                  data_dim: int,
                  near_far: Tuple[float]):
         super().__init__()
-        self.resolution = resolution
-        self.aabb = aabb
+        self.register_buffer("resolution", resolution.float())
+        self.register_buffer("aabb", aabb)
         self.near_far = near_far
         self.data_dim = data_dim
 
         self.data = nn.Parameter(torch.empty(
-            (torch.prod(resolution).item(), data_dim), dtype=torch.float32))
+            1, data_dim, int(resolution[0]), int(resolution[1]), int(resolution[2]), dtype=torch.float32))
+        nn.init.normal_(self.data, std=0.1)
 
     @property
     def n_intersections(self):
@@ -53,7 +54,7 @@ class RegularGrid(nn.Module):
 
     @property
     def inv_aabb_size(self):
-        aabb_size = self.aabb_[1] - self.aabb_[0]
+        aabb_size = self.aabb[1] - self.aabb[0]
         return 2 / aabb_size
 
     @property
@@ -84,7 +85,7 @@ class RegularGrid(nn.Module):
         intrs_pts_mask = torch.all((self.aabb[0] < intrs_pts) & (intrs_pts < self.aabb[1]), dim=-1)  # [batch, n_intrs-1]
 
         intrs_pts = normalize_coord(intrs_pts, self.aabb, self.inv_aabb_size)
-        data_interp = self._interp(
+        data_interp = interp_regular(
             self.data, intrs_pts[intrs_pts_mask].view(1, -1, 1, 1, 3)).T  # [mask_pts, ch]
         return data_interp, intrs_pts_mask, intersections
 
@@ -110,10 +111,13 @@ class ShDictRender(nn.Module):
         self.abs_light_thresh = abs_light_thresh  # TODO: Unused
         self.occupancy_thresh = occupancy_thresh  # TODO: Unused
 
-        self.atoms = torch.nn.EmbeddingBag(self.num_atoms, self.data_dim, mode='sum')  # n_data, data_dim
+        self.atoms = nn.Parameter(torch.empty(self.num_atoms, self.data_dim, dtype=torch.float32))
+        #self.atoms = torch.nn.EmbeddingBag(self.num_atoms, self.data_dim, mode='sum')  # n_data, data_dim
         with torch.no_grad():
-            self.atoms.data[:, :-1].fill_(init_rgb)
-            self.atoms.data[:, -1].fill_(init_sigma)
+            self.atoms[:, :-1].fill_(init_rgb)
+            self.atoms[:, -1].fill_(init_sigma)
+            #self.atoms.weight[:, :-1].fill_(init_rgb)
+            #self.atoms.weight[:, -1].fill_(init_sigma)
         self.sh_encoder = sh_encoder
 
     def forward(self, rays_o, rays_d):
@@ -121,10 +125,11 @@ class ShDictRender(nn.Module):
         batch, nintrs = queries_mask.size()
 
         m_batch = queries.size(0)
-        data_masked = self.atoms(
-            torch.arange(self.num_atoms, device=rays_o.device).unsqueeze(0).repeat(m_batch, 1),
-            queries
-        )
+        data_masked = queries @ self.atoms
+        #data_masked = self.atoms(
+        #    torch.arange(self.num_atoms, device=rays_o.device).unsqueeze(0).repeat(m_batch, 1),
+        #    per_sample_weights=queries
+        #)
 
         # 1. Process density: Un-masked sigma (batch, n_intrs-1), and compute.
         sigma_masked = data_masked[:, -1]
