@@ -111,25 +111,35 @@ class ShDictRender(nn.Module):
         self.abs_light_thresh = abs_light_thresh  # TODO: Unused
         self.occupancy_thresh = occupancy_thresh  # TODO: Unused
 
-        self.atoms = nn.Parameter(torch.empty(self.num_atoms, self.data_dim, dtype=torch.float32))
-        #self.atoms = torch.nn.EmbeddingBag(self.num_atoms, self.data_dim, mode='sum')  # n_data, data_dim
+        self.atoms = nn.Parameter(torch.empty(self.num_atoms, self.data_dim, 8, dtype=torch.float32))
         with torch.no_grad():
             self.atoms[:, :-1].fill_(init_rgb)
             self.atoms[:, -1].fill_(init_sigma)
-            #self.atoms.weight[:, :-1].fill_(init_rgb)
-            #self.atoms.weight[:, -1].fill_(init_sigma)
         self.sh_encoder = sh_encoder
 
     def forward(self, rays_o, rays_d):
-        queries, queries_mask, intersections = self.grid(rays_o, rays_d)
+        # queries: [n_pts, n_atoms]  queries_mask: [batch, n_intrs - 1]  intersections: [batch, n_intrs]
+        queries, queries_mask, intersections, intrs_pts = self.grid(rays_o, rays_d)
         batch, nintrs = queries_mask.size()
+        n_pts = queries.shape[0]
 
-        m_batch = queries.size(0)
-        data_masked = queries @ self.atoms
-        #data_masked = self.atoms(
-        #    torch.arange(self.num_atoms, device=rays_o.device).unsqueeze(0).repeat(m_batch, 1),
-        #    per_sample_weights=queries
-        #)
+        # [n_pts, n_atoms] @ [n_atoms, data_dim, 8]
+        data_masked = (queries @ self.atoms.view(self.num_atoms, -1)).view(n_pts, *self.atoms.shape[1:])
+        # data_masked = queries @ self.atoms  # [n_pts, data_dim]
+        # To allow multiple cells in each atom:
+        #  - fetch the intersections connected to each data-point (need to use the queries_mask)
+        #  - figure out in which sub-cell each intersection is. We may need intersection-pts instead of intersections.
+        #     Not entirely clear how we'd do this! We need the aabb of the coarse-cell, do the aabb test on that and from there
+        #     get the sub-cell?
+
+        # intrs_pts are between -1, 1
+        pts = intrs_pts * (self.grid.resolution / 2) + 1e-5
+        grid_pts = torch.floor(pts)
+        diff = pts - grid_pts
+        diff *= 2
+        indices = torch.floor(diff).clamp_max_(1)
+        indices = indices[:, 0] * 4 + indices[:, 1] * 2 + indices[:, 0]
+        data_masked = data_masked[torch.arange(n_pts, device=data_masked.device), :, indices]
 
         # 1. Process density: Un-masked sigma (batch, n_intrs-1), and compute.
         sigma_masked = data_masked[:, -1]
