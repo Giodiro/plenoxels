@@ -84,10 +84,11 @@ class RegularGrid(nn.Module):
         # noinspection PyTypeChecker
         intrs_pts_mask = torch.all((self.aabb[0] < intrs_pts) & (intrs_pts < self.aabb[1]), dim=-1)  # [batch, n_intrs-1]
 
+        intrs_pts = intrs_pts[intrs_pts_mask]  # masked points
         intrs_pts = normalize_coord(intrs_pts, self.aabb, self.inv_aabb_size)
         data_interp = interp_regular(
-            self.data, intrs_pts[intrs_pts_mask].view(1, -1, 1, 1, 3)).T  # [mask_pts, ch]
-        return data_interp, intrs_pts_mask, intersections
+            self.data, intrs_pts.view(1, -1, 1, 1, 3)).T  # [mask_pts, ch]
+        return data_interp, intrs_pts_mask, intersections, intrs_pts
 
 
 class ShDictRender(nn.Module):
@@ -126,19 +127,13 @@ class ShDictRender(nn.Module):
         # [n_pts, n_atoms] @ [n_atoms, data_dim, 8]
         data_masked = (queries @ self.atoms.view(self.num_atoms, -1)).view(n_pts, *self.atoms.shape[1:])
         # data_masked = queries @ self.atoms  # [n_pts, data_dim]
-        # To allow multiple cells in each atom:
-        #  - fetch the intersections connected to each data-point (need to use the queries_mask)
-        #  - figure out in which sub-cell each intersection is. We may need intersection-pts instead of intersections.
-        #     Not entirely clear how we'd do this! We need the aabb of the coarse-cell, do the aabb test on that and from there
-        #     get the sub-cell?
-
-        # intrs_pts are between -1, 1
-        pts = intrs_pts * (self.grid.resolution / 2) + 1e-5
-        grid_pts = torch.floor(pts)
-        diff = pts - grid_pts
-        diff *= 2
-        indices = torch.floor(diff).clamp_max_(1)
-        indices = indices[:, 0] * 4 + indices[:, 1] * 2 + indices[:, 0]
+        with torch.autograd.no_grad():
+            # intrs_pts are between -1, 1
+            pts = intrs_pts * (self.grid.resolution / 2) + 1e-5
+            pts_diff = pts - torch.floor(pts)  # Difference between point and point snapped to grid
+            pts_diff.mul_(2)
+            indices = torch.floor(pts_diff).clamp_max_(1).long()
+            indices = indices[:, 0] * 4 + indices[:, 1] * 2 + indices[:, 2]
         data_masked = data_masked[torch.arange(n_pts, device=data_masked.device), :, indices]
 
         # 1. Process density: Un-masked sigma (batch, n_intrs-1), and compute.
