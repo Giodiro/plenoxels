@@ -37,16 +37,18 @@ class RegularGrid(nn.Module):
                  resolution: torch.Tensor,
                  aabb: torch.Tensor,
                  data_dim: int,
-                 near_far: Tuple[float]):
+                 near_far: Tuple[float],
+                 interpolate: bool = True):
         super().__init__()
         self.register_buffer("resolution", resolution.float())
         self.register_buffer("aabb", aabb)
         self.near_far = near_far
         self.data_dim = data_dim
+        self.interpolate = interpolate
 
         self.data = nn.Parameter(torch.empty(
             1, data_dim, int(resolution[0]), int(resolution[1]), int(resolution[2]), dtype=torch.float32))
-        nn.init.normal_(self.data, std=0.1)
+        nn.init.normal_(self.data, std=0.01)
 
     @property
     def n_intersections(self):
@@ -86,9 +88,15 @@ class RegularGrid(nn.Module):
 
         intrs_pts = intrs_pts[intrs_pts_mask]  # masked points
         intrs_pts = normalize_coord(intrs_pts, self.aabb, self.inv_aabb_size)
-        data_interp = interp_regular(
-            self.data, intrs_pts.view(1, -1, 1, 1, 3)).T  # [mask_pts, ch]
-        return data_interp, intrs_pts_mask, intersections, intrs_pts
+        if self.interpolate:
+            data_out = interp_regular(
+                self.data, intrs_pts.view(1, -1, 1, 1, 3)).T  # [mask_pts, ch]
+        else:
+            grid_pts = (intrs_pts + 1) * (self.grid.resolution / 2) + 1e-5
+            indices = torch.floor(grid_pts).long()
+            data_out = self.data[0, :, indices[:, 0], indices[:, 1], indices[:, 2]]
+
+        return data_out, intrs_pts_mask, intersections, intrs_pts
 
 
 class ShDictRender(nn.Module):
