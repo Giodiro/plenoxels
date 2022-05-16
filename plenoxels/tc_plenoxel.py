@@ -193,42 +193,30 @@ def get_interp_weights(xs, ys, zs):
 class TrilinearInterpolate(torch.autograd.Function):
     @staticmethod
     def forward(ctx, neighbor_data: torch.Tensor, offsets: torch.Tensor):
-        # neighbor_data: [batch, n_intrs, 8, channels]
-        # offsets:       [batch, n_intrs, 3]
-        # out:           [batch, n_intrs, channels]
-
-        # Coalesce all intersections into the 'batch' dimension. Call batch * n_intrs == n_pts
-        batch, nintrs = offsets.shape[:2]
-        neighbor_data = neighbor_data.view(batch * nintrs, 8, -1)  # [n_pts, 8, channels]
-        offsets = offsets.view(batch * nintrs, 3).to(dtype=neighbor_data.dtype)  # [n_pts, 3]
-
+        # neighbor_data: [batch, channels, 8]
+        # offsets:       [batch, 3]
+        # out:           [batch, channels]
+        offsets = offsets.to(dtype=neighbor_data.dtype)  # [batch, 3]
+        weights = get_interp_weights(xs=offsets[:, 0], ys=offsets[:, 1], zs=offsets[:, 2]).unsqueeze(1)  # [batch, 1, 8]
         if neighbor_data.dtype == torch.bfloat16:
-            neighbor_data = neighbor_data.transpose(1, 2)  # [n_pts, ch, 8]
-            weights = get_interp_weights(xs=offsets[:, 0], ys=offsets[:, 1], zs=offsets[:, 2]).unsqueeze(1)  # [n_pts, 1, 8]
-            out = neighbor_data.mul_(weights).sum(-1)  # [n_pts, ch]
+            out = neighbor_data.mul_(weights).sum(-1)  # [batch, ch]
         else:
-            weights = get_interp_weights(xs=offsets[:, 0], ys=offsets[:, 1], zs=offsets[:, 2]).unsqueeze(-1)  # [n_pts, 8, 1]
-            out = torch.einsum('bik, bik -> bk', neighbor_data, weights)
-
-        out = out.view(batch, nintrs, -1)  # [batch, n_intrs, n_ch]
+            out = torch.einsum('bki, bki -> bk', neighbor_data, weights)  # [batch, ch]
 
         ctx.weights = weights
-        ctx.batch, ctx.nintrs = batch, nintrs
         return out
 
     @staticmethod
     def backward(ctx, grad_output):
-        # weights:      [n_pts, 8, 1]
-        # grad_output:  [batch, n_intrs, n_channels]
-        # out:          [batch, n_intrs, 8, n_channels]
-        batch, nintrs = ctx.batch, ctx.nintrs
-        weights = ctx.weights.reshape(batch, nintrs, 8, 1)
-        return (grad_output.unsqueeze(2) * weights), None, None
+        # weights:      [batch, 1, 8]
+        # grad_output:  [batch, n_channels]
+        # out:          [batch, n_channels, 8]
+        return grad_output[..., None] * ctx.weights, None, None
 
     @staticmethod
     def test_autograd():
-        data = torch.randn(5, 4, 8, 6).to(dtype=torch.float64).requires_grad_()
-        weights = torch.randn(5, 4, 3).to(dtype=torch.float64)
+        data = torch.randn(5, 6, 8).to(dtype=torch.float64).requires_grad_()
+        weights = torch.randn(5, 3).to(dtype=torch.float64)
 
         torch.autograd.gradcheck(lambda d: TrilinearInterpolate.apply(d, weights),
                                  inputs=data)

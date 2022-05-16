@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from plenoxels.tc_plenoxel import shrgb2rgb, depth_map, sigma2alpha
+from plenoxels.tc_plenoxel import shrgb2rgb, depth_map, sigma2alpha, TrilinearInterpolate
 
 
 def interp_regular(grid, pts):
@@ -124,20 +124,17 @@ class ShDictRender(nn.Module):
         batch, nintrs = queries_mask.size()
         n_pts = queries.shape[0]
 
-        # [n_pts, n_atoms] @ [n_atoms, data_dim, 8]
+        # [n_pts, n_atoms] @ [n_atoms, data_dim, 8] => [n_pts, data_dim, 8]
         data_masked = (queries @ self.atoms.view(self.num_atoms, -1)).view(n_pts, *self.atoms.shape[1:])
-        # data_masked = queries @ self.atoms  # [n_pts, data_dim]
+        # Interpolate atoms.
         with torch.autograd.no_grad():
             # intrs_pts are between -1, 1
             pts = intrs_pts * (self.grid.resolution / 2) + 1e-5
-            pts_diff = pts - torch.floor(pts)  # Difference between point and point snapped to grid
-            pts_diff.mul_(2)
-            indices = torch.floor(pts_diff).clamp_max_(1).long()
-            indices = indices[:, 0] * 4 + indices[:, 1] * 2 + indices[:, 2]
-        data_masked = data_masked[torch.arange(n_pts, device=data_masked.device), :, indices]
+            xyzs = pts - torch.floor(pts)
+        data_interp = TrilinearInterpolate.apply(data_masked, xyzs)  # [n_pts, data_dim]
 
         # 1. Process density: Un-masked sigma (batch, n_intrs-1), and compute.
-        sigma_masked = data_masked[:, -1]
+        sigma_masked = data_interp[:, -1]
         sigma = torch.zeros(batch, nintrs, dtype=sigma_masked.dtype, device=sigma_masked.device)
         sigma.masked_scatter_(queries_mask, sigma_masked)
         sigma = F.relu(sigma)
@@ -148,7 +145,7 @@ class ShDictRender(nn.Module):
         sh_mult = sh_mult[queries_mask].unsqueeze(1)  # [mask_pts, 1, ch/3]
 
         # 4. Interpolate rgbdata, use SH coefficients to get to RGB
-        sh_masked = data_masked[:, :-1]
+        sh_masked = data_interp[:, :-1]
         sh_masked = sh_masked.view(-1, 3, sh_mult.shape[-1])  # [mask_pts, 3, ch/3]
         rgb_masked = torch.sum(sh_mult * sh_masked, dim=-1)   # [mask_pts, 3]
 
