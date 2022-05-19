@@ -161,10 +161,10 @@ class MultiSyntheticNerfDataset(TensorDataset):
         self.focal = torch.cat(all_focal, 0)
         self.scene_ids = torch.cat(all_scene_ids, 0)
 
-        self.rays = self.init_rays()  # [N, H*W, ro+rd, 3]
+        self.rays_o, self.rays_d = self.init_rays()  # [N, H*W, ro+rd, 3]
         self.imgs_hr = self.imgs_hr.reshape(self.imgs_hr.shape[0], -1, 3)  # [N, H*W, 3]
         self.imgs_lr = self.imgs_lr.reshape(self.imgs_lr.shape[0], -1, 3)  # [N, H*W, 3]
-        super().__init__(self.rays, self.imgs_lr, self.imgs_hr, self.scene_ids)
+        super().__init__(self.rays_o, self.rays_d, self.imgs_lr, self.imgs_hr, self.scene_ids)
 
     def process_img(self, img: PIL.Image):
         img = self.pil2tensor(img)
@@ -209,8 +209,10 @@ class MultiSyntheticNerfDataset(TensorDataset):
         # Merge H, W dimensions
         rays = rays.permute(0, 2, 3, 1, 4).reshape(num_frames, -1, 2, 3)  # [N, H*W, ro+rd, 3]
         rays = rays.to(dtype=torch.float32)
+        rays_o = rays[:, :, 0, :].contiguous()
+        rays_d = rays[:, :, 1, :].contiguous()
 
-        return rays
+        return rays_o, rays_d
 
 
 class MultiSyntheticNerfDatasetv2(MultiSyntheticNerfDataset):
@@ -231,7 +233,8 @@ class MultiSyntheticNerfDatasetv2(MultiSyntheticNerfDataset):
     def __getitem__(self, idx):
         h_img = self.imgs_hr[idx].view(self.high_resolution, self.high_resolution, 3)
         l_img = self.imgs_lr[idx].view(self.low_resolution, self.low_resolution, 3)
-        rays = self.rays[idx].view(self.low_resolution, self.low_resolution, 2, 3)
+        rays_o = self.rays_o[idx].view(self.low_resolution, self.low_resolution, 2, 3)
+        rays_d = self.rays_d[idx].view(self.low_resolution, self.low_resolution, 2, 3)
         scene_id = self.scene_ids[idx]
 
         if self.split == 'train':
@@ -239,7 +242,8 @@ class MultiSyntheticNerfDatasetv2(MultiSyntheticNerfDataset):
             rnd_h = random.randint(0, max(0, self.low_resolution - self.l_patch_size))
             rnd_w = random.randint(0, max(0, self.low_resolution - self.l_patch_size))
             l_img = l_img[rnd_h: rnd_h + self.l_patch_size, rnd_w: rnd_w + self.l_patch_size, :]
-            rays = rays[rnd_h: rnd_h + self.l_patch_size, rnd_w: rnd_w + self.l_patch_size, ...]
+            rays_o = rays_o[rnd_h: rnd_h + self.l_patch_size, rnd_w: rnd_w + self.l_patch_size, ...]
+            rays_d = rays_d[rnd_h: rnd_h + self.l_patch_size, rnd_w: rnd_w + self.l_patch_size, ...]
             # Crop the high-res patch correspondingly
             rnd_h_highres = int(rnd_h * self.scale_factor)
             rnd_w_highres = int(rnd_w * self.scale_factor)
@@ -249,5 +253,6 @@ class MultiSyntheticNerfDatasetv2(MultiSyntheticNerfDataset):
             "scene_id": scene_id,
             "low": l_img,
             "high": h_img,
-            "rays": rays
+            "rays_o": rays_o,
+            "rays_d": rays_d,
         }
