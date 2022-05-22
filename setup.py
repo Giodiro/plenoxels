@@ -10,14 +10,15 @@ INSTALL_REQUIREMENTS = []
 ext_modules = [
     CUDAExtension('plenoxels.c_ext',
         sources=[
-            'plenoxels/csrc/svox.cu',
+            # 'plenoxels/csrc/svox.cu',
             # 'plenoxels/csrc/octree_common.cu',
             # 'csrc/svox_kernel.cu',
             # 'csrc/rt_kernel.cu',
+            'csrc/regular_tree.cu'
         ],
         include_dirs=[
             'plenoxels/csrc',
-            'plenoxels/csrc/include',
+            # 'plenoxels/csrc/include',
         ],
         extra_compile_args={
             "cxx": ["-std=c++14", "-g"],
