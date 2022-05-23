@@ -1,10 +1,15 @@
 from typing import Tuple, List
+from importlib.machinery import PathFinder
+import os
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from plenoxels.tc_plenoxel import shrgb2rgb, depth_map, sigma2alpha, TrilinearInterpolate
+from plenoxels.tc_plenoxel import shrgb2rgb, depth_map, sigma2alpha
+
+spec = PathFinder().find_spec("c_ext", [os.path.dirname(__file__)])
+torch.ops.load_library(spec.origin)
 
 
 def interp_regular(grid, pts, align_corners=True, padding_mode='zeros'):
@@ -129,19 +134,11 @@ class ShDictRender(nn.Module):
         self.abs_light_thresh = abs_light_thresh  # TODO: Unused
         self.occupancy_thresh = occupancy_thresh  # TODO: Unused
 
-        self.atoms = nn.Parameter(torch.empty(self.num_atoms, self.data_dim, self.fine_reso, self.fine_reso, self.fine_reso, dtype=torch.float32))
+        self.atoms = nn.Parameter(torch.empty(self.num_atoms, self.fine_reso ** 3, self.data_dim, dtype=torch.float32))
         with torch.no_grad():
-            self.atoms[:, :-1].fill_(init_rgb)
-            self.atoms[:, -1].fill_(init_sigma)
+            self.atoms[..., :-1].fill_(init_rgb)
+            self.atoms[..., -1].fill_(init_sigma)
         self.sh_encoder = sh_encoder
-        self.register_buffer("const_neighbor_ids", torch.tensor([[[[0, 3, 9, 12, 1, 4, 10, 13],
-                                                                      [3, 6, 12, 15, 4, 7, 13, 16]],
-                                                                     [[9, 12, 18, 21, 10, 13, 19, 22],
-                                                                      [12, 15, 21, 24, 13, 16, 22, 25]]],
-                                                                    [[[1, 4, 10, 13, 2, 5, 11, 14],
-                                                                      [4, 7, 13, 16, 5, 8, 14, 17]],
-                                                                     [[10, 13, 19, 22, 11, 14, 20, 23],
-                                                                      [13, 16, 22, 25, 14, 17, 23, 26]]]], dtype=torch.long))
 
     def __repr__(self):
         return (f"ShDictRender(grids={self.grids}, num_atoms={self.num_atoms}, data_dim={self.data_dim}, "
@@ -154,27 +151,15 @@ class ShDictRender(nn.Module):
         batch, nintrs = queries_mask.size()
         n_pts = queries.shape[0]
 
-        # [n_pts, n_atoms] @ [n_atoms, data_dim, 8] => [n_pts, data_dim, *patch_res]
-        data_masked = (queries @ self.atoms.view(self.num_atoms, -1)).view(n_pts, *self.atoms.shape[1:])
+        intrs_pts.mul_(2).sub_(1)# = intrs_pts * 2 - 1
+        data_interp = torch.ops.plenoxels.l2_interp(queries, self.atoms, intrs_pts)
 
-        intrs_pts = intrs_pts * 2 - 1
-        data_interp = interp_regular(data_masked, intrs_pts.view(n_pts, 1, 1, 1, 3), align_corners=False, padding_mode='border')
+
+        # [n_pts, n_atoms] @ [n_atoms, data_dim, 8] => [n_pts, data_dim, *patch_res]
+        # data_masked = (queries @ self.atoms.view(self.num_atoms, -1)).view(n_pts, *self.atoms.shape[1:])
 
         # Interpolate atoms.
-        #print("pts-in", intrs_pts)
-        #with torch.autograd.no_grad():
-            #pts = intrs_pts * 2
-            #floor = torch.floor(pts).clamp_max_(1)
-            #pts -= floor
-            #floor = floor.long()
-            #neighbor_ids = self.const_neighbor_ids[floor[:, 0], floor[:, 1], floor[:, 2]]  # [n_pts, 8]
-       # print("pts-out", pts)
-        #print("neighbor-ids", neighbor_ids)
-
-        #neighbors = torch.gather(data_masked, dim=2, index=neighbor_ids.unsqueeze(1).expand(n_pts, data_masked.shape[1], 8)) # [n_pts, data_dim, 8]
-        #print("neighbors", neighbors)
-        #data_interp = TrilinearInterpolate.apply(neighbors, pts)
-        #print("interp", data_interp)
+        # data_interp = interp_regular(data_masked, intrs_pts.view(n_pts, 1, 1, 1, 3), align_corners=False, padding_mode='border')
 
         # 1. Process density: Un-masked sigma (batch, n_intrs-1), and compute.
         sigma_masked = data_interp[:, -1]
