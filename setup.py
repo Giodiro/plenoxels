@@ -1,4 +1,5 @@
 from setuptools import setup
+import os
 import os.path as osp
 
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
@@ -7,6 +8,14 @@ ROOT_DIR = osp.dirname(osp.abspath(__file__))
 CUDA_FLAGS = []
 INSTALL_REQUIREMENTS = []
 
+cub_home = os.environ.get("CUB_HOME", None)
+if cub_home is None:
+    prefix = os.environ.get("CONDA_PREFIX", None)
+    if prefix is not None and os.path.isdir(prefix + "/include/cub"):
+        cub_home = prefix + "/include"
+if cub_home is None:
+    raise RuntimeError('Could not find CUB')
+
 ext_modules = [
     CUDAExtension('plenoxels.c_ext',
         sources=[
@@ -14,11 +23,12 @@ ext_modules = [
             # 'plenoxels/csrc/octree_common.cu',
             # 'csrc/svox_kernel.cu',
             # 'csrc/rt_kernel.cu',
-            'csrc/regular_tree.cu'
+            'plenoxels/csrc/regular_tree.cu'
         ],
         include_dirs=[
             'plenoxels/csrc',
             # 'plenoxels/csrc/include',
+            osp.realpath(cub_home).replace('\\ ', ' '),
         ],
         extra_compile_args={
             "cxx": ["-std=c++14", "-g"],
@@ -37,6 +47,6 @@ setup(
     ext_modules=ext_modules,
     setup_requires=['pybind11>=2.5.0'],
     packages=['plenoxels'],
-    cmdclass={'build_ext': BuildExtension.with_options(no_python_abi_suffix=True, use_ninja=True)},
+    cmdclass={'build_ext': BuildExtension.with_options(no_python_abi_suffix=True, use_ninja=False)},
     zip_safe=False,
 )

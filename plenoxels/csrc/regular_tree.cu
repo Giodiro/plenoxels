@@ -2,10 +2,10 @@
 #include <tuple>
 
 #include <torch/torch.h>
+#include <torch/extension.h>
 #include <ATen/cuda/CUDAEvent.h>
 #include <c10/cuda/CUDAGuard.h>
-#include <cub/cub.cuh>
-#include "regular_tree.h"
+#include <cub/warp/warp_reduce.cuh>
 
 template <typename T, size_t N>
 using Acc32 = torch::GenericPackedTensorAccessor<T, N, torch::RestrictPtrTraits, int32_t>;
@@ -49,7 +49,7 @@ __device__ __inline__ float trilerp_one(const index_t * __restrict__ n_idx,
     const float ix0y1 = lerp(data_ptr[offy], data_ptr[offy + offz], pos[2]);  // (1-z) * (x,y+1,z) + (z) * (x,y+1,z+1)
     const float ix0 = lerp(ix0y0, ix0y1, pos[1]);                             // (1-y) * ix0y0 + (y) * ix0y1
     const float ix1y0 = lerp(data_ptr[offx], data_ptr[offx + offz], pos[2]);  // (1-z) * (x+1,y,z) + (z) * (x+1,y,z+1)
-    const float ix1y1 = lerp(data_ptr[offy + offx], data_ptr[offy + offx + offz], pos[2])  // (1-z)*(x+1,y+1,z)+z*(x+1,y+1,z+1)
+    const float ix1y1 = lerp(data_ptr[offy + offx], data_ptr[offy + offx + offz], pos[2]);  // (1-z)*(x+1,y+1,z)+z*(x+1,y+1,z+1)
     const float ix1 = lerp(ix1y0, ix1y1, pos[1]);
     return lerp(ix0, ix1, pos[0]);
 }
@@ -62,7 +62,7 @@ __device__ __inline__ float trilerp_precomputed(const float   * __restrict__ pos
     const float ix0y1 = lerp(data[2], data[3], pos[2]);
     const float ix0 = lerp(ix0y0, ix0y1, pos[1]);
     const float ix1y0 = lerp(data[4], data[5], pos[2]);
-    const float ix1y1 = lerp(data[6], data[7], pos[2])
+    const float ix1y1 = lerp(data[6], data[7], pos[2]);
     const float ix1 = lerp(ix1y0, ix1y1, pos[1]);
     return lerp(ix0, ix1, pos[0]);
 }
@@ -83,11 +83,11 @@ __global__ void k_l2_interp(Acc32<query_t, 2> Q,       // N x S
     if (warp_lane >= D || point_id > Q.size(0)) { return; }
     float pos[3] = {positions[point_id][0], positions[point_id][1], positions[point_id][2]};
     int32_t n_idx[3];
-    for (j = 0; j < 3; j++) {  // this work is repeated unnecessarily for all threads in warp.
+    for (int j = 0; j < 3; j++) {  // this work is repeated unnecessarily for all threads in warp.
         pos[j] = pos[j] * grid_size;
         pos[j] = min(max(pos[j], 0.0f), grid_size - 1.0f);
         n_idx[j] = min(static_cast<int32_t>(pos[j]), grid_size - 2);
-        pos[j] -= static_cast<float>(floor);
+        pos[j] -= static_cast<float>(n_idx[j]);
     }
     sh_t neighbor_data[8] = {0.};
     const uint32_t offz = 1;                 // stride=stride
@@ -129,11 +129,11 @@ __global__ void k_l2_interp_bwd(Acc32<float, 2> grad_output,  // N x D
 
     float pos[3] = {positions[point_id][0], positions[point_id][1], positions[point_id][2]};
     int32_t n_idx[3];
-    for (j = 0; j < 3; j++) {  // this work is repeated unnecessarily for all threads in warp.
+    for (int j = 0; j < 3; j++) {  // this work is repeated unnecessarily for all threads in warp.
         pos[j] = pos[j] * grid_size;
         pos[j] = min(max(pos[j], 0.0f), grid_size - 1.0f);
         n_idx[j] = min(static_cast<int32_t>(pos[j]), grid_size - 2);
-        pos[j] -= static_cast<float>(floor);
+        pos[j] -= static_cast<float>(n_idx[j]);
     }
     const float ax = 1.f - pos[0];
     const float ay = 1.f - pos[1];
@@ -143,8 +143,8 @@ __global__ void k_l2_interp_bwd(Acc32<float, 2> grad_output,  // N x D
     const uint32_t offx = offy * grid_size;  // stride=stride * grid_size * grid_size
     uint32_t A_offset = offx * n_idx[0] + offy * n_idx[1] + offz * n_idx[2] + warp_lane;
 
-    sh_t* __restrict__ A_ptr = &A[0];
-    sh_t* __restrict__ DA_ptr = &DA[0];
+    sh_t* __restrict__  A_ptr = A.data();
+    sh_t* __restrict__ DA_ptr = DA.data();
     const uint32_t A_stride0 = A.stride(0);
 
     const float go = grad_output[point_id][warp_lane];
@@ -209,6 +209,7 @@ __global__ void k_l2_interp_bwd(Acc32<float, 2> grad_output,  // N x D
 
 
 using torch::autograd::variable_list;
+using torch::autograd::tensor_list;
 using torch::autograd::Function;
 using torch::autograd::AutogradContext;
 using torch::autograd::Variable;
@@ -242,17 +243,18 @@ class L2InterpFunction : public Function<L2InterpFunction> {
         }
         static tensor_list backward(AutogradContext *ctx, tensor_list grad_outputs)
         {
+            const auto saved = ctx->get_saved_variables();
+            const Tensor queries = saved[0];
+            const Tensor atoms = saved[1];
+            const Tensor points = ctx->saved_data["points"].toTensor();
+            const Tensor grad_output = grad_outputs[0];
+
             const at::cuda::CUDAGuard device_guard(queries.device());
             const auto stream = at::cuda::getCurrentCUDAStream();
-            const auto saved = ctx->get_saved_variables();
-            const auto queries = saved[0];
-            const auto atoms = saved[1];
-            const auto points = ctx->saved_data["points"].toTensor();
-            const auto grad_output = grad_outputs[0];
 
             const uint32_t l2_grid_size = (uint32_t)std::sqrt(atoms.size(1));
-            auto d_atoms = torch::empty_like(atoms);
-            auto d_queries = torch::empty_like(queries);
+            Tensor d_queries = torch::zeros_like(queries);
+            Tensor d_atoms = torch::zeros_like(atoms);
             const uint32_t threads_per_block = 256;
             k_l2_interp_bwd<float, float>
                 <<< n_blocks_linear(queries.size(0), threads_per_block), threads_per_block, 0, stream.stream()>>>
@@ -265,10 +267,11 @@ class L2InterpFunction : public Function<L2InterpFunction> {
                  l2_grid_size);
             return {d_queries, d_atoms, Tensor()};
         }
-}
+};
 
 
-torch::Tensor l2_interp(const Tensor &queries, const Tensor &atoms, const Tensor &points)
+Tensor l2_interp(const Tensor &queries, const Tensor &atoms, const Tensor &points) 
+{
     return L2InterpFunction::apply(queries, atoms, points)[0];
 }
 
@@ -295,7 +298,7 @@ torch::Tensor level2_interp(const torch::Tensor &queries, const torch::Tensor &a
 }
 
 std::tuple<torch::Tensor, torch::Tensor> level2_interp_bwd(const torch::Tensor &grad_output,
-                                                           const torch::Tensor &queries
+                                                           const torch::Tensor &queries,
                                                            const torch::Tensor &atoms,
                                                            const torch::Tensor &points)
 {
@@ -303,8 +306,8 @@ std::tuple<torch::Tensor, torch::Tensor> level2_interp_bwd(const torch::Tensor &
     const auto stream = at::cuda::getCurrentCUDAStream();
 
     const uint32_t l2_grid_size = (uint32_t)std::sqrt(atoms.size(1));
-    auto d_atoms = torch::empty_like(atoms);
-    auto d_queries = torch::empty_like(queries);
+    torch::Tensor d_atoms = torch::empty_like(atoms);
+    torch::Tensor d_queries = torch::empty_like(queries);
     const uint32_t threads_per_block = 256;
     k_l2_interp_bwd<float, float>
         <<< n_blocks_linear(queries.size(0), threads_per_block), threads_per_block, 0, stream.stream()>>>
