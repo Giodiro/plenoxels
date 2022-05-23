@@ -17,10 +17,8 @@ constexpr uint32_t n_blocks_linear(uint32_t n_elements, uint32_t n_threads_linea
     return (uint32_t)(n_elements + n_threads_linear - 1) / n_threads_linear;
 }
 
-template<typename T>
-__host__ __device__ __forceinlince__ T myfma(T a, T b, T c) { throw std::invalid_argument("T"); }
-__host__ __device__ __forceinlince__ float myfma(float a, float b, float c) { return fmaf(a, b, c); }
-__host__ __device__ __forceinlince__ double myfma(double a, double b, double c) { return fma(a, b, c); }
+__host__ __device__ __forceinline__ float myfma(float a, float b, float c) { return fmaf(a, b, c); }
+__host__ __device__ __forceinline__ double myfma(double a, double b, double c) { return fma(a, b, c); }
 /*
  * Linear interpolation
  * implements (1 - w) * a + w * b via a subtraction and a fused multiply-add.
@@ -28,7 +26,7 @@ __host__ __device__ __forceinlince__ double myfma(double a, double b, double c) 
  */
 template<typename T>
 __host__ __device__ __inline__ T lerp(T a, T b, T w) {
-    return myfma<T>(w, b, - a, a);
+    return myfma(w, b - a, a);
 }
 
 template<typename index_t, typename data_t>
@@ -234,7 +232,7 @@ class L2InterpFunction : public Function<L2InterpFunction> {
 
 
             const uint32_t l2_grid_size = (uint32_t)std::sqrt(atoms.size(1));
-            auto out = torch::empty({queries.size(0), atoms.size(2)}, torch::dtype(torch::kFloat32).device(queries.device()));
+            auto out = torch::zeros({queries.size(0), atoms.size(2)}, torch::dtype(queries.dtype()).device(queries.device()));
             const uint32_t threads_per_block = 256;
             AT_DISPATCH_FLOATING_TYPES(queries.scalar_type(), "dispatch_l2interp_fwd", [&] {
                 k_l2_interp<scalar_t, scalar_t, scalar_t>
@@ -244,8 +242,8 @@ class L2InterpFunction : public Function<L2InterpFunction> {
                      out.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
                      points.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
                      l2_grid_size);
-                return out;
-            }
+            });
+            return out;
         }
         static tensor_list backward(AutogradContext *ctx, tensor_list grad_outputs)
         {
@@ -272,8 +270,8 @@ class L2InterpFunction : public Function<L2InterpFunction> {
                      queries.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
                      atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
                      l2_grid_size);
-                return {d_queries, d_atoms, Tensor()};
-            }
+            });
+            return {d_queries, d_atoms, Tensor()};
         }
 };
 
