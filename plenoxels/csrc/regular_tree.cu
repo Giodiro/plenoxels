@@ -82,7 +82,7 @@ __global__ void k_l2_interp(Acc32<query_t, 2> Q,       // N x S
     const uint32_t warp_lane = threadIdx.x % 32;
     const uint32_t S = A.size(0);
     const uint32_t D = A.size(2);
-    if (warp_lane >= D || point_id > Q.size(0)) { return; }
+    if (warp_lane >= D || point_id >= Q.size(0)) { return; }
     out_t pos[3] = {positions[point_id][0], positions[point_id][1], positions[point_id][2]};
     int32_t n_idx[3];
     for (int j = 0; j < 3; j++) {  // this work is repeated unnecessarily for all threads in warp.
@@ -126,7 +126,7 @@ __global__ void k_l2_interp_bwd(Acc32<out_t, 2> grad_output,  // N x D
     const uint32_t warp_lane = threadIdx.x % 32;
     const uint32_t S = A.size(0);
     const uint32_t D = A.size(2);
-    if (warp_lane >= D || point_id > Q.size(0)) { return; }
+    if (warp_lane >= D || point_id >= Q.size(0)) { return; }
     __shared__ typename cub::WarpReduce<out_t>::TempStorage temp_storage;
 
     out_t pos[3] = {positions[point_id][0], positions[point_id][1], positions[point_id][2]};
@@ -197,10 +197,11 @@ __global__ void k_l2_interp_bwd(Acc32<out_t, 2> grad_output,  // N x D
         atomicAdd(&DA_ptr[il], static_cast<sh_t>(iw * go));
 
         dq_temp *= go;
-        dq_temp = cub::WarpReduce<out_t>(temp_storage).Sum(dq_temp);
+        dq_temp = cub::WarpReduce<out_t>(temp_storage).Sum(dq_temp, D);
         if (warp_lane == 0) {
             DQ[point_id][s] = static_cast<query_t>(dq_temp);
         }
+        //atomicAdd(&DQ[point_id][s], static_cast<query_t>(dq_temp));
         A_offset += A_stride0;
     }
 }
@@ -231,7 +232,7 @@ class L2InterpFunction : public Function<L2InterpFunction> {
             ctx->saved_data["points"] = points;
 
 
-            const uint32_t l2_grid_size = (uint32_t)std::sqrt(atoms.size(1));
+            const uint32_t l2_grid_size = (uint32_t)std::cbrt(atoms.size(1));
             auto out = torch::zeros({queries.size(0), atoms.size(2)}, torch::dtype(queries.dtype()).device(queries.device()));
             const uint32_t threads_per_block = 256;
             AT_DISPATCH_FLOATING_TYPES(queries.scalar_type(), "dispatch_l2interp_fwd", [&] {
@@ -256,7 +257,7 @@ class L2InterpFunction : public Function<L2InterpFunction> {
             const at::cuda::CUDAGuard device_guard(queries.device());
             const auto stream = at::cuda::getCurrentCUDAStream();
 
-            const uint32_t l2_grid_size = (uint32_t)std::sqrt(atoms.size(1));
+            const uint32_t l2_grid_size = (uint32_t)std::cbrt(atoms.size(1));
             Tensor d_queries = torch::zeros_like(queries);
             Tensor d_atoms = torch::zeros_like(atoms);
             const uint32_t threads_per_block = 256;
