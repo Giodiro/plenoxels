@@ -60,13 +60,13 @@ template<typename data_t, typename out_t>
 __device__ __inline__ out_t trilerp_precomputed(const out_t   * __restrict__ pos,
                                                 const data_t  * __restrict__ data)
 {
-    const out_t ix0y0 = lerp(static_cast<out_t>(data[0]), static_cast<out_t>(data[1]), pos[2]);
-    const out_t ix0y1 = lerp(static_cast<out_t>(data[2]), static_cast<out_t>(data[3]), pos[2]);
+    const out_t ix0y0 = lerp(static_cast<out_t>(data[0]), static_cast<out_t>(data[1]), pos[0]);
+    const out_t ix0y1 = lerp(static_cast<out_t>(data[2]), static_cast<out_t>(data[3]), pos[0]);
     const out_t ix0 = lerp(ix0y0, ix0y1, pos[1]);
-    const out_t ix1y0 = lerp(static_cast<out_t>(data[4]), static_cast<out_t>(data[5]), pos[2]);
-    const out_t ix1y1 = lerp(static_cast<out_t>(data[6]), static_cast<out_t>(data[7]), pos[2]);
+    const out_t ix1y0 = lerp(static_cast<out_t>(data[4]), static_cast<out_t>(data[5]), pos[0]);
+    const out_t ix1y1 = lerp(static_cast<out_t>(data[6]), static_cast<out_t>(data[7]), pos[0]);
     const out_t ix1 = lerp(ix1y0, ix1y1, pos[1]);
-    return lerp(ix0, ix1, pos[0]);
+    return lerp(ix0, ix1, pos[2]);
 }
 
 
@@ -78,36 +78,46 @@ __global__ void k_l2_interp(Acc32<query_t, 2> Q,       // N x S
                             const uint32_t grid_size
                            )
 {
-    const uint32_t point_id = threadIdx.x / 32;
+    const uint32_t point_id = blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32;
     const uint32_t warp_lane = threadIdx.x % 32;
     const uint32_t S = A.size(0);
     const uint32_t D = A.size(2);
     if (warp_lane >= D || point_id >= Q.size(0)) { return; }
+    //printf("blockIdx.x %d, threadIdx.x %d, point %d\n", blockIdx.x, threadIdx.x, point_id);
     out_t pos[3] = {positions[point_id][0], positions[point_id][1], positions[point_id][2]};
     int32_t n_idx[3];
     for (int j = 0; j < 3; j++) {  // this work is repeated unnecessarily for all threads in warp.
-        pos[j] = pos[j] * grid_size;
-        pos[j] = min(max(pos[j], 0.0f), grid_size - 1.0f);
+        //printf("0. pos[%d] = %f\n", j, pos[j]);
+        pos[j] = pos[j] * (grid_size - 1);
+        //printf("1. pos[%d] = %f\n", j, pos[j]);
+        pos[j] = min(max(pos[j], 0.0f), static_cast<out_t>(grid_size - 1));
+        //printf("2. pos[%d] = %f\n", j, pos[j]);
         n_idx[j] = min(static_cast<int32_t>(pos[j]), grid_size - 2);
         pos[j] -= static_cast<out_t>(n_idx[j]);
+        //printf("pos[%d] = %f - id[%d] = %d\n", j, pos[j], j, n_idx[j]);
     }
     sh_t neighbor_data[8] = {0.};
-    const uint32_t offz = 1;                 // stride=stride
-    const uint32_t offy = offz * grid_size;  // stride=stride * grid_size
-    const uint32_t offx = offy * grid_size;  // stride=stride * grid_size * grid_size
+    const uint32_t offx = 1;                 // stride=stride
+    const uint32_t offy = offx * grid_size;  // stride=stride * grid_size
+    const uint32_t offz = offy * grid_size;  // stride=stride * grid_size * grid_size
     const uint32_t offdata = offx * n_idx[0] + offy * n_idx[1] + offz * n_idx[2];
+    //printf("offz %u, offy %u, offx %u, offdata %u\n", offz, offy, offx, offdata);
     for (int s = 0; s < S; s++) {
         // Load s-th weight from global
         sh_t weight = static_cast<sh_t>(Q[point_id][s]);
         neighbor_data[0] = myfma(weight, A[s][offdata][warp_lane], neighbor_data[0]);
-        neighbor_data[1] = myfma(weight, A[s][offdata + offz][warp_lane], neighbor_data[1]);
+        neighbor_data[1] = myfma(weight, A[s][offdata + offx][warp_lane], neighbor_data[1]);
         neighbor_data[2] = myfma(weight, A[s][offdata + offy][warp_lane], neighbor_data[2]);
-        neighbor_data[3] = myfma(weight, A[s][offdata + offy + offz][warp_lane], neighbor_data[3]);
-        neighbor_data[4] = myfma(weight, A[s][offdata + offx][warp_lane], neighbor_data[4]);
-        neighbor_data[5] = myfma(weight, A[s][offdata + offx + offz][warp_lane], neighbor_data[5]);
-        neighbor_data[6] = myfma(weight, A[s][offdata + offx + offy][warp_lane], neighbor_data[6]);
-        neighbor_data[7] = myfma(weight, A[s][offdata + offx + offy + offz][warp_lane], neighbor_data[7]);
+        neighbor_data[3] = myfma(weight, A[s][offdata + offy + offx][warp_lane], neighbor_data[3]);
+        neighbor_data[4] = myfma(weight, A[s][offdata + offz][warp_lane], neighbor_data[4]);
+        neighbor_data[5] = myfma(weight, A[s][offdata + offz + offx][warp_lane], neighbor_data[5]);
+        neighbor_data[6] = myfma(weight, A[s][offdata + offz + offy][warp_lane], neighbor_data[6]);
+        neighbor_data[7] = myfma(weight, A[s][offdata + offz + offy + offx][warp_lane], neighbor_data[7]);
     }
+    //printf("Before trilerp\n");
+    //for (int i = 0; i < 8; i++) {
+    //    printf("\tnd[%d] = %f\n", i, neighbor_data[i]);
+    //}
     O[point_id][warp_lane] = trilerp_precomputed(pos, neighbor_data);
 }
 
@@ -122,7 +132,7 @@ __global__ void k_l2_interp_bwd(Acc32<out_t, 2> grad_output,  // N x D
                                 const uint32_t grid_size
                                 )
 {
-    const uint32_t point_id = threadIdx.x / 32;
+    const uint32_t point_id = blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32;
     const uint32_t warp_lane = threadIdx.x % 32;
     const uint32_t S = A.size(0);
     const uint32_t D = A.size(2);
@@ -132,17 +142,17 @@ __global__ void k_l2_interp_bwd(Acc32<out_t, 2> grad_output,  // N x D
     out_t pos[3] = {positions[point_id][0], positions[point_id][1], positions[point_id][2]};
     int32_t n_idx[3];
     for (int j = 0; j < 3; j++) {  // this work is repeated unnecessarily for all threads in warp.
-        pos[j] = pos[j] * grid_size;
-        pos[j] = min(max(pos[j], 0.0f), grid_size - 1.0f);
+        pos[j] = pos[j] * (grid_size - 1);
+        pos[j] = min(max(pos[j], 0.0f), static_cast<out_t>(grid_size - 1));
         n_idx[j] = min(static_cast<int32_t>(pos[j]), grid_size - 2);
         pos[j] -= static_cast<out_t>(n_idx[j]);
     }
     const out_t ax = 1.f - pos[0];
     const out_t ay = 1.f - pos[1];
     const out_t az = 1.f - pos[2];
-    const uint32_t offz = A.stride(1);                 // stride=stride
-    const uint32_t offy = offz * grid_size;  // stride=stride * grid_size
-    const uint32_t offx = offy * grid_size;  // stride=stride * grid_size * grid_size
+    const uint32_t offx = A.stride(1);                 // stride=stride
+    const uint32_t offy = offx * grid_size;  // stride=stride * grid_size
+    const uint32_t offz = offy * grid_size;  // stride=stride * grid_size * grid_size
     uint32_t A_offset = offx * n_idx[0] + offy * n_idx[1] + offz * n_idx[2] + warp_lane;
 
     sh_t* __restrict__  A_ptr = A.data();
@@ -161,37 +171,37 @@ __global__ void k_l2_interp_bwd(Acc32<out_t, 2> grad_output,  // N x D
         dq_temp = iw * A_ptr[il];
         atomicAdd(&DA_ptr[il], static_cast<sh_t>(iw * go));
 
-        iw = ax * ay * pos[2];
-        il = A_offset + offz;
-        dq_temp = myfma(iw, A_ptr[il], dq_temp);
-        atomicAdd(&DA_ptr[il], static_cast<sh_t>(iw * go));
-
-        iw = ax * pos[1] * az;
-        il = A_offset + offy;
-        dq_temp = myfma(iw, A_ptr[il], dq_temp);
-        atomicAdd(&DA_ptr[il], static_cast<sh_t>(iw * go));
-
-        iw = ax * pos[1] * pos[2];
-        il = A_offset + offy + offz;
-        dq_temp = myfma(iw, A_ptr[il], dq_temp);
-        atomicAdd(&DA_ptr[il], static_cast<sh_t>(iw * go));
-
-        iw = pos[0] * ay * az;
+        iw = az * ay * pos[0];//ax * ay * pos[2];
         il = A_offset + offx;
         dq_temp = myfma(iw, A_ptr[il], dq_temp);
         atomicAdd(&DA_ptr[il], static_cast<sh_t>(iw * go));
 
-        iw = pos[0] * ay * pos[2];
-        il = A_offset + offx + offz;
+        iw = az * pos[1] * ax;//ax * pos[1] * az;
+        il = A_offset + offy;
         dq_temp = myfma(iw, A_ptr[il], dq_temp);
         atomicAdd(&DA_ptr[il], static_cast<sh_t>(iw * go));
 
-        iw = pos[0] * pos[1] * az;
-        il = A_offset + offx + offy;
+        iw = az * pos[1] * pos[0];//ax * pos[1] * pos[2];
+        il = A_offset + offy + offx;//offy + offz;
         dq_temp = myfma(iw, A_ptr[il], dq_temp);
         atomicAdd(&DA_ptr[il], static_cast<sh_t>(iw * go));
 
-        iw = pos[0] * pos[1] * pos[2];
+        iw = pos[2] * ay * ax;//pos[0] * ay * az;
+        il = A_offset + offz;//offx;
+        dq_temp = myfma(iw, A_ptr[il], dq_temp);
+        atomicAdd(&DA_ptr[il], static_cast<sh_t>(iw * go));
+
+        iw = pos[2] * ay * pos[0];//pos[0] * ay * pos[2];
+        il = A_offset + offz + offx;//offx + offz;
+        dq_temp = myfma(iw, A_ptr[il], dq_temp);
+        atomicAdd(&DA_ptr[il], static_cast<sh_t>(iw * go));
+
+        iw = pos[2] * pos[1] * ax;//pos[0] * pos[1] * az;
+        il = A_offset + offz + offy;//offx + offy;
+        dq_temp = myfma(iw, A_ptr[il], dq_temp);
+        atomicAdd(&DA_ptr[il], static_cast<sh_t>(iw * go));
+
+        iw = pos[2] * pos[1] * pos[0]; //pos[0] * pos[1] * pos[2];
         il = A_offset + offx + offy + offz;
         dq_temp = myfma(iw, A_ptr[il], dq_temp);
         atomicAdd(&DA_ptr[il], static_cast<sh_t>(iw * go));
@@ -237,7 +247,7 @@ class L2InterpFunction : public Function<L2InterpFunction> {
             const uint32_t threads_per_block = 256;
             AT_DISPATCH_FLOATING_TYPES(queries.scalar_type(), "dispatch_l2interp_fwd", [&] {
                 k_l2_interp<scalar_t, scalar_t, scalar_t>
-                    <<< n_blocks_linear(queries.size(0), threads_per_block), threads_per_block, 0, stream.stream()>>>
+                    <<< n_blocks_linear(queries.size(0), threads_per_block / 32), threads_per_block, 0, stream.stream()>>>
                     (queries.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
                      atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
                      out.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
@@ -263,7 +273,7 @@ class L2InterpFunction : public Function<L2InterpFunction> {
             const uint32_t threads_per_block = 256;
             AT_DISPATCH_FLOATING_TYPES(queries.scalar_type(), "dispatch_l2interp_bwd", [&] {
                 k_l2_interp_bwd<scalar_t, scalar_t, scalar_t>
-                    <<< n_blocks_linear(queries.size(0), threads_per_block), threads_per_block, 0, stream.stream()>>>
+                    <<< n_blocks_linear(queries.size(0), threads_per_block / 32), threads_per_block, 0, stream.stream()>>>
                     (grad_output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
                      d_queries.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
                      d_atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
@@ -279,7 +289,7 @@ class L2InterpFunction : public Function<L2InterpFunction> {
 
 Tensor l2_interp(const Tensor &queries, const Tensor &atoms, const Tensor &points) 
 {
-    return L2InterpFunction::apply(queries, atoms, points)[0];
+    return L2InterpFunction::apply(queries, atoms, points);
 }
 
 static auto registry = torch::RegisterOperators()

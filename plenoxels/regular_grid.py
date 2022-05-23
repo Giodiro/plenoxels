@@ -151,9 +151,8 @@ class ShDictRender(nn.Module):
         batch, nintrs = queries_mask.size()
         n_pts = queries.shape[0]
 
-        intrs_pts.mul_(2).sub_(1)# = intrs_pts * 2 - 1
+        #intrs_pts.mul_(2).sub_(1)# = intrs_pts * 2 - 1
         data_interp = torch.ops.plenoxels.l2_interp(queries, self.atoms, intrs_pts)
-
 
         # [n_pts, n_atoms] @ [n_atoms, data_dim, 8] => [n_pts, data_dim, *patch_res]
         # data_masked = (queries @ self.atoms.view(self.num_atoms, -1)).view(n_pts, *self.atoms.shape[1:])
