@@ -19,6 +19,8 @@ constexpr uint32_t n_blocks_linear(uint32_t n_elements, uint32_t n_threads_linea
 
 __host__ __device__ __forceinline__ float myfma(float a, float b, float c) { return fmaf(a, b, c); }
 __host__ __device__ __forceinline__ double myfma(double a, double b, double c) { return fma(a, b, c); }
+__host__ __device__ __forceinline__ float myfloor(float a) { return floorf(a); }
+__host__ __device__ __forceinline__ double myfloor(double a) { return floor(a); }
 /*
  * Linear interpolation
  * implements (1 - w) * a + w * b via a subtraction and a fused multiply-add.
@@ -87,24 +89,22 @@ __global__ void k_l2_interp(Acc32<query_t, 2> Q,       // N x S
     out_t pos[3] = {positions[point_id][0], positions[point_id][1], positions[point_id][2]};
     int32_t n_idx[3];
     for (int j = 0; j < 3; j++) {  // this work is repeated unnecessarily for all threads in warp.
-        //printf("0. pos[%d] = %f\n", j, pos[j]);
-        pos[j] = pos[j] * (grid_size - 1);
-        //printf("1. pos[%d] = %f\n", j, pos[j]);
-        pos[j] = min(max(pos[j], 0.0f), static_cast<out_t>(grid_size - 1));
-        //printf("2. pos[%d] = %f\n", j, pos[j]);
-        n_idx[j] = min(static_cast<int32_t>(pos[j]), grid_size - 2);
+        pos[j] = pos[j] * grid_size - 0.5;
+        pos[j] = min(static_cast<out_t>(grid_size - 1), max(pos[j], 0.0));
+        n_idx[j] = static_cast<int32_t>(myfloor(pos[j]));
+        //pos[j] = pos[j] * (grid_size - 1);
+        //pos[j] = min(max(pos[j], 0.0f), static_cast<out_t>(grid_size - 1));
+        //n_idx[j] = min(static_cast<int32_t>(pos[j]), grid_size - 2);
         pos[j] -= static_cast<out_t>(n_idx[j]);
-        //printf("pos[%d] = %f - id[%d] = %d\n", j, pos[j], j, n_idx[j]);
     }
     sh_t neighbor_data[8] = {0.};
     const uint32_t offx = 1;                 // stride=stride
     const uint32_t offy = offx * grid_size;  // stride=stride * grid_size
     const uint32_t offz = offy * grid_size;  // stride=stride * grid_size * grid_size
     const uint32_t offdata = offx * n_idx[0] + offy * n_idx[1] + offz * n_idx[2];
-    //printf("offz %u, offy %u, offx %u, offdata %u\n", offz, offy, offx, offdata);
     for (int s = 0; s < S; s++) {
         // Load s-th weight from global
-        sh_t weight = static_cast<sh_t>(Q[point_id][s]);
+        const sh_t weight = static_cast<sh_t>(Q[point_id][s]);
         neighbor_data[0] = myfma(weight, A[s][offdata][warp_lane], neighbor_data[0]);
         neighbor_data[1] = myfma(weight, A[s][offdata + offx][warp_lane], neighbor_data[1]);
         neighbor_data[2] = myfma(weight, A[s][offdata + offy][warp_lane], neighbor_data[2]);
@@ -114,10 +114,6 @@ __global__ void k_l2_interp(Acc32<query_t, 2> Q,       // N x S
         neighbor_data[6] = myfma(weight, A[s][offdata + offz + offy][warp_lane], neighbor_data[6]);
         neighbor_data[7] = myfma(weight, A[s][offdata + offz + offy + offx][warp_lane], neighbor_data[7]);
     }
-    //printf("Before trilerp\n");
-    //for (int i = 0; i < 8; i++) {
-    //    printf("\tnd[%d] = %f\n", i, neighbor_data[i]);
-    //}
     O[point_id][warp_lane] = trilerp_precomputed(pos, neighbor_data);
 }
 
@@ -142,9 +138,12 @@ __global__ void k_l2_interp_bwd(Acc32<out_t, 2> grad_output,  // N x D
     out_t pos[3] = {positions[point_id][0], positions[point_id][1], positions[point_id][2]};
     int32_t n_idx[3];
     for (int j = 0; j < 3; j++) {  // this work is repeated unnecessarily for all threads in warp.
-        pos[j] = pos[j] * (grid_size - 1);
+        pos[j] = pos[j] * grid_size - 0.5;
+        pos[j] = min(static_cast<out_t>(grid_size - 1), max(pos[j], 0.0));
+        n_idx[j] = static_cast<int32_t>(myfloor(pos[j]));
+        /*pos[j] = pos[j] * (grid_size - 1);
         pos[j] = min(max(pos[j], 0.0f), static_cast<out_t>(grid_size - 1));
-        n_idx[j] = min(static_cast<int32_t>(pos[j]), grid_size - 2);
+        n_idx[j] = min(static_cast<int32_t>(pos[j]), grid_size - 2);*/
         pos[j] -= static_cast<out_t>(n_idx[j]);
     }
     const out_t ax = 1.f - pos[0];
@@ -166,45 +165,46 @@ __global__ void k_l2_interp_bwd(Acc32<out_t, 2> grad_output,  // N x D
     for (int s = 0; s < S; s++) {
         // Gradient with respect to atoms (DA) is summed over all points
         // Gradient with respect to queries (DQ) is summed over all dimensions (warp lanes)
+        const out_t weight = static_cast<out_t>(Q[point_id][s]) * go;
         iw = ax * ay * az;
         il = A_offset;
         dq_temp = iw * A_ptr[il];
-        atomicAdd(&DA_ptr[il], static_cast<sh_t>(iw * go));
+        atomicAdd(&DA_ptr[il], static_cast<sh_t>(iw * weight));
 
-        iw = az * ay * pos[0];//ax * ay * pos[2];
+        iw = az * ay * pos[0];
         il = A_offset + offx;
         dq_temp = myfma(iw, A_ptr[il], dq_temp);
-        atomicAdd(&DA_ptr[il], static_cast<sh_t>(iw * go));
+        atomicAdd(&DA_ptr[il], static_cast<sh_t>(iw * weight));
 
-        iw = az * pos[1] * ax;//ax * pos[1] * az;
+        iw = az * pos[1] * ax;
         il = A_offset + offy;
         dq_temp = myfma(iw, A_ptr[il], dq_temp);
-        atomicAdd(&DA_ptr[il], static_cast<sh_t>(iw * go));
+        atomicAdd(&DA_ptr[il], static_cast<sh_t>(iw * weight));
 
-        iw = az * pos[1] * pos[0];//ax * pos[1] * pos[2];
-        il = A_offset + offy + offx;//offy + offz;
+        iw = az * pos[1] * pos[0];
+        il = A_offset + offy + offx;
         dq_temp = myfma(iw, A_ptr[il], dq_temp);
-        atomicAdd(&DA_ptr[il], static_cast<sh_t>(iw * go));
+        atomicAdd(&DA_ptr[il], static_cast<sh_t>(iw * weight));
 
-        iw = pos[2] * ay * ax;//pos[0] * ay * az;
-        il = A_offset + offz;//offx;
+        iw = pos[2] * ay * ax;
+        il = A_offset + offz;
         dq_temp = myfma(iw, A_ptr[il], dq_temp);
-        atomicAdd(&DA_ptr[il], static_cast<sh_t>(iw * go));
+        atomicAdd(&DA_ptr[il], static_cast<sh_t>(iw * weight));
 
-        iw = pos[2] * ay * pos[0];//pos[0] * ay * pos[2];
-        il = A_offset + offz + offx;//offx + offz;
+        iw = pos[2] * ay * pos[0];
+        il = A_offset + offz + offx;
         dq_temp = myfma(iw, A_ptr[il], dq_temp);
-        atomicAdd(&DA_ptr[il], static_cast<sh_t>(iw * go));
+        atomicAdd(&DA_ptr[il], static_cast<sh_t>(iw * weight));
 
-        iw = pos[2] * pos[1] * ax;//pos[0] * pos[1] * az;
-        il = A_offset + offz + offy;//offx + offy;
+        iw = pos[2] * pos[1] * ax;
+        il = A_offset + offz + offy;
         dq_temp = myfma(iw, A_ptr[il], dq_temp);
-        atomicAdd(&DA_ptr[il], static_cast<sh_t>(iw * go));
+        atomicAdd(&DA_ptr[il], static_cast<sh_t>(iw * weight));
 
-        iw = pos[2] * pos[1] * pos[0]; //pos[0] * pos[1] * pos[2];
+        iw = pos[2] * pos[1] * pos[0];
         il = A_offset + offx + offy + offz;
         dq_temp = myfma(iw, A_ptr[il], dq_temp);
-        atomicAdd(&DA_ptr[il], static_cast<sh_t>(iw * go));
+        atomicAdd(&DA_ptr[il], static_cast<sh_t>(iw * weight));
 
         dq_temp *= go;
         dq_temp = cub::WarpReduce<out_t>(temp_storage).Sum(dq_temp, D);

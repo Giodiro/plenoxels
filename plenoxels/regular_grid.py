@@ -135,9 +135,12 @@ class ShDictRender(nn.Module):
         self.occupancy_thresh = occupancy_thresh  # TODO: Unused
 
         self.atoms = nn.Parameter(torch.empty(self.num_atoms, self.fine_reso ** 3, self.data_dim, dtype=torch.float32))
+        #self.atoms = nn.Parameter(torch.empty(self.num_atoms, self.data_dim, self.fine_reso, self.fine_reso, self.fine_reso, dtype=torch.float32))
         with torch.no_grad():
-            self.atoms[..., :-1].fill_(init_rgb)
-            self.atoms[..., -1].fill_(init_sigma)
+            #self.atoms[..., :-1].fill_(init_rgb)
+            #self.atoms[..., -1].fill_(init_sigma)
+            self.atoms[:, :-1].fill_(init_rgb)
+            self.atoms[:, -1].fill_(init_sigma)
         self.sh_encoder = sh_encoder
 
     def __repr__(self):
@@ -151,14 +154,15 @@ class ShDictRender(nn.Module):
         batch, nintrs = queries_mask.size()
         n_pts = queries.shape[0]
 
-        #intrs_pts.mul_(2).sub_(1)# = intrs_pts * 2 - 1
-        data_interp = torch.ops.plenoxels.l2_interp(queries, self.atoms, intrs_pts)
-
         # [n_pts, n_atoms] @ [n_atoms, data_dim, 8] => [n_pts, data_dim, *patch_res]
-        # data_masked = (queries @ self.atoms.view(self.num_atoms, -1)).view(n_pts, *self.atoms.shape[1:])
+        #intrs_pts = intrs_pts * 2 - 1
+        #data_masked = (queries @ self.atoms.view(self.num_atoms, -1)).view(n_pts, *self.atoms.shape[1:])
+        #data_interp = interp_regular(data_masked, intrs_pts.view(n_pts, 1, 1, 1, 3), align_corners=False, padding_mode='border')
 
-        # Interpolate atoms.
-        # data_interp = interp_regular(data_masked, intrs_pts.view(n_pts, 1, 1, 1, 3), align_corners=False, padding_mode='border')
+        #atoms = self.atoms.view(self.num_atoms, self.data_dim, -1).transpose(1, 2).contiguous()
+        atoms = self.atoms
+        data_interp = torch.ops.plenoxels.l2_interp(queries, atoms, intrs_pts)
+        #torch.testing.assert_allclose(data_interp, data_interp_)
 
         # 1. Process density: Un-masked sigma (batch, n_intrs-1), and compute.
         sigma_masked = data_interp[:, -1]
