@@ -80,11 +80,11 @@ __device__ __inline__ void unnormalize_pos(out_t * __restrict__ pos,
     for (int j = 0; j < 3; j++) {  // this work is repeated unnecessarily for all threads in warp.
         pos[j] = pos[j] * grid_size - 0.5;
         pos[j] = min(static_cast<out_t>(grid_size - 1), max(pos[j], 0.0));
-        n_idx[j] = static_cast<int32_t>(myfloor(pos[j]));
+        idx[j] = static_cast<int32_t>(myfloor(pos[j]));
         //pos[j] = pos[j] * (grid_size - 1);
         //pos[j] = min(max(pos[j], 0.0f), static_cast<out_t>(grid_size - 1));
         //n_idx[j] = min(static_cast<int32_t>(pos[j]), grid_size - 2);
-        pos[j] -= static_cast<out_t>(n_idx[j]);
+        pos[j] -= static_cast<out_t>(idx[j]);
     }
 }
 
@@ -135,40 +135,37 @@ __global__ void k_l2_interp_dA(Acc32<out_t, 2> grad_output,  // N x D
                                )
 {
     const uint32_t atom_id = blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32;
+    const uint32_t point_id = blockIdx.y * blockDim.y + threadIdx.y;
     const uint32_t warp_lane = threadIdx.x % 32;
     const uint32_t S = DA.size(0);
     const uint32_t D = DA.size(2);
     const uint32_t N = positions.size(0);
-    if (warp_lane >= D || atom_id >= S) { return; }
+    if (warp_lane >= D || atom_id >= S || point_id >= N) { return; }
 
     const uint32_t offx = 1;                 // stride=stride
     const uint32_t offy = offx * grid_size;  // stride=stride * grid_size
     const uint32_t offz = offy * grid_size;  // stride=stride * grid_size * grid_size
 
-    sh_t neighbor_data[8] = {0.};
-
     out_t pos[3];
     int32_t n_idx[3];
-    for (uint32_t i = 0; i < N; i++) {
-        pos[0] = positions[i][0];
-        pos[1] = positions[i][1];
-        pos[2] = positions[i][2];
-        unnormalize_pos(pos, n_idx, grid_size);
-        const uint32_t offdata = offx * n_idx[0] + offy * n_idx[1] + offz * n_idx[2];
-        const out_t ax = 1.f - pos[0];
-        const out_t ay = 1.f - pos[1];
-        const out_t az = 1.f - pos[2];
-        const out_t go = grad_output[i][warp_lane];
-        const sh_t weight = static_cast<sh_t>(Q[i][atom_id]) * go;
-        DA[atom_id][offdata][warp_lane] += static_cast<sh_t>(ax * ay * az * weight);
-        DA[atom_id][offdata + offx][warp_lane] += static_cast<sh_t>(az * ay * pos[0] * weight);
-        DA[atom_id][offdata + offy][warp_lane] += static_cast<sh_t>(az * pos[1] * ax * weight);
-        DA[atom_id][offdata + offy + offx][warp_lane] += static_cast<sh_t>(az * pos[1] * pos[0] * weight);
-        DA[atom_id][offdata + offz][warp_lane] += static_cast<sh_t>(pos[2] * ay * ax * weight);
-        DA[atom_id][offdata + offz + offx][warp_lane] += static_cast<sh_t>(pos[2] * ay * pos[0] * weight);
-        DA[atom_id][offdata + offz + offy][warp_lane] += static_cast<sh_t>(pos[2] * pos[1] * ax * weight);
-        DA[atom_id][offdata + offz + offy + offx][warp_lane] += static_cast<sh_t>(pos[2] * pos[1] * pos[0] * weight);
-    }
+    pos[0] = positions[point_id][0];
+    pos[1] = positions[point_id][1];
+    pos[2] = positions[point_id][2];
+    unnormalize_pos(pos, n_idx, grid_size);
+    const uint32_t offdata = offx * n_idx[0] + offy * n_idx[1] + offz * n_idx[2];
+    const out_t ax = 1.f - pos[0];
+    const out_t ay = 1.f - pos[1];
+    const out_t az = 1.f - pos[2];
+    const out_t go = grad_output[point_id][warp_lane];
+    const sh_t weight = static_cast<sh_t>(Q[point_id][atom_id]) * go;
+    DA[atom_id][offdata][warp_lane] += static_cast<sh_t>(ax * ay * az * weight);
+    DA[atom_id][offdata + offx][warp_lane] += static_cast<sh_t>(az * ay * pos[0] * weight);
+    DA[atom_id][offdata + offy][warp_lane] += static_cast<sh_t>(az * pos[1] * ax * weight);
+    DA[atom_id][offdata + offy + offx][warp_lane] += static_cast<sh_t>(az * pos[1] * pos[0] * weight);
+    DA[atom_id][offdata + offz][warp_lane] += static_cast<sh_t>(pos[2] * ay * ax * weight);
+    DA[atom_id][offdata + offz + offx][warp_lane] += static_cast<sh_t>(pos[2] * ay * pos[0] * weight);
+    DA[atom_id][offdata + offz + offy][warp_lane] += static_cast<sh_t>(pos[2] * pos[1] * ax * weight);
+    DA[atom_id][offdata + offz + offy + offx][warp_lane] += static_cast<sh_t>(pos[2] * pos[1] * pos[0] * weight);
 }
 
 
@@ -184,7 +181,7 @@ __global__ void k_l2_interp_dQ(Acc32<out_t, 2> grad_output,  // N x D
     const uint32_t warp_lane = threadIdx.x % 32;
     const uint32_t S = A.size(0);
     const uint32_t D = A.size(2);
-    if (warp_lane >= D || point_id >= Q.size(0)) { return; }
+    if (warp_lane >= D || point_id >= DQ.size(0)) { return; }
     __shared__ typename cub::WarpReduce<out_t>::TempStorage temp_storage;
 
     out_t pos[3] = {positions[point_id][0], positions[point_id][1], positions[point_id][2]};
@@ -304,11 +301,10 @@ __global__ void k_l2_interp_bwd(Acc32<out_t, 2> grad_output,  // N x D
         atomicAdd(&DA_ptr[il], static_cast<sh_t>(iw * weight));
 
         dq_temp *= go;
-        dq_temp = cub::WarpReduce<out_t>(temp_storage).Sum(dq_temp, D);
+        dq_temp = cub::WarpReduce<out_t>(temp_storage).Sum(dq_temp);
         if (warp_lane == 0) {
             DQ[point_id][s] = static_cast<query_t>(dq_temp);
         }
-        //atomicAdd(&DQ[point_id][s], static_cast<query_t>(dq_temp));
         A_offset += A_stride0;
     }
 }
@@ -367,19 +363,19 @@ class L2InterpFunction : public Function<L2InterpFunction> {
             const uint32_t l2_grid_size = (uint32_t)std::cbrt(atoms.size(1));
             Tensor d_queries = torch::zeros_like(queries);
             Tensor d_atoms = torch::zeros_like(atoms);
-            const uint32_t threads_per_block = 256;
+            const uint32_t threads_per_block = 512;
             AT_DISPATCH_FLOATING_TYPES(queries.scalar_type(), "dispatch_l2interp_bwd", [&] {
-//                k_l2_interp_bwd<scalar_t, scalar_t, scalar_t>
-//                    <<< n_blocks_linear(queries.size(0), threads_per_block / 32), threads_per_block, 0, stream.stream()>>>
-//                    (grad_output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-//                     d_queries.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-//                     d_atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
-//                     points.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-//                     queries.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-//                     atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
-//                     l2_grid_size);
-                k_l2_interp_dA<scalar_t, scalar_t, scalar_t>
-                    <<< n_blocks_linear(atoms.size(0), threads_per_block / 32), threads_per_block, 0, stream.stream()>>>
+                k_l2_interp_bwd<scalar_t, scalar_t, scalar_t>
+                    <<< n_blocks_linear(queries.size(0), threads_per_block / 32), threads_per_block, 0, stream.stream()>>>
+                    (grad_output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                     d_queries.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                     d_atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
+                     points.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                     queries.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                     atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
+                     l2_grid_size);
+/*                k_l2_interp_dA<scalar_t, scalar_t, scalar_t>
+                    <<< n_blocks_linear(atoms.size(0), 32 / 32), 32, 0, stream.stream()>>>
                     (grad_output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
                      d_atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
                      points.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
@@ -391,7 +387,7 @@ class L2InterpFunction : public Function<L2InterpFunction> {
                      d_queries.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
                      points.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
                      atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
-                     l2_grid_size);
+                     l2_grid_size);*/
             });
             return {d_queries, d_atoms, Tensor()};
         }
