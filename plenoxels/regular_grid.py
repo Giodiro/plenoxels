@@ -137,10 +137,10 @@ class ShDictRender(nn.Module):
         self.atoms = nn.Parameter(torch.empty(self.num_atoms, self.fine_reso ** 3, self.data_dim, dtype=torch.float32))
         #self.atoms = nn.Parameter(torch.empty(self.num_atoms, self.data_dim, self.fine_reso, self.fine_reso, self.fine_reso, dtype=torch.float32))
         with torch.no_grad():
-            #self.atoms[..., :-1].fill_(init_rgb)
-            #self.atoms[..., -1].fill_(init_sigma)
-            self.atoms[:, :-1].fill_(init_rgb)
-            self.atoms[:, -1].fill_(init_sigma)
+            self.atoms[..., :-1].fill_(init_rgb)
+            self.atoms[..., -1].fill_(init_sigma)
+            # self.atoms[:, :-1].fill_(init_rgb)
+            # self.atoms[:, -1].fill_(init_sigma)
         self.sh_encoder = sh_encoder
 
     def __repr__(self):

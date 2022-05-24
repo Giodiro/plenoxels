@@ -90,7 +90,7 @@ __device__ __inline__ void unnormalize_pos(out_t * __restrict__ pos,
 
 
 template<typename query_t, typename sh_t, typename out_t>
-__global__ void k_l2_interp(Acc32<query_t, 2> Q,       // N x S
+__global__ void k_l2_interp(Acc64<query_t, 2> Q,       // N x S
                             Acc32<sh_t, 3> A,          // S x R^3 x D
                             Acc32<out_t, 2> O,         // N x D
                             Acc32<out_t, 2> positions,  // N x 3
@@ -222,7 +222,7 @@ __global__ void k_l2_interp_dQ(Acc32<out_t, 2> grad_output,  // N x D
 
 template<typename query_t, typename sh_t, typename out_t>
 __global__ void k_l2_interp_bwd(Acc32<out_t, 2> grad_output,  // N x D
-                                Acc32<query_t, 2> DQ,  // N x S
+                                Acc64<query_t, 2> DQ,  // N x S
                                 Acc32<sh_t, 3> DA,    // S x R^3 x D
                                 Acc32<out_t, 2> positions,
                                 Acc32<query_t, 2> Q,
@@ -337,11 +337,11 @@ class L2InterpFunction : public Function<L2InterpFunction> {
 
             const uint32_t l2_grid_size = (uint32_t)std::cbrt(atoms.size(1));
             auto out = torch::zeros({queries.size(0), atoms.size(2)}, torch::dtype(queries.dtype()).device(queries.device()));
-            const uint32_t threads_per_block = 256;
+            const uint32_t threads_per_block = 512;
             AT_DISPATCH_FLOATING_TYPES(queries.scalar_type(), "dispatch_l2interp_fwd", [&] {
                 k_l2_interp<scalar_t, scalar_t, scalar_t>
                     <<< n_blocks_linear(queries.size(0), threads_per_block / 32), threads_per_block, 0, stream.stream()>>>
-                    (queries.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                    (queries.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits>(),
                      atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
                      out.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
                      points.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
@@ -367,7 +367,7 @@ class L2InterpFunction : public Function<L2InterpFunction> {
             AT_DISPATCH_FLOATING_TYPES(queries.scalar_type(), "dispatch_l2interp_bwd", [&] {
                 k_l2_interp_bwd<scalar_t, scalar_t, scalar_t>
                     <<< n_blocks_linear(queries.size(0), threads_per_block / 32), threads_per_block, 0, stream.stream()>>>
-                    (grad_output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                    (grad_output.packed_accessor64<scalar_t, 2, torch::RestrictPtrTraits>(),
                      d_queries.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
                      d_atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
                      points.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
