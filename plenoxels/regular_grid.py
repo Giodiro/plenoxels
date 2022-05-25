@@ -61,7 +61,7 @@ class RegularGrid(nn.Module):
 
     @property
     def n_intersections(self):
-        return int(torch.mean(self.resolution * 3 * 4).item())
+        return int(torch.mean(self.resolution * 3 * 6).item())
 
     @property
     def inv_aabb_size(self):
@@ -103,7 +103,10 @@ class RegularGrid(nn.Module):
             sub_pts = grid_pts - grid_idx
         if self.interpolate:
             data_out = interp_regular(
-                self.data, intrs_pts.view(1, -1, 1, 1, 3)).T  # [mask_pts, ch]
+                self.data, intrs_pts.view(1, -1, 1, 1, 3))  # [ch, mask_pts]
+            if data_out.dim() == 1:  # happens if mask_pts == 1
+                data_out = data_out.unsqueeze(1)
+            data_out = data_out.T  # [mask_pts, ch]
         else:
             grid_idx = grid_idx.long()
             data_out = self.data[0, :, grid_idx[:, 0], grid_idx[:, 1], grid_idx[:, 2]].T
@@ -147,7 +150,7 @@ class ShDictRender(nn.Module):
         return (f"ShDictRender(grids={self.grids}, num_atoms={self.num_atoms}, data_dim={self.data_dim}, "
                 f"fine_reso={self.fine_reso}, white_bkgd={self.white_bkgd})")
 
-    def forward(self, rays_o, rays_d, grid_id):
+    def forward(self, rays_o, rays_d, grid_id, verbose=False):
         # queries: [n_pts, n_atoms]  queries_mask: [batch, n_intrs - 1]  intersections: [batch, n_intrs]
         grid = self.grids[grid_id]
         queries, queries_mask, intersections, intrs_pts = grid(rays_o, rays_d)
@@ -161,7 +164,11 @@ class ShDictRender(nn.Module):
 
         #atoms = self.atoms.view(self.num_atoms, self.data_dim, -1).transpose(1, 2).contiguous()
         atoms = self.atoms
-        data_interp = torch.ops.plenoxels.l2_interp(queries, atoms, intrs_pts)
+        intrs_pts = torch.clamp(intrs_pts, min=0.0, max=1.0)
+        if intrs_pts.shape[0] > 0:
+            data_interp = torch.ops.plenoxels.l2_interp(queries, atoms, intrs_pts, verbose)
+        else:
+            data_interp = torch.zeros(0, self.data_dim, dtype=atoms.dtype, device=atoms.device)
         #torch.testing.assert_allclose(data_interp, data_interp_)
 
         # 1. Process density: Un-masked sigma (batch, n_intrs-1), and compute.
