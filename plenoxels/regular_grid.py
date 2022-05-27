@@ -6,10 +6,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from plenoxels.tc_plenoxel import shrgb2rgb, depth_map, sigma2alpha
+from nerf_rendering import shrgb2rgb, depth_map, sigma2alpha
 
-spec = PathFinder().find_spec("c_ext", [os.path.dirname(__file__)])
-torch.ops.load_library(spec.origin)
+try:
+    spec = PathFinder().find_spec("c_ext", [os.path.dirname(__file__)])
+    torch.ops.load_library(spec.origin)
+except:
+    print("Failed to load C-extension necessary for regular grid")
+    raise
 
 
 def interp_regular(grid, pts, align_corners=True, padding_mode='zeros'):
