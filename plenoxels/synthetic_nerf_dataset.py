@@ -23,7 +23,8 @@ def get_rays(H: int, W: int, focal, c2w) -> torch.Tensor:
         Tensor of size [2, W, H, 3] where the first dimension indexes origin and direction
         of rays
     """
-    i, j = torch.meshgrid(torch.arange(W) + 0.5, torch.arange(H) + 0.5, indexing='xy')
+    # i, j = torch.meshgrid(torch.arange(W) + 0.5, torch.arange(H) + 0.5, indexing='xy')
+    i, j = torch.meshgrid(torch.arange(W) + 0.5, torch.arange(H) + 0.5)
 
     dirs = torch.stack([
         (i - W * 0.5) / focal,
@@ -226,7 +227,7 @@ class MultiSyntheticNerfDatasetv2(MultiSyntheticNerfDataset):
         super().__init__(datadirs, split, low_resolution, high_resolution, max_frames)
         self.patch_size = patch_size
         scale_factor = high_resolution / low_resolution
-        assert abs(scale_factor - int(scale_factor)) < 1e-9, f"{scale_factor=} is not an integer"
+        assert abs(scale_factor - int(scale_factor)) < 1e-9, f"{scale_factor} is not an integer"
         self.scale_factor = int(scale_factor)
         self.l_patch_size = self.patch_size // self.scale_factor
 

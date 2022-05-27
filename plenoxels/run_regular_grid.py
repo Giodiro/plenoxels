@@ -1,31 +1,94 @@
+import os
 import time
+import math
 from typing import List
+
+import matplotlib.pyplot as plt
 
 import torch
 import torch.nn.functional as F
 
 import config
-from plenoxels.utils import EMA
-from regular_grid import RegularGrid, ShDictRender
-from tc_plenoptimize import init_datasets, init_sh_encoder
+from griddict import ShDictRender
+from synthetic_nerf_dataset import SyntheticNerfDataset
+from torch.utils.data import DataLoader
+import tc_plenoxel
 
 
-def init_renderers(cfg, dsets, num_atoms, resolution, fine_resolution, interpolate):
-    reso = torch.tensor([resolution] * 3, dtype=torch.int32)
-    grids = []
-    # Scene-specific regular-grid modules
-    for dset in dsets:
-        grids.append(RegularGrid(
-            resolution=reso, aabb=dset.scene_bbox, data_dim=num_atoms,
-            near_far=dset.near_far, interpolate=interpolate))
+class EMA():
+    def __init__(self, weighting=0.9):
+        self.weighting = weighting
+        self.val = None
 
-    # scene-independent dictionary
+    def update(self, val):
+        if self.val is None:
+            self.val = val
+        else:
+            self.val = self.weighting * val + (1 - self.weighting) * self.val
+
+    @property
+    def value(self):
+        return self.val
+
+
+def plot_ts(ts_dset, dset_id, renderer, log_dir, exp_name, iteration, batch_size=10_000):
+    with torch.autograd.no_grad():
+        for ts_el in ts_dset:
+            if len(ts_el) == 3:
+                rays_o, rays_d, rgb = ts_el
+                img_h, img_w = ts_dset.img_h, ts_dset.img_w
+            else:
+                rays, rgb, _, _ = ts_el
+                img_h, img_w = ts_dset.low_resolution, ts_dset.low_resolution
+            preds = []
+            for b in range(math.ceil(rays_o.shape[0] / batch_size)):
+                rays_o_b = rays_o[b * batch_size: (b + 1) * batch_size].to("cuda")
+                rays_d_b = rays_d[b * batch_size: (b + 1) * batch_size].to("cuda")
+                preds.append(renderer(rays_o_b, rays_d_b, dset_id)[0].cpu())
+            pred = torch.cat(preds, 0).view(img_h, img_w, 3)
+            rgb = rgb.view(img_h, img_w, 3)
+            mse = torch.mean((pred - rgb) ** 2)
+            psnr = -10.0 * torch.log(mse) / math.log(10)
+            break
+    fig, ax = plt.subplots(ncols=2)
+    ax[0].imshow(pred)
+    ax[1].imshow(rgb)
+    ax[0].set_title(f"PSNR={psnr:.2f}")
+    os.makedirs(f"{log_dir}/{exp_name}", exist_ok=True)
+    fig.savefig(f"{log_dir}/{exp_name}/dset{dset_id}_iter{iteration}.png")
+    return fig
+
+
+def init_datasets(cfg, dev):
+    resolution = cfg.data.resolution
+    tr_dset = SyntheticNerfDataset(cfg.data.datadir, split='train', downsample=cfg.data.downsample,
+                                   resolution=resolution, max_frames=cfg.data.max_tr_frames)
+    tr_loader = DataLoader(tr_dset, batch_size=cfg.optim.batch_size, shuffle=True, num_workers=3,
+                           prefetch_factor=10,
+                           pin_memory=dev.startswith("cuda"))
+    ts_dset = SyntheticNerfDataset(cfg.data.datadir, split='test', downsample=cfg.data.downsample,
+                                   resolution=resolution, max_frames=cfg.data.max_ts_frames)
+    return tr_dset, tr_loader, ts_dset
+
+
+def init_sh_encoder(cfg, h_degree):
+    if cfg.sh.sh_encoder == "tcnn":
+        return tcnn.Encoding(3, {
+            "otype": "SphericalHarmonics",
+            "degree": h_degree + 1,
+        })
+    elif cfg.sh.sh_encoder == "plenoxels":
+        return tc_plenoxel.plenoxel_sh_encoder(h_degree)
+    else:
+        raise ValueError(cfg.sh.sh_encoder)
+
+def init_renderers(cfg, dsets, num_atoms, resolution, fine_resolution):
     sh_encoder = init_sh_encoder(cfg, cfg.sh.degree)
     render = ShDictRender(
-        sh_deg=cfg.sh.degree, sh_encoder=sh_encoder, grids=grids,
-        fine_reso=fine_resolution,
-        init_sigma=0.1, init_rgb=0.01, white_bkgd=True,
-        abs_light_thresh=1e-4, occupancy_thresh=1e-4)
+        sh_deg=cfg.sh.degree, sh_encoder=sh_encoder, 
+        radius=1.3, num_atoms=num_atoms, num_scenes=len(dsets),
+        fine_reso=fine_resolution, coarse_reso=resolution, 
+        init_sigma=0.1, init_rgb=0.01)
     print(f"Initialized renderer {render}")
     return render
 
@@ -34,8 +97,7 @@ def initialize(cfg,
                data_dirs: List[str],
                num_atoms: int,
                coarse_reso: int,
-               fine_reso: int,
-               coarse_interpolate: bool):
+               fine_reso: int,):
     # Initialize datasets
     tr_dsets, tr_loaders, ts_dsets = [], [], []
     for dd in data_dirs:
@@ -45,37 +107,29 @@ def initialize(cfg,
         tr_loaders.append(tr_loader)
         ts_dsets.append(ts_dset)
     # Initialize model
-    renderer = init_renderers(cfg, tr_dsets, num_atoms, coarse_reso, fine_reso,
-                              coarse_interpolate)
+    renderer = init_renderers(cfg, tr_dsets, num_atoms, coarse_reso, fine_reso)
     renderer.cuda()
 
     # Initialize optimizer
-    optims = []
-    for i in range(len(renderer.grids)):
-        optims.append(torch.optim.Adam(
-            (renderer.atoms, renderer.grids[i].data), lr=1e-2
-        ))
+    optim = torch.optim.Adam(renderer.parameters(), lr=1e-2)
 
     return {
         "train_datasets": tr_dsets,
         "train_loaders": tr_loaders,
         "test_datasets": ts_dsets,
         "model": renderer,
-        "optimizers": optims,
+        "optimizer": optim,
     }
 
 
-def train_epoch(renderer, data_loaders, optims, max_steps, l1_loss_coef):
+def train_epoch(renderer, data_loaders, ts_dsets, optim, max_steps, l1_loss_coef, exp_name, batch_size):
     batches_per_dset = 10
     max_tot_steps = max_steps * len(data_loaders)
     eta_min = 1e-5
     ema_weight = 0.5
     dev = "cuda"
-    lr_scheds = [
-        torch.optim.lr_scheduler.CosineAnnealingLR(
-            optim, T_max=max_tot_steps // len(optims), eta_min=eta_min)
-        for optim in optims
-    ]
+    lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optim, T_max=max_tot_steps // len(data_loaders), eta_min=eta_min)
 
     iters = [iter(dl) for dl in data_loaders]
     tot_steps = 0
@@ -86,8 +140,6 @@ def train_epoch(renderer, data_loaders, optims, max_steps, l1_loss_coef):
             for dset_id, dset in enumerate(iters):
                 if dset is None:
                     continue
-                optim = optims[dset_id]
-                lr_sched = lr_scheds[dset_id]
                 for i in range(batches_per_dset):
                     if tot_steps >= max_tot_steps:
                         raise StopIteration("Maximum steps reached")
@@ -120,6 +172,8 @@ def train_epoch(renderer, data_loaders, optims, max_steps, l1_loss_coef):
                     if tot_steps % 1000 == 0:
                         print("Time for 1000 steps: %.2fs" % (time.time() - time_s))
                         time_s = time.time()
+                        for j in range(len(ts_dsets)):
+                            plot_ts(ts_dsets[j], j, renderer, "logs", exp_name, tot_steps, batch_size=batch_size)
         except StopIteration:
             print(f"Dataset {dset_id} finished")
             iters[dset_id] = None
@@ -128,27 +182,26 @@ def train_epoch(renderer, data_loaders, optims, max_steps, l1_loss_coef):
 if __name__ == "__main__":
     cfg_ = config.get_cfg_defaults()
     cfg_.data.resolution = 256
-    cfg_.data.max_tr_frames = None
+    cfg_.data.max_tr_frames = 10
     cfg_.data.max_ts_frames = 10
     cfg_.data.downsample = 1
-    cfg_.optim.batch_size = 2000
-    cfg_.sh.degree = 2
+    cfg_.optim.batch_size = 1000
+    cfg_.sh.degree = 0
     cfg_.sh.sh_encoder = "plenoxels"
     data_dirs_ = [
-        "/data/DATASETS/SyntheticNerf/lego",
-        "/data/DATASETS/SyntheticNerf/ship",
-        "/data/DATASETS/SyntheticNerf/chair",
-        "/data/DATASETS/SyntheticNerf/drums/",
-        "/data/DATASETS/SyntheticNerf/ficus/",
+        "/data/datasets/nerf/data/nerf_synthetic/lego",
+        "/data/datasets/nerf/data/nerf_synthetic/chair",
+        "/data/datasets/nerf/data/nerf_synthetic/drums/",
+        "/data/datasets/nerf/data/nerf_synthetic/ficus/",
     ]
     num_atoms_ = 128
-    coarse_reso_ = 64
-    fine_reso_ = 7
-    coarse_interpolate_ = True
-    max_steps_ = 20_000
+    coarse_reso_ = 32
+    fine_reso_ = 4
+    max_steps_ = 2_000
     l1_loss_coef_ = 0.1
+    exp_name_ = "e1"
 
     init_data = initialize(cfg_, data_dirs_, num_atoms=num_atoms_, coarse_reso=coarse_reso_,
-                           fine_reso=fine_reso_, coarse_interpolate=coarse_interpolate_)
-    train_epoch(init_data["model"], init_data["train_loaders"], init_data["optimizers"],
-                max_steps_, l1_loss_coef_)
+                           fine_reso=fine_reso_)
+    train_epoch(init_data["model"], init_data["train_loaders"], optim=init_data["optimizer"], ts_dsets=init_data['test_datasets'],
+                max_steps=max_steps_, l1_loss_coef=l1_loss_coef_, exp_name=exp_name_, batch_size=cfg_.optim.batch_size)
