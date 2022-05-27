@@ -1,0 +1,10 @@
+data:
+  datadir:
+    - /data/DATASETS/SyntheticNerf/lego
+    - /data/DATASETS/SyntheticNerf/chair
+    - /data/DATASETS/SyntheticNerf/drums
+    - /data/DATASETS/SyntheticNerf/ficus
+  resolution: 256
+  max_tr_frames: 10
+  max_ts_frames: 10
+  downsample: 1.0

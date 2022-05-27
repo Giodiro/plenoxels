@@ -1,0 +1,10 @@
+data:
+  datadir:
+    - /data/datasets/nerf/data/nerf_synthetic/lego
+    - /data/datasets/nerf/data/nerf_synthetic/chair
+    - /data/datasets/nerf/data/nerf_synthetic/drums
+    - /data/datasets/nerf/data/nerf_synthetic/ficus
+  resolution: 256
+  max_tr_frames: 10
+  max_ts_frames: 10
+  downsample: 1.0

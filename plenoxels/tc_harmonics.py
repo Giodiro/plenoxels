@@ -1,29 +1,5 @@
 # Spherical Harmonic helper functions, borrowed from svox library (Alex Yu)
-
-#  Copyright 2021 PlenOctree Authors.
-#
-#  Redistribution and use in source and binary forms, with or without
-#  modification, are permitted provided that the following conditions are met:
-#
-#  1. Redistributions of source code must retain the above copyright notice,
-#  this list of conditions and the following disclaimer.
-#
-#  2. Redistributions in binary form must reproduce the above copyright notice,
-#  this list of conditions and the following disclaimer in the documentation
-#  and/or other materials provided with the distribution.
-#
-#  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-#  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-#  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-#  ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
-#  LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-#  CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-#  SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-#  INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-#  CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-#  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-#  POSSIBILITY OF SUCH DAMAGE.
-from typing import Sequence, Tuple, List
+from typing import List, Callable
 
 import torch
 
@@ -544,3 +520,13 @@ def eval_sh_bases(deg: int, dirs: torch.Tensor, result: torch.Tensor) -> torch.T
                     result[..., 23] = C4[7] * xz * (xx - 3 * yy)
                     result[..., 24] = C4[8] * (xx * (xx - 3 * yy) - yy * (3 * xx - yy))
     return result
+
+
+def plenoxel_sh_encoder(harmonic_degree: int) -> Callable[[torch.Tensor], torch.Tensor]:
+    num_sh = (harmonic_degree + 1) ** 2
+
+    def encode(rays_d: torch.Tensor) -> torch.Tensor:
+        out = torch.empty(rays_d.shape[0], num_sh, dtype=rays_d.dtype, device=rays_d.device)
+        out = eval_sh_bases(harmonic_degree, rays_d, out)
+        return out
+    return encode

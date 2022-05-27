@@ -1,3 +1,6 @@
+import argparse
+from datetime import datetime
+
 from yacs.config import CfgNode as CN
 
 _C = CN()
@@ -86,3 +89,20 @@ def get_cfg_defaults():
     # Return a clone so that the defaults will not be altered
     # This is for the "local variable" use pattern
     return _C.clone()
+
+
+def parse_config():
+    # Build experiment configuration
+    parser = argparse.ArgumentParser("Train + evaluate kernel model")
+    parser.add_argument("--config", default=None)
+    parser.add_argument('--config-updates', default=[], nargs='*')
+    args = parser.parse_args()
+    cfg = get_cfg_defaults()
+    if args.config is not None:
+        cfg.merge_from_file(args.config)
+    cfg.merge_from_list(args.config_updates)
+    # cfg.freeze()
+    print(f"[{datetime.now()}] Starting")
+    # print(cfg)
+    return cfg
+
