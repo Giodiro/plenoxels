@@ -7,4 +7,4 @@ data:
   resolution: 256
   max_tr_frames: 10
   max_ts_frames: 10
-  downsample: 1
+  downsample: 1.0

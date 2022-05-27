@@ -23,8 +23,8 @@ def get_rays(H: int, W: int, focal, c2w) -> torch.Tensor:
         Tensor of size [2, W, H, 3] where the first dimension indexes origin and direction
         of rays
     """
-    # i, j = torch.meshgrid(torch.arange(W) + 0.5, torch.arange(H) + 0.5, indexing='xy')
-    i, j = torch.meshgrid(torch.arange(W) + 0.5, torch.arange(H) + 0.5)
+    i, j = torch.meshgrid(torch.arange(W) + 0.5, torch.arange(H) + 0.5, indexing='xy')
+    #i, j = torch.meshgrid(torch.arange(W) + 0.5, torch.arange(H) + 0.5)
 
     dirs = torch.stack([
         (i - W * 0.5) / focal,

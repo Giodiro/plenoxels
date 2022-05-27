@@ -63,6 +63,7 @@ def train_epoch(renderer, tr_loaders, ts_dsets, optim, max_steps, log_dir, exp_n
     tot_steps = 0
     time_s = time.time()
     losses = [{"mse": EMA(ema_weight), "l1": EMA(ema_weight)} for _ in range(len(tr_loaders))]
+    renderer.cuda()
     while len([it for it in iters if it is not None]) > 0:
         try:
             for dset_id, dset in enumerate(iters):
@@ -152,7 +153,7 @@ if __name__ == "__main__":
     print(f'gpu is {gpu}')
     num_atoms_ = 128
     coarse_reso_ = 64
-    fine_reso_ = 3
+    fine_reso_ = 5
     lr_ = 1e-2
 
     max_steps_ = 2000
