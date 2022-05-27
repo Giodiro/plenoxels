@@ -98,7 +98,7 @@ static const float OFFSET[8][3] = {{-0.5, -0.5, -0.5}, {-0.5, -0.5, 0.5}, {-0.5,
                                    {0.5, -0.5, -0.5},  {0.5, -0.5, 0.5},  {0.5, 0.5, -0.5},  {0.5, 0.5, 0.5}};
 
 
-template<typename scalar_t>
+template<class scalar_t>
 __global__ void k_l2_interp_v2(Acc32<scalar_t, 2> coarse_grid,  // Rc^3, S
                                Acc32<scalar_t, 3> atoms,        // S, Rf^3, D
                                Acc32<scalar_t, 2> points,       // N, 3
@@ -109,6 +109,11 @@ __global__ void k_l2_interp_v2(Acc32<scalar_t, 2> coarse_grid,  // Rc^3, S
                                const scalar_t coarse_vl
                                )
 {
+    //SharedMem<T> shared;
+    //T* coarse_w = shared.getPointer(); // CUDA_WARPS_PER_BLOCK * S
+    //extern __shared__ scalar_t coarse_w[];  
+    extern __shared__ __align__(sizeof(double2)) unsigned char smem[];
+    scalar_t* coarse_w = reinterpret_cast<scalar_t *>(smem);
     const uint32_t point_id = (blockIdx.x * blockDim.x + threadIdx.x) / WARP_SIZE;
     const uint32_t warp_block_id = threadIdx.x / WARP_SIZE;
     const uint32_t warp_lane = threadIdx.x % WARP_SIZE;
@@ -119,19 +124,18 @@ __global__ void k_l2_interp_v2(Acc32<scalar_t, 2> coarse_grid,  // Rc^3, S
 
     const scalar_t cp[3] = {points[point_id][0] * coarse_reso, points[point_id][1] * coarse_reso, points[point_id][2] * coarse_reso};
     const scalar_t fp[3] = {points[point_id][0] * fine_reso, points[point_id][1] * fine_reso, points[point_id][2] * fine_reso};
-    assert fine_reso % coarse_reso == 0
+    //assert fine_reso % coarse_reso == 0
     const int32_t fc_ratio = fine_reso / coarse_reso;
     const scalar_t c_vl_wcoo = coarse_vl * fc_ratio;
-    int32_t * cn[3];           // corner of coarse-neighbor cell in 'coarse-grid' coordinates
-    int32_t * fn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
-    int32_t * cn_wcoo[3];      // corner of coarse-neighbor in 'full-grid' coordinates
-    scalar_t * fn_center[3];   // center of fine-neighbor cell in 'full-grid' coordinates
-    extern __shared__ scalar_t coarse_w[];  // CUDA_WARPS_PER_BLOCK * S
+    int32_t cn[3];           // corner of coarse-neighbor cell in 'coarse-grid' coordinates
+    int32_t fn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
+    int32_t cn_wcoo[3];      // corner of coarse-neighbor in 'full-grid' coordinates
+    scalar_t fn_center[3];   // center of fine-neighbor cell in 'full-grid' coordinates
 
     // Interpolation weight for fine coordinates to the center of top-left cell
-    const scalar_t tl_w[3] = {fp[0] - myfloor(fp[0] - 0.5) - 0.5,
-                              fp[1] - myfloor(fp[1] - 0.5) - 0.5,
-                              fp[2] - myfloor(fp[2] - 0.5) - 0.5};
+    const scalar_t tl_w[3] = {fp[0] - myfloor(fp[0] - 0.5f) - 0.5f,
+                              fp[1] - myfloor(fp[1] - 0.5f) - 0.5f,
+                              fp[2] - myfloor(fp[2] - 0.5f) - 0.5f};
     const scalar_t interp_weights[8] = {
         tl_w[0] * tl_w[1] * tl_w[2],
         tl_w[0] * tl_w[1] * (1 - tl_w[2]),
@@ -170,7 +174,7 @@ __global__ void k_l2_interp_v2(Acc32<scalar_t, 2> coarse_grid,  // Rc^3, S
             {
                 // Load the weights from coarse-grid
                 if (loaded_w < 0 || loaded_w != cn[0] + cn[1] * coarse_reso + cn[2] * coarse_reso * coarse_reso) {
-                    loaded_w = cn[0] + cn[1] * coarse_reso + cn[2] * coarse_reso * coarse_reso
+                    loaded_w = cn[0] + cn[1] * coarse_reso + cn[2] * coarse_reso * coarse_reso;
                     // load w from coarse_grid to shared mem using all active threads in warp
                     for (int s = warp_lane; s < S; s += D) {
                         coarse_w[warp_block_id * S + s] = coarse_grid[loaded_w][s];  // TODO: figure out correct stride to avoid bank conflicts in shmem
@@ -214,15 +218,21 @@ __global__ void k_l2_interp_v2_d_cg(Acc32<scalar_t, 2> grad_output,   // N, D
     const uint32_t N = points.size(0);
     if (cg_y >= coarse_reso || cg_z >= coarse_reso || cg_x >= coarse_reso || atom_id >= S) { return; }
     const uint32_t fine_reso_sq = fine_reso * fine_reso;
+    const int32_t fc_ratio = fine_reso / coarse_reso;
+    const scalar_t c_vl_wcoo = coarse_vl * fc_ratio;
+
+    int32_t fn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
+    int32_t cn_wcoo[3];      // corner of coarse-neighbor in 'full-grid' coordinates
+    scalar_t fn_center[3];   // center of fine-neighbor cell in 'full-grid' coordinates
 
     scalar_t grad = 0.0;
     for (int n = 0; n < N; n++)
     {
         const scalar_t cp[3] = {points[n][0] * coarse_reso, points[n][1] * coarse_reso, points[n][2] * coarse_reso};
         const scalar_t fp[3] = {points[n][0] * fine_reso, points[n][1] * fine_reso, points[n][2] * fine_reso};
-        const scalar_t tl_w[3] = {fp[0] - myfloor(fp[0] - 0.5) - 0.5,
-                                  fp[1] - myfloor(fp[1] - 0.5) - 0.5,
-                                  fp[2] - myfloor(fp[2] - 0.5) - 0.5};
+        const scalar_t tl_w[3] = {fp[0] - myfloor(fp[0] - 0.5f) - 0.5f,
+                                  fp[1] - myfloor(fp[1] - 0.5f) - 0.5f,
+                                  fp[2] - myfloor(fp[2] - 0.5f) - 0.5f};
         const scalar_t interp_weights[8] = {
             tl_w[0] * tl_w[1] * tl_w[2],
             tl_w[0] * tl_w[1] * (1 - tl_w[2]),
@@ -255,10 +265,10 @@ __global__ void k_l2_interp_v2_d_cg(Acc32<scalar_t, 2> grad_output,   // N, D
                     int32_t fn_realcoo = (fn[0] - cn_wcoo[0]) +
                                          (fn[1] - cn_wcoo[1]) * fine_reso +
                                          (fn[2] - cn_wcoo[2]) * fine_reso_sq;
-                    for (d = 0; d < D; d++) {
-                        grad = fma(atoms[d][fn_realcoo][atom_id],          // coalesced
-                                   interp_weights[j] * grad_output[n][d],  // not coalesced
-                                   grad);
+                    for (int d = 0; d < D; d++) {
+                        grad = myfma(atoms[d][fn_realcoo][atom_id],          // coalesced
+                                     interp_weights[j] * grad_output[n][d],  // not coalesced
+                                     grad);
                     }
                 }
             }
@@ -426,51 +436,50 @@ class L2InterpFunctionv2 : public Function<L2InterpFunctionv2> {
                               Tensor coarse_grid,   // Rc^3, S
                               Tensor atoms,         // S, Rf^3, D
                               Tensor points,        // N, 3
-                              int32_t fine_reso,
-                              int32_t coarse_reso,
-                              float fine_vl,
-                              float coarse_vl)
+                              int64_t fine_reso,
+                              int64_t coarse_reso,
+                              double fine_vl,
+                              double coarse_vl)
         {
-            const at::cuda::CUDAGuard device_guard(queries.device());
+            const at::cuda::CUDAGuard device_guard(coarse_grid.device());
             const auto stream = at::cuda::getCurrentCUDAStream();
             ctx->save_for_backward({coarse_grid, atoms});
             ctx->saved_data["points"] = points;
-            ctx->saved_data["verbose"] = verbose;
             ctx->saved_data["fine_reso"] = fine_reso;
             ctx->saved_data["coarse_reso"] = coarse_reso;
-            ctx->saved_data["fine_voxel_len"] = fine_voxel_len;
-            ctx->saved_data["coarse_voxel_len"] = coarse_voxel_len;
+            ctx->saved_data["fine_voxel_len"] = fine_vl;
+            ctx->saved_data["coarse_voxel_len"] = coarse_vl;
 
             auto out = torch::zeros({points.size(0), atoms.size(2)}, torch::dtype(atoms.dtype()).device(atoms.device()));
             const dim3 grid_size(n_blocks_linear(points.size(0), CUDA_THREADS_PER_BLOCK / WARP_SIZE));
             const dim3 block_size(CUDA_THREADS_PER_BLOCK);
-            AT_DISPATCH_FLOATING_TYPES(queries.scalar_type(), "dispatch_l2interpv2_fwd", [&] {
-                k_l2_interp_v2<scalar_t><<<grid_size, block_size, 0, stream.stream()>>>(
+            const uint32_t shared_mem = CUDA_WARPS_PER_BLOCK * coarse_grid.size(1);
+            AT_DISPATCH_FLOATING_TYPES(coarse_grid.scalar_type(), "dispatch_l2interpv2_fwd", [&] {
+                k_l2_interp_v2<scalar_t><<<grid_size, block_size, shared_mem * sizeof(scalar_t), stream.stream()>>>(
                     coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
                     atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
                     points.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
                     out.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                    fine_reso, coarse_reso, fine_vl, coarse_vl
+                    (uint32_t)fine_reso, (uint32_t)coarse_reso, (float)fine_vl, (float)coarse_vl
                 );
             });
             return out;
         }
 
-        static tensor_list backward(AutogradContext *ctx, tensor_list grad_outputs)
-        {
+        static tensor_list backward(AutogradContext *ctx, tensor_list grad_outputs) {
             const auto saved = ctx->get_saved_variables();
-            const Tensor coarse_grid saved[0];
+            const Tensor coarse_grid = saved[0];
             const Tensor atoms = saved[1];
 
             const Tensor points = ctx->saved_data["points"].toTensor();
-            const uint32_t coarse_reso = ctx->saved_data["coarse_reso"].toUint();
-            const uint32_t fine_reso = ctx->saved_data["fine_reso"].toUint();
-            const float coarse_voxel_len = ctx->saved_data["coarse_voxel_len"].toFloat();
-            const float fine_voxel_len = ctx->saved_data["fine_voxel_len"].toFloat();
+            const int64_t coarse_reso = ctx->saved_data["coarse_reso"].toInt();
+            const int64_t fine_reso = ctx->saved_data["fine_reso"].toInt();
+            const double coarse_vl = ctx->saved_data["coarse_voxel_len"].toDouble();
+            const double fine_vl = ctx->saved_data["fine_voxel_len"].toDouble();
 
             const Tensor grad_output = grad_outputs[0];
 
-            const at::cuda::CUDAGuard device_guard(queries.device());
+            const at::cuda::CUDAGuard device_guard(coarse_grid.device());
             const auto stream = at::cuda::getCurrentCUDAStream();
 
             Tensor d_coarse_grid = torch::zeros_like(coarse_grid);
@@ -480,13 +489,13 @@ class L2InterpFunctionv2 : public Function<L2InterpFunctionv2> {
             dim3 block_size(d_atoms.size(0));
 
             Tensor atoms_t = atoms.transpose(0, 2).contiguous();  // D, R^3, S
-            AT_DISPATCH_FLOATING_TYPES(queries.scalar_type(), "dispatch_l2interpv2_bwd", [&] {
+            AT_DISPATCH_FLOATING_TYPES(coarse_grid.scalar_type(), "dispatch_l2interpv2_bwd", [&] {
                 k_l2_interp_v2_d_cg<scalar_t><<<grid_size, block_size, 0, stream.stream()>>>(
                     grad_output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
                     d_coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
                     atoms_t.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
                     points.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                    fine_reso, coarse_reso, fine_voxel_len, coarse_voxel_len
+                    (uint32_t)fine_reso, (uint32_t)coarse_reso, (float)fine_vl, (float)coarse_vl
                 );
             });
             return {d_coarse_grid, d_atoms, Tensor(), Tensor(), Tensor(), Tensor(), Tensor()};
@@ -569,8 +578,8 @@ Tensor l2_interp(const Tensor &queries, const Tensor &atoms, const Tensor &point
     return L2InterpFunction::apply(queries, atoms, points, verbose);
 }
 
-Tensor l2_interp_v2(const Tensor &coarse_grid, const Tensor &atoms, const Tensor &points, const int32_t fine_reso,
-                    const int32_t coarse_reso, const float fine_vl, const float coarse_vl)
+Tensor l2_interp_v2(const Tensor &coarse_grid, const Tensor &atoms, const Tensor &points, const int64_t fine_reso,
+                    const int64_t coarse_reso, const double fine_vl, const double coarse_vl)
 {
     return L2InterpFunctionv2::apply(coarse_grid, atoms, points, fine_reso, coarse_reso, fine_vl, coarse_vl);
 }
