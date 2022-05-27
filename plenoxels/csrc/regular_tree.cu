@@ -100,7 +100,7 @@ static const float OFFSET[8][3] = {{-0.5, -0.5, -0.5}, {-0.5, -0.5, 0.5}, {-0.5,
 
 template<class scalar_t>
 __global__ void k_l2_interp_v2(Acc32<scalar_t, 2> coarse_grid,  // Rc^3, S
-                               Acc32<scalar_t, 3> atoms,        // S, Rf^3, D
+                               Acc32<scalar_t, 3> atoms,        // Rf^3, S, D
                                Acc32<scalar_t, 2> points,       // N, 3
                                Acc32<scalar_t, 2> out,          // N, D
                                const uint32_t fine_reso,
@@ -109,19 +109,15 @@ __global__ void k_l2_interp_v2(Acc32<scalar_t, 2> coarse_grid,  // Rc^3, S
                                const scalar_t coarse_vl
                                )
 {
-    //SharedMem<T> shared;
-    //T* coarse_w = shared.getPointer(); // CUDA_WARPS_PER_BLOCK * S
-    //extern __shared__ scalar_t coarse_w[];  
     extern __shared__ __align__(sizeof(double2)) unsigned char smem[];
     scalar_t* coarse_w = reinterpret_cast<scalar_t *>(smem);
     const uint32_t point_id = (blockIdx.x * blockDim.x + threadIdx.x) / WARP_SIZE;
     const uint32_t warp_block_id = threadIdx.x / WARP_SIZE;
     const uint32_t warp_lane = threadIdx.x % WARP_SIZE;
-    const uint32_t S = atoms.size(0);
     const uint32_t D = atoms.size(2);
-    const uint32_t N = points.size(0);
-    if (warp_lane >= D || point_id >= N) { return; }
+    if (warp_lane >= atoms.size(1) || point_id >= points.size(0)) { return; }
 
+    const uint32_t fine_reso_sq = fine_reso * fine_reso;
     const scalar_t cp[3] = {points[point_id][0] * coarse_reso, points[point_id][1] * coarse_reso, points[point_id][2] * coarse_reso};
     const scalar_t fp[3] = {points[point_id][0] * fine_reso, points[point_id][1] * fine_reso, points[point_id][2] * fine_reso};
     //assert fine_reso % coarse_reso == 0
@@ -183,9 +179,9 @@ __global__ void k_l2_interp_v2(Acc32<scalar_t, 2> coarse_grid,  // Rc^3, S
                 }
                 int32_t fn_realcoo = (fn[0] - cn_wcoo[0]) +
                                      (fn[1] - cn_wcoo[1]) * fine_reso +
-                                     (fn[2] - cn_wcoo[2]) * fine_reso * fine_reso;
+                                     (fn[2] - cn_wcoo[2]) * fine_reso_sq;
                 for (int s = 0; s < S; s++) {
-                    acc = myfma(coarse_w[warp_block_id * S + s] * interp_weights[j], atoms[s][fn_realcoo][warp_lane], acc);
+                    acc = myfma(coarse_w[warp_block_id * S + s] * interp_weights[j], atoms[fn_realcoo][s][warp_lane], acc);
                 }
             }
         }
@@ -193,11 +189,91 @@ __global__ void k_l2_interp_v2(Acc32<scalar_t, 2> coarse_grid,  // Rc^3, S
     out[point_id][warp_lane] = acc;
 }
 
+template<typename scalar_t>
+__global__ void k_l2_interp_v2_d_a(Acc32<scalar_t, 2> grad_output,   // N, D
+                                    Acc32<scalar_t, 2> coarse_grid,  // Rc^3, S
+                                    Acc32<scalar_t, 3> d_atoms,      // Rf^3, S, D
+                                    Acc32<scalar_t, 2> points,       // N, 3
+                                    const uint32_t fine_reso,
+                                    const uint32_t coarse_reso,
+                                    const scalar_t fine_vl,
+                                    const scalar_t coarse_vl
+                                   )
+{
+    const uint32_t fine_reso_sq = fine_reso * fine_reso;
+    const uint32_t coarse_reso_sq = coarse_reso * coarse_reso;
+    const uint32_t fg_x = blockIdx.y % fine_reso;
+    const uint32_t fg_y = (blockIdx.y / fine_reso) % fine_reso;
+    const uint32_t fg_z = (blockIdx.y / fine_reso_sq) % fine_reso;
+    const uint32_t atom_id = blockIdx.x;
+    const uint32_t warp_lane = threadIdx.x % WARP_SIZE;
+    const uint32_t N = points.size(0);
+    if (warp_lane >= atoms.size(2) || atom_id >= coarse_grid.size(1)) { return; }
+    const int32_t fc_ratio = fine_reso / coarse_reso;
+    const scalar_t c_vl_wcoo = coarse_vl * fc_ratio;
+
+    const scalar_t fn_center = {static_cast<scalar_t>(fg_x) + 0.5,
+                                static_cast<scalar_t>(fg_y) + 0.5,
+                                static_cast<scalar_t>(fg_z) + 0.5};
+    int32_t cn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
+    int32_t cn_wcoo[3];      // corner of coarse-neighbor in 'full-grid' coordinates
+    scalar_t grad = 0.0;
+
+    for (int n = 0; n < N; n++)
+    {
+        const scalar_t cp[3] = {points[n][0] * coarse_reso, points[n][1] * coarse_reso, points[n][2] * coarse_reso};
+        const scalar_t fp[3] = {points[n][0] * fine_reso, points[n][1] * fine_reso, points[n][2] * fine_reso};
+        const scalar_t tl_w[3] = {fp[0] - myfloor(fp[0] - 0.5f) - 0.5f,
+                                  fp[1] - myfloor(fp[1] - 0.5f) - 0.5f,
+                                  fp[2] - myfloor(fp[2] - 0.5f) - 0.5f};
+        const scalar_t interp_weights[8] = {
+            tl_w[0] * tl_w[1] * tl_w[2],
+            tl_w[0] * tl_w[1] * (1 - tl_w[2]),
+            tl_w[0] * (1 - tl_w[1]) * tl_w[2],
+            tl_w[0] * (1 - tl_w[1]) * (1 - tl_w[2]),
+            (1 - tl_w[0]) * tl_w[1] * (1 - tl_w[2]),
+            (1 - tl_w[0]) * tl_w[1] * tl_w[2],
+            (1 - tl_w[0]) * (1 - tl_w[1]) * tl_w[2],
+            (1 - tl_w[0]) * (1 - tl_w[1]) * (1 - tl_w[2])
+        };
+        for (int i = 0; i < 8; i++) {
+            cn[0] = static_cast<int32_t>(myfloor(cp[0] + OFFSET[i][0]));
+            cn[1] = static_cast<int32_t>(myfloor(cp[1] + OFFSET[i][1]));
+            cn[2] = static_cast<int32_t>(myfloor(cp[2] + OFFSET[i][2]));
+            if (cn[0] < 0 || cn[0] >= coarse_reso ||
+                cn[1] < 0 || cn[1] >= coarse_reso ||
+                cn[2] < 0 || cn[2] >= coarse_reso) {
+                continue;
+            }
+            cn_wcoo[0] = cn[0] * fc_ratio;
+            cn_wcoo[1] = cn[1] * fc_ratio;
+            cn_wcoo[2] = cn[2] * fc_ratio;
+            for (int j = 0; j < 8; j++) {
+                if (static_cast<int32_t>(myfloor(fp[0] + OFFSET[j][0])) - cn_wcoo[0] != fg_x ||
+                    static_cast<int32_t>(myfloor(fp[1] + OFFSET[j][1])) - cn_wcoo[1] != fg_y ||
+                    static_cast<int32_t>(myfloor(fp[2] + OFFSET[j][2])) - cn_wcoo[2] != fg_z) { continue; }
+                // The if-statement also takes care of any out-of-bounds neighbors (ignored)
+                if (static_cast<scalar_t>(cn_wcoo[0]) <= fn_center[0] && static_cast<scalar_t>(cn_wcoo[0]) + c_vl_wcoo >= fn_center[0] &&
+                    static_cast<scalar_t>(cn_wcoo[1]) <= fn_center[1] && static_cast<scalar_t>(cn_wcoo[1]) + c_vl_wcoo >= fn_center[1] &&
+                    static_cast<scalar_t>(cn_wcoo[2]) <= fn_center[2] && static_cast<scalar_t>(cn_wcoo[2]) + c_vl_wcoo >= fn_center[2])
+                {
+                    grad = myfma(
+                        coarse_grid[cn[0] + cn[1] * coarse_reso + cn[2] * coarse_reso_sq][atom_id],
+                        interp_weights[j] * grad_output[n][warp_lane],
+                        grad
+                    );
+                }
+            }
+        }
+    }
+    d_atoms[fg_x + fg_y * fine_reso + fg_z * fine_reso * fine_reso][atom_id][warp_lane] = grad;
+}
+
 
 template<typename scalar_t>
 __global__ void k_l2_interp_v2_d_cg(Acc32<scalar_t, 2> grad_output,   // N, D
                                     Acc32<scalar_t, 2> d_coarse_grid, // Rc^3, S
-                                    Acc32<scalar_t, 3> atoms,         // D, Rf^3, S
+                                    Acc32<scalar_t, 3> atoms,         // Rf^3, D, S
                                     Acc32<scalar_t, 2> points,        // N, 3
                                     const uint32_t fine_reso,
                                     const uint32_t coarse_reso,
@@ -206,17 +282,16 @@ __global__ void k_l2_interp_v2_d_cg(Acc32<scalar_t, 2> grad_output,   // N, D
                                    )
 {
     /*
-     * The CUDA grid is 3D with z=coarse_reso, y=coarse_reso, x=1
+     * The CUDA grid is 3D with z=coarse_reso, y=coarse_reso, x=coarse_reso
      * Each thread-block is 1D
      */
     const uint32_t cg_x = blockIdx.x;
     const uint32_t cg_y = blockIdx.y;
     const uint32_t cg_z = blockIdx.z;
     const uint32_t atom_id = threadIdx.x;
-    const uint32_t S = atoms.size(2);
-    const uint32_t D = atoms.size(0);
+    const uint32_t D = grad_output.size(1);
     const uint32_t N = points.size(0);
-    if (cg_y >= coarse_reso || cg_z >= coarse_reso || cg_x >= coarse_reso || atom_id >= S) { return; }
+    if (atom_id >= d_coarse_grid.size(1)) { return; }
     const uint32_t fine_reso_sq = fine_reso * fine_reso;
     const int32_t fc_ratio = fine_reso / coarse_reso;
     const scalar_t c_vl_wcoo = coarse_vl * fc_ratio;
@@ -266,7 +341,7 @@ __global__ void k_l2_interp_v2_d_cg(Acc32<scalar_t, 2> grad_output,   // N, D
                                          (fn[1] - cn_wcoo[1]) * fine_reso +
                                          (fn[2] - cn_wcoo[2]) * fine_reso_sq;
                     for (int d = 0; d < D; d++) {
-                        grad = myfma(atoms[d][fn_realcoo][atom_id],          // coalesced
+                        grad = myfma(atoms[fn_realcoo][d][atom_id],          // coalesced
                                      interp_weights[j] * grad_output[n][d],  // not coalesced
                                      grad);
                     }
@@ -278,6 +353,7 @@ __global__ void k_l2_interp_v2_d_cg(Acc32<scalar_t, 2> grad_output,   // N, D
 }
 
 
+/* v1 */
 
 template<typename query_t, typename sh_t, typename out_t>
 __global__ void k_l2_interp(Acc32<query_t, 2> Q,       // N x S
@@ -417,6 +493,8 @@ __global__ void k_l2_interp_bwd(Acc32<out_t, 2> grad_output,  // N x D
     }
 }
 
+
+
 /*
  * PyTorch Wrappers
  */
@@ -434,7 +512,7 @@ class L2InterpFunctionv2 : public Function<L2InterpFunctionv2> {
     public:
         static Tensor forward(AutogradContext *ctx,
                               Tensor coarse_grid,   // Rc^3, S
-                              Tensor atoms,         // S, Rf^3, D
+                              Tensor atoms,         // Rf^3, S, D
                               Tensor points,        // N, 3
                               int64_t fine_reso,
                               int64_t coarse_reso,
@@ -485,15 +563,25 @@ class L2InterpFunctionv2 : public Function<L2InterpFunctionv2> {
             Tensor d_coarse_grid = torch::zeros_like(coarse_grid);
             Tensor d_atoms = torch::zeros_like(atoms);
 
-            dim3 grid_size(coarse_reso, coarse_reso, coarse_reso);
-            dim3 block_size(d_atoms.size(0));
+            const dim3 grid_size_dcg(coarse_reso, coarse_reso, coarse_reso);
+            const dim3 block_size_dcg(d_atoms.size(0));
 
-            Tensor atoms_t = atoms.transpose(0, 2).contiguous();  // D, R^3, S
+            const dim3 grid_size_da(d_atoms.size(0), fine_reso * fine_reso * fine_reso);
+            const dim3 block_size_da(WARP_SIZE);
+
+            Tensor atoms_t = atoms.transpose(1, 2).contiguous();  // Rf^3, D, S
             AT_DISPATCH_FLOATING_TYPES(coarse_grid.scalar_type(), "dispatch_l2interpv2_bwd", [&] {
-                k_l2_interp_v2_d_cg<scalar_t><<<grid_size, block_size, 0, stream.stream()>>>(
+                k_l2_interp_v2_d_cg<scalar_t><<<grid_size_dcg, block_size_dcg, 0, stream.stream()>>>(
                     grad_output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
                     d_coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
                     atoms_t.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
+                    points.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                    (uint32_t)fine_reso, (uint32_t)coarse_reso, (float)fine_vl, (float)coarse_vl
+                );
+                k_l2_interp_v2_d_a<scalar_t><<<grid_size_da, block_size_da, 0, stream.stream()>>>(
+                    grad_output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                    coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                    d_atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
                     points.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
                     (uint32_t)fine_reso, (uint32_t)coarse_reso, (float)fine_vl, (float)coarse_vl
                 );
