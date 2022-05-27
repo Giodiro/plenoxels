@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from plenoxels.tc_plenoxel import shrgb2rgb, depth_map, sigma2alpha
+from tc_plenoxel import shrgb2rgb, depth_map, sigma2alpha
 
 spec = PathFinder().find_spec("c_ext", [os.path.dirname(__file__)])
 torch.ops.load_library(spec.origin)
