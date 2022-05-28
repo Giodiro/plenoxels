@@ -1,3 +1,5 @@
+expname: "e2"
+
 data:
   datadir:
     - /data/DATASETS/SyntheticNerf/lego
@@ -7,4 +9,11 @@ data:
   resolution: 256
   max_tr_frames: 10
   max_ts_frames: 10
-  downsample: 1.0
+
+model:
+  num_atoms: 128
+  coarse_reso: 64
+  fine_reso: 3
+
+regularization:
+  l1_weight: 0.1
