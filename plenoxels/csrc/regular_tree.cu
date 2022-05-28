@@ -1,4 +1,5 @@
 #include <cmath>
+#include <stdexcept>
 #include <tuple>
 
 #include <torch/torch.h>
@@ -25,6 +26,13 @@ __host__ __device__ __forceinline__ float myfma(float a, float b, float c) { ret
 __host__ __device__ __forceinline__ double myfma(double a, double b, double c) { return fma(a, b, c); }
 __host__ __device__ __forceinline__ float myfloor(float a) { return floorf(a); }
 __host__ __device__ __forceinline__ double myfloor(double a) { return floor(a); }
+
+__host__ __device__ int round_up(int num, int multiple) 
+{
+    return ((num + multiple - 1) / multiple) * multiple;
+}
+
+
 /*
  * Linear interpolation
  * implements (1 - w) * a + w * b via a subtraction and a fused multiply-add.
@@ -115,14 +123,14 @@ __global__ void k_l2_interp_v2(Acc32<scalar_t, 2> coarse_grid,  // Rc^3, S
     const uint32_t warp_block_id = threadIdx.x / WARP_SIZE;
     const uint32_t warp_lane = threadIdx.x % WARP_SIZE;
     const uint32_t D = atoms.size(2);
-    if (warp_lane >= atoms.size(1) || point_id >= points.size(0)) { return; }
+    const uint32_t S = coarse_grid.size(1);
+    const uint32_t warp_mask = __ballot_sync(0xffffffff, warp_lane < D);
+    if (warp_lane >= D || point_id >= points.size(0)) { return; }
 
     const uint32_t fine_reso_sq = fine_reso * fine_reso;
     const scalar_t cp[3] = {points[point_id][0] * coarse_reso, points[point_id][1] * coarse_reso, points[point_id][2] * coarse_reso};
-    const scalar_t fp[3] = {points[point_id][0] * fine_reso, points[point_id][1] * fine_reso, points[point_id][2] * fine_reso};
-    //assert fine_reso % coarse_reso == 0
-    const int32_t fc_ratio = fine_reso / coarse_reso;
-    const scalar_t c_vl_wcoo = coarse_vl * fc_ratio;
+    const scalar_t fp[3] = {cp[0] * fine_reso, cp[1] * fine_reso, cp[2] * fine_reso};
+    const scalar_t c_vl_wcoo = coarse_vl * fine_reso;
     int32_t cn[3];           // corner of coarse-neighbor cell in 'coarse-grid' coordinates
     int32_t fn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
     int32_t cn_wcoo[3];      // corner of coarse-neighbor in 'full-grid' coordinates
@@ -153,9 +161,9 @@ __global__ void k_l2_interp_v2(Acc32<scalar_t, 2> coarse_grid,  // Rc^3, S
             cn[2] < 0 || cn[2] >= coarse_reso) {
             continue;
         }
-        cn_wcoo[0] = cn[0] * fc_ratio;
-        cn_wcoo[1] = cn[1] * fc_ratio;
-        cn_wcoo[2] = cn[2] * fc_ratio;
+        cn_wcoo[0] = cn[0] * fine_reso;
+        cn_wcoo[1] = cn[1] * fine_reso;
+        cn_wcoo[2] = cn[2] * fine_reso;
         for (int j = 0; j < 8; j++) {
             fn[0] = static_cast<int32_t>(myfloor(fp[0] + OFFSET[j][0]));
             fn[1] = static_cast<int32_t>(myfloor(fp[1] + OFFSET[j][1]));
@@ -175,7 +183,7 @@ __global__ void k_l2_interp_v2(Acc32<scalar_t, 2> coarse_grid,  // Rc^3, S
                     for (int s = warp_lane; s < S; s += D) {
                         coarse_w[warp_block_id * S + s] = coarse_grid[loaded_w][s];  // TODO: figure out correct stride to avoid bank conflicts in shmem
                     }
-                    __syncwarp();
+                    __syncwarp(warp_mask);
                 }
                 int32_t fn_realcoo = (fn[0] - cn_wcoo[0]) +
                                      (fn[1] - cn_wcoo[1]) * fine_reso +
@@ -183,6 +191,7 @@ __global__ void k_l2_interp_v2(Acc32<scalar_t, 2> coarse_grid,  // Rc^3, S
                 for (int s = 0; s < S; s++) {
                     acc = myfma(coarse_w[warp_block_id * S + s] * interp_weights[j], atoms[fn_realcoo][s][warp_lane], acc);
                 }
+                __syncwarp(warp_mask);
             }
         }
     }
@@ -200,73 +209,171 @@ __global__ void k_l2_interp_v2_d_a(Acc32<scalar_t, 2> grad_output,   // N, D
                                     const scalar_t coarse_vl
                                    )
 {
+    const uint32_t point_id = blockIdx.x;
+    const uint32_t dim_start_id = threadIdx.x;
+    const uint32_t num_dims_in_block = blockDim.x;
+    const uint32_t atom_start_id = threadIdx.y;
+    const uint32_t num_atoms_in_block = blockDim.y;
+
+    const uint32_t S = coarse_grid.size(1);
+    const uint32_t D = grad_output.size(1);
+    if (point_id >= grad_output.size(0) || atom_start_id >= S || dim_start_id >= D) { return; }
+
     const uint32_t fine_reso_sq = fine_reso * fine_reso;
     const uint32_t coarse_reso_sq = coarse_reso * coarse_reso;
-    const uint32_t fg_x = blockIdx.y % fine_reso;
-    const uint32_t fg_y = (blockIdx.y / fine_reso) % fine_reso;
-    const uint32_t fg_z = (blockIdx.y / fine_reso_sq) % fine_reso;
-    const uint32_t atom_id = blockIdx.x;
-    const uint32_t warp_lane = threadIdx.x % WARP_SIZE;
-    const uint32_t N = points.size(0);
-    if (warp_lane >= atoms.size(2) || atom_id >= coarse_grid.size(1)) { return; }
-    const int32_t fc_ratio = fine_reso / coarse_reso;
-    const scalar_t c_vl_wcoo = coarse_vl * fc_ratio;
-
-    const scalar_t fn_center = {static_cast<scalar_t>(fg_x) + 0.5,
-                                static_cast<scalar_t>(fg_y) + 0.5,
-                                static_cast<scalar_t>(fg_z) + 0.5};
+    const scalar_t c_vl_wcoo = coarse_vl * fine_reso;
+    scalar_t fn_center[3];   // center of fine-neighbor cell in 'full-grid' coordinates
     int32_t cn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
+    int32_t fn[3];
     int32_t cn_wcoo[3];      // corner of coarse-neighbor in 'full-grid' coordinates
-    scalar_t grad = 0.0;
 
-    for (int n = 0; n < N; n++)
-    {
-        const scalar_t cp[3] = {points[n][0] * coarse_reso, points[n][1] * coarse_reso, points[n][2] * coarse_reso};
-        const scalar_t fp[3] = {points[n][0] * fine_reso, points[n][1] * fine_reso, points[n][2] * fine_reso};
-        const scalar_t tl_w[3] = {fp[0] - myfloor(fp[0] - 0.5f) - 0.5f,
-                                  fp[1] - myfloor(fp[1] - 0.5f) - 0.5f,
-                                  fp[2] - myfloor(fp[2] - 0.5f) - 0.5f};
-        const scalar_t interp_weights[8] = {
-            tl_w[0] * tl_w[1] * tl_w[2],
-            tl_w[0] * tl_w[1] * (1 - tl_w[2]),
-            tl_w[0] * (1 - tl_w[1]) * tl_w[2],
-            tl_w[0] * (1 - tl_w[1]) * (1 - tl_w[2]),
-            (1 - tl_w[0]) * tl_w[1] * (1 - tl_w[2]),
-            (1 - tl_w[0]) * tl_w[1] * tl_w[2],
-            (1 - tl_w[0]) * (1 - tl_w[1]) * tl_w[2],
-            (1 - tl_w[0]) * (1 - tl_w[1]) * (1 - tl_w[2])
-        };
-        for (int i = 0; i < 8; i++) {
-            cn[0] = static_cast<int32_t>(myfloor(cp[0] + OFFSET[i][0]));
-            cn[1] = static_cast<int32_t>(myfloor(cp[1] + OFFSET[i][1]));
-            cn[2] = static_cast<int32_t>(myfloor(cp[2] + OFFSET[i][2]));
-            if (cn[0] < 0 || cn[0] >= coarse_reso ||
-                cn[1] < 0 || cn[1] >= coarse_reso ||
-                cn[2] < 0 || cn[2] >= coarse_reso) {
-                continue;
-            }
-            cn_wcoo[0] = cn[0] * fc_ratio;
-            cn_wcoo[1] = cn[1] * fc_ratio;
-            cn_wcoo[2] = cn[2] * fc_ratio;
-            for (int j = 0; j < 8; j++) {
-                if (static_cast<int32_t>(myfloor(fp[0] + OFFSET[j][0])) - cn_wcoo[0] != fg_x ||
-                    static_cast<int32_t>(myfloor(fp[1] + OFFSET[j][1])) - cn_wcoo[1] != fg_y ||
-                    static_cast<int32_t>(myfloor(fp[2] + OFFSET[j][2])) - cn_wcoo[2] != fg_z) { continue; }
-                // The if-statement also takes care of any out-of-bounds neighbors (ignored)
-                if (static_cast<scalar_t>(cn_wcoo[0]) <= fn_center[0] && static_cast<scalar_t>(cn_wcoo[0]) + c_vl_wcoo >= fn_center[0] &&
-                    static_cast<scalar_t>(cn_wcoo[1]) <= fn_center[1] && static_cast<scalar_t>(cn_wcoo[1]) + c_vl_wcoo >= fn_center[1] &&
-                    static_cast<scalar_t>(cn_wcoo[2]) <= fn_center[2] && static_cast<scalar_t>(cn_wcoo[2]) + c_vl_wcoo >= fn_center[2])
-                {
-                    grad = myfma(
-                        coarse_grid[cn[0] + cn[1] * coarse_reso + cn[2] * coarse_reso_sq][atom_id],
-                        interp_weights[j] * grad_output[n][warp_lane],
-                        grad
-                    );
+    const scalar_t cp[3] = {points[point_id][0] * coarse_reso, points[point_id][1] * coarse_reso, points[point_id][2] * coarse_reso};
+    const scalar_t fp[3] = {cp[0] * fine_reso, cp[1] * fine_reso, cp[2] * fine_reso};
+    const scalar_t tl_w[3] = {fp[0] - myfloor(fp[0] - 0.5f) - 0.5f,
+                              fp[1] - myfloor(fp[1] - 0.5f) - 0.5f,
+                              fp[2] - myfloor(fp[2] - 0.5f) - 0.5f};
+    const scalar_t interp_weights[8] = {
+        tl_w[0] * tl_w[1] * tl_w[2],
+        tl_w[0] * tl_w[1] * (1 - tl_w[2]),
+        tl_w[0] * (1 - tl_w[1]) * tl_w[2],
+        tl_w[0] * (1 - tl_w[1]) * (1 - tl_w[2]),
+        (1 - tl_w[0]) * tl_w[1] * (1 - tl_w[2]),
+        (1 - tl_w[0]) * tl_w[1] * tl_w[2],
+        (1 - tl_w[0]) * (1 - tl_w[1]) * tl_w[2],
+        (1 - tl_w[0]) * (1 - tl_w[1]) * (1 - tl_w[2])
+    };
+    for (int i = 0; i < 8; i++) {
+        cn[0] = static_cast<int32_t>(myfloor(cp[0] + OFFSET[i][0]));
+        cn[1] = static_cast<int32_t>(myfloor(cp[1] + OFFSET[i][1]));
+        cn[2] = static_cast<int32_t>(myfloor(cp[2] + OFFSET[i][2]));
+        if (cn[0] < 0 || cn[0] >= coarse_reso ||
+            cn[1] < 0 || cn[1] >= coarse_reso ||
+            cn[2] < 0 || cn[2] >= coarse_reso) {
+            continue;
+        }
+        cn_wcoo[0] = cn[0] * fine_reso;
+        cn_wcoo[1] = cn[1] * fine_reso;
+        cn_wcoo[2] = cn[2] * fine_reso;
+        for (int j = 0; j < 8; j++) {
+            fn[0] = static_cast<int32_t>(myfloor(fp[0] + OFFSET[j][0]));
+            fn[1] = static_cast<int32_t>(myfloor(fp[1] + OFFSET[j][1]));
+            fn[2] = static_cast<int32_t>(myfloor(fp[2] + OFFSET[j][2]));
+            fn_center[0] = static_cast<scalar_t>(fn[0]) + 0.5;
+            fn_center[1] = static_cast<scalar_t>(fn[1]) + 0.5;
+            fn_center[2] = static_cast<scalar_t>(fn[2]) + 0.5;
+            if (static_cast<scalar_t>(cn_wcoo[0]) <= fn_center[0] && static_cast<scalar_t>(cn_wcoo[0]) + c_vl_wcoo >= fn_center[0] &&
+                static_cast<scalar_t>(cn_wcoo[1]) <= fn_center[1] && static_cast<scalar_t>(cn_wcoo[1]) + c_vl_wcoo >= fn_center[1] &&
+                static_cast<scalar_t>(cn_wcoo[2]) <= fn_center[2] && static_cast<scalar_t>(cn_wcoo[2]) + c_vl_wcoo >= fn_center[2])
+            {
+                int32_t fn_realcoo = (fn[0] - cn_wcoo[0]) +
+                                     (fn[1] - cn_wcoo[1]) * fine_reso +
+                                     (fn[2] - cn_wcoo[2]) * fine_reso_sq;
+                for (uint32_t s = atom_start_id; s < S; s += num_atoms_in_block) {
+                    scalar_t cg_s = coarse_grid[cn[0] + cn[1] * coarse_reso + cn[2] * coarse_reso_sq][s];
+                    for (uint32_t d = dim_start_id; d < D; d += num_dims_in_block) {
+                        atomicAdd(
+                            &d_atoms[fn_realcoo][s][d],
+                            interp_weights[j] * grad_output[point_id][d] * cg_s
+                        );
+                    }
                 }
             }
         }
     }
-    d_atoms[fg_x + fg_y * fine_reso + fg_z * fine_reso * fine_reso][atom_id][warp_lane] = grad;
+}
+
+
+template<typename scalar_t>
+__global__ void k_l2_interp_v2_d_cg2(Acc32<scalar_t, 2> grad_output,   // N, D
+                                    Acc32<scalar_t, 2> d_coarse_grid, // Rc^3, S
+                                    Acc32<scalar_t, 3> atoms,         // Rf^3, D, S
+                                    Acc32<scalar_t, 2> points,        // N, 3
+                                    const uint32_t fine_reso,
+                                    const uint32_t coarse_reso,
+                                    const scalar_t fine_vl,
+                                    const scalar_t coarse_vl
+                                   )
+{
+    const uint32_t point_id = (blockIdx.x * blockDim.x + threadIdx.x) / WARP_SIZE;
+    const uint32_t warp_block_id = threadIdx.x / WARP_SIZE;
+    const uint32_t warp_lane = threadIdx.x % WARP_SIZE;
+    const uint32_t D = grad_output.size(1);
+    const uint32_t S = d_coarse_grid.size(1);
+    const uint32_t warp_mask = __ballot_sync(0xffffffff, warp_lane < S);
+    if (warp_lane >= S || point_id >= points.size(0)) { return; }
+    const uint32_t fine_reso_sq = fine_reso * fine_reso;
+    const scalar_t c_vl_wcoo = coarse_vl * fine_reso;
+
+    int32_t fn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
+    scalar_t fn_center[3];   // center of fine-neighbor cell in 'full-grid' coordinates
+    int32_t cn[3];
+    int32_t cn_wcoo[3];
+
+    const scalar_t cp[3] = {points[point_id][0] * coarse_reso, points[point_id][1] * coarse_reso, points[point_id][2] * coarse_reso};
+    const scalar_t fp[3] = {cp[0] * fine_reso, cp[1] * fine_reso, cp[2] * fine_reso};
+    const scalar_t tl_w[3] = {fp[0] - myfloor(fp[0] - 0.5f) - 0.5f,
+                              fp[1] - myfloor(fp[1] - 0.5f) - 0.5f,
+                              fp[2] - myfloor(fp[2] - 0.5f) - 0.5f};
+    const scalar_t interp_weights[8] = {
+        tl_w[0] * tl_w[1] * tl_w[2],
+        tl_w[0] * tl_w[1] * (1 - tl_w[2]),
+        tl_w[0] * (1 - tl_w[1]) * tl_w[2],
+        tl_w[0] * (1 - tl_w[1]) * (1 - tl_w[2]),
+        (1 - tl_w[0]) * tl_w[1] * (1 - tl_w[2]),
+        (1 - tl_w[0]) * tl_w[1] * tl_w[2],
+        (1 - tl_w[0]) * (1 - tl_w[1]) * tl_w[2],
+        (1 - tl_w[0]) * (1 - tl_w[1]) * (1 - tl_w[2])
+    };
+    // Load grad_output into shmem
+    extern __shared__ __align__(sizeof(double2)) unsigned char smem[];
+    scalar_t* shmem_grad_output = reinterpret_cast<scalar_t *>(smem);
+    for (int d = warp_lane; d < D; d += WARP_SIZE) {
+        shmem_grad_output[warp_block_id * D + d] = grad_output[point_id][d];
+    }
+    __syncwarp(warp_mask);
+    //const uint32_t num_atoms_per_warp = (S + WARP_SIZE - 1) / WARP_SIZE;
+
+    for (int i = 0; i < 8; i++) {
+        scalar_t grad[8] = {0.0};  // TODO: This is hardcoded randomly, allows up to 256 atoms
+        cn[0] = static_cast<int32_t>(myfloor(cp[0] + OFFSET[i][0]));
+        cn[1] = static_cast<int32_t>(myfloor(cp[1] + OFFSET[i][1]));
+        cn[2] = static_cast<int32_t>(myfloor(cp[2] + OFFSET[i][2]));
+        if (cn[0] < 0 || cn[0] >= coarse_reso ||
+            cn[1] < 0 || cn[1] >= coarse_reso ||
+            cn[2] < 0 || cn[2] >= coarse_reso) { continue; }
+        cn_wcoo[0] = cn[0] * fine_reso;
+        cn_wcoo[1] = cn[1] * fine_reso;
+        cn_wcoo[2] = cn[2] * fine_reso;
+        for (int j = 0; j < 8; j++) {
+            fn[0] = static_cast<int32_t>(myfloor(fp[0] + OFFSET[j][0]));
+            fn[1] = static_cast<int32_t>(myfloor(fp[1] + OFFSET[j][1]));
+            fn[2] = static_cast<int32_t>(myfloor(fp[2] + OFFSET[j][2]));
+            fn_center[0] = static_cast<scalar_t>(fn[0]) + 0.5;
+            fn_center[1] = static_cast<scalar_t>(fn[1]) + 0.5;
+            fn_center[2] = static_cast<scalar_t>(fn[2]) + 0.5;
+            // The if-statement also takes care of any out-of-bounds neighbors (ignored)
+            if (static_cast<scalar_t>(cn_wcoo[0]) <= fn_center[0] && static_cast<scalar_t>(cn_wcoo[0]) + c_vl_wcoo >= fn_center[0] &&
+                static_cast<scalar_t>(cn_wcoo[1]) <= fn_center[1] && static_cast<scalar_t>(cn_wcoo[1]) + c_vl_wcoo >= fn_center[1] &&
+                static_cast<scalar_t>(cn_wcoo[2]) <= fn_center[2] && static_cast<scalar_t>(cn_wcoo[2]) + c_vl_wcoo >= fn_center[2])
+            {
+                int32_t fn_realcoo = (fn[0] - cn_wcoo[0]) +
+                                     (fn[1] - cn_wcoo[1]) * fine_reso +
+                                     (fn[2] - cn_wcoo[2]) * fine_reso_sq;
+                for (int d = 0; d < D; d++) {
+                    for (int s = warp_lane, s_w = 0; s < S; s += WARP_SIZE, s_w++) {
+                        grad[s_w] = myfma(atoms[fn_realcoo][d][s], interp_weights[j] * shmem_grad_output[warp_block_id * D + d], grad[s_w]);
+                        //atomicAdd(
+                        //    &d_coarse_grid[cn[0] + cn[1] * coarse_reso + cn[2] * coarse_reso_sq][s], 
+                        //    atoms[fn_realcoo][d][s] * interp_weights[j] * shmem_grad_output[warp_block_id * D + d]
+                        //);
+                    }
+                }
+            }
+        }
+        for (int s = warp_lane, s_w = 0; s < S; s += WARP_SIZE, s_w++) {
+            atomicAdd(&d_coarse_grid[cn[0] + cn[1] * coarse_reso + cn[2] * coarse_reso * coarse_reso][s], grad[s_w]);
+        }
+    }
 }
 
 
@@ -293,8 +400,7 @@ __global__ void k_l2_interp_v2_d_cg(Acc32<scalar_t, 2> grad_output,   // N, D
     const uint32_t N = points.size(0);
     if (atom_id >= d_coarse_grid.size(1)) { return; }
     const uint32_t fine_reso_sq = fine_reso * fine_reso;
-    const int32_t fc_ratio = fine_reso / coarse_reso;
-    const scalar_t c_vl_wcoo = coarse_vl * fc_ratio;
+    const scalar_t c_vl_wcoo = coarse_vl * fine_reso;
 
     int32_t fn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
     int32_t cn_wcoo[3];      // corner of coarse-neighbor in 'full-grid' coordinates
@@ -304,7 +410,7 @@ __global__ void k_l2_interp_v2_d_cg(Acc32<scalar_t, 2> grad_output,   // N, D
     for (int n = 0; n < N; n++)
     {
         const scalar_t cp[3] = {points[n][0] * coarse_reso, points[n][1] * coarse_reso, points[n][2] * coarse_reso};
-        const scalar_t fp[3] = {points[n][0] * fine_reso, points[n][1] * fine_reso, points[n][2] * fine_reso};
+        const scalar_t fp[3] = {cp[0] * fine_reso, cp[1] * fine_reso, cp[2] * fine_reso};
         const scalar_t tl_w[3] = {fp[0] - myfloor(fp[0] - 0.5f) - 0.5f,
                                   fp[1] - myfloor(fp[1] - 0.5f) - 0.5f,
                                   fp[2] - myfloor(fp[2] - 0.5f) - 0.5f};
@@ -322,9 +428,9 @@ __global__ void k_l2_interp_v2_d_cg(Acc32<scalar_t, 2> grad_output,   // N, D
             if (static_cast<int32_t>(myfloor(cp[1] + OFFSET[i][1])) != cg_y ||
                 static_cast<int32_t>(myfloor(cp[2] + OFFSET[i][2])) != cg_z ||
                 static_cast<int32_t>(myfloor(cp[0] + OFFSET[i][0])) != cg_x) { continue; }
-            cn_wcoo[0] = cg_x * fc_ratio;
-            cn_wcoo[1] = cg_y * fc_ratio;
-            cn_wcoo[2] = cg_z * fc_ratio;
+            cn_wcoo[0] = cg_x * fine_reso;
+            cn_wcoo[1] = cg_y * fine_reso;
+            cn_wcoo[2] = cg_z * fine_reso;
             for (int j = 0; j < 8; j++) {
                 fn[0] = static_cast<int32_t>(myfloor(fp[0] + OFFSET[j][0]));
                 fn[1] = static_cast<int32_t>(myfloor(fp[1] + OFFSET[j][1]));
@@ -521,6 +627,20 @@ class L2InterpFunctionv2 : public Function<L2InterpFunctionv2> {
         {
             const at::cuda::CUDAGuard device_guard(coarse_grid.device());
             const auto stream = at::cuda::getCurrentCUDAStream();
+            // Size checks
+            if (coarse_grid.size(0) != coarse_reso * coarse_reso * coarse_reso) {
+                throw std::invalid_argument("Coarse-grid has wrong first dimension");
+            }
+            if (coarse_grid.size(1) != atoms.size(1)) {
+                throw std::invalid_argument("Coarse-grid and atoms dimension 1 doesn't match");
+            }
+            if (atoms.size(0) != fine_reso * fine_reso * fine_reso) {
+                throw std::invalid_argument("Atoms has wrong first dimension");
+            }
+            if (atoms.size(2) > 32) {
+                throw std::invalid_argument("Data dimension must be at most 32");
+            }
+
             ctx->save_for_backward({coarse_grid, atoms});
             ctx->saved_data["points"] = points;
             ctx->saved_data["fine_reso"] = fine_reso;
@@ -563,15 +683,18 @@ class L2InterpFunctionv2 : public Function<L2InterpFunctionv2> {
             Tensor d_coarse_grid = torch::zeros_like(coarse_grid);
             Tensor d_atoms = torch::zeros_like(atoms);
 
-            const dim3 grid_size_dcg(coarse_reso, coarse_reso, coarse_reso);
-            const dim3 block_size_dcg(d_atoms.size(0));
+            const dim3 grid_size_dcg(n_blocks_linear(points.size(0), CUDA_THREADS_PER_BLOCK / WARP_SIZE));
+            const dim3 block_size_dcg(CUDA_THREADS_PER_BLOCK);
+            //const dim3 grid_size_dcg(coarse_reso * n_blocks_linear(points.size(0), CUDA_THREADS_PER_BLOCK / WARP_SIZE), coarse_reso, coarse_reso);
+            //const dim3 block_size_dcg(d_atoms.size(0));
 
-            const dim3 grid_size_da(d_atoms.size(0), fine_reso * fine_reso * fine_reso);
-            const dim3 block_size_da(WARP_SIZE);
+            const dim3 grid_size_da(points.size(0));//d_atoms.size(0), fine_reso * fine_reso * fine_reso);
+            const dim3 block_size_da(round_up(grad_output.size(1), 32), 8);  // D * S
 
             Tensor atoms_t = atoms.transpose(1, 2).contiguous();  // Rf^3, D, S
             AT_DISPATCH_FLOATING_TYPES(coarse_grid.scalar_type(), "dispatch_l2interpv2_bwd", [&] {
-                k_l2_interp_v2_d_cg<scalar_t><<<grid_size_dcg, block_size_dcg, 0, stream.stream()>>>(
+                const uint32_t shared_mem = CUDA_WARPS_PER_BLOCK * atoms.size(2);  // D
+                k_l2_interp_v2_d_cg2<scalar_t><<<grid_size_dcg, block_size_dcg, shared_mem * sizeof(scalar_t), stream.stream()>>>(
                     grad_output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
                     d_coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
                     atoms_t.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
