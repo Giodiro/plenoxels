@@ -20,17 +20,24 @@ class ShDictRender(nn.Module):
                  num_atoms: int,
                  init_sigma: float,
                  init_rgb: float,
-                 num_scenes: int):
+                 num_scenes: int,
+                 efficient_dict=True):
         super().__init__()
         sh_dim = (sh_deg + 1) ** 2
         total_data_channels = sh_dim * 3 + 1
         self.radius = radius
         self.fine_reso = fine_reso
         self.coarse_reso = coarse_reso
-        self.grids = nn.ParameterList([nn.Parameter(torch.empty(coarse_reso, coarse_reso, coarse_reso, num_atoms)) for i in range(num_scenes)])
         self.num_atoms = num_atoms
         self.data_dim = total_data_channels
-        self.atoms = nn.Parameter(torch.empty(self.fine_reso, self.fine_reso, self.fine_reso, self.num_atoms, self.data_dim, dtype=torch.float32))  # [n_atoms, data_dim, fine_reso, fine_reso, fine_reso]
+        self.efficient_dict = efficient_dict
+        # If we want to reuse the same dictionary for different channels
+        if efficient_dict:
+            self.grids = nn.ParameterList([nn.Parameter(torch.empty(coarse_reso, coarse_reso, coarse_reso, self.num_atoms, self.data_dim)) for i in range(num_scenes)])
+            self.atoms = nn.Parameter(torch.empty(self.fine_reso, self.fine_reso, self.fine_reso, num_atoms, dtype=torch.float32)) 
+        else:
+            self.grids = nn.ParameterList([nn.Parameter(torch.empty(coarse_reso, coarse_reso, coarse_reso, self.num_atoms)) for i in range(num_scenes)])
+            self.atoms = nn.Parameter(torch.empty(self.fine_reso, self.fine_reso, self.fine_reso, self.num_atoms, self.data_dim, dtype=torch.float32)) 
         self.n_intersections = coarse_reso * 3 * 2 * fine_reso
         with torch.no_grad():
             nn.init.uniform_(self.atoms[..., :-1])
@@ -87,7 +94,7 @@ class ShDictRender(nn.Module):
             # Get indices of 8 fine grid neighbors
             fine_offsets, fine_neighbors = self.get_neighbors((intrs_pts + self.radius) / self.fine_voxel_len)  # [n_pts, 8, 3]
             # Get corresponding coarse grid indices for each fine neighbor
-            coarse_neighbors = fine_neighbors // self.fine_reso  # [n_pts, 8, 3]
+            coarse_neighbors = torch.div(fine_neighbors, self.fine_reso, rounding_mode='floor')  # [n_pts, 8, 3]
             fine_neighbors = fine_neighbors % self.fine_reso  # [n_pts, 8, 3]
             # Apply the dictionary to each of the 8 neighbors
         # This should be faster but goes OOM
@@ -102,9 +109,14 @@ class ShDictRender(nn.Module):
         # Slower, but cheaper on memory
         data_interp = torch.zeros(len(fine_neighbors), self.data_dim, device=rays_o.device)
         for i in range(8):
-            coarse_neighbor_vals = grid[coarse_neighbors[:,i,0], coarse_neighbors[:,i,1], coarse_neighbors[:,i,2], :]  # [n_pts, n_atoms]
-            fine_neighbor_vals = self.atoms[fine_neighbors[:,i,0], fine_neighbors[:,i,1], fine_neighbors[:,i,2], :, :]  # [n_pts, n_atoms, data_dim]
-            result = torch.sum(coarse_neighbor_vals[:,:,None] * fine_neighbor_vals, dim=1) # [n_pts, data_dim]
+            if self.efficient_dict:
+                coarse_neighbor_vals = grid[coarse_neighbors[:,i,0], coarse_neighbors[:,i,1], coarse_neighbors[:,i,2], :, :]  # [n_pts, n_atoms, data_dim]
+                fine_neighbor_vals = self.atoms[fine_neighbors[:,i,0], fine_neighbors[:,i,1], fine_neighbors[:,i,2], :]  # [n_pts, n_atoms]
+                result = torch.sum(coarse_neighbor_vals * fine_neighbor_vals[:,:,None], dim=1) # [n_pts, data_dim]
+            else:
+                coarse_neighbor_vals = grid[coarse_neighbors[:,i,0], coarse_neighbors[:,i,1], coarse_neighbors[:,i,2], :]  # [n_pts, n_atoms]
+                fine_neighbor_vals = self.atoms[fine_neighbors[:,i,0], fine_neighbors[:,i,1], fine_neighbors[:,i,2], :, :]  # [n_pts, n_atoms, data_dim]
+                result = torch.sum(coarse_neighbor_vals[:,:,None] * fine_neighbor_vals, dim=1) # [n_pts, data_dim]
             weights = torch.prod(1. - fine_offsets[:,i,:], dim=-1, keepdim=True)  # [n_pts, 1]
             data_interp = data_interp + weights * result
 

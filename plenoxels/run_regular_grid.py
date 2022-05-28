@@ -95,13 +95,13 @@ def init_sh_encoder(cfg, h_degree):
     else:
         raise ValueError(cfg.sh.sh_encoder)
 
-def init_renderers(cfg, dsets, num_atoms, resolution, fine_resolution):
+def init_renderers(cfg, dsets, num_atoms, resolution, fine_resolution, efficient_dict):
     sh_encoder = init_sh_encoder(cfg, cfg.sh.degree)
     render = ShDictRender(
         sh_deg=cfg.sh.degree, sh_encoder=sh_encoder, 
         radius=1.3, num_atoms=num_atoms, num_scenes=len(dsets),
         fine_reso=fine_resolution, coarse_reso=resolution, 
-        init_sigma=0.1, init_rgb=0.01)
+        init_sigma=0.1, init_rgb=0.01, efficient_dict=efficient_dict)
     print(f"Initialized renderer {render}")
     return render
 
@@ -110,7 +110,8 @@ def initialize(cfg,
                data_dirs: List[str],
                num_atoms: int,
                coarse_reso: int,
-               fine_reso: int,):
+               fine_reso: int,
+               efficient_dict: bool):
     # Initialize datasets
     tr_dsets, tr_loaders, ts_dsets = [], [], []
     for dd in data_dirs:
@@ -120,7 +121,7 @@ def initialize(cfg,
         tr_loaders.append(tr_loader)
         ts_dsets.append(ts_dset)
     # Initialize model
-    renderer = init_renderers(cfg, tr_dsets, num_atoms, coarse_reso, fine_reso)
+    renderer = init_renderers(cfg, tr_dsets, num_atoms, coarse_reso, fine_reso, efficient_dict=efficient_dict)
     renderer.cuda()
 
     # Initialize optimizer
@@ -207,14 +208,15 @@ if __name__ == "__main__":
         "/data/datasets/nerf/data/nerf_synthetic/drums/",
         "/data/datasets/nerf/data/nerf_synthetic/ficus/",
     ]
-    num_atoms_ = 200
+    efficient_dict_ = True
+    num_atoms_ = 32
     coarse_reso_ = 32
-    fine_reso_ = 3
+    fine_reso_ = 4
     max_steps_ = 2_000
     l1_loss_coef_ = 0.1
     exp_name_ = "e1"
 
     init_data = initialize(cfg_, data_dirs_, num_atoms=num_atoms_, coarse_reso=coarse_reso_,
-                           fine_reso=fine_reso_)
+                           fine_reso=fine_reso_, efficient_dict=efficient_dict_)
     train_epoch(init_data["model"], init_data["train_loaders"], optim=init_data["optimizer"], ts_dsets=init_data['test_datasets'],
                 max_steps=max_steps_, l1_loss_coef=l1_loss_coef_, exp_name=exp_name_, batch_size=cfg_.optim.batch_size)
