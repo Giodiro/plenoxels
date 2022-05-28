@@ -167,7 +167,7 @@ __global__ void fetch_interpolate(
         _dev_query_corners<branching>(
                 t_child, t_nids, pos,
                 /*weights=*/c_interp_weights, /*nid_ptr=*/&nid_ptr_offset);//&nid_ptrs[b][i]);
-        int * n_ptr = nid_start_ptr + nid_ptr_offset;
+        const int * n_ptr = nid_start_ptr + nid_ptr_offset;
         #pragma unroll data_dim
         for (int k = 0; k < data_dim; k++) {
             interp_val[k] = c_interp_weights[0] * t_data[*n_ptr][k];
@@ -722,7 +722,7 @@ RenderingOutput corner_tree_render(
     fwd_end.synchronize();
     float fwd_ela = fwd_start.elapsed_time(fwd_end);
 
-    //printf("Forward timings(ms): Sampling=%f  Alloc=%f  Interpolate=%f  Forward=%f\n", gs_ela, alloc_ela, interpolate_ela, fwd_ela);
+    printf("Forward timings(ms): Sampling=%f  Alloc=%f  Interpolate=%f  Forward=%f\n", gs_ela, alloc_ela, interpolate_ela, fwd_ela);
 
     return {
         /*output_rgb=*/output,

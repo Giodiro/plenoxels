@@ -52,8 +52,8 @@ def init_datasets(cfg, dev):
     resolution = cfg.data.resolution
     tr_dset = SyntheticNerfDataset(cfg.data.datadir, split='train', downsample=cfg.data.downsample,
                                    resolution=resolution, max_frames=cfg.data.max_tr_frames)
-    tr_loader = DataLoader(tr_dset, batch_size=cfg.optim.batch_size, shuffle=True, num_workers=3,
-                           prefetch_factor=10,
+    tr_loader = DataLoader(tr_dset, batch_size=cfg.optim.batch_size, shuffle=True, num_workers=4,
+                           prefetch_factor=3,
                            pin_memory=dev.startswith("cuda"))
     ts_dset = SyntheticNerfDataset(cfg.data.datadir, split='test', downsample=cfg.data.downsample,
                                    resolution=resolution, max_frames=cfg.data.max_ts_frames)

@@ -46,7 +46,7 @@ def plot_ts(ts_dset, dset_id, renderer, log_dir, exp_name, iteration, batch_size
     ax[0].set_title(f"PSNR={psnr:.2f}")
     os.makedirs(f"{log_dir}/{exp_name}", exist_ok=True)
     fig.savefig(f"{log_dir}/{exp_name}/dset{dset_id}_iter{iteration}.png")
-    fig.close()
+    plt.close(fig)
 
 
 def train_epoch(renderer, tr_loaders, ts_dsets, optim, max_steps, log_dir, exp_name):
