@@ -36,6 +36,7 @@ def init_data(cfg):
         ts_dsets.append(SyntheticNerfDataset(
             data_dir, split='test', downsample=cfg.data.downsample, resolution=resolution,
             max_frames=cfg.data.max_ts_frames))
+    return tr_dsets, tr_loaders, ts_dsets
 
 
 def render_ts_img(data: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],

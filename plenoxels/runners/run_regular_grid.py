@@ -42,7 +42,7 @@ def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_loss_coef, max_steps, 
                     optim.zero_grad()
                     rgb_preds, alpha, depth = renderer(rays_o, rays_d, grid_id=dset_id)
                     rec_loss = F.mse_loss(rgb_preds, imgs)
-                    l1_loss = l1_loss_coef * torch.abs(renderer.grids[dset_id].data).mean()
+                    l1_loss = l1_loss_coef * torch.abs(renderer.grids[dset_id]).mean()
                     loss = rec_loss + l1_loss
                     loss.backward()
                     optim.step()
@@ -99,4 +99,4 @@ if __name__ == "__main__":
 
     train_epoch(renderer=model_, tr_loaders=tr_loaders_, ts_dsets=ts_dsets_, optim=optim_,
                 max_steps=cfg_.optim.max_steps, log_dir=cfg_.logdir, exp_name=cfg_.expname,
-                batch_size=cfg_.optim.batch_size, l1_loss_coef=cfg_.regularization.l1_weight)
+                batch_size=cfg_.optim.batch_size, l1_loss_coef=cfg_.optim.regularization.l1_weight)

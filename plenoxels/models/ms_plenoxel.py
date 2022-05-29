@@ -1,4 +1,5 @@
 from importlib.machinery import PathFinder
+from pathlib import Path
 import os
 
 import torch
@@ -8,7 +9,7 @@ import torch.nn.functional as F
 from plenoxels.nerf_rendering import shrgb2rgb, depth_map, sigma2alpha
 
 try:
-    spec = PathFinder().find_spec("c_ext", [os.path.dirname(__file__)])
+    spec = PathFinder().find_spec("c_ext", [str(Path(__file__).resolve().parents[1])])
     torch.ops.load_library(spec.origin)
 except:
     print("Failed to load C-extension necessary for DictPlenoxels model")
@@ -44,6 +45,7 @@ class DictPlenoxels(nn.Module):
         self.grids = nn.ParameterList([nn.Parameter(
             torch.empty(coarse_reso ** 3, self.num_atoms)) for i in range(num_scenes)])
         self.atoms = nn.Parameter(torch.empty(fine_reso ** 3, self.num_atoms, self.data_dim))
+        self.init_params()
 
     def init_params(self):
         for grid in self.grids:
@@ -52,7 +54,7 @@ class DictPlenoxels(nn.Module):
         nn.init.constant_(self.atoms[..., -1], 0.01)
 
     def __repr__(self):
-        return (f"ShDictRender(grids={self.grids}, num_atoms={self.num_atoms}, data_dim={self.data_dim}, "
+        return (f"DictPlenoxels(grids={self.grids}, num_atoms={self.num_atoms}, data_dim={self.data_dim}, "
                 f"fine_reso={self.fine_reso}, coarse_reso={self.coarse_reso})")
 
     @torch.no_grad()
@@ -68,21 +70,6 @@ class DictPlenoxels(nn.Module):
         intersections = start + steps * self.step_size  # [batch, n_intrs]
         return intersections
 
-    def get_neighbors(self, pts):
-        """ pts should be in grid coordinates, ranging from 0 to coarse_reso * fine_reso """
-        offsets_3d = torch.tensor(
-            [[-1, -1, -1],
-            [-1, -1, 1],
-            [-1, 1, -1],
-            [-1, 1, 1],
-            [1, -1, -1],
-            [1, -1, 1],
-            [1, 1, -1],
-            [1, 1, 1]], dtype=pts.dtype, device=pts.device)
-        pre_floor = pts[:,None,:] + offsets_3d[None,...] / 2.
-        post_floor = torch.clamp(torch.floor(pre_floor), min=0., max=self.coarse_reso * self.fine_reso - 1)
-        return torch.abs(pts[:,None,:] - (post_floor + 0.5)), post_floor.long()
-
     def forward(self, rays_o, rays_d, grid_id, verbose=False):
         grid = self.grids[grid_id]
         with torch.autograd.no_grad():
@@ -93,10 +80,12 @@ class DictPlenoxels(nn.Module):
             # noinspection PyTypeChecker
             intrs_pts_mask = torch.all((-self.radius < intrs_pts) & (intrs_pts < self.radius), dim=-1)  # [batch, n_intrs-1]
             intrs_pts = intrs_pts[intrs_pts_mask]  # masked points
+            # Normalize pts in [0, 1]
+            intrs_pts = (intrs_pts + self.radius) / (self.radius * 2)
 
         data_interp = torch.ops.plenoxels.l2_interp_v2(
             grid, self.atoms, intrs_pts, self.fine_reso, self.coarse_reso,
-            1 / self.fine_reso, 1 / self.coarse_reso)
+            1 / self.fine_reso, 1)
 
         # 1. Process density: Un-masked sigma (batch, n_intrs-1), and compute.
         sigma_masked = data_interp[:, -1]
