@@ -104,13 +104,33 @@ __device__ __inline__ void unnormalize_pos(out_t * __restrict__ pos,
 
 
 __device__ __inline__ int32_t coo2idx(int32_t x, int32_t y, int32_t z, uint32_t grid_size) {
-    return z + y * grid_size + x * grid_size * grid_size;
+    return x + y * grid_size + z * grid_size * grid_size;//z + y * grid_size + x * grid_size * grid_size;
 }
 
 
 __constant__
 static const float OFFSET[8][3] = {{-0.5, -0.5, -0.5}, {-0.5, -0.5, 0.5}, {-0.5, 0.5, -0.5}, {-0.5, 0.5, 0.5},
                                    {0.5, -0.5, -0.5},  {0.5, -0.5, 0.5},  {0.5, 0.5, -0.5},  {0.5, 0.5, 0.5}};
+
+template<class scalar_t>
+__device__ __inline__ void
+calc_interp_weights(scalar_t * __restrict__ weights_out,
+                    const scalar_t * __restrict__ point,
+                    scalar_t * __restrict__ scratch)
+{
+    // Interpolation weight for fine coordinates to the center of top-left cell.
+    scratch[0] = point[0] - 0.5f - myfloor(point[0] - 0.5f);
+    scratch[1] = point[1] - 0.5f - myfloor(point[1] - 0.5f);
+    scratch[2] = point[2] - 0.5f - myfloor(point[2] - 0.5f);
+    weights_out[0] = scratch[0] * scratch[1] * scratch[2];
+    weights_out[1] = scratch[0] * scratch[1] * (1.0 - scratch[2]);
+    weights_out[2] = scratch[0] * (1.0 - scratch[1]) * scratch[2];
+    weights_out[3] = scratch[0] * (1.0 - scratch[1]) * (1.0 - scratch[2]);
+    weights_out[4] = (1.0 - scratch[0]) * scratch[1] * (1.0 - scratch[2]);
+    weights_out[5] = (1.0 - scratch[0]) * scratch[1] * scratch[2];
+    weights_out[6] = (1.0 - scratch[0]) * (1.0 - scratch[1]) * scratch[2];
+    weights_out[7] = (1.0 - scratch[0]) * (1.0 - scratch[1]) * (1.0 - scratch[2]);
+}
 
 
 template<class scalar_t>
@@ -135,24 +155,13 @@ k_l2_interp_v2(Acc32<scalar_t, 2> coarse_grid,  // Rc^3, S
 
     const scalar_t cp[3] = {points[point_id][0] * coarse_reso, points[point_id][1] * coarse_reso, points[point_id][2] * coarse_reso};
     const scalar_t fp[3] = {cp[0] * fine_reso, cp[1] * fine_reso, cp[2] * fine_reso};
+
     int32_t cn[3];           // corner of coarse-neighbor cell in 'coarse-grid' coordinates
     int32_t fn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
     scalar_t fn_center[3];   // center of fine-neighbor cell in 'full-grid' coordinates
+    scalar_t interp_weights[8];
+    calc_interp_weights(fp, fn_center, interp_weights);
 
-    // Interpolation weight for fine coordinates to the center of top-left cell. Overwrite the fn_center array for the purpose.
-    fn_center[0] = fp[0] - myfloor(fp[0] - 0.5f) - 0.5f;
-    fn_center[1] = fp[1] - myfloor(fp[1] - 0.5f) - 0.5f;
-    fn_center[2] = fp[2] - myfloor(fp[2] - 0.5f) - 0.5f;
-    scalar_t interp_weights[8] = {
-        fn_center[0] * fn_center[1] * fn_center[2],
-        fn_center[0] * fn_center[1] * (1 - fn_center[2]),
-        fn_center[0] * (1 - fn_center[1]) * fn_center[2],
-        fn_center[0] * (1 - fn_center[1]) * (1 - fn_center[2]),
-        (1 - fn_center[0]) * fn_center[1] * (1 - fn_center[2]),
-        (1 - fn_center[0]) * fn_center[1] * fn_center[2],
-        (1 - fn_center[0]) * (1 - fn_center[1]) * fn_center[2],
-        (1 - fn_center[0]) * (1 - fn_center[1]) * (1 - fn_center[2])
-    };
     scalar_t acc = 0.0;
     int loaded_w = -1;
     for (int i = 0; i < 8; i++) {
@@ -196,8 +205,8 @@ k_l2_interp_v2(Acc32<scalar_t, 2> coarse_grid,  // Rc^3, S
                     acc = myfma(coarse_w[warp_offset + s] * interp_weights[j], atoms[fn_realcoo][s][warp_lane], acc);
                 }
             }
-            __syncwarp(warp_mask);  // synchronize to avoid write after read in shmem
         }
+        __syncwarp(warp_mask);  // synchronize to avoid write after read in shmem
     }
     out[point_id][warp_lane] = acc;
 }
@@ -221,26 +230,15 @@ __global__ void k_l2_interp_v2_d_a(Acc32<scalar_t, 2> grad_output,   // N, D
     const uint32_t D = grad_output.size(1);
     if (point_id >= grad_output.size(0) || atom_start_id >= S || dim_start_id >= D) { return; }
 
-    scalar_t fn_center[3];   // center of fine-neighbor cell in 'full-grid' coordinates
-    int32_t cn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
-    int32_t fn[3];
-
     const scalar_t cp[3] = {points[point_id][0] * coarse_reso, points[point_id][1] * coarse_reso, points[point_id][2] * coarse_reso};
     const scalar_t fp[3] = {cp[0] * fine_reso, cp[1] * fine_reso, cp[2] * fine_reso};
-    // Interpolation weight for fine coordinates to the center of top-left cell. Overwrite the fn_center array for the purpose.
-    fn_center[0] = fp[0] - myfloor(fp[0] - 0.5f) - 0.5f;
-    fn_center[1] = fp[1] - myfloor(fp[1] - 0.5f) - 0.5f;
-    fn_center[2] = fp[2] - myfloor(fp[2] - 0.5f) - 0.5f;
-    const scalar_t interp_weights[8] = {
-        fn_center[0] * fn_center[1] * fn_center[2],
-        fn_center[0] * fn_center[1] * (1 - fn_center[2]),
-        fn_center[0] * (1 - fn_center[1]) * fn_center[2],
-        fn_center[0] * (1 - fn_center[1]) * (1 - fn_center[2]),
-        (1 - fn_center[0]) * fn_center[1] * (1 - fn_center[2]),
-        (1 - fn_center[0]) * fn_center[1] * fn_center[2],
-        (1 - fn_center[0]) * (1 - fn_center[1]) * fn_center[2],
-        (1 - fn_center[0]) * (1 - fn_center[1]) * (1 - fn_center[2])
-    };
+
+    int32_t cn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
+    int32_t fn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
+    scalar_t fn_center[3];   // center of fine-neighbor cell in 'full-grid' coordinates
+    scalar_t interp_weights[8];
+    calc_interp_weights(fp, fn_center, interp_weights);
+
     for (int i = 0; i < 8; i++) {
         cn[0] = floor2int(cp[0] + OFFSET[i][0]);
         cn[1] = floor2int(cp[1] + OFFSET[i][1]);
@@ -298,28 +296,16 @@ __global__ void k_l2_interp_v2_d_cg2(Acc32<scalar_t, 2> grad_output,   // N, D
     const uint32_t warp_mask = __ballot_sync(0xffffffff, warp_lane < S);
     if (warp_lane >= S || point_id >= points.size(0)) { return; }
 
-    int32_t fn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
-    scalar_t fn_center[3];   // center of fine-neighbor cell in 'full-grid' coordinates
-    int32_t cn[3];
-    scalar_t grad[8];  // TODO: This is hardcoded randomly, allows up to 256 atoms
-
     const scalar_t cp[3] = {points[point_id][0] * coarse_reso, points[point_id][1] * coarse_reso, points[point_id][2] * coarse_reso};
     const scalar_t fp[3] = {cp[0] * fine_reso, cp[1] * fine_reso, cp[2] * fine_reso};
 
-    // Interpolation weight for fine coordinates to the center of top-left cell. Overwrite the fn_center array for the purpose.
-    fn_center[0] = fp[0] - myfloor(fp[0] - 0.5f) - 0.5f;
-    fn_center[1] = fp[1] - myfloor(fp[1] - 0.5f) - 0.5f;
-    fn_center[2] = fp[2] - myfloor(fp[2] - 0.5f) - 0.5f;
-    const scalar_t interp_weights[8] = {
-        fn_center[0] * fn_center[1] * fn_center[2],
-        fn_center[0] * fn_center[1] * (1 - fn_center[2]),
-        fn_center[0] * (1 - fn_center[1]) * fn_center[2],
-        fn_center[0] * (1 - fn_center[1]) * (1 - fn_center[2]),
-        (1 - fn_center[0]) * fn_center[1] * (1 - fn_center[2]),
-        (1 - fn_center[0]) * fn_center[1] * fn_center[2],
-        (1 - fn_center[0]) * (1 - fn_center[1]) * fn_center[2],
-        (1 - fn_center[0]) * (1 - fn_center[1]) * (1 - fn_center[2])
-    };
+    int32_t cn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
+    int32_t fn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
+    scalar_t fn_center[3];   // center of fine-neighbor cell in 'full-grid' coordinates
+    scalar_t grad[8];  // TODO: This is hardcoded randomly, allows up to 256 atoms
+    scalar_t interp_weights[8];
+    calc_interp_weights(fp, fn_center, interp_weights);
+
     // Load grad_output into shmem
     extern __shared__ __align__(sizeof(double2)) unsigned char smem[];
     scalar_t* shmem_grad_output = reinterpret_cast<scalar_t *>(smem);
@@ -330,9 +316,8 @@ __global__ void k_l2_interp_v2_d_cg2(Acc32<scalar_t, 2> grad_output,   // N, D
     //const uint32_t num_atoms_per_warp = (S + WARP_SIZE - 1) / WARP_SIZE;
 
     for (int i = 0; i < 8; i++) {
-        for (int j = 0; j < 8; j++) {
-            grad[j] = 0.0;
-        }
+        #pragma unroll 8
+        for (int j = 0; j < 8; j++) { grad[j] = 0.0; }
         cn[0] = floor2int(cp[0] + OFFSET[i][0]);
         cn[1] = floor2int(cp[1] + OFFSET[i][1]);
         cn[2] = floor2int(cp[2] + OFFSET[i][2]);
