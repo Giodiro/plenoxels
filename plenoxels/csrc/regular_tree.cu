@@ -122,12 +122,12 @@ calc_interp_weights(scalar_t * __restrict__ weights_out,
     scratch[0] = point[0] - 0.5f - myfloor(point[0] - 0.5f);
     scratch[1] = point[1] - 0.5f - myfloor(point[1] - 0.5f);
     scratch[2] = point[2] - 0.5f - myfloor(point[2] - 0.5f);
-    weights_out[0] = scratch[0] * scratch[1] * scratch[2];
-    weights_out[1] = scratch[0] * scratch[1] * (1.0 - scratch[2]);
-    weights_out[2] = scratch[0] * (1.0 - scratch[1]) * scratch[2];
-    weights_out[3] = scratch[0] * (1.0 - scratch[1]) * (1.0 - scratch[2]);
-    weights_out[4] = (1.0 - scratch[0]) * scratch[1] * (1.0 - scratch[2]);
-    weights_out[5] = (1.0 - scratch[0]) * scratch[1] * scratch[2];
+    weights_out[0] = scratch[0]         * scratch[1]         * scratch[2];
+    weights_out[1] = scratch[0]         * scratch[1]         * (1.0 - scratch[2]);
+    weights_out[2] = scratch[0]         * (1.0 - scratch[1]) * scratch[2];
+    weights_out[3] = scratch[0]         * (1.0 - scratch[1]) * (1.0 - scratch[2]);
+    weights_out[4] = (1.0 - scratch[0]) * scratch[1]         * scratch[2];
+    weights_out[5] = (1.0 - scratch[0]) * scratch[1]         * (1.0 - scratch[2]);
     weights_out[6] = (1.0 - scratch[0]) * (1.0 - scratch[1]) * scratch[2];
     weights_out[7] = (1.0 - scratch[0]) * (1.0 - scratch[1]) * (1.0 - scratch[2]);
 }
