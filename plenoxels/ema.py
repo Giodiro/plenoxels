@@ -13,3 +13,6 @@ class EMA():
     @property
     def value(self):
         return self.val
+
+    def __str__(self):
+        return f"{self.val:.4f}"
