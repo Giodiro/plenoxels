@@ -14,7 +14,8 @@ _C.sh.degree = 2
 
 _C.optim = CN()
 _C.optim.batch_size = 4000
-_C.optim.max_steps = 2000
+_C.optim.batches_per_epoch = 500
+_C.optim.num_epochs = 10
 _C.optim.lr = 1e6
 
 _C.optim.regularization = CN()
