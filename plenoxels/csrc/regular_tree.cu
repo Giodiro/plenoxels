@@ -132,6 +132,41 @@ calc_interp_weights(scalar_t * __restrict__ weights_out,
     weights_out[0] = (1.0 - scratch[0]) * (1.0 - scratch[1]) * (1.0 - scratch[2]);
 }
 
+// The code below is based on section 4 Unsigned division of paper https://gmplib.org/~tege/divcnst-pldi94.pdf
+// In current ORT, fast_divmod is used for calculating the position of a element in tensor,
+// so unsigned integer division from the paper is good enough for ORT. The advantage is that div is very simple,
+// then GPU compiler can do loop unroll easilly when divmod is called in a loop.
+// https://github.com/microsoft/onnxruntime/blob/master/onnxruntime/core/providers/cuda/shared_inc/fast_divmod.h
+struct fast_divmod {
+  fast_divmod(int d = 1) {
+    d_ = d == 0 ? 1 : d;
+    for (l_ = 0; l_ < 32; l_++)
+      if ((1U << l_) >= d_) break;
+
+    uint64_t one = 1;
+    uint64_t m = ((one << 32) * ((one << l_) - d_)) / d_ + 1;
+    M_ = static_cast<uint32_t>(m);
+  }
+
+  __host__ __device__ inline int div(int n) const {
+    uint32_t t = __umulhi(M_, n);
+    return (t + n) >> l_;
+  }
+
+  __host__ __device__ inline int mod(int n) const {
+    return n - div(n) * d_;
+  }
+
+  __host__ __device__ inline void divmod(int n, int& q, int& r) const {
+    q = div(n);
+    r = n - q * d_;
+  }
+
+  uint32_t d_;  // divisor
+  uint32_t M_;  // m' in the paper.
+  uint32_t l_;  // l_ = ceil(log2(d_))
+};
+
 
 template<class scalar_t>
 __global__ void 
@@ -140,61 +175,62 @@ k_l2_interp_v2(Acc32<scalar_t, 2> coarse_grid,  // Rc^3, S
                Acc32<scalar_t, 3> atoms,        // Rf^3, S, D
                Acc32<scalar_t, 2> points,       // N, 3
                Acc32<scalar_t, 2> out,          // N, D
-               const uint32_t fine_reso,
+               const fast_divmod fast_divmod_fine_reso,
                const uint32_t coarse_reso)
 {
     extern __shared__ __align__(sizeof(double2)) unsigned char smem[];
     scalar_t* coarse_w = reinterpret_cast<scalar_t *>(smem);  // num warps in block * S
     const uint32_t point_id = (blockIdx.x * blockDim.x + threadIdx.x) / WARP_SIZE;
     const uint32_t warp_lane = threadIdx.x % WARP_SIZE;
+    const uint32_t tot_reso = coarse_reso * fast_divmod_fine_reso.d_;
     const uint32_t D = atoms.size(2);
     const uint32_t S = coarse_grid.size(1);
     const uint32_t warp_offset = (threadIdx.x / WARP_SIZE) * S;  // warp_block_id * S
     const uint32_t warp_mask = __ballot_sync(0xffffffff, warp_lane < D);
     if (warp_lane >= D || point_id >= points.size(0)) { return; }
 
-    const scalar_t cp[3] = {points[point_id][0] * coarse_reso, points[point_id][1] * coarse_reso, points[point_id][2] * coarse_reso};
-    const scalar_t fp[3] = {cp[0] * fine_reso, cp[1] * fine_reso, cp[2] * fine_reso};
+    const scalar_t fp[3] = {points[point_id][0] * tot_reso, points[point_id][1] * tot_reso, points[point_id][2] * tot_reso};
 
     int32_t cn[3];           // corner of coarse-neighbor cell in 'coarse-grid' coordinates
     int32_t fn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
 //    scalar_t fn_center[3];   // center of fine-neighbor cell in 'full-grid' coordinates
-    scalar_t interp_weights[8];
-    calc_interp_weights(interp_weights, fp, fn);
+//    scalar_t interp_weights[8];
+//    calc_interp_weights(interp_weights, fp, fn);
 
     scalar_t acc = 0.0f;
+    scalar_t interpolation_weight;
     int32_t loaded_w = -1;
+
+    int32_t cn_realcoo;//[8];
+    int32_t fn_realcoo;//[8];
     for (int i = 0; i < 8; i++) {
         fn[0] = floor2int(fp[0] + OFFSET[i][0]);
         fn[1] = floor2int(fp[1] + OFFSET[i][1]);
         fn[2] = floor2int(fp[2] + OFFSET[i][2]);
-        if (fn[0] < 0 || fn[0] >= fine_reso ||
-            fn[1] < 0 || fn[1] >= fine_reso ||
-            fn[2] < 0 || fn[2] >= fine_reso) {
+        if (fn[0] < 0 || fn[0] >= tot_reso ||
+            fn[1] < 0 || fn[1] >= tot_reso ||
+            fn[2] < 0 || fn[2] >= tot_reso) {
             continue;
         }
-        cn[0] = fn[0] / fine_reso;
-        fn[0] = fn[0] % fine_reso;
-        cn[1] = fn[1] / fine_reso;
-        fn[1] = fn[1] % fine_reso;
-        cn[2] = fn[2] / fine_reso;
-        fn[2] = fn[2] % fine_reso;
+        fast_divmod_fine_reso.divmod(fn[0], fn[0], cn[0]);  // fn[0] = fn[0] / fine_reso, cn[0] = fn[0] % fine_reso;
+        fast_divmod_fine_reso.divmod(fn[1], fn[1], cn[1]);  // fn[0] = fn[0] / fine_reso, cn[0] = fn[0] % fine_reso;
+        fast_divmod_fine_reso.divmod(fn[2], fn[2], cn[2]);  // fn[0] = fn[0] / fine_reso, cn[0] = fn[0] % fine_reso;
+        cn_realcoo = coo2idx(cn[0], cn[1], cn[2], coarse_reso);
+        fn_realcoo = coo2idx(fn[0], fn[1], fn[2], fast_divmod_fine_reso.d_);
 
-        const int32_t cn_realcoo = coo2idx(cn[0], cn[1], cn[2], coarse_reso);
-        if (loaded_w != cn_realcoo) {
-            loaded_w = cn_realcoo;
-            __syncwarp(warp_mask);
-            // load w from coarse_grid to shared mem using all active threads in warp
-            for (int s = warp_lane; s < S; s += D) {
-                coarse_w[warp_offset + s] = coarse_grid[cn_realcoo][s];
-            }
-            __syncwarp(warp_mask);
+        interpolation_weight = (1 - myabs(fp[0] - static_cast<scalar_t>(fn[0]) - 0.5)) *
+                               (1 - myabs(fp[1] - static_cast<scalar_t>(fn[1]) - 0.5)) *
+                               (1 - myabs(fp[2] - static_cast<scalar_t>(fn[2]) - 0.5));
+        // load w from coarse_grid to shared mem using all active threads in warp
+        for (int s = warp_lane; s < S; s += D) {
+            coarse_w[warp_offset + s] = coarse_grid[cn_realcoo][s];
         }
-        const int32_t fn_realcoo = coo2idx(fn[0], fn[1], fn[2], fine_reso);
+        __syncwarp(warp_mask);
         for (int s = 0; s < S; s++) {
             // pseudo: out += coarse_grid[cn][s] * iw[j] * atoms[fn][s][d]
-            acc = myfma(coarse_w[warp_offset + s] * interp_weights[i], atoms[fn_realcoo][s][warp_lane], acc);
+            acc = myfma(coarse_w[warp_offset + s] * interpolation_weight, atoms[fn_realcoo][s][warp_lane], acc);
         }
+        __syncwarp(warp_mask);
     }
     out[point_id][warp_lane] = acc;
 
@@ -585,13 +621,17 @@ class L2InterpFunctionv2 : public Function<L2InterpFunctionv2> {
             const dim3 grid_size(n_blocks_linear(points.size(0), CUDA_WARPS_PER_BLOCK));
             const dim3 block_size(CUDA_THREADS_PER_BLOCK);
             const uint32_t shared_mem = CUDA_WARPS_PER_BLOCK * coarse_grid.size(1);
+
+            fast_divmod fast_divmod_fine_reso((int32_t)fine_reso);
             AT_DISPATCH_FLOATING_TYPES(coarse_grid.scalar_type(), "dispatch_l2interpv2_fwd", [&] {
                 k_l2_interp_v2<scalar_t><<<grid_size, block_size, shared_mem * sizeof(scalar_t), stream.stream()>>>(
                     coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
                     atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
                     points.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
                     out.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                    (uint32_t)fine_reso, (uint32_t)coarse_reso
+//                    (uint32_t)fine_reso,
+                    fast_divmod_fine_reso,
+                    (uint32_t)coarse_reso
                 );
             });
             return out;
