@@ -13,7 +13,7 @@ from plenoxels.tc_harmonics import plenoxel_sh_encoder
 from plenoxels.runners.utils import *
 
 
-def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_loss_coef, max_steps, log_dir, exp_name, batch_size):
+def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_loss_coef, max_steps, log_dir, batch_size):
     batches_per_dset = 10
     max_tot_steps = max_steps * len(tr_loaders)
     eta_min = 1e-5
@@ -59,13 +59,15 @@ def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_loss_coef, max_steps, 
                             print("  ", end="")
                         print()
                     if tot_steps % 1000 == 0:
-                        print("Time for 1000 steps: %.2fs" % (time.time() - time_s))
+                        print(f"Time for 1000 steps: {time.time() - time_s:.2f}s")
                         time_s = time.time()
                         for ts_dset_id, ts_dset in enumerate(ts_dsets):
                             plot_ts_imageio(
-                                ts_dset, ts_dset_id, renderer, log_dir, exp_name,
+                                ts_dset, ts_dset_id, renderer, log_dir,
                                 iteration=tot_steps, batch_size=batch_size)
-                        print("Plot test images in %.2fs" % (time.time() - time_s))
+                        model_save_path = os.path.join(log_dir, "model.pt")
+                        torch.save(renderer.state_dict(), model_save_path)
+                        print(f"Plot test images & saved model to {log_dir} in {time.time() - time_s:.2f}s")
                         time_s = time.time()
             except StopIteration:
                 print(f"Dataset {dset_id} finished")
@@ -93,10 +95,18 @@ if __name__ == "__main__":
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
     print(f'gpu is {gpu}')
 
+    log_dir_ = os.path.join(cfg_.logdir, cfg_.expname)
+    os.makedirs(log_dir_, exist_ok=True)
+    # Make config immutable
+    cfg_.freeze()
+    # Save configuration as yaml into logdir
+    with open(os.path.join(log_dir_, "config.yaml"), "w+") as fh:
+        fh.write(cfg_.dump())
+    print(cfg_)
+
     tr_dsets_, tr_loaders_, ts_dsets_ = init_data(cfg_)
     model_ = init_model(cfg_, tr_dsets=tr_dsets_, efficient_dict=False)
     optim_ = init_optim(cfg_, model_)
-
     train_epoch(renderer=model_, tr_loaders=tr_loaders_, ts_dsets=ts_dsets_, optim=optim_,
-                max_steps=cfg_.optim.max_steps, log_dir=cfg_.logdir, exp_name=cfg_.expname,
+                max_steps=cfg_.optim.max_steps, log_dir=log_dir_,
                 batch_size=cfg_.optim.batch_size, l1_loss_coef=cfg_.optim.regularization.l1_weight)

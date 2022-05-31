@@ -1,6 +1,7 @@
 import json
 import os
 import random
+import re
 from typing import Tuple, Optional, List
 
 import PIL
@@ -52,7 +53,12 @@ class SyntheticNerfDataset(TensorDataset):
         self.white_bg = True
         self.near_far = [2.0, 6.0]
 
-        self.scene_bbox = torch.tensor([[-1.3, -1.3, -1.3], [1.3, 1.3, 1.3]])
+        if "ship" in datadir:
+            self.scene_bbox = torch.tensor([[-1.5, -1.5, -1.5], [1.5, 1.5, 1.5]])
+            self.radius = 1.5
+        else:
+            self.scene_bbox = torch.tensor([[-1.3, -1.3, -1.3], [1.3, 1.3, 1.3]])
+            self.radius = 1.3
         self.pil2tensor = torchvision.transforms.ToTensor()
         self.tensor2pil = torchvision.transforms.ToPILImage()
 
