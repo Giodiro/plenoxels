@@ -122,14 +122,14 @@ calc_interp_weights(scalar_t * __restrict__ weights_out,
     scratch[0] = point[0] - 0.5f - myfloor(point[0] - 0.5f);
     scratch[1] = point[1] - 0.5f - myfloor(point[1] - 0.5f);
     scratch[2] = point[2] - 0.5f - myfloor(point[2] - 0.5f);
-    weights_out[0] = scratch[0]         * scratch[1]         * scratch[2];
-    weights_out[1] = scratch[0]         * scratch[1]         * (1.0 - scratch[2]);
-    weights_out[2] = scratch[0]         * (1.0 - scratch[1]) * scratch[2];
-    weights_out[3] = scratch[0]         * (1.0 - scratch[1]) * (1.0 - scratch[2]);
-    weights_out[4] = (1.0 - scratch[0]) * scratch[1]         * scratch[2];
-    weights_out[5] = (1.0 - scratch[0]) * scratch[1]         * (1.0 - scratch[2]);
-    weights_out[6] = (1.0 - scratch[0]) * (1.0 - scratch[1]) * scratch[2];
-    weights_out[7] = (1.0 - scratch[0]) * (1.0 - scratch[1]) * (1.0 - scratch[2]);
+    weights_out[7] = scratch[0]         * scratch[1]         * scratch[2];
+    weights_out[6] = scratch[0]         * scratch[1]         * (1.0 - scratch[2]);
+    weights_out[5] = scratch[0]         * (1.0 - scratch[1]) * scratch[2];
+    weights_out[4] = scratch[0]         * (1.0 - scratch[1]) * (1.0 - scratch[2]);
+    weights_out[3] = (1.0 - scratch[0]) * scratch[1]         * scratch[2];
+    weights_out[2] = (1.0 - scratch[0]) * scratch[1]         * (1.0 - scratch[2]);
+    weights_out[1] = (1.0 - scratch[0]) * (1.0 - scratch[1]) * scratch[2];
+    weights_out[0] = (1.0 - scratch[0]) * (1.0 - scratch[1]) * (1.0 - scratch[2]);
 }
 
 
@@ -160,7 +160,7 @@ k_l2_interp_v2(Acc32<scalar_t, 2> coarse_grid,  // Rc^3, S
     int32_t fn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
     scalar_t fn_center[3];   // center of fine-neighbor cell in 'full-grid' coordinates
     scalar_t interp_weights[8];
-    calc_interp_weights(fp, fn_center, interp_weights);
+    calc_interp_weights(interp_weights, fp, fn_center);
 
     scalar_t acc = 0.0;
     int loaded_w = -1;
@@ -237,7 +237,7 @@ __global__ void k_l2_interp_v2_d_a(Acc32<scalar_t, 2> grad_output,   // N, D
     int32_t fn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
     scalar_t fn_center[3];   // center of fine-neighbor cell in 'full-grid' coordinates
     scalar_t interp_weights[8];
-    calc_interp_weights(fp, fn_center, interp_weights);
+    calc_interp_weights(interp_weights, fp, fn_center);
 
     for (int i = 0; i < 8; i++) {
         cn[0] = floor2int(cp[0] + OFFSET[i][0]);
@@ -304,7 +304,7 @@ __global__ void k_l2_interp_v2_d_cg2(Acc32<scalar_t, 2> grad_output,   // N, D
     scalar_t fn_center[3];   // center of fine-neighbor cell in 'full-grid' coordinates
     scalar_t grad[8];  // TODO: This is hardcoded randomly, allows up to 256 atoms
     scalar_t interp_weights[8];
-    calc_interp_weights(fp, fn_center, interp_weights);
+    calc_interp_weights(interp_weights, fp, fn_center);
 
     // Load grad_output into shmem
     extern __shared__ __align__(sizeof(double2)) unsigned char smem[];

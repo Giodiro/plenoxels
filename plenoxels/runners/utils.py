@@ -55,6 +55,7 @@ def render_ts_img(data: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
 
 
 def plot_ts(ts_dset, dset_id, renderer, log_dir, exp_name, iteration, batch_size=10_000):
+    psnr_list = []
     with torch.autograd.no_grad():
         for ts_el in ts_dset:
             pred, rgb = render_ts_img(
@@ -62,6 +63,7 @@ def plot_ts(ts_dset, dset_id, renderer, log_dir, exp_name, iteration, batch_size
                 batch_size=batch_size, img_h=ts_dset.img_h, img_w=ts_dset.img_w)
             mse = torch.mean((pred - rgb) ** 2)
             psnr = -10.0 * torch.log(mse) / math.log(10)
+            psnr_list.append(psnr)
             break
     fig, ax = plt.subplots(ncols=2)
     ax[0].imshow(pred)
@@ -74,12 +76,17 @@ def plot_ts(ts_dset, dset_id, renderer, log_dir, exp_name, iteration, batch_size
 
 def plot_ts_imageio(ts_dset, dset_id, renderer, log_dir, exp_name, iteration, batch_size=10_000):
     import imageio
+    psnr_list = []
     with torch.autograd.no_grad():
         for ts_el in ts_dset:
             pred, rgb = render_ts_img(
                 ts_el, model=lambda ro, rd: renderer(ro, rd, dset_id)[0],
                 batch_size=batch_size, img_h=ts_dset.img_h, img_w=ts_dset.img_w)
+            mse = torch.mean((pred - rgb) ** 2)
+            psnr = -10.0 * torch.log(mse) / math.log(10)
+            psnr_list.append(psnr)
             break
+    print(f"D{dset_id} Test PSNR={np.mean(psnr_list):.2f}")
     vis = torch.cat((pred, rgb), dim=1)
     vis = (vis * 255).numpy().astype(np.uint8)
     os.makedirs(f"{log_dir}/{exp_name}", exist_ok=True)
