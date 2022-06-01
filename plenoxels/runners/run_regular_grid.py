@@ -20,7 +20,7 @@ def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_loss_coef, batches_per
     ema_weight = 0.3
     num_dsets = len(tr_loaders)
 
-    lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=epochs * batches_per_epoch, eta_min=eta_min)
+    lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=epochs * batches_per_epoch * num_dsets // batches_per_dset, eta_min=eta_min)
 
     tr_iterators = [iter(dl) for dl in tr_loaders]
     renderer.cuda()

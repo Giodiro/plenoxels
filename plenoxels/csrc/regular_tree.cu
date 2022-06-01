@@ -22,10 +22,12 @@ constexpr uint32_t n_blocks_linear(uint32_t n_elements, uint32_t n_threads_linea
     return (uint32_t)(n_elements + n_threads_linear - 1) / n_threads_linear;
 }
 
-__host__ __device__ __forceinline__ float myfma(float a, float b, float c) { return fmaf(a, b, c); }
-__host__ __device__ __forceinline__ double myfma(double a, double b, double c) { return fma(a, b, c); }
-__host__ __device__ __forceinline__ float myfloor(float a) { return floorf(a); }
-__host__ __device__ __forceinline__ double myfloor(double a) { return floor(a); }
+__device__ __forceinline__ float myfma(float a, float b, float c) { return fmaf(a, b, c); }
+__device__ __forceinline__ double myfma(double a, double b, double c) { return fma(a, b, c); }
+__device__ __forceinline__ float myfloor(float a) { return floorf(a); }
+__device__ __forceinline__ double myfloor(double a) { return floor(a); }
+__device__ __forceinline__ float myabs(float a) { return fabsf(a); }
+__device__ __forceinline__ double myabs(double a) { return fabs(a); }
 __device__ __forceinline__ int32_t floor2int(float a) { return __float2int_rd(a); }
 __device__ __forceinline__ int32_t floor2int(double a) { return __double2int_rd(a); }
 
@@ -148,16 +150,16 @@ struct fast_divmod {
     M_ = static_cast<uint32_t>(m);
   }
 
-  __host__ __device__ inline int div(int n) const {
+  __device__ inline int div(int n) const {
     uint32_t t = __umulhi(M_, n);
     return (t + n) >> l_;
   }
 
-  __host__ __device__ inline int mod(int n) const {
+  __device__ inline int mod(int n) const {
     return n - div(n) * d_;
   }
 
-  __host__ __device__ inline void divmod(int n, int& q, int& r) const {
+  __device__ inline void divmod(int n, int& q, int& r) const {
     q = div(n);
     r = n - q * d_;
   }
@@ -193,16 +195,13 @@ k_l2_interp_v2(Acc32<scalar_t, 2> coarse_grid,  // Rc^3, S
 
     int32_t cn[3];           // corner of coarse-neighbor cell in 'coarse-grid' coordinates
     int32_t fn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
-//    scalar_t fn_center[3];   // center of fine-neighbor cell in 'full-grid' coordinates
-//    scalar_t interp_weights[8];
-//    calc_interp_weights(interp_weights, fp, fn);
+    int32_t rfn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
 
     scalar_t acc = 0.0f;
     scalar_t interpolation_weight;
-    int32_t loaded_w = -1;
 
-    int32_t cn_realcoo;//[8];
-    int32_t fn_realcoo;//[8];
+    int32_t cn_realcoo;
+    int32_t fn_realcoo;
     for (int i = 0; i < 8; i++) {
         fn[0] = floor2int(fp[0] + OFFSET[i][0]);
         fn[1] = floor2int(fp[1] + OFFSET[i][1]);
@@ -212,15 +211,15 @@ k_l2_interp_v2(Acc32<scalar_t, 2> coarse_grid,  // Rc^3, S
             fn[2] < 0 || fn[2] >= tot_reso) {
             continue;
         }
-        fast_divmod_fine_reso.divmod(fn[0], fn[0], cn[0]);  // fn[0] = fn[0] / fine_reso, cn[0] = fn[0] % fine_reso;
-        fast_divmod_fine_reso.divmod(fn[1], fn[1], cn[1]);  // fn[0] = fn[0] / fine_reso, cn[0] = fn[0] % fine_reso;
-        fast_divmod_fine_reso.divmod(fn[2], fn[2], cn[2]);  // fn[0] = fn[0] / fine_reso, cn[0] = fn[0] % fine_reso;
+        fast_divmod_fine_reso.divmod(fn[0], cn[0], rfn[0]);  // fn[0] = fn[0] / fine_reso, cn[0] = fn[0] % fine_reso;
+        fast_divmod_fine_reso.divmod(fn[1], cn[1], rfn[1]);
+        fast_divmod_fine_reso.divmod(fn[2], cn[2], rfn[2]);
         cn_realcoo = coo2idx(cn[0], cn[1], cn[2], coarse_reso);
-        fn_realcoo = coo2idx(fn[0], fn[1], fn[2], fast_divmod_fine_reso.d_);
+        fn_realcoo = coo2idx(rfn[0], rfn[1], rfn[2], fast_divmod_fine_reso.d_);
 
-        interpolation_weight = (1 - myabs(fp[0] - static_cast<scalar_t>(fn[0]) - 0.5)) *
-                               (1 - myabs(fp[1] - static_cast<scalar_t>(fn[1]) - 0.5)) *
-                               (1 - myabs(fp[2] - static_cast<scalar_t>(fn[2]) - 0.5));
+        interpolation_weight = (1.0f - myabs(fp[0] - static_cast<scalar_t>(fn[0]) - 0.5f)) *
+                               (1.0f - myabs(fp[1] - static_cast<scalar_t>(fn[1]) - 0.5f)) *
+                               (1.0f - myabs(fp[2] - static_cast<scalar_t>(fn[2]) - 0.5f));
         // load w from coarse_grid to shared mem using all active threads in warp
         for (int s = warp_lane; s < S; s += D) {
             coarse_w[warp_offset + s] = coarse_grid[cn_realcoo][s];
@@ -233,57 +232,8 @@ k_l2_interp_v2(Acc32<scalar_t, 2> coarse_grid,  // Rc^3, S
         __syncwarp(warp_mask);
     }
     out[point_id][warp_lane] = acc;
-
-
-
-    /*scalar_t acc = 0.0f;
-    int loaded_w = -1;
-    for (int i = 0; i < 8; i++) {
-        cn[0] = floor2int(cp[0] + OFFSET[i][0]);
-        cn[1] = floor2int(cp[1] + OFFSET[i][1]);
-        cn[2] = floor2int(cp[2] + OFFSET[i][2]);
-        if (cn[0] < 0 || cn[0] >= coarse_reso ||
-            cn[1] < 0 || cn[1] >= coarse_reso ||
-            cn[2] < 0 || cn[2] >= coarse_reso) {
-            continue;
-        }
-        const int32_t cn_realcoo = coo2idx(cn[0], cn[1], cn[2], coarse_reso);
-        // overwrite cn from coarse-grid-coordinates fo full-grid-coordinates
-        cn[0] *= fine_reso;
-        cn[1] *= fine_reso;
-        cn[2] *= fine_reso;
-        for (int j = 0; j < 8; j++) {
-            fn[0] = floor2int(fp[0] + OFFSET[j][0]);
-            fn[1] = floor2int(fp[1] + OFFSET[j][1]);
-            fn[2] = floor2int(fp[2] + OFFSET[j][2]);
-            fn_center[0] = static_cast<scalar_t>(fn[0]) + 0.5f;
-            fn_center[1] = static_cast<scalar_t>(fn[1]) + 0.5f;
-            fn_center[2] = static_cast<scalar_t>(fn[2]) + 0.5f;
-            // The if-statement also takes care of any out-of-bounds neighbors (ignored)
-            if (static_cast<scalar_t>(cn[0]) <= fn_center[0] && static_cast<scalar_t>(cn[0]) + fine_reso >= fn_center[0] &&
-                static_cast<scalar_t>(cn[1]) <= fn_center[1] && static_cast<scalar_t>(cn[1]) + fine_reso >= fn_center[1] &&
-                static_cast<scalar_t>(cn[2]) <= fn_center[2] && static_cast<scalar_t>(cn[2]) + fine_reso >= fn_center[2])
-            {
-                // Lazuily load the weights from coarse-grid
-                if (loaded_w != cn_realcoo) {
-                    loaded_w = cn_realcoo;
-                    // load w from coarse_grid to shared mem using all active threads in warp
-                    for (int s = warp_lane; s < S; s += D) {
-                        coarse_w[warp_offset + s] = coarse_grid[cn_realcoo][s];
-                    }
-                    __syncwarp(warp_mask);
-                }
-                const int32_t fn_realcoo = coo2idx(fn[0] - cn[0], fn[1] - cn[1], fn[2] - cn[2], fine_reso);
-                for (int s = 0; s < S; s++) {
-                    // pseudo: out += coarse_grid[cn][s] * iw[j] * atoms[fn][s][d]
-                    acc = myfma(coarse_w[warp_offset + s] * interp_weights[j], atoms[fn_realcoo][s][warp_lane], acc);
-                }
-            }
-        }
-        __syncwarp(warp_mask);  // synchronize to avoid write after read in shmem
-    }
-    out[point_id][warp_lane] = acc;*/
 }
+
 
 template<typename scalar_t>
 __global__ void k_l2_interp_v2_d_a(Acc32<scalar_t, 2> grad_output,   // N, D
