@@ -1,6 +1,8 @@
+from typing import Union, List
 from importlib.machinery import PathFinder
 from pathlib import Path
 import os
+import math
 
 import torch
 import torch.nn as nn
@@ -20,10 +22,10 @@ class DictPlenoxels(nn.Module):
     def __init__(self,
                  sh_deg: int,
                  sh_encoder,
-                 fine_reso: int,
+                 fine_reso: Union[int, List[int]],
                  coarse_reso: int,
                  radius: float,
-                 num_atoms: int,
+                 num_atoms: Union[int, List[int]],
                  num_scenes: int,
                  efficient_dict=True):
         super().__init__()
@@ -31,27 +33,36 @@ class DictPlenoxels(nn.Module):
         sh_dim = (sh_deg + 1) ** 2
         total_data_channels = sh_dim * 3 + 1
         self.radius = radius
+        if isinstance(fine_reso, int):
+            fine_reso = [fine_reso]
         self.fine_reso = fine_reso
         self.coarse_reso = coarse_reso
+        if isinstance(num_atoms, int):
+            num_atoms = [num_atoms]
         self.num_atoms = num_atoms
         self.data_dim = total_data_channels
         self.efficient_dict = efficient_dict
         self.sh_encoder = sh_encoder
         self.coarse_voxel_len = radius * 2 / coarse_reso
-        self.fine_voxel_len = self.coarse_voxel_len / fine_reso
+        self.fine_voxel_len = self.coarse_voxel_len / fine_reso[-1]
         self.step_size = self.fine_voxel_len / 2.
-        self.n_intersections = coarse_reso * 3 * 2 * fine_reso
+        self.n_intersections = coarse_reso * 3 * 2 * fine_reso[-1]
+        assert len(self.num_atoms) == len(self.fine_reso), "Number of atoms != number of fine-reso items"
 
         self.grids = nn.ParameterList([nn.Parameter(
-            torch.empty(coarse_reso ** 3, self.num_atoms)) for i in range(num_scenes)])
-        self.atoms = nn.Parameter(torch.empty(fine_reso ** 3, self.num_atoms, self.data_dim))
+            torch.empty(coarse_reso ** 3, sum(num_atoms))) for i in range(num_scenes)])
+        atoms = []
+        for reso, n_atoms in zip(self.fine_reso, self.num_atoms):
+            atoms.append(nn.Parameter(torch.empty(reso ** 3, n_atoms, self.data_dim)))
+        self.atoms = nn.ParameterList(atoms)
         self.init_params()
 
     def init_params(self):
         for grid in self.grids:
             nn.init.normal_(grid, std=0.01)
-        nn.init.uniform_(self.atoms[..., :-1])
-        nn.init.constant_(self.atoms[..., -1], 0.01)
+        for atoms in self.atoms:
+            nn.init.uniform_(atoms[..., :-1])
+            nn.init.constant_(atoms[..., -1], 0.01)
 
     def __repr__(self):
         return (f"DictPlenoxels(grids={self.grids}, num_atoms={self.num_atoms}, data_dim={self.data_dim}, "
@@ -70,6 +81,20 @@ class DictPlenoxels(nn.Module):
         intersections = start + steps * self.step_size  # [batch, n_intrs]
         return intersections
 
+    def tv_loss(self, grid_id):
+        grid = self.grids[grid_id]
+        grid = grid.view(self.coarse_reso, self.coarse_reso, self.coarse_reso, self.num_atoms)
+
+        pixel_dif1 = grid[1:, :, :, ...] - grid[:-1, :, :, ...]
+        pixel_dif2 = grid[:, 1:, :, ...] - grid[:, :-1, :, ...]
+        pixel_dif3 = grid[:, :, 1:, ...] - grid[:, :, :-1, ...]
+
+        res1 = pixel_dif1.square().sum()
+        res2 = pixel_dif2.square().sum()
+        res3 = pixel_dif3.square().sum()
+
+        return (res1 + res2 + res3) / math.prod(grid.shape)
+
     def forward(self, rays_o, rays_d, grid_id, verbose=False):
         grid = self.grids[grid_id]
         with torch.autograd.no_grad():
@@ -83,15 +108,21 @@ class DictPlenoxels(nn.Module):
             # Normalize pts in [0, 1]
             intrs_pts = (intrs_pts + self.radius) / (self.radius * 2)
 
-        data_interp = torch.ops.plenoxels.l2_interp_v2(
-            grid, self.atoms, intrs_pts, self.fine_reso, self.coarse_reso,
-            1 / self.fine_reso, 1)
+        atom_idx = 0
+        for i, (reso, n_atoms) in enumerate(zip(self.fine_reso, self.num_atoms)):
+            if i == 0:
+                data_interp = torch.ops.plenoxels.l2_interp_v2(
+                        grid[..., atom_idx: atom_idx + n_atoms], self.atoms[i], intrs_pts, reso, self.coarse_reso, 1, 1)
+            else:
+                data_interp = data_interp + torch.ops.plenoxels.l2_interp_v2(
+                        grid[..., atom_idx: atom_idx + n_atoms], self.atoms[i], intrs_pts, reso, self.coarse_reso, 1, 1)
+            atom_idx += n_atoms
 
         # 1. Process density: Un-masked sigma (batch, n_intrs-1), and compute.
         sigma_masked = data_interp[:, -1]
+        sigma_masked = F.relu(sigma_masked)
         sigma = torch.zeros(batch, nintrs, dtype=sigma_masked.dtype, device=sigma_masked.device)
         sigma.masked_scatter_(intrs_pts_mask, sigma_masked)
-        sigma = F.relu(sigma)
         alpha, abs_light = sigma2alpha(sigma, intersections, rays_d)  # both [batch, n_intrs-1]
 
         # 3. Create SH coefficients and mask them
