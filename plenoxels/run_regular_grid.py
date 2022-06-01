@@ -95,12 +95,12 @@ def init_sh_encoder(cfg, h_degree):
     else:
         raise ValueError(cfg.sh.sh_encoder)
 
-def init_renderers(cfg, dsets, num_atoms, resolution, fine_resolution, efficient_dict):
+def init_renderers(cfg, dsets, num_atoms, resolution, fine_resolution, noise_std, efficient_dict):
     sh_encoder = init_sh_encoder(cfg, cfg.sh.degree)
     render = ShDictRender(
         sh_deg=cfg.sh.degree, sh_encoder=sh_encoder, 
         radius=1.3, num_atoms=num_atoms, num_scenes=len(dsets),
-        fine_reso=fine_resolution, coarse_reso=resolution, 
+        fine_reso=fine_resolution, noise_std=noise_std, coarse_reso=resolution, 
         init_sigma=0.1, init_rgb=0.01, efficient_dict=efficient_dict)
     print(f"Initialized renderer {render}")
     return render
@@ -111,6 +111,7 @@ def initialize(cfg,
                num_atoms: int,
                coarse_reso: int,
                fine_reso: int,
+               noise_std: float,
                efficient_dict: bool):
     # Initialize datasets
     tr_dsets, tr_loaders, ts_dsets = [], [], []
@@ -121,7 +122,7 @@ def initialize(cfg,
         tr_loaders.append(tr_loader)
         ts_dsets.append(ts_dset)
     # Initialize model
-    renderer = init_renderers(cfg, tr_dsets, num_atoms, coarse_reso, fine_reso, efficient_dict=efficient_dict)
+    renderer = init_renderers(cfg, tr_dsets, num_atoms, coarse_reso, fine_reso, noise_std=noise_std, efficient_dict=efficient_dict)
     renderer.cuda()
 
     # Initialize optimizer
@@ -136,7 +137,7 @@ def initialize(cfg,
     }
 
 
-def train_epoch(renderer, data_loaders, ts_dsets, optim, max_steps, l1_loss_coef, exp_name, batch_size):
+def train_epoch(renderer, data_loaders, ts_dsets, optim, max_steps, l1_loss_coef, consistency_loss_coef, exp_name, batch_size):
     batches_per_dset = 10
     max_tot_steps = max_steps * len(data_loaders)
     eta_min = 1e-5
@@ -148,7 +149,7 @@ def train_epoch(renderer, data_loaders, ts_dsets, optim, max_steps, l1_loss_coef
     iters = [iter(dl) for dl in data_loaders]
     tot_steps = 0
     time_s = time.time()
-    losses = [{"mse": EMA(ema_weight), "l1": EMA(ema_weight)} for _ in range(len(data_loaders))]
+    losses = [{"mse": EMA(ema_weight), "l1": EMA(ema_weight), "consistency": EMA(ema_weight)} for _ in range(len(data_loaders))]
     while len([it for it in iters if it is not None]) > 0:
         try:
             for dset_id, dset in enumerate(iters):
@@ -163,16 +164,18 @@ def train_epoch(renderer, data_loaders, ts_dsets, optim, max_steps, l1_loss_coef
                     rays_d = rays_d.to(device=dev)
 
                     optim.zero_grad()
-                    rgb_preds, alpha, depth = renderer(rays_o, rays_d, grid_id=dset_id)
+                    rgb_preds, alpha, depth, consistency_loss = renderer(rays_o, rays_d, grid_id=dset_id)
                     rec_loss = F.mse_loss(rgb_preds, imgs)
                     l1_loss = l1_loss_coef * torch.abs(renderer.grids[dset_id].data).mean()
-                    loss = rec_loss + l1_loss
+                    consistency_loss = consistency_loss_coef * consistency_loss
+                    loss = rec_loss + l1_loss + consistency_loss
                     loss.backward()
                     optim.step()
                     lr_sched.step()
 
                     losses[dset_id]["mse"].update(rec_loss.item())
                     losses[dset_id]["l1"].update(l1_loss.item())
+                    losses[dset_id]["consistency"].update(consistency_loss.item())
                     tot_steps += 1
 
                     if tot_steps % 100 == 0:
@@ -183,6 +186,7 @@ def train_epoch(renderer, data_loaders, ts_dsets, optim, max_steps, l1_loss_coef
                                 print(f"{lname}={lval.value:.4f} ", end="")
                             print("  ", end="")
                         print()
+                        print(f'max dictionary value {renderer.atoms.abs().max()}')
                     if tot_steps % 1000 == 0:
                         print("Time for 1000 steps: %.2fs" % (time.time() - time_s))
                         time_s = time.time()
@@ -208,15 +212,19 @@ if __name__ == "__main__":
         "/data/datasets/nerf/data/nerf_synthetic/drums/",
         "/data/datasets/nerf/data/nerf_synthetic/ficus/",
     ]
+    # efficient_dict_ = False
+    # num_atoms_ = 128
     efficient_dict_ = True
     num_atoms_ = 32
-    coarse_reso_ = 32
+    coarse_reso_ = 64
     fine_reso_ = 4
     max_steps_ = 2_000
     l1_loss_coef_ = 0.1
+    consistency_loss_coef = 1
+    noise_std = 0.2
     exp_name_ = "e1"
 
     init_data = initialize(cfg_, data_dirs_, num_atoms=num_atoms_, coarse_reso=coarse_reso_,
-                           fine_reso=fine_reso_, efficient_dict=efficient_dict_)
+                           fine_reso=fine_reso_, noise_std=noise_std, efficient_dict=efficient_dict_)
     train_epoch(init_data["model"], init_data["train_loaders"], optim=init_data["optimizer"], ts_dsets=init_data['test_datasets'],
-                max_steps=max_steps_, l1_loss_coef=l1_loss_coef_, exp_name=exp_name_, batch_size=cfg_.optim.batch_size)
+                max_steps=max_steps_, l1_loss_coef=l1_loss_coef_, consistency_loss_coef=consistency_loss_coef, exp_name=exp_name_, batch_size=cfg_.optim.batch_size)
