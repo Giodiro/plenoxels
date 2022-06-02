@@ -1,8 +1,8 @@
-expname: "two_dicts_finereso2,4"
+expname: "reso32_finereso2,4,8,16_l1_0_tv_1"
 use_csrc: True
 
 data:
-  datadir:
+  datadirs:
     - /data/datasets/nerf/data/nerf_synthetic/lego
     - /data/datasets/nerf/data/nerf_synthetic/chair
     - /data/datasets/nerf/data/nerf_synthetic/drums
@@ -12,20 +12,20 @@ data:
   max_ts_frames: 10
 
 model:
-  num_atoms: [64, 64]
-  coarse_reso: 64
-  fine_reso: [2, 4]
+  num_atoms: [16, 32, 32, 64]
+  coarse_reso: 32
+  fine_reso: [2, 4, 8, 16]
   noise_std: 0.0
 
 optim:
   batch_size: 4000
   batches_per_epoch: 100
-  num_epochs: 50
+  num_epochs: 5
   lr: 1e-2
   regularization:
-    l1_weight: 0.4
-    tv_weight: 0.0
-    consistency_coef: 0.0
+    l1_weight: 0.0
+    tv_weight: 1.0
+    consistency_weight: 0.0
 
 sh:
   degree: 0

@@ -2,7 +2,7 @@ from typing import Union, List
 from importlib.machinery import PathFinder
 from pathlib import Path
 import math
-
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -14,7 +14,6 @@ try:
     torch.ops.load_library(spec.origin)
 except:
     print("Failed to load C-extension necessary for DictPlenoxels model")
-    raise
 
 
 class DictPlenoxels(nn.Module):
@@ -86,7 +85,7 @@ class DictPlenoxels(nn.Module):
 
     def tv_loss(self, grid_id):
         grid = self.grids[grid_id]
-        grid = grid.view(self.coarse_reso, self.coarse_reso, self.coarse_reso, self.num_atoms)
+        grid = grid.view(self.coarse_reso, self.coarse_reso, self.coarse_reso, sum(self.num_atoms))
 
         pixel_dif1 = grid[1:, :, :, ...] - grid[:-1, :, :, ...]
         pixel_dif2 = grid[:, 1:, :, ...] - grid[:, :-1, :, ...]
@@ -96,7 +95,7 @@ class DictPlenoxels(nn.Module):
         res2 = pixel_dif2.square().sum()
         res3 = pixel_dif3.square().sum()
 
-        return (res1 + res2 + res3) / math.prod(grid.shape)
+        return (res1 + res2 + res3) / np.prod(grid.shape)
 
     def get_neighbors(self, pts, fine_reso):
         # pts should be in grid coordinates, ranging from 0 to coarse_reso * fine_reso
