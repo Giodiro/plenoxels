@@ -2,10 +2,6 @@ from typing import Union, List, Optional, Tuple
 from importlib.machinery import PathFinder
 from pathlib import Path
 import math
-<<<<<<< HEAD
-=======
-
->>>>>>> edebaeea3fbacbb066218ae7afed0fadd2e0e991
 import numpy as np
 import torch
 import torch.nn as nn
@@ -18,8 +14,6 @@ try:
     torch.ops.load_library(spec.origin)
 except:
     print("Failed to load C-extension necessary for DictPlenoxels model")
-<<<<<<< HEAD
-=======
 
 
 def ensure_list(el, expand_size: Optional[int] = None) -> list:
@@ -31,7 +25,6 @@ def ensure_list(el, expand_size: Optional[int] = None) -> list:
         if expand_size:
             return [el] * expand_size
         return [el]
->>>>>>> edebaeea3fbacbb066218ae7afed0fadd2e0e991
 
 
 class DictPlenoxels(nn.Module):
