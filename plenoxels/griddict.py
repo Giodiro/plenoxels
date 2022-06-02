@@ -21,6 +21,7 @@ class ShDictRender(nn.Module):
                  init_sigma: float,
                  init_rgb: float,
                  num_scenes: int,
+                 noise_std: float,
                  efficient_dict=True):
         super().__init__()
         sh_dim = (sh_deg + 1) ** 2
@@ -30,11 +31,12 @@ class ShDictRender(nn.Module):
         self.coarse_reso = coarse_reso
         self.num_atoms = num_atoms
         self.data_dim = total_data_channels
+        self.noise_std = noise_std
         self.efficient_dict = efficient_dict
         # If we want to reuse the same dictionary for different channels
         if efficient_dict:
             self.grids = nn.ParameterList([nn.Parameter(torch.empty(coarse_reso, coarse_reso, coarse_reso, self.num_atoms, self.data_dim)) for i in range(num_scenes)])
-            self.atoms = nn.Parameter(torch.empty(self.fine_reso, self.fine_reso, self.fine_reso, num_atoms, dtype=torch.float32)) 
+            self.atoms = nn.Parameter(torch.empty(self.fine_reso, self.fine_reso, self.fine_reso, num_atoms, self.data_dim, dtype=torch.float32)) 
         else:
             self.grids = nn.ParameterList([nn.Parameter(torch.empty(coarse_reso, coarse_reso, coarse_reso, self.num_atoms)) for i in range(num_scenes)])
             self.atoms = nn.Parameter(torch.empty(self.fine_reso, self.fine_reso, self.fine_reso, self.num_atoms, self.data_dim, dtype=torch.float32)) 
@@ -81,6 +83,35 @@ class ShDictRender(nn.Module):
         post_floor = torch.clamp(torch.floor(pre_floor), min=0., max=self.coarse_reso * self.fine_reso - 1)
         return torch.abs(pts[:,None,:] - (post_floor + 0.5)), post_floor.long()
 
+    def encode_patches(self, patches):
+        # Compute the inverse dictionary
+        if self.efficient_dict:
+            atoms = self.atoms.view(-1, self.num_atoms)  # [patch_size, num_atoms]
+        else:
+            atoms = self.atoms.permute(0,1,2,4,3).reshape(-1, self.num_atoms)  # [patch_size, num_atoms]
+        pinv = torch.linalg.pinv(atoms) # [num_atoms, patch_size]
+        # Apply to the patches
+        vectorized_patches = patches.view(patches.size(0), -1) # [batch_size, patch_size]
+        return vectorized_patches @ pinv.T  # [batch_size, num_atoms]
+
+    def patch_consistency_loss(self, weights):
+        # Convert weights to patches
+        # weights has shape [batch_size, num_atoms]
+        if self.efficient_dict:
+            atoms = self.atoms.view(-1, self.num_atoms)  # [patch_size, num_atoms]
+        else:
+            atoms = self.atoms.permute(0,1,2,4,3).reshape(-1, self.num_atoms)  # [patch_size, num_atoms]
+        patches = weights @ atoms.T # [batch_size, patch_size]
+        # Add noise to patches
+        with torch.autograd.no_grad():
+            noise = torch.randn_like(patches) * self.noise_std * atoms.abs().max()
+        patches = patches + noise
+        # Encode patches
+        new_weights = self.encode_patches(patches)
+        # Compute loss
+        return F.mse_loss(new_weights, weights)
+
+
     def forward(self, rays_o, rays_d, grid_id, verbose=False):
         grid = self.grids[grid_id]
         with torch.autograd.no_grad():
@@ -111,12 +142,15 @@ class ShDictRender(nn.Module):
         for i in range(8):
             if self.efficient_dict:
                 coarse_neighbor_vals = grid[coarse_neighbors[:,i,0], coarse_neighbors[:,i,1], coarse_neighbors[:,i,2], :, :]  # [n_pts, n_atoms, data_dim]
-                fine_neighbor_vals = self.atoms[fine_neighbors[:,i,0], fine_neighbors[:,i,1], fine_neighbors[:,i,2], :]  # [n_pts, n_atoms]
-                result = torch.sum(coarse_neighbor_vals * fine_neighbor_vals[:,:,None], dim=1) # [n_pts, data_dim]
+                fine_neighbor_vals = self.atoms[fine_neighbors[:,i,0], fine_neighbors[:,i,1], fine_neighbors[:,i,2], :, :]  # [n_pts, n_atoms, data_dim]
+                result = torch.sum(coarse_neighbor_vals * fine_neighbor_vals, dim=1) # [n_pts, data_dim]
+                consistency_loss = torch.tensor(0.0, device=result.device) # TODO: fill this in
             else:
                 coarse_neighbor_vals = grid[coarse_neighbors[:,i,0], coarse_neighbors[:,i,1], coarse_neighbors[:,i,2], :]  # [n_pts, n_atoms]
                 fine_neighbor_vals = self.atoms[fine_neighbors[:,i,0], fine_neighbors[:,i,1], fine_neighbors[:,i,2], :, :]  # [n_pts, n_atoms, data_dim]
                 result = torch.sum(coarse_neighbor_vals[:,:,None] * fine_neighbor_vals, dim=1) # [n_pts, data_dim]
+                if i == 0:
+                    consistency_loss = self.patch_consistency_loss(coarse_neighbor_vals[::10,:])
             weights = torch.prod(1. - fine_offsets[:,i,:], dim=-1, keepdim=True)  # [n_pts, 1]
             data_interp = data_interp + weights * result
 
@@ -144,4 +178,4 @@ class ShDictRender(nn.Module):
         # 6. Depth map (optional)
         depth = depth_map(abs_light, intersections)
 
-        return rgb, alpha, depth
+        return rgb, alpha, depth, consistency_loss

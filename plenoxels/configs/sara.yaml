@@ -1,3 +1,6 @@
+expname: "two_dicts_finereso2,4"
+use_csrc: True
+
 data:
   datadir:
     - /data/datasets/nerf/data/nerf_synthetic/lego
@@ -5,6 +8,24 @@ data:
     - /data/datasets/nerf/data/nerf_synthetic/drums
     - /data/datasets/nerf/data/nerf_synthetic/ficus
   resolution: 256
-  max_tr_frames: 10
+  max_tr_frames: None
   max_ts_frames: 10
-  downsample: 1.0
+
+model:
+  num_atoms: [64, 64]
+  coarse_reso: 64
+  fine_reso: [2, 4]
+  noise_std: 0.0
+
+optim:
+  batch_size: 4000
+  batches_per_epoch: 100
+  num_epochs: 50
+  lr: 1e-2
+  regularization:
+    l1_weight: 0.4
+    tv_weight: 0.0
+    consistency_coef: 0.0
+
+sh:
+  degree: 0

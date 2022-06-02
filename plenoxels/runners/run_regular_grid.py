@@ -15,7 +15,7 @@ from plenoxels.tc_harmonics import plenoxel_sh_encoder
 from plenoxels.runners.utils import *
 
 
-def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_coef, tv_coef, batches_per_epoch, epochs, log_dir, batch_size):
+def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_coef, tv_coef, consistency_coef, batches_per_epoch, epochs, log_dir, batch_size):
     batches_per_dset = 10
     eta_min = 1e-5
     ema_weight = 0.3
@@ -38,13 +38,15 @@ def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_coef, tv_coef, batches
                         rays_o = rays_o.cuda()
                         rays_d = rays_d.cuda()
                         optim.zero_grad()
-                        rgb_preds, alpha, depth = renderer(rays_o, rays_d, grid_id=dset_id)
+                        rgb_preds, alpha, depth, consistency_loss = renderer(rays_o, rays_d, grid_id=dset_id)
 
                         diff_losses = dict(mse=F.mse_loss(rgb_preds, imgs))
                         if l1_coef > 0:
                             diff_losses["l1"] = l1_coef * torch.abs(renderer.grids[dset_id].data).mean()
                         if tv_coef > 0:
                             diff_losses["tv"] = tv_coef * renderer.tv_loss(dset_id)
+                        if consistency_coef > 0:
+                            diff_losses["consistency"] = consistency_coef * consistency_loss
 
                         loss = 0.0
                         for l in diff_losses.values(): loss = loss + l
@@ -79,7 +81,7 @@ def init_model(cfg, tr_dsets, efficient_dict):
         sh_deg=cfg.sh.degree, sh_encoder=sh_encoder,
         radius=1.3, num_atoms=cfg.model.num_atoms, num_scenes=len(tr_dsets),
         fine_reso=cfg.model.fine_reso, coarse_reso=cfg.model.coarse_reso,
-        efficient_dict=efficient_dict)
+        efficient_dict=efficient_dict, noise_std=cfg.model.noise_std, use_csrc=cfg.use_csrc)
     return render
 
 
@@ -108,4 +110,5 @@ if __name__ == "__main__":
     train_epoch(renderer=model_, tr_loaders=tr_loaders_, ts_dsets=ts_dsets_, optim=optim_,
                 batches_per_epoch=cfg_.optim.batches_per_epoch, epochs=cfg_.optim.num_epochs,
                 log_dir=log_dir_, batch_size=cfg_.optim.batch_size,
-                l1_coef=cfg_.optim.regularization.l1_weight, tv_coef=cfg_.optim.regularization.tv_weight)
+                l1_coef=cfg_.optim.regularization.l1_weight, tv_coef=cfg_.optim.regularization.tv_weight,
+                consistency_coef=cfg_.optim.regularization.consistency_weight)

@@ -14,6 +14,7 @@ model:
   num_atoms: [64, 64]
   coarse_reso: 64
   fine_reso: [2, 4]
+  noise_std: 0.0
 
 optim:
   batch_size: 4000
@@ -23,6 +24,7 @@ optim:
   regularization:
     l1_weight: 0.4
     tv_weight: 0.0
+    consistency_coef: 0.0
 
 sh:
   degree: 0

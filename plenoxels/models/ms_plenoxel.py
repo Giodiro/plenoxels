@@ -1,7 +1,6 @@
 from typing import Union, List
 from importlib.machinery import PathFinder
 from pathlib import Path
-import os
 import math
 
 import torch
@@ -27,6 +26,8 @@ class DictPlenoxels(nn.Module):
                  radius: float,
                  num_atoms: Union[int, List[int]],
                  num_scenes: int,
+                 noise_std: float,
+                 use_csrc: bool,
                  efficient_dict=True):
         super().__init__()
         assert not efficient_dict
@@ -35,22 +36,24 @@ class DictPlenoxels(nn.Module):
         self.radius = radius
         if isinstance(fine_reso, int):
             fine_reso = [fine_reso]
-        self.fine_reso = fine_reso
+        self.fine_reso: List[int] = fine_reso
         self.coarse_reso = coarse_reso
         if isinstance(num_atoms, int):
             num_atoms = [num_atoms]
-        self.num_atoms = num_atoms
+        self.num_atoms: List[int] = num_atoms
         self.data_dim = total_data_channels
         self.efficient_dict = efficient_dict
+        self.noise_std = noise_std
         self.sh_encoder = sh_encoder
         self.coarse_voxel_len = radius * 2 / coarse_reso
-        self.fine_voxel_len = self.coarse_voxel_len / fine_reso[-1]
-        self.step_size = self.fine_voxel_len / 2.
+        self.fine_voxel_len = [self.coarse_voxel_len / reso for reso in self.fine_reso]
+        self.step_size = self.fine_voxel_len[-1] / 2.
         self.n_intersections = coarse_reso * 3 * 2 * fine_reso[-1]
+        self.use_csrc = use_csrc
         assert len(self.num_atoms) == len(self.fine_reso), "Number of atoms != number of fine-reso items"
 
         self.grids = nn.ParameterList([nn.Parameter(
-            torch.empty(coarse_reso ** 3, sum(num_atoms))) for i in range(num_scenes)])
+            torch.empty(coarse_reso ** 3, sum(num_atoms))) for _ in range(num_scenes)])
         atoms = []
         for reso, n_atoms in zip(self.fine_reso, self.num_atoms):
             atoms.append(nn.Parameter(torch.empty(reso ** 3, n_atoms, self.data_dim)))
@@ -66,7 +69,7 @@ class DictPlenoxels(nn.Module):
 
     def __repr__(self):
         return (f"DictPlenoxels(grids={self.grids}, num_atoms={self.num_atoms}, data_dim={self.data_dim}, "
-                f"fine_reso={self.fine_reso}, coarse_reso={self.coarse_reso})")
+                f"fine_reso={self.fine_reso}, coarse_reso={self.coarse_reso}, noise_std={self.noise_std})")
 
     @torch.no_grad()
     def sample_proposal(self, rays_o, rays_d):
@@ -95,6 +98,45 @@ class DictPlenoxels(nn.Module):
 
         return (res1 + res2 + res3) / math.prod(grid.shape)
 
+    def get_neighbors(self, pts, fine_reso):
+        # pts should be in grid coordinates, ranging from 0 to coarse_reso * fine_reso
+        offsets_3d = torch.tensor(
+            [[-1, -1, -1],
+             [-1, -1, 1],
+             [-1, 1, -1],
+             [-1, 1, 1],
+             [1, -1, -1],
+             [1, -1, 1],
+             [1, 1, -1],
+             [1, 1, 1]], dtype=pts.dtype, device=pts.device)
+        pre_floor = pts[:, None, :] + offsets_3d[None, ...] / 2.
+        post_floor = torch.clamp(torch.floor(pre_floor), min=0., max=self.coarse_reso * fine_reso - 1)
+        return torch.abs(pts[:,None,:] - (post_floor + 0.5)), post_floor.long()
+
+    def encode_patches(self, patches, dict_id: int):
+        # Compute the inverse dictionary
+        atoms = self.atoms[dict_id]
+        atoms = atoms.permute(0,1,2,4,3).reshape(-1, self.num_atoms[dict_id])  # [patch_size, num_atoms]
+        pinv = torch.linalg.pinv(atoms) # [num_atoms, patch_size]
+        # Apply to the patches
+        vectorized_patches = patches.view(patches.size(0), -1) # [batch_size, patch_size]
+        return vectorized_patches @ pinv.T  # [batch_size, num_atoms]
+
+    def patch_consistency_loss(self, weights, dict_id: int):
+        # Convert weights to patches
+        # weights has shape [batch_size, num_atoms]
+        atoms = self.atoms[dict_id]
+        atoms = atoms.permute(0,1,2,4,3).reshape(-1, self.num_atoms[dict_id])  # [patch_size, num_atoms]
+        patches = weights @ atoms.T # [batch_size, patch_size]
+        # Add noise to patches
+        with torch.autograd.no_grad():
+            noise = torch.randn_like(patches) * self.noise_std * atoms.abs().max()
+        patches = patches + noise
+        # Encode patches
+        new_weights = self.encode_patches(patches, dict_id)
+        # Compute loss
+        return F.mse_loss(new_weights, weights)
+
     def forward(self, rays_o, rays_d, grid_id, verbose=False):
         grid = self.grids[grid_id]
         with torch.autograd.no_grad():
@@ -105,18 +147,43 @@ class DictPlenoxels(nn.Module):
             # noinspection PyTypeChecker
             intrs_pts_mask = torch.all((-self.radius < intrs_pts) & (intrs_pts < self.radius), dim=-1)  # [batch, n_intrs-1]
             intrs_pts = intrs_pts[intrs_pts_mask]  # masked points
+
+        consistency_loss = torch.tensor(0.0, device=rays_d.device)
+        if not self.use_csrc:
+            atom_idx = 0
+            data_interp = torch.zeros(len(intrs_pts), self.data_dim, device=rays_o.device)
+            consistency_loss = 0
+            for i, (reso, n_atoms) in enumerate(zip(self.fine_reso, self.num_atoms)):
+                fine_offsets, fine_neighbors = self.get_neighbors(
+                    (intrs_pts + self.radius) / self.fine_voxel_len[i], fine_reso=reso)  # [n_pts, 8, 3]
+                # Get corresponding coarse grid indices for each fine neighbor
+                coarse_neighbors = torch.div(fine_neighbors, reso, rounding_mode='floor')  # [n_pts, 8, 3]
+                fine_neighbors = fine_neighbors % reso  # [n_pts, 8, 3]
+                for n in range(8):
+                    coarse_neighbor_vals = grid[
+                       coarse_neighbors[:,n,0], coarse_neighbors[:,n,1], coarse_neighbors[:,n,2],
+                       atom_idx: atom_idx + n_atoms]  # [n_pts, n_atoms]
+                    fine_neighbor_vals = self.atoms[i][
+                        fine_neighbors[:,n,0], fine_neighbors[:,n,1], fine_neighbors[:,n,2], ...]  # [n_pts, n_atoms, data_dim]
+                    result = torch.sum(coarse_neighbor_vals[:,:,None] * fine_neighbor_vals, dim=1)  # [n_pts, data_dim]
+                    if n == 0 and self.noise_std > 0:
+                        consistency_loss = consistency_loss + self.patch_consistency_loss(
+                            coarse_neighbor_vals[::10,:], dict_id=i)
+                    weights = torch.prod(1. - fine_offsets[:, n, :], dim=-1, keepdim=True)  # [n_pts, 1]
+                    data_interp = data_interp + weights * result
+                atom_idx += n_atoms
+        else:
             # Normalize pts in [0, 1]
             intrs_pts = (intrs_pts + self.radius) / (self.radius * 2)
-
-        atom_idx = 0
-        for i, (reso, n_atoms) in enumerate(zip(self.fine_reso, self.num_atoms)):
-            if i == 0:
-                data_interp = torch.ops.plenoxels.l2_interp_v2(
-                        grid[..., atom_idx: atom_idx + n_atoms], self.atoms[i], intrs_pts, reso, self.coarse_reso, 1, 1)
-            else:
-                data_interp = data_interp + torch.ops.plenoxels.l2_interp_v2(
-                        grid[..., atom_idx: atom_idx + n_atoms], self.atoms[i], intrs_pts, reso, self.coarse_reso, 1, 1)
-            atom_idx += n_atoms
+            atom_idx = 0
+            for i, (reso, n_atoms) in enumerate(zip(self.fine_reso, self.num_atoms)):
+                if i == 0:
+                    data_interp = torch.ops.plenoxels.l2_interp_v2(
+                            grid[..., atom_idx: atom_idx + n_atoms], self.atoms[i], intrs_pts, reso, self.coarse_reso, 1, 1)
+                else:
+                    data_interp = data_interp + torch.ops.plenoxels.l2_interp_v2(
+                            grid[..., atom_idx: atom_idx + n_atoms], self.atoms[i], intrs_pts, reso, self.coarse_reso, 1, 1)
+                atom_idx += n_atoms
 
         # 1. Process density: Un-masked sigma (batch, n_intrs-1), and compute.
         sigma_masked = data_interp[:, -1]
@@ -142,4 +209,4 @@ class DictPlenoxels(nn.Module):
         # 6. Depth map (optional)
         depth = depth_map(abs_light, intersections)
 
-        return rgb, alpha, depth
+        return rgb, alpha, depth, consistency_loss
