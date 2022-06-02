@@ -1,8 +1,9 @@
-from typing import Union, List
+from typing import Union, List, Optional, Tuple
 from importlib.machinery import PathFinder
 from pathlib import Path
 import math
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -14,7 +15,17 @@ try:
     torch.ops.load_library(spec.origin)
 except:
     print("Failed to load C-extension necessary for DictPlenoxels model")
-    raise
+
+
+def ensure_list(el, expand_size: Optional[int] = None) -> list:
+    if isinstance(el, list):
+        return el
+    elif isinstance(el, tuple):
+        return list(el)
+    else:
+        if expand_size:
+            return [el] * expand_size
+        return [el]
 
 
 class DictPlenoxels(nn.Module):
@@ -23,7 +34,7 @@ class DictPlenoxels(nn.Module):
                  sh_encoder,
                  fine_reso: Union[int, List[int]],
                  coarse_reso: int,
-                 radius: float,
+                 radius: Union[float, List[float]],
                  num_atoms: Union[int, List[int]],
                  num_scenes: int,
                  noise_std: float,
@@ -33,32 +44,50 @@ class DictPlenoxels(nn.Module):
         assert not efficient_dict
         sh_dim = (sh_deg + 1) ** 2
         total_data_channels = sh_dim * 3 + 1
-        self.radius = radius
-        if isinstance(fine_reso, int):
-            fine_reso = [fine_reso]
-        self.fine_reso: List[int] = fine_reso
+        self.radius: List[float] = ensure_list(radius, expand_size=num_scenes)
+        self.fine_reso: List[int] = ensure_list(fine_reso)
         self.coarse_reso = coarse_reso
-        if isinstance(num_atoms, int):
-            num_atoms = [num_atoms]
-        self.num_atoms: List[int] = num_atoms
+        self.num_atoms: List[int] = ensure_list(num_atoms)
         self.data_dim = total_data_channels
         self.efficient_dict = efficient_dict
         self.noise_std = noise_std
         self.sh_encoder = sh_encoder
-        self.coarse_voxel_len = radius * 2 / coarse_reso
-        self.fine_voxel_len = [self.coarse_voxel_len / reso for reso in self.fine_reso]
-        self.step_size = self.fine_voxel_len[-1] / 2.
-        self.n_intersections = coarse_reso * 3 * 2 * fine_reso[-1]
         self.use_csrc = use_csrc
+        self.num_scenes = num_scenes
+        self.num_dicts = len(self.num_atoms)
+
         assert len(self.num_atoms) == len(self.fine_reso), "Number of atoms != number of fine-reso items"
+        assert len(self.radius) == self.num_scenes, "Radii != number of scenes"
+        assert sorted(self.fine_reso) == self.fine_reso, "Fine-reso elements must be sorted increasingly"
+
+        self.step_size, self.n_intersections = self.calc_step_size()
+        print("Ray-marching with step-size = %.4e  -  %d intersections" %
+              (self.step_size, self.n_intersections))
 
         self.grids = nn.ParameterList([nn.Parameter(
-            torch.empty(coarse_reso ** 3, sum(num_atoms))) for _ in range(num_scenes)])
+            torch.empty(coarse_reso ** 3, sum(num_atoms))) for _ in range(self.num_scenes)])
         atoms = []
         for reso, n_atoms in zip(self.fine_reso, self.num_atoms):
             atoms.append(nn.Parameter(torch.empty(reso ** 3, n_atoms, self.data_dim)))
         self.atoms = nn.ParameterList(atoms)
         self.init_params()
+
+    def get_radius(self, dset_id: int) -> float:
+        return self.radius[dset_id]
+
+    def get_coarse_voxel_len(self, dset_id: int) -> float:
+        return self.get_radius(dset_id) * 2 / self.coarse_reso
+
+    def get_fine_voxel_len(self, dset_id: int, dict_id: int):
+        return self.get_coarse_voxel_len(dset_id) / self.fine_reso[dict_id]
+
+    def calc_step_size(self) -> Tuple[float, int]:
+        # Smallest radius, largest fine-resolution
+        smallest_dset = np.argmin(self.radius).item()
+        smallest_voxel = self.get_fine_voxel_len(dset_id=smallest_dset, dict_id=self.num_dicts - 1)
+        step_size = smallest_voxel / 2
+        n_intersections = self.coarse_reso * 3 * 2 * self.fine_reso[-1]
+        return step_size, n_intersections
 
     def init_params(self):
         for grid in self.grids:
@@ -67,15 +96,11 @@ class DictPlenoxels(nn.Module):
             nn.init.uniform_(atoms[..., :-1])
             nn.init.constant_(atoms[..., -1], 0.01)
 
-    def __repr__(self):
-        return (f"DictPlenoxels(grids={self.grids}, num_atoms={self.num_atoms}, data_dim={self.data_dim}, "
-                f"fine_reso={self.fine_reso}, coarse_reso={self.coarse_reso}, noise_std={self.noise_std})")
-
     @torch.no_grad()
-    def sample_proposal(self, rays_o, rays_d):
+    def sample_proposal(self, rays_o, rays_d, dset_id: int):
         dev, dt = rays_o.device, rays_o.dtype
-        offsets_pos = (self.radius - rays_o) / rays_d  # [batch, 3]
-        offsets_neg = (-self.radius - rays_o) / rays_d  # [batch, 3]
+        offsets_pos = (self.radius[dset_id] - rays_o) / rays_d  # [batch, 3]
+        offsets_neg = (-self.radius[dset_id] - rays_o) / rays_d  # [batch, 3]
         offsets_in = torch.minimum(offsets_pos, offsets_neg)  # [batch, 3]
         start = torch.amax(offsets_in, dim=-1, keepdim=True)  # [batch, 1]
 
@@ -113,6 +138,17 @@ class DictPlenoxels(nn.Module):
         post_floor = torch.clamp(torch.floor(pre_floor), min=0., max=self.coarse_reso * fine_reso - 1)
         return torch.abs(pts[:,None,:] - (post_floor + 0.5)), post_floor.long()
 
+    def normalize01(self, pts: torch.Tensor, dset_id: int) -> torch.Tensor:
+        """Normalize from world coordinates to 0-1"""
+        radius = self.get_radius(dset_id)
+        return (pts + radius) / (radius * 2)
+
+    def normalizegrid(self, pts: torch.Tensor, dset_id: int, dict_id) -> torch.Tensor:
+        """Normalize from world coordinates to 0-gridsize"""
+        radius = self.get_radius(dset_id)
+        voxel_len = self.get_fine_voxel_len(dset_id=dset_id, dict_id=dict_id)
+        return (pts + radius) / voxel_len
+
     def encode_patches(self, patches, dict_id: int):
         # Compute the inverse dictionary
         atoms = self.atoms[dict_id]
@@ -140,12 +176,12 @@ class DictPlenoxels(nn.Module):
     def forward(self, rays_o, rays_d, grid_id, verbose=False):
         grid = self.grids[grid_id]
         with torch.autograd.no_grad():
-            intersections = self.sample_proposal(rays_o, rays_d)
+            intersections = self.sample_proposal(rays_o, rays_d, grid_id)
             intersections_trunc = intersections[:, :-1]  # [batch, n_intrs - 1]
             batch, nintrs = intersections_trunc.shape
             intrs_pts = rays_o.unsqueeze(1) + intersections_trunc.unsqueeze(2) * rays_d.unsqueeze(1)  # [batch, n_intrs - 1, 3]
             # noinspection PyTypeChecker
-            intrs_pts_mask = torch.all((-self.radius < intrs_pts) & (intrs_pts < self.radius), dim=-1)  # [batch, n_intrs-1]
+            intrs_pts_mask = torch.all((-self.radius[grid_id] < intrs_pts) & (intrs_pts < self.radius[grid_id]), dim=-1)  # [batch, n_intrs-1]
             intrs_pts = intrs_pts[intrs_pts_mask]  # masked points
 
         consistency_loss = torch.tensor(0.0, device=rays_d.device)
@@ -155,7 +191,7 @@ class DictPlenoxels(nn.Module):
             consistency_loss = 0
             for i, (reso, n_atoms) in enumerate(zip(self.fine_reso, self.num_atoms)):
                 fine_offsets, fine_neighbors = self.get_neighbors(
-                    (intrs_pts + self.radius) / self.fine_voxel_len[i], fine_reso=reso)  # [n_pts, 8, 3]
+                    self.normalizegrid(intrs_pts, dset_id=grid_id, dict_id=i), fine_reso=reso)  # [n_pts, 8, 3]
                 # Get corresponding coarse grid indices for each fine neighbor
                 coarse_neighbors = torch.div(fine_neighbors, reso, rounding_mode='floor')  # [n_pts, 8, 3]
                 fine_neighbors = fine_neighbors % reso  # [n_pts, 8, 3]
@@ -174,7 +210,7 @@ class DictPlenoxels(nn.Module):
                 atom_idx += n_atoms
         else:
             # Normalize pts in [0, 1]
-            intrs_pts = (intrs_pts + self.radius) / (self.radius * 2)
+            intrs_pts = self.normalize01(intrs_pts, grid_id)
             atom_idx = 0
             for i, (reso, n_atoms) in enumerate(zip(self.fine_reso, self.num_atoms)):
                 if i == 0:
@@ -210,3 +246,7 @@ class DictPlenoxels(nn.Module):
         depth = depth_map(abs_light, intersections)
 
         return rgb, alpha, depth, consistency_loss
+
+    def __repr__(self):
+        return (f"DictPlenoxels(grids={self.grids}, num_atoms={self.num_atoms}, data_dim={self.data_dim}, "
+                f"fine_reso={self.fine_reso}, coarse_reso={self.coarse_reso}, noise_std={self.noise_std})")

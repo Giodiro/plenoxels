@@ -65,6 +65,7 @@ def plot_ts(ts_dset, dset_id, renderer, log_dir, iteration, batch_size=10_000):
             psnr = -10.0 * torch.log(mse) / math.log(10)
             psnr_list.append(psnr)
             break
+    psnr = np.mean(psnr_list)
     fig, ax = plt.subplots(ncols=2)
     ax[0].imshow(pred)
     ax[1].imshow(rgb)
@@ -73,7 +74,7 @@ def plot_ts(ts_dset, dset_id, renderer, log_dir, iteration, batch_size=10_000):
     plt.close(fig)
 
 
-def plot_ts_imageio(ts_dset, dset_id, renderer, log_dir, iteration, batch_size=10_000):
+def plot_ts_imageio(ts_dset, dset_id, renderer, log_dir, iteration, batch_size=10_000) -> float:
     import imageio
     psnr_list = []
     with torch.autograd.no_grad():
@@ -85,7 +86,9 @@ def plot_ts_imageio(ts_dset, dset_id, renderer, log_dir, iteration, batch_size=1
             psnr = -10.0 * torch.log(mse) / math.log(10)
             psnr_list.append(psnr)
             break
-    print(f"D{dset_id} Test PSNR={np.mean(psnr_list):.2f}")
+    psnr = np.mean(psnr_list)
+    print(f"D{dset_id} Test PSNR={psnr:.2f}")
     vis = torch.cat((pred, rgb), dim=1)
     vis = (vis * 255).numpy().astype(np.uint8)
     imageio.imwrite(os.path.join(log_dir, f"dset{dset_id}_iter{iteration}.png"), vis)
+    return psnr.item()

@@ -1,3 +1,4 @@
+from typing import Dict, List
 import os
 from collections import defaultdict
 import time
@@ -5,6 +6,7 @@ import time
 import torch
 import torch.utils.data
 import torch.nn.functional as F
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from plenoxels import multiscene_config
@@ -15,21 +17,36 @@ from plenoxels.tc_harmonics import plenoxel_sh_encoder
 from plenoxels.runners.utils import *
 
 
+TB_WRITER = None
+
+
+def losses_to_postfix(losses: List[Dict[str, EMA]]) -> str:
+    pfix_list = []
+    for dset_id, loss_dict in enumerate(losses):
+        pfix_inner = ", ".join(f"{lname}={lval}" for lname, lval in loss_dict.items())
+        pfix_list.append(f"D{dset_id}({pfix_inner})")
+    return '  '.join(pfix_list)
+
+
 def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_coef, tv_coef, consistency_coef, batches_per_epoch, epochs, log_dir, batch_size):
     batches_per_dset = 10
-    eta_min = 1e-5
+    eta_min = 1e-4
     ema_weight = 0.3
     num_dsets = len(tr_loaders)
 
-    lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=epochs * batches_per_epoch * num_dsets // batches_per_dset, eta_min=eta_min)
+    lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optim, T_max=epochs * batches_per_epoch * num_dsets // batches_per_dset, eta_min=eta_min)
+    TB_WRITER.add_scalar("lr", optim.param_groups[0]["lr"], 0)
 
     tr_iterators = [iter(dl) for dl in tr_loaders]
     renderer.cuda()
 
+    tot_step = 0
     for e in range(epochs):
-        pb = tqdm(range(0, batches_per_epoch * num_dsets, batches_per_dset), desc=f"epoch {e + 1}")
+        # pb = tqdm(range(0, batches_per_epoch * num_dsets, batches_per_dset), desc=f"epoch {e + 1}")
         losses = [defaultdict(lambda: EMA(ema_weight)) for _ in range(num_dsets)]
-        for _ in pb:
+        pb = tqdm(total=batches_per_epoch * num_dsets * batches_per_dset, desc=f"Epoch {e + 1}")
+        for _ in range(0, batches_per_epoch * num_dsets, batches_per_dset):
             for dset_id in range(num_dsets):
                 for i in range(batches_per_dset):
                     try:
@@ -47,29 +64,28 @@ def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_coef, tv_coef, consist
                             diff_losses["tv"] = tv_coef * renderer.tv_loss(dset_id)
                         if consistency_coef > 0:
                             diff_losses["consistency"] = consistency_coef * consistency_loss
-
-                        loss = 0.0
-                        for l in diff_losses.values(): loss = loss + l
+                        loss = sum(diff_losses.values())
                         loss.backward()
                         optim.step()
 
                         for loss_name, loss_val in diff_losses.items():
                             losses[dset_id][loss_name].update(loss_val.item())
+                            TB_WRITER.add_scalar(f"{loss_name}/D{dset_id}", loss_val.item(), tot_step)
+                            pb.set_postfix_str(losses_to_postfix(losses), refresh=False)
+                        pb.update(1)
+                        tot_step += 1
                     except StopIteration:
                         # Reset the training-iterator which has no more samples
                         tr_iterators[dset_id] = iter(tr_loaders[dset_id])
             lr_sched.step()
-            pb_postfix = {}
-            for dset_id, loss_dict in enumerate(losses):
-                for loss_name, loss_val in loss_dict.items():
-                    pb_postfix[f"{loss_name}-D{dset_id}"] = loss_val
-            pb.set_postfix(pb_postfix)
+            TB_WRITER.add_scalar("lr", lr_sched.get_last_lr()[0])  # one lr per parameter-group
         # Save and evaluate model
         time_s = time.time()
         for ts_dset_id, ts_dset in enumerate(ts_dsets):
-            plot_ts_imageio(
+            psnr = plot_ts_imageio(
                 ts_dset, ts_dset_id, renderer, log_dir,
                 iteration=e, batch_size=batch_size)
+            TB_WRITER.add_scalar(f"TestPSNR/D{ts_dset_id}", psnr, tot_step)
         model_save_path = os.path.join(log_dir, "model.pt")
         torch.save(renderer.state_dict(), model_save_path)
         print(f"Plot test images & saved model to {log_dir} in {time.time() - time_s:.2f}s")
@@ -77,9 +93,10 @@ def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_coef, tv_coef, consist
 
 def init_model(cfg, tr_dsets, efficient_dict):
     sh_encoder = plenoxel_sh_encoder(cfg.sh.degree)
+    radii = [dset.radius for dset in tr_dsets]
     render = DictPlenoxels(
         sh_deg=cfg.sh.degree, sh_encoder=sh_encoder,
-        radius=1.3, num_atoms=cfg.model.num_atoms, num_scenes=len(tr_dsets),
+        radius=radii, num_atoms=cfg.model.num_atoms, num_scenes=len(tr_dsets),
         fine_reso=cfg.model.fine_reso, coarse_reso=cfg.model.coarse_reso,
         efficient_dict=efficient_dict, noise_std=cfg.model.noise_std, use_csrc=cfg.use_csrc)
     return render
@@ -103,6 +120,8 @@ if __name__ == "__main__":
     with open(os.path.join(log_dir_, "config.yaml"), "w+") as fh:
         fh.write(cfg_.dump())
     print(cfg_)
+    # Initialize tensorboard
+    TB_WRITER = SummaryWriter(log_dir=log_dir_)
 
     tr_dsets_, tr_loaders_, ts_dsets_ = init_data(cfg_)
     model_ = init_model(cfg_, tr_dsets=tr_dsets_, efficient_dict=False)
