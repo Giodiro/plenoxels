@@ -15,4 +15,4 @@ class EMA():
         return self.val
 
     def __str__(self):
-        return f"{self.val:.4f}"
+        return f"{self.val:.2e}"
