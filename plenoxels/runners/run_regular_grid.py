@@ -60,7 +60,7 @@ def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_coef, tv_coef, consist
 
                         diff_losses = dict(mse=F.mse_loss(rgb_preds, imgs))
                         if l1_coef > 0:
-                            diff_losses["l1"] = l1_coef * torch.abs(renderer.grids[dset_id].data).mean()
+                            diff_losses["l1"] = l1_coef * torch.abs(renderer.grids[dset_id]).mean()
                         if tv_coef > 0:
                             diff_losses["tv"] = tv_coef * renderer.tv_loss(dset_id)
                         if consistency_coef > 0:
