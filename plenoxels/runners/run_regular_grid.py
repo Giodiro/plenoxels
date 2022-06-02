@@ -36,6 +36,7 @@ def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_coef, tv_coef, consist
 
     lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
         optim, T_max=epochs * batches_per_epoch * num_dsets // batches_per_dset, eta_min=eta_min)
+    lr_sched = None
     TB_WRITER.add_scalar("lr", optim.param_groups[0]["lr"], 0)
 
     tr_iterators = [iter(dl) for dl in tr_loaders]
@@ -45,8 +46,8 @@ def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_coef, tv_coef, consist
     for e in range(epochs):
         # pb = tqdm(range(0, batches_per_epoch * num_dsets, batches_per_dset), desc=f"epoch {e + 1}")
         losses = [defaultdict(lambda: EMA(ema_weight)) for _ in range(num_dsets)]
-        pb = tqdm(total=batches_per_epoch * num_dsets * batches_per_dset, desc=f"Epoch {e + 1}")
-        for _ in range(0, batches_per_epoch * num_dsets, batches_per_dset):
+        pb = tqdm(total=batches_per_epoch * num_dsets, desc=f"Epoch {e + 1}")
+        for _ in range(0, batches_per_epoch, batches_per_dset):
             for dset_id in range(num_dsets):
                 for i in range(batches_per_dset):
                     try:
@@ -77,8 +78,10 @@ def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_coef, tv_coef, consist
                     except StopIteration:
                         # Reset the training-iterator which has no more samples
                         tr_iterators[dset_id] = iter(tr_loaders[dset_id])
-            lr_sched.step()
-            TB_WRITER.add_scalar("lr", lr_sched.get_last_lr()[0])  # one lr per parameter-group
+            if lr_sched is not None:
+                lr_sched.step()
+                TB_WRITER.add_scalar("lr", lr_sched.get_last_lr()[0], tot_step)  # one lr per parameter-group
+        pb.close()
         # Save and evaluate model
         time_s = time.time()
         for ts_dset_id, ts_dset in enumerate(ts_dsets):
