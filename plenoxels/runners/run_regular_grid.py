@@ -28,15 +28,16 @@ def losses_to_postfix(losses: List[Dict[str, EMA]]) -> str:
     return '  '.join(pfix_list)
 
 
-def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_coef, tv_coef, consistency_coef, batches_per_epoch, epochs, log_dir, batch_size):
+def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_coef, tv_coef, consistency_coef, batches_per_epoch, epochs, log_dir, batch_size, cosine):
     batches_per_dset = 10
     eta_min = 1e-4
     ema_weight = 0.3
     num_dsets = len(tr_loaders)
 
-    lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optim, T_max=epochs * batches_per_epoch * num_dsets // batches_per_dset, eta_min=eta_min)
     lr_sched = None
+    if cosine:
+        lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optim, T_max=epochs * batches_per_epoch * num_dsets // batches_per_dset, eta_min=eta_min)
     TB_WRITER.add_scalar("lr", optim.param_groups[0]["lr"], 0)
 
     tr_iterators = [iter(dl) for dl in tr_loaders]
@@ -133,4 +134,4 @@ if __name__ == "__main__":
                 batches_per_epoch=cfg_.optim.batches_per_epoch, epochs=cfg_.optim.num_epochs,
                 log_dir=log_dir_, batch_size=cfg_.optim.batch_size,
                 l1_coef=cfg_.optim.regularization.l1_weight, tv_coef=cfg_.optim.regularization.tv_weight,
-                consistency_coef=cfg_.optim.regularization.consistency_weight)
+                consistency_coef=cfg_.optim.regularization.consistency_weight, cosine=cfg_.optim.cosine)
