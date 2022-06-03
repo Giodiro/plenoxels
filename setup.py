@@ -14,7 +14,11 @@ if cub_home is None:
     if prefix is not None and os.path.isdir(prefix + "/include/cub"):
         cub_home = prefix + "/include"
 if cub_home is None:
-    raise RuntimeError('Could not find CUB')
+    print("CUB not detected")
+
+include_dirs = ['plenoxels/csrc']
+if cub_home is not None:
+    include_dirs.append(osp.realpath(cub_home).replace('\\ ', ' '))
 
 ext_modules = [
     CUDAExtension('plenoxels.c_ext',
@@ -25,14 +29,10 @@ ext_modules = [
             # 'csrc/rt_kernel.cu',
             'plenoxels/csrc/regular_tree.cu'
         ],
-        include_dirs=[
-            'plenoxels/csrc',
-            # 'plenoxels/csrc/include',
-            osp.realpath(cub_home).replace('\\ ', ' '),
-        ],
+        include_dirs=include_dirs,
         extra_compile_args={
-            "cxx": ["-std=c++14", "-g"],
-            "nvcc": ["-std=c++14", "--ptxas-options=-v", "-keep", "-lineinfo"]
+            "cxx": ["-std=c++14", "-O3"],
+            "nvcc": ["-std=c++14", "--ptxas-options=-v", "-lineinfo", "-O3"]
         },
     )
 ]
