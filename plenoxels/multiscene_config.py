@@ -64,7 +64,7 @@ def parse_config():
         if not os.path.isfile(logged_config_file):
             raise RuntimeError(f"logdir {args.logdir} doesn't specify a config-file")
         print(f"Loading configuration from logs at {logged_config_file}")
-        cfg.merge_from_list(logged_config_file)
+        cfg.merge_from_file(logged_config_file)
     elif args.config is not None:
         cfg.merge_from_file(args.config)
     cfg.merge_from_list(args.config_updates)
