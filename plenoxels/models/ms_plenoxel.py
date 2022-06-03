@@ -85,7 +85,7 @@ class DictPlenoxels(nn.Module):
         smallest_dset = np.argmin(self.radius).item()
         smallest_voxel = self.get_fine_voxel_len(dset_id=smallest_dset, dict_id=self.num_dicts - 1)
         step_size = smallest_voxel / 2
-        n_intersections = self.coarse_reso * 3 * 2 * self.fine_reso[-1]
+        n_intersections = self.coarse_reso * np.sqrt(3.) * 2 * self.fine_reso[-1]
         return step_size, n_intersections
 
     def init_params(self):

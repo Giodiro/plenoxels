@@ -1,4 +1,5 @@
 import argparse
+import os.path
 from datetime import datetime
 
 from yacs.config import CfgNode as CN
@@ -18,6 +19,7 @@ _C.optim.batch_size = 4000
 _C.optim.batches_per_epoch = 500
 _C.optim.num_epochs = 10
 _C.optim.lr = 1e6
+_C.optim.cosine = False
 
 _C.optim.regularization = CN()
 _C.optim.regularization.l1_weight = 0.1
@@ -49,14 +51,23 @@ def parse_config():
     # Build experiment configuration
     parser = argparse.ArgumentParser("Train + evaluate kernel model")
     parser.add_argument("--config", default=None)
-    parser.add_argument('--config-updates', default=[], nargs='*')
+    parser.add_argument("--config-updates", default=[], nargs='*')
+    parser.add_argument("--logdir", default=None)
     args = parser.parse_args()
-    cfg = get_cfg_defaults()
+    if args.logdir is not None:
+        assert args.config is None, "logdir and config cannot be specified together"
     if args.config is not None:
+        assert args.logdir is None, "logdir and config cannot be specified together"
+    cfg = get_cfg_defaults()
+    if args.logdir is not None:
+        logged_config_file = os.path.join(args.logdir, "config.yaml")
+        if not os.path.isfile(logged_config_file):
+            raise RuntimeError(f"logdir {args.logdir} doesn't specify a config-file")
+        print(f"Loading configuration from logs at {logged_config_file}")
+        cfg.merge_from_file(logged_config_file)
+    elif args.config is not None:
         cfg.merge_from_file(args.config)
     cfg.merge_from_list(args.config_updates)
-    # cfg.freeze()
     print(f"[{datetime.now()}] Starting")
-    # print(cfg)
-    return cfg
+    return cfg, args.logdir is not None
 

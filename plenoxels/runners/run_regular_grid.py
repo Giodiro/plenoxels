@@ -3,6 +3,7 @@ import os
 from collections import defaultdict
 import time
 
+import numpy as np
 import torch
 import torch.utils.data
 import torch.nn.functional as F
@@ -28,15 +29,16 @@ def losses_to_postfix(losses: List[Dict[str, EMA]]) -> str:
     return '  '.join(pfix_list)
 
 
-def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_coef, tv_coef, consistency_coef, batches_per_epoch, epochs, log_dir, batch_size):
+def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_coef, tv_coef, consistency_coef, batches_per_epoch, epochs, log_dir, batch_size, cosine):
     batches_per_dset = 10
     eta_min = 1e-4
     ema_weight = 0.3
     num_dsets = len(tr_loaders)
 
-    lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optim, T_max=epochs * batches_per_epoch * num_dsets // batches_per_dset, eta_min=eta_min)
     lr_sched = None
+    if cosine:
+        lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optim, T_max=epochs * batches_per_epoch * num_dsets // batches_per_dset, eta_min=eta_min)
     TB_WRITER.add_scalar("lr", optim.param_groups[0]["lr"], 0)
 
     tr_iterators = [iter(dl) for dl in tr_loaders]
@@ -89,11 +91,32 @@ def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_coef, tv_coef, consist
         for ts_dset_id, ts_dset in enumerate(ts_dsets):
             psnr = plot_ts_imageio(
                 ts_dset, ts_dset_id, renderer, log_dir,
-                iteration=e, batch_size=batch_size)
+                iteration=e, batch_size=batch_size, image_id=0, verbose=True)
             TB_WRITER.add_scalar(f"TestPSNR/D{ts_dset_id}", psnr, tot_step)
         model_save_path = os.path.join(log_dir, "model.pt")
         torch.save(renderer.state_dict(), model_save_path)
         print(f"Plot test images & saved model to {log_dir} in {time.time() - time_s:.2f}s")
+
+
+def test_model(renderer, ts_dsets, log_dir, batch_size, num_test_imgs=1):
+    renderer.cuda()
+    for ts_dset_id, ts_dset in enumerate(ts_dsets):
+        psnrs = []
+        for image_id in range(num_test_imgs):
+            psnr = plot_ts_imageio(ts_dset, ts_dset_id, renderer, log_dir, iteration="test",
+                                   batch_size=batch_size, image_id=image_id, verbose=False)
+            psnrs.append(psnr)
+        print(f"Average PSNR (over {num_test_imgs} poses) for "
+              f"dataset {ts_dset_id}: {np.mean(psnrs):.2f}")
+
+
+def load_model_from_logdir(cfg, logdir, tr_dsets, efficient_dict) -> DictPlenoxels:
+    renderer = init_model(cfg, tr_dsets, efficient_dict)
+    model_save_path = os.path.join(logdir, "model.pt")
+    model_data = torch.load(model_save_path, map_location='cpu')
+    renderer.load_state_dict(model_data)
+    print(f"loaded model from {model_save_path}")
+    return renderer
 
 
 def init_model(cfg, tr_dsets, efficient_dict):
@@ -112,7 +135,7 @@ def init_optim(cfg, model):
 
 
 if __name__ == "__main__":
-    cfg_ = multiscene_config.parse_config()
+    cfg_, run_test_ = multiscene_config.parse_config()
     gpu = get_freer_gpu()
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
     print(f'gpu is {gpu}')
@@ -121,18 +144,23 @@ if __name__ == "__main__":
     os.makedirs(log_dir_, exist_ok=True)
     # Make config immutable
     cfg_.freeze()
-    # Save configuration as yaml into logdir
-    with open(os.path.join(log_dir_, "config.yaml"), "w+") as fh:
-        fh.write(cfg_.dump())
-    print(cfg_)
     # Initialize tensorboard
     TB_WRITER = SummaryWriter(log_dir=log_dir_)
-
+    print(cfg_)
     tr_dsets_, tr_loaders_, ts_dsets_ = init_data(cfg_)
-    model_ = init_model(cfg_, tr_dsets=tr_dsets_, efficient_dict=False)
-    optim_ = init_optim(cfg_, model_)
-    train_epoch(renderer=model_, tr_loaders=tr_loaders_, ts_dsets=ts_dsets_, optim=optim_,
-                batches_per_epoch=cfg_.optim.batches_per_epoch, epochs=cfg_.optim.num_epochs,
-                log_dir=log_dir_, batch_size=cfg_.optim.batch_size,
-                l1_coef=cfg_.optim.regularization.l1_weight, tv_coef=cfg_.optim.regularization.tv_weight,
-                consistency_coef=cfg_.optim.regularization.consistency_weight)
+    if run_test_:
+        print("Running tests only.")
+        model_ = load_model_from_logdir(cfg_, logdir=log_dir_, tr_dsets=tr_dsets_, efficient_dict=False)
+        test_model(renderer=model_, ts_dsets=ts_dsets_, log_dir=log_dir_,
+                   batch_size=cfg_.optim.batch_size, num_test_imgs=1)
+    else:
+        # Save configuration as yaml into logdir
+        with open(os.path.join(log_dir_, "config.yaml"), "w") as fh:
+            fh.write(cfg_.dump())
+        model_ = init_model(cfg_, tr_dsets=tr_dsets_, efficient_dict=False)
+        optim_ = init_optim(cfg_, model_)
+        train_epoch(renderer=model_, tr_loaders=tr_loaders_, ts_dsets=ts_dsets_, optim=optim_,
+                    batches_per_epoch=cfg_.optim.batches_per_epoch, epochs=cfg_.optim.num_epochs,
+                    log_dir=log_dir_, batch_size=cfg_.optim.batch_size,
+                    l1_coef=cfg_.optim.regularization.l1_weight, tv_coef=cfg_.optim.regularization.tv_weight,
+                    consistency_coef=cfg_.optim.regularization.consistency_weight, cosine=cfg_.optim.cosine)
