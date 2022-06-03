@@ -97,6 +97,7 @@ def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_coef, tv_coef, consist
 
 
 def test_model(renderer, ts_dsets, log_dir, batch_size, num_test_imgs=1):
+    renderer.cuda()
     for ts_dset_id, ts_dset in enumerate(ts_dsets):
         psnrs = []
         for image_id in range(num_test_imgs):
@@ -132,7 +133,7 @@ def init_optim(cfg, model):
 
 
 if __name__ == "__main__":
-    cfg_ = multiscene_config.parse_config()
+    cfg_, run_test_ = multiscene_config.parse_config()
     gpu = get_freer_gpu()
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
     print(f'gpu is {gpu}')
@@ -141,20 +142,19 @@ if __name__ == "__main__":
     os.makedirs(log_dir_, exist_ok=True)
     # Make config immutable
     cfg_.freeze()
-    # Save configuration as yaml into logdir
-    with open(os.path.join(log_dir_, "config.yaml"), "w") as fh:
-        fh.write(cfg_.dump())
-    print(cfg_)
     # Initialize tensorboard
     TB_WRITER = SummaryWriter(log_dir=log_dir_)
-
+    print(cfg_)
     tr_dsets_, tr_loaders_, ts_dsets_ = init_data(cfg_)
-    if cfg_.test_only:
+    if run_test_:
         print("Running tests only.")
         model_ = load_model_from_logdir(cfg_, logdir=log_dir_, tr_dsets=tr_dsets_, efficient_dict=False)
         test_model(renderer=model_, ts_dsets=ts_dsets_, log_dir=log_dir_,
                    batch_size=cfg_.optim.batch_size, num_test_imgs=1)
     else:
+        # Save configuration as yaml into logdir
+        with open(os.path.join(log_dir_, "config.yaml"), "w") as fh:
+            fh.write(cfg_.dump())
         model_ = init_model(cfg_, tr_dsets=tr_dsets_, efficient_dict=False)
         optim_ = init_optim(cfg_, model_)
         train_epoch(renderer=model_, tr_loaders=tr_loaders_, ts_dsets=ts_dsets_, optim=optim_,
