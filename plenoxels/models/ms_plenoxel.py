@@ -254,7 +254,6 @@ class DictPlenoxels(nn.Module):
                 if data_interp is None:
                     data_interp = torch.ops.plenoxels.l2_interp_v2(
                             grid[..., atom_idx: atom_idx + n_atoms], self.atoms[i], intrs_pts, reso, self.coarse_reso, 1, 1)
-                    rgb_coarse = self.render(rays_d, data_interp, intersections, intrs_pts_mask)
                 else:
                     data_interp = data_interp + torch.ops.plenoxels.l2_interp_v2(
                             grid[..., atom_idx: atom_idx + n_atoms], self.atoms[i], intrs_pts, reso, self.coarse_reso, 1, 1)
@@ -262,7 +261,7 @@ class DictPlenoxels(nn.Module):
 
         rgb_full = self.render(rays_d, data_interp, intersections, intrs_pts_mask)
 
-        return rgb_full, rgb_coarse, consistency_loss
+        return rgb_full, consistency_loss
 
     def __repr__(self):
         return (f"DictPlenoxels(grids={self.grids}, num_atoms={self.num_atoms}, data_dim={self.data_dim}, "

@@ -1,4 +1,4 @@
-expname: "Rc64_Rf2(32)_Rf4(32)_doubleloss_l1_0"
+expname: "Rc32_Rf2(64)_Rf4(64)_progressive_e1_l1_0"
 
 data:
   datadirs:
@@ -11,8 +11,8 @@ data:
   max_ts_frames: 10
 
 model:
-  num_atoms: [32, 32]
-  coarse_reso: 64
+  num_atoms: [64, 64]
+  coarse_reso: 32
   fine_reso: [2, 4]
   noise_std: 0.0
 
@@ -21,6 +21,7 @@ optim:
   batches_per_epoch: 400
   num_epochs: 5
   lr: 1e-2
+  cosine: False
   regularization:
     l1_weight: 0.0
     tv_weight: 0.0
