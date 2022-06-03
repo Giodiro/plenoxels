@@ -1,4 +1,4 @@
-expname: "two_dicts_finereso2,4"
+expname: "Rc64_Rf2(32)_Rf4(32)_doubleloss_l1_0"
 
 data:
   datadirs:
@@ -11,20 +11,20 @@ data:
   max_ts_frames: 10
 
 model:
-  num_atoms: [64, 64]
+  num_atoms: [32, 32]
   coarse_reso: 64
   fine_reso: [2, 4]
   noise_std: 0.0
 
 optim:
   batch_size: 4000
-  batches_per_epoch: 100
-  num_epochs: 50
+  batches_per_epoch: 400
+  num_epochs: 5
   lr: 1e-2
   regularization:
-    l1_weight: 0.4
+    l1_weight: 0.0
     tv_weight: 0.0
-    consistency_coef: 0.0
+    consistency_weight: 0.0
 
 sh:
   degree: 0

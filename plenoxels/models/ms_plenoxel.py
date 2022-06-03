@@ -172,12 +172,43 @@ class DictPlenoxels(nn.Module):
         # Compute loss
         return F.mse_loss(new_weights, weights)
 
-    def forward(self, rays_o, rays_d, grid_id, verbose=False):
+    def render(self, rays_d, data_interp, intersections, mask):
+        batch, nintrs = intersections.shape[0], intersections.shape[1] - 1
+
+        # 1. Process density: Un-masked sigma (batch, n_intrs-1), and compute.
+        sigma_masked = data_interp[:, -1]
+        sigma_masked = F.relu(sigma_masked)
+        sigma = torch.zeros(batch, nintrs, dtype=sigma_masked.dtype, device=sigma_masked.device)
+        sigma.masked_scatter_(mask, sigma_masked)
+        alpha, abs_light = sigma2alpha(sigma, intersections, rays_d)  # both [batch, n_intrs-1]
+
+        # 3. Create SH coefficients and mask them
+        sh_mult = self.sh_encoder(rays_d).unsqueeze(1).expand(batch, nintrs, -1)  # [batch, nintrs, ch/3]
+        sh_mult = sh_mult[mask].unsqueeze(1)  # [mask_pts, 1, ch/3]
+
+        # 4. Interpolate rgbdata, use SH coefficients to get to RGB
+        sh_masked = data_interp[:, :-1]
+        sh_masked = sh_masked.view(-1, 3, sh_mult.shape[-1])  # [mask_pts, 3, ch/3]
+        rgb_masked = torch.sum(sh_mult * sh_masked, dim=-1)   # [mask_pts, 3]
+
+        # 5. Post-process RGB
+        rgb = torch.zeros(batch, nintrs, 3, dtype=rgb_masked.dtype, device=rgb_masked.device)
+        rgb.masked_scatter_(mask.unsqueeze(-1), rgb_masked)
+        rgb = shrgb2rgb(rgb, abs_light, True)
+
+        return rgb
+
+    def forward(self, rays_o, rays_d, grid_id, verbose=False, dict_ids=None):
         grid = self.grids[grid_id]
+        if dict_ids is None:
+            dict_ids = set(range(len(self.fine_reso)))
+        else:
+            dict_ids = set(dict_ids)
+        if len(dict_ids) == 0:
+            raise RuntimeError("No dict_ids provided")
         with torch.autograd.no_grad():
             intersections = self.sample_proposal(rays_o, rays_d, grid_id)
             intersections_trunc = intersections[:, :-1]  # [batch, n_intrs - 1]
-            batch, nintrs = intersections_trunc.shape
             intrs_pts = rays_o.unsqueeze(1) + intersections_trunc.unsqueeze(2) * rays_d.unsqueeze(1)  # [batch, n_intrs - 1, 3]
             # noinspection PyTypeChecker
             intrs_pts_mask = torch.all((-self.radius[grid_id] < intrs_pts) & (intrs_pts < self.radius[grid_id]), dim=-1)  # [batch, n_intrs-1]
@@ -189,6 +220,9 @@ class DictPlenoxels(nn.Module):
             data_interp = torch.zeros(len(intrs_pts), self.data_dim, device=rays_o.device)
             consistency_loss = 0
             for i, (reso, n_atoms) in enumerate(zip(self.fine_reso, self.num_atoms)):
+                if i not in dict_ids:
+                    atom_idx += n_atoms
+                    continue
                 fine_offsets, fine_neighbors = self.get_neighbors(
                     self.normalizegrid(intrs_pts, dset_id=grid_id, dict_id=i), fine_reso=reso)  # [n_pts, 8, 3]
                 # Get corresponding coarse grid indices for each fine neighbor
@@ -211,40 +245,24 @@ class DictPlenoxels(nn.Module):
             # Normalize pts in [0, 1]
             intrs_pts = self.normalize01(intrs_pts, grid_id)
             atom_idx = 0
+            data_interp = None
+            rgb_coarse = None
             for i, (reso, n_atoms) in enumerate(zip(self.fine_reso, self.num_atoms)):
-                if i == 0:
+                if i not in dict_ids:
+                    atom_idx += n_atoms
+                    continue
+                if data_interp is None:
                     data_interp = torch.ops.plenoxels.l2_interp_v2(
                             grid[..., atom_idx: atom_idx + n_atoms], self.atoms[i], intrs_pts, reso, self.coarse_reso, 1, 1)
+                    rgb_coarse = self.render(rays_d, data_interp, intersections, intrs_pts_mask)
                 else:
                     data_interp = data_interp + torch.ops.plenoxels.l2_interp_v2(
                             grid[..., atom_idx: atom_idx + n_atoms], self.atoms[i], intrs_pts, reso, self.coarse_reso, 1, 1)
                 atom_idx += n_atoms
 
-        # 1. Process density: Un-masked sigma (batch, n_intrs-1), and compute.
-        sigma_masked = data_interp[:, -1]
-        sigma_masked = F.relu(sigma_masked)
-        sigma = torch.zeros(batch, nintrs, dtype=sigma_masked.dtype, device=sigma_masked.device)
-        sigma.masked_scatter_(intrs_pts_mask, sigma_masked)
-        alpha, abs_light = sigma2alpha(sigma, intersections, rays_d)  # both [batch, n_intrs-1]
+        rgb_full = self.render(rays_d, data_interp, intersections, intrs_pts_mask)
 
-        # 3. Create SH coefficients and mask them
-        sh_mult = self.sh_encoder(rays_d).unsqueeze(1).expand(batch, nintrs, -1)  # [batch, nintrs, ch/3]
-        sh_mult = sh_mult[intrs_pts_mask].unsqueeze(1)  # [mask_pts, 1, ch/3]
-
-        # 4. Interpolate rgbdata, use SH coefficients to get to RGB
-        sh_masked = data_interp[:, :-1]
-        sh_masked = sh_masked.view(-1, 3, sh_mult.shape[-1])  # [mask_pts, 3, ch/3]
-        rgb_masked = torch.sum(sh_mult * sh_masked, dim=-1)   # [mask_pts, 3]
-
-        # 5. Post-process RGB
-        rgb = torch.zeros(batch, nintrs, 3, dtype=rgb_masked.dtype, device=rgb_masked.device)
-        rgb.masked_scatter_(intrs_pts_mask.unsqueeze(-1), rgb_masked)
-        rgb = shrgb2rgb(rgb, abs_light, True)
-
-        # 6. Depth map (optional)
-        depth = depth_map(abs_light, intersections)
-
-        return rgb, alpha, depth, consistency_loss
+        return rgb_full, rgb_coarse, consistency_loss
 
     def __repr__(self):
         return (f"DictPlenoxels(grids={self.grids}, num_atoms={self.num_atoms}, data_dim={self.data_dim}, "

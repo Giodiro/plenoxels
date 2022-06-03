@@ -44,7 +44,8 @@ def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_coef, tv_coef, consist
 
     tot_step = 0
     for e in range(epochs):
-        # pb = tqdm(range(0, batches_per_epoch * num_dsets, batches_per_dset), desc=f"epoch {e + 1}")
+        if e <= 1: dict_ids = [0]
+        else: dict_ids = [0, 1]
         losses = [defaultdict(lambda: EMA(ema_weight)) for _ in range(num_dsets)]
         pb = tqdm(total=batches_per_epoch * num_dsets, desc=f"Epoch {e + 1}")
         for _ in range(0, batches_per_epoch, batches_per_dset):
@@ -56,9 +57,10 @@ def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_coef, tv_coef, consist
                         rays_o = rays_o.cuda()
                         rays_d = rays_d.cuda()
                         optim.zero_grad()
-                        rgb_preds, alpha, depth, consistency_loss = renderer(rays_o, rays_d, grid_id=dset_id)
+                        rgb_preds, rgb_coarse, consistency_loss = renderer(rays_o, rays_d, grid_id=dset_id, dict_ids=None)
 
                         diff_losses = dict(mse=F.mse_loss(rgb_preds, imgs))
+                        diff_losses["mse-coarse"] = 1.0 * F.mse_loss(rgb_coarse, imgs)
                         if l1_coef > 0:
                             diff_losses["l1"] = l1_coef * torch.abs(renderer.grids[dset_id]).mean()
                         if tv_coef > 0:
