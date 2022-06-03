@@ -34,7 +34,7 @@ def init_data(cfg):
             tr_dsets[-1], batch_size=cfg.optim.batch_size, shuffle=True, num_workers=3,
             prefetch_factor=4, pin_memory=True))
         ts_dsets.append(SyntheticNerfDataset(
-            data_dir, split='test', downsample=cfg.data.downsample, resolution=resolution,
+            data_dir, split='test', downsample=1, resolution=800,
             max_frames=cfg.data.max_ts_frames))
     return tr_dsets, tr_loaders, ts_dsets
 
