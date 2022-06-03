@@ -9,6 +9,7 @@ _C.seed = 42
 _C.expname = "e1"
 _C.logdir = "./logs/"
 _C.use_csrc = True
+_C.test_only = False
 
 _C.sh = CN()
 _C.sh.degree = 2
