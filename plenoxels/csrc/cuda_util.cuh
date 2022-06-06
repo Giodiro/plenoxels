@@ -1,14 +1,13 @@
-
-
+#pragma once
 
 // c = c + a * b
 __device__ __forceinline__ float myfma(float a, float b, float c) { return fmaf(a, b, c); }
 __device__ __forceinline__ double myfma(double a, double b, double c) { return fma(a, b, c); }
 __device__ __forceinline__ void myfma(float a, float b, float *c) {
-    *c = fmaf(a, b, c);
+    *c = fmaf(a, b, *c);
 }
 __device__ __forceinline__ void myfma(double a, double b, double *c) {
-    *c = fma(a, b, c);
+    *c = fma(a, b, *c);
 }
 
 __device__ __forceinline__ float myfloor(float a) { return floorf(a); }
@@ -17,8 +16,8 @@ __device__ __forceinline__ double myfloor(double a) { return floor(a); }
 __device__ __forceinline__ float myabs(float a) { return fabsf(a); }
 __device__ __forceinline__ double myabs(double a) { return fabs(a); }
 
-__device__ __forceinline__ float mymax(float a) { return fmaxf(a); }
-__device__ __forceinline__ double mymax(double a) { return fmax(a); }
+__device__ __forceinline__ float mymax(float a, float b) { return fmaxf(a, b); }
+__device__ __forceinline__ double mymax(double a, double b) { return fmax(a, b); }
 
 __device__ __forceinline__ int32_t floor2int(float a) { return __float2int_rd(a); }
 __device__ __forceinline__ int32_t floor2int(double a) { return __double2int_rd(a); }

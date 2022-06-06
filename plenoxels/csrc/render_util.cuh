@@ -30,14 +30,14 @@ struct Ray {
     T dir[3];
     T pos[3];
     T tmin, tmax, world_step;
-}
+};
 
 struct RenderOptions {
     float step_size;
     float sigma_thresh;
     float stop_thresh;
     float near_plane;
-}
+};
 
 
 template <typename T>
