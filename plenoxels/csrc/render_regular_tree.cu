@@ -44,8 +44,8 @@ __device__ __inline__ void dictionary_grad(
     Acc32<scalar_t, 3> d_atoms,             // Rf^3, S, D
     const scalar_t grad_output,             // 1
     const scalar_t * __restrict__ point,    // 3
-    const fast_divmod& fast_divmod_fine_reso,
-    const cub::WarpReduce<scalar_t>& cub_reduce,
+    const fast_divmod& __restrict__ fast_divmod_fine_reso,
+    cub::WarpReduce<scalar_t>::TempStorage& __restrict__ cub_storage,
     const uint32_t coarse_reso,
     const uint32_t warp_lane
 )
@@ -87,7 +87,8 @@ __device__ __inline__ void dictionary_grad(
                 &d_atoms[fn_realcoo][s][warp_lane],
                 coarse_grid[cn_realcoo][s] * interp_weight);  // TODO: NOT COALESCED.
 
-            scalar_t grad_cg = cub_reduce.Sum(atoms[fn_realcoo][s][warp_lane] * interp_weight, D);
+            scalar_t grad_cg = cub::WarpReduce<scalar_t>(cub_storage).Sum(
+                atoms[fn_realcoo][s][warp_lane] * interp_weight, (int)D);
             if (warp_lane == 0) {
                 atomicAdd(&d_coarse_grid[cn_realcoo][s], grad_cg);  // TODO: NOT COALESCED.
             }
@@ -104,7 +105,7 @@ dictionary_interp(const Acc32<scalar_t, 2> coarse_grid,  // Rc^3, S
                   const scalar_t * __restrict__ point,    // 3
                         scalar_t * __restrict__ coarse_w_smem,  // num warps in block * S
                         scalar_t * __restrict__ out,      // 1
-                  const fast_divmod& fast_divmod_fine_reso,
+                  const fast_divmod& __restrict__ fast_divmod_fine_reso,
                   const uint32_t coarse_reso,
                   const uint32_t warp_lane,
                   const uint32_t warp_offset)
@@ -243,8 +244,8 @@ trace_ray(
 
 
 template <typename scalar_t, uint32_t BASIS_DIM>
-__device__ __inline__
-void trace_ray_cuvol_backward(
+__global__ void
+trace_ray_cuvol_backward(
         const Acc32<scalar_t, 2> grad_output,  // N, 3
         const Acc32<scalar_t, 2> color_cache,  // N, 3
         const Acc32<scalar_t, 2> coarse_grid,
@@ -349,11 +350,11 @@ void trace_ray_cuvol_backward(
             if (warp_lane == D - 1) {
                 dictionary_grad(coarse_grid, atoms, d_coarse_grid, d_atoms, /*grad_output=*/curr_grad_sigma,
                                 /*point=*/ray_spec[warp_offset].pos, fast_divmod_fine_reso,
-                                WarpReduce(cub_storage[warp_offset]), coarse_reso, warp_lane);
+                                cub_storage[warp_offset], coarse_reso, warp_lane);
             } else {
                 dictionary_grad(coarse_grid, atoms, d_coarse_grid, d_atoms, /*grad_output=*/curr_grad_color,
                                 /*point=*/ray_spec[warp_offset].pos, fast_divmod_fine_reso,
-                                WarpReduce(cub_storage[warp_offset]), coarse_reso, warp_lane);
+                                cub_storage[warp_offset], coarse_reso, warp_lane);
             }
             if (myexp(log_light_intensity) < opt.stop_thresh) {
                 break;
