@@ -63,12 +63,29 @@ class DictPlenoxels(nn.Module):
         print("Ray-marching with step-size = %.4e  -  %d intersections" %
               (self.step_size, self.n_intersections))
 
-        self.grids = nn.ParameterList([nn.Parameter(
-            torch.empty(coarse_reso ** 3, sum(num_atoms))) for _ in range(self.num_scenes)])
+        if self.use_csrc:
+            self.grids = nn.ParameterList([nn.Parameter(
+                torch.empty(coarse_reso ** 3, sum(num_atoms))) for _ in range(self.num_scenes)])
+        else:
+            self.grids = nn.ParameterList([nn.Parameter(
+                torch.empty(coarse_reso, coarse_reso, coarse_reso, sum(num_atoms))) for _ in range(self.num_scenes)])
         atoms = []
+        consistency_mlp = []
         for reso, n_atoms in zip(self.fine_reso, self.num_atoms):
-            atoms.append(nn.Parameter(torch.empty(reso ** 3, n_atoms, self.data_dim)))
+            if self.use_csrc:
+                atoms.append(nn.Parameter(torch.empty(reso ** 3, n_atoms, self.data_dim)))
+            else:
+                atoms.append(nn.Parameter(torch.empty(reso, reso, reso, n_atoms, self.data_dim)))
+            if not self.use_csrc:
+                consistency_mlp.append(nn.Sequential(
+                    nn.Linear(self.data_dim * (reso ** 3), 16),
+                    nn.ReLU(),
+                    nn.Linear(16, n_atoms)
+                ))
         self.atoms = nn.ParameterList(atoms)
+        self.consistency_mlp = nn.ModuleList(consistency_mlp) if not self.use_csrc else None
+        self.grid_dropout = nn.Dropout(p=0)
+
         self.init_params()
 
     def get_radius(self, dset_id: int) -> float:
@@ -89,10 +106,13 @@ class DictPlenoxels(nn.Module):
         return step_size, n_intersections
 
     def init_params(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight.data, mean=0, std=0.01)
         for grid in self.grids:
             nn.init.normal_(grid, std=0.01)
         for atoms in self.atoms:
-            nn.init.uniform_(atoms[..., :-1])
+            nn.init.normal_(atoms[..., :-1]) * 0.01 + 0.5
             nn.init.constant_(atoms[..., -1], 0.01)
 
     @torch.no_grad()
@@ -158,19 +178,16 @@ class DictPlenoxels(nn.Module):
         return vectorized_patches @ pinv.T  # [batch_size, num_atoms]
 
     def patch_consistency_loss(self, weights, dict_id: int):
+        """Predict weights from atom, """
         # Convert weights to patches
         # weights has shape [batch_size, num_atoms]
         atoms = self.atoms[dict_id]
         atoms = atoms.permute(0,1,2,4,3).reshape(-1, self.num_atoms[dict_id])  # [patch_size, num_atoms]
-        patches = weights @ atoms.T # [batch_size, patch_size]
-        # Add noise to patches
-        with torch.autograd.no_grad():
-            noise = torch.randn_like(patches) * self.noise_std * atoms.abs().max()
-        patches = patches + noise
-        # Encode patches
-        new_weights = self.encode_patches(patches, dict_id)
-        # Compute loss
-        return F.mse_loss(new_weights, weights)
+        patches = weights @ atoms.T  # [batch_size, patch_size]
+
+        weights_pred = self.consistency_mlp[dict_id](patches)  # [batch_size, num_atoms]
+
+        return F.mse_loss(weights_pred, weights)
 
     def render(self, rays_d, data_interp, intersections, mask):
         batch, nintrs = intersections.shape[0], intersections.shape[1] - 1
@@ -198,7 +215,7 @@ class DictPlenoxels(nn.Module):
 
         return rgb
 
-    def forward(self, rays_o, rays_d, grid_id, verbose=False, dict_ids=None):
+    def forward(self, rays_o, rays_d, grid_id, verbose=False, dict_ids=None, return_lst=False):
         grid = self.grids[grid_id]
         if dict_ids is None:
             dict_ids = set(range(len(self.fine_reso)))
@@ -235,7 +252,7 @@ class DictPlenoxels(nn.Module):
                     fine_neighbor_vals = self.atoms[i][
                         fine_neighbors[:,n,0], fine_neighbors[:,n,1], fine_neighbors[:,n,2], ...]  # [n_pts, n_atoms, data_dim]
                     result = torch.sum(coarse_neighbor_vals[:,:,None] * fine_neighbor_vals, dim=1)  # [n_pts, data_dim]
-                    if n == 0 and self.noise_std > 0:
+                    if n == 0:
                         consistency_loss = consistency_loss + self.patch_consistency_loss(
                             coarse_neighbor_vals[::10,:], dict_id=i)
                     weights = torch.prod(1. - fine_offsets[:, n, :], dim=-1, keepdim=True)  # [n_pts, 1]
@@ -245,19 +262,27 @@ class DictPlenoxels(nn.Module):
             # Normalize pts in [0, 1]
             intrs_pts = self.normalize01(intrs_pts, grid_id)
             atom_idx = 0
-            data_interp = None
-            rgb_coarse = None
+            samples = []
+            rgbs = []
             for i, (reso, n_atoms) in enumerate(zip(self.fine_reso, self.num_atoms)):
                 if i not in dict_ids:
                     atom_idx += n_atoms
                     continue
-                if data_interp is None:
-                    data_interp = torch.ops.plenoxels.l2_interp_v2(
-                            grid[..., atom_idx: atom_idx + n_atoms], self.atoms[i], intrs_pts, reso, self.coarse_reso, 1, 1)
-                else:
-                    data_interp = data_interp + torch.ops.plenoxels.l2_interp_v2(
-                            grid[..., atom_idx: atom_idx + n_atoms], self.atoms[i], intrs_pts, reso, self.coarse_reso, 1, 1)
+                c_grid = grid[..., atom_idx: atom_idx + n_atoms]  # [n_pts, n_atoms]
+                c_grid = F.softmax(c_grid, dim=1)
+                c_grid = self.grid_dropout(c_grid)
+                sample = torch.ops.plenoxels.l2_interp_v2(
+                        c_grid, self.atoms[i], intrs_pts, reso, self.coarse_reso, 1, 1)
+                samples.append(sample)
+                if len(samples) > 1:
+                    samples[-1] += samples[-2]
+                rgb = self.render(rays_d, samples[-1], intersections, intrs_pts_mask)
+                rgbs.append(rgb)
                 atom_idx += n_atoms
+            if return_lst:
+                return rgbs, consistency_loss
+            else:
+                return rgbs[-1], consistency_loss
 
         rgb_full = self.render(rays_d, data_interp, intersections, intrs_pts_mask)
 

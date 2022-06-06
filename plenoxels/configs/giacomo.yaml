@@ -1,4 +1,5 @@
-expname: "Rc32_Rf2(64)_Rf4(64)_progressive_e1_l1_0"
+expname: "test_ray_norm"
+use_csrc: True 
 
 data:
   datadirs:
@@ -11,21 +12,21 @@ data:
   max_ts_frames: 10
 
 model:
-  num_atoms: [64, 64]
-  coarse_reso: 32
-  fine_reso: [2, 4]
+  num_atoms: [64]
+  coarse_reso: 64
+  fine_reso: [4]
   noise_std: 0.0
 
 optim:
   batch_size: 4000
   batches_per_epoch: 400
-  num_epochs: 5
+  num_epochs: 40
   lr: 1e-2
-  cosine: False
+  cosine: True
   regularization:
     l1_weight: 0.0
     tv_weight: 0.0
     consistency_weight: 0.0
 
 sh:
-  degree: 0
+  degree: 2

@@ -46,11 +46,11 @@ def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_coef, tv_coef, consist
 
     tot_step = 0
     for e in range(epochs):
-        if e < 1: dict_ids = [0]
-        else: dict_ids = [0, 1]
+        dict_ids = None#list(range(e + 1))
         losses = [defaultdict(lambda: EMA(ema_weight)) for _ in range(num_dsets)]
         pb = tqdm(total=batches_per_epoch * num_dsets, desc=f"Epoch {e + 1}")
         for _ in range(0, batches_per_epoch, batches_per_dset):
+            renderer.train()
             for dset_id in range(num_dsets):
                 for i in range(batches_per_dset):
                     try:
@@ -59,9 +59,14 @@ def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_coef, tv_coef, consist
                         rays_o = rays_o.cuda()
                         rays_d = rays_d.cuda()
                         optim.zero_grad()
-                        rgb_preds, rgb_coarse, consistency_loss = renderer(rays_o, rays_d, grid_id=dset_id, dict_ids=dict_ids)
+                        rgb_preds, consistency_loss = renderer(rays_o, rays_d, grid_id=dset_id, dict_ids=dict_ids, return_lst=True)
 
-                        diff_losses = dict(mse=F.mse_loss(rgb_preds, imgs))
+                        mse = 0.0
+                        for lod_id, rgb_pred in enumerate(rgb_preds):
+                            mse += ((rgb_pred - imgs)**2).sum()
+                        mse /= rays_o.shape[0]
+
+                        diff_losses = dict(mse=mse)
                         if l1_coef > 0:
                             diff_losses["l1"] = l1_coef * torch.abs(renderer.grids[dset_id]).mean()
                         if tv_coef > 0:
@@ -87,6 +92,7 @@ def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_coef, tv_coef, consist
         pb.close()
         # Save and evaluate model
         time_s = time.time()
+        renderer.eval()
         for ts_dset_id, ts_dset in enumerate(ts_dsets):
             psnr = plot_ts_imageio(
                 ts_dset, ts_dset_id, renderer, log_dir,
@@ -94,11 +100,13 @@ def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_coef, tv_coef, consist
             TB_WRITER.add_scalar(f"TestPSNR/D{ts_dset_id}", psnr, tot_step)
         model_save_path = os.path.join(log_dir, "model.pt")
         torch.save(renderer.state_dict(), model_save_path)
+        torch.cuda.empty_cache()
         print(f"Plot test images & saved model to {log_dir} in {time.time() - time_s:.2f}s")
 
 
 def test_model(renderer, ts_dsets, log_dir, batch_size, num_test_imgs=1):
     renderer.cuda()
+    renderer.eval()
     for ts_dset_id, ts_dset in enumerate(ts_dsets):
         psnrs = []
         for image_id in range(num_test_imgs):
@@ -130,7 +138,10 @@ def init_model(cfg, tr_dsets, efficient_dict):
 
 
 def init_optim(cfg, model):
-    return torch.optim.Adam(model.parameters(), lr=cfg.optim.lr)
+    return torch.optim.Adam([
+        {"params": model.atoms.parameters(), "lr": cfg.optim.lr / 4},
+        {"params": model.grids.parameters(), "lr": cfg.optim.lr},
+    ])
 
 
 if __name__ == "__main__":

@@ -33,6 +33,7 @@ def get_rays(H: int, W: int, focal, c2w) -> torch.Tensor:
     ], dim=-1)
     # Rotate ray directions from camera frame to the world frame
     # dot product, equals to: [c2w.dot(dir) for dir in dirs]
+    dirs = dirs / torch.norm(dirs, dim=-1, keepdim=True)
     rays_d = torch.sum(dirs.unsqueeze(-2) * c2w[:3, :3], dim=-1)
     # Translate camera frame's origin to the world frame. It is the origin of all rays.
     rays_o = torch.broadcast_to(c2w[:3, -1], rays_d.shape)
