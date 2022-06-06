@@ -320,7 +320,6 @@ class L2InterpFunctionv2 : public Function<L2InterpFunctionv2> {
                     atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
                     points.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
                     out.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-//                    (uint32_t)fine_reso,
                     fast_divmod_fine_reso,
                     (uint32_t)coarse_reso
                 );
@@ -369,9 +368,6 @@ class L2InterpFunctionv2 : public Function<L2InterpFunctionv2> {
                     (uint32_t)fine_reso, (uint32_t)coarse_reso
                 );
             });
-            //std::cout << "grad_output " << grad_output.min() << " " << grad_output.max() << "\n";
-            //std::cout << "d_coarse_grid" << d_coarse_grid.min() << " " << d_coarse_grid.max() << "\n";
-            //std::cout << "d_atoms " << d_atoms.min() << " " << d_atoms.max() << "\n";
             return {d_coarse_grid, d_atoms, Tensor(), Tensor(), Tensor(), Tensor(), Tensor()};
         }
 };
@@ -385,4 +381,3 @@ Tensor l2_interp_v2(const Tensor &coarse_grid, const Tensor &atoms, const Tensor
 
 static auto registry = torch::RegisterOperators()
                         .op("plenoxels::l2_interp_v2", &l2_interp_v2);
-
