@@ -164,7 +164,7 @@ __device__ __inline__ void ray_find_bounds(
         // aabb intersection with [0, 1] cube
         const T t1 = (   - ray_spec.origin[i]) * invdir;
         const T t2 = (1  - ray_spec.origin[i]) * invdir;
-        if (ray_d_inout[i] != 0.0f) {
+        if (ray_spec.dir[i] != 0.0f) {
             ray_spec.tmin = max(ray_spec.tmin, min(t1, t2));
             ray_spec.tmax = min(ray_spec.tmax, max(t1, t2));
         }

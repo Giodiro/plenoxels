@@ -58,12 +58,13 @@ trace_ray(
     const uint32_t lane_colorgrp = warp_lane / BASIS_DIM;
     const uint32_t lane_colorgrp_id = warp_lane % BASIS_DIM;
     const uint32_t D = atoms.size(2);  // D is also BASIS_DIM * 3 + 1
+    typedef cub::WarpReduce<scalar_t> WarpReduce;
 	if (ray_id >= n_rays || warp_lane >= D) return;
 
     // shared memory. This is done to save some register space, no actual sharing occurs.
     __shared__ scalar_t sphfunc_val[CUDA_WARPS_PER_BLOCK][9];
     __shared__ Ray<scalar_t> ray_spec[CUDA_WARPS_PER_BLOCK];
-    __shared__ typename cub::WarpReduce<scalar_t>::TempStorage cub_storage[CUDA_WARPS_PER_BLOCK];
+    __shared__ typename WarpReduce::TempStorage cub_storage[CUDA_WARPS_PER_BLOCK];
     // dynamically allocated shmem. This is actually shared
     scalar_t* coarse_w_smem = shared_memory_proxy<scalar_t>();  // CUDA_WARPS_PER_BLOCK * S
 
@@ -87,11 +88,12 @@ trace_ray(
     while (t <= ray_spec[warp_offset].tmax) {
         ray_spec[warp_offset].update_pos(t);
 
-        dictionary_interp(coarse_grid, atoms, /*point=*/ray_spec[warp_offset].pos, /*coarse_w_smem=*/coarse_w_smem,
-                          /*out=*/&interp_val, fast_divmod_fine_reso, coarse_reso, warp_lane, warp_offset);
+        dictionary_interp<scalar_t>(
+            coarse_grid, atoms, /*point=*/ray_spec[warp_offset].pos, /*coarse_w_smem=*/coarse_w_smem,
+            /*out=*/&interp_val, fast_divmod_fine_reso, coarse_reso, warp_lane, warp_offset);
         sigma = interp_val;
         // broadcast sigma (stored in last coordinate) to other threads in warp
-        __shfl_sync((1U << D) - 1, &sigma, /*srcLane=*/D - 1);
+        __shfl_sync((1U << D) - 1, sigma, /*srcLane=*/D - 1);
         if (sigma > opt.sigma_thresh) {
             interp_val *= sphfunc_val[warp_offset][lane_colorgrp_id]; // bank conflict
             const scalar_t pcnt = ray_spec[warp_offset].world_step * sigma;
@@ -100,7 +102,7 @@ trace_ray(
 
             // The reduction will also happen on the last lane which only holds sigma.
             // The value computed there is ignored.
-            scalar_t lane_color_total = cub::WarpReduce<scalar_t>(cub_storage).HeadSegmentedSum(
+            scalar_t lane_color_total = WarpReduce(cub_storage[warp_offset]).HeadSegmentedSum(
                 interp_val, lane_colorgrp_id == 0);
             outv += weight * mymax(lane_color_total + 0.5f, 0.0f);  // clamp [+0, infty)
             if (myexp(log_light_intensity) < opt.stop_thresh) {
@@ -244,8 +246,8 @@ class DictTreeRender : public Function<DictTreeRender> {
                     fast_divmod_fine_reso,
                     (uint32_t)coarse_reso,
                     num_rays,
-                    scaling.data_ptr<scalar_t>(),
-                    offset.data_ptr<scalar_t>(),
+                    scaling_t.data_ptr<scalar_t>(),
+                    offset_t.data_ptr<scalar_t>(),
                     opt
                 );
             });
