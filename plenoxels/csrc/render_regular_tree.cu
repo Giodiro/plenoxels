@@ -45,7 +45,7 @@ __device__ __inline__ void dictionary_grad(
     const scalar_t grad_output,             // 1
     const scalar_t * __restrict__ point,    // 3
     const fast_divmod& __restrict__ fast_divmod_fine_reso,
-    cub::WarpReduce<scalar_t>::TempStorage& __restrict__ cub_storage,
+    typename cub::WarpReduce<scalar_t>::TempStorage& __restrict__ cub_storage,
     const uint32_t coarse_reso,
     const uint32_t warp_lane
 )
@@ -197,10 +197,10 @@ trace_ray(
     calc_sphfunc(/*basis_dim=*/BASIS_DIM, /*dir=*/ray_spec[warp_offset].dir, /*out=*/sphfunc_val[warp_offset]);
     // Finish ray-spec initialization
     ray_find_bounds(ray_spec[warp_offset], scaling, offset, (scalar_t)opt.step_size, (scalar_t)opt.near_plane);
-    __syncwarp((1U << D) - 1);
+    //__syncwarp((1U << D) - 1);
 
     if (ray_spec[warp_offset].tmin > ray_spec[warp_offset].tmax) {  // Ray doesn't hit box
-        out[ray_id][lane_colorgrp] = 1.0f;
+        out[ray_id][min(lane_colorgrp, 2)] = 1.0f;
         return;
     }
 
@@ -292,7 +292,7 @@ trace_ray_cuvol_backward(
     const scalar_t norm_factor = 2.0f / (3 * n_rays);
     #pragma unroll 3
     for (int i = 0; i < 3; ++i) {
-        c_grad_out[i] = (color_cache[ray_id][i] - grad_output[ray_id][i]) * norm_factor;
+        c_grad_out[i] = grad_output[ray_id][i];//(color_cache[ray_id][i] - grad_output[ray_id][i]) * norm_factor;
     }
     scalar_t accum = fmaf(color_cache[ray_id][0], c_grad_out[0],
                       fmaf(color_cache[ray_id][1], c_grad_out[1],
@@ -318,9 +318,6 @@ trace_ray_cuvol_backward(
         // broadcast sigma (stored in last coordinate) to other threads in warp
         sigma = __shfl_sync((1U << D) - 1, sigma, /*srcLane=*/D - 1);
 
-        if (opt.last_sample_opaque && t + opt.step_size > ray_spec[warp_offset].tmax) {
-            ray_spec[warp_offset].world_step = 1e9;
-        }
         if (sigma > opt.sigma_thresh) {
             scalar_t weighted_lane_color = interp_val * sphfunc_val[warp_offset][lane_colorgrp_id];
             const scalar_t pcnt = ray_spec[warp_offset].world_step * sigma;
@@ -335,9 +332,11 @@ trace_ray_cuvol_backward(
             total_color *= gout;  // the multiplication zeroes out total_color for the sigma lane
 
             // For each 'leader' thread (first thread in a colorgroup), sum the values in the other leaders.
-            scalar_t total_color_c1 = __shfl_sync(leader_mask, total_color, /*srcLane=*/BASIS_DIM);
-            total_color += __shfl_sync(leader_mask, total_color, 2 * BASIS_DIM);
-            total_color += total_color_c1;
+            total_color += __shfl_up_sync(leader_mask, total_color, /*delta=*/BASIS_DIM);
+            total_color += __shfl_up_sync(leader_mask, total_color, /*delta=*/2 * BASIS_DIM);
+            //scalar_t total_color_c1 = __shfl_sync(leader_mask, total_color, /*srcLane=*/BASIS_DIM);
+            //total_color += __shfl_sync(leader_mask, total_color, 2 * BASIS_DIM);
+            ///total_color += total_color_c1;
 
             // for sigma thread this will be something random
             color_in_01 = __shfl_sync((1U << D) - 1, color_in_01, /*srcLane=*/lane_colorgrp * BASIS_DIM);
@@ -347,15 +346,10 @@ trace_ray_cuvol_backward(
             accum -= weight * total_color;
             scalar_t curr_grad_sigma = ray_spec[warp_offset].world_step * (total_color * myexp(log_light_intensity) - accum);
 
-            if (warp_lane == D - 1) {
-                dictionary_grad(coarse_grid, atoms, d_coarse_grid, d_atoms, /*grad_output=*/curr_grad_sigma,
-                                /*point=*/ray_spec[warp_offset].pos, fast_divmod_fine_reso,
-                                cub_storage[warp_offset], coarse_reso, warp_lane);
-            } else {
-                dictionary_grad(coarse_grid, atoms, d_coarse_grid, d_atoms, /*grad_output=*/curr_grad_color,
-                                /*point=*/ray_spec[warp_offset].pos, fast_divmod_fine_reso,
-                                cub_storage[warp_offset], coarse_reso, warp_lane);
-            }
+            dictionary_grad(coarse_grid, atoms, d_coarse_grid, d_atoms, 
+                            /*grad_output=*/warp_lane < D - 1 ? curr_grad_color : curr_grad_sigma,
+                            /*point=*/ray_spec[warp_offset].pos, fast_divmod_fine_reso,
+                            cub_storage[warp_offset], coarse_reso, warp_lane);
             if (myexp(log_light_intensity) < opt.stop_thresh) {
                 break;
             }
@@ -413,7 +407,7 @@ class DictTreeRender : public Function<DictTreeRender> {
                 .sigma_thresh = (float)sigma_thresh,
                 .stop_thresh = (float)stop_thresh,
                 .near_plane = 0.0f,
-                .last_sample_opaque = true
+                .last_sample_opaque = false
             };
 
             const uint32_t num_rays = rays_o.size(0);
@@ -445,7 +439,7 @@ class DictTreeRender : public Function<DictTreeRender> {
             });
             ctx->save_for_backward({coarse_grid, atoms, out});
             ctx->saved_data["rays_o"] = rays_o;
-            ctx->saved_data["rays_d"] = rays_o;
+            ctx->saved_data["rays_d"] = rays_d;
             ctx->saved_data["fine_reso"] = fine_reso;
             ctx->saved_data["coarse_reso"] = coarse_reso;
             ctx->saved_data["scaling"] = scaling;
@@ -473,7 +467,7 @@ class DictTreeRender : public Function<DictTreeRender> {
                 .sigma_thresh = (float)ctx->saved_data["sigma_thresh"].toDouble(),
                 .stop_thresh = (float)ctx->saved_data["stop_thresh"].toDouble(),
                 .near_plane = 0.0f,
-                .last_sample_opaque = true
+                .last_sample_opaque = false
             };
             fast_divmod fast_divmod_fine_reso((int32_t)fine_reso);
 
