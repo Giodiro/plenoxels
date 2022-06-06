@@ -161,7 +161,7 @@ __device__ __inline__ T _get_delta_scale(
 
 template <typename T>
 __device__ __inline__ void ray_find_bounds(
-    Ray& __restrict__ ray_spec,
+    Ray<T>& __restrict__ ray_spec,
     const T* __restrict__ scaling,
     const T* __restrict__ offset,
     const T step_size,

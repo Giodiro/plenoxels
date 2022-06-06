@@ -214,7 +214,7 @@ class DictTreeRender : public Function<DictTreeRender> {
             if (atoms.size(2) > 32) {
                 throw std::invalid_argument("Data dimension must be at most 32");
             }
-            RenderOptions opt = {.step_size = 0.1, .sigma_thresh = 1e-4, .stop_thresh = 1e-4, near_plane = 0.0};
+            RenderOptions opt = {.step_size = 0.1, .sigma_thresh = 1e-4, .stop_thresh = 1e-4, .near_plane = 0.0};
 
             ctx->save_for_backward({coarse_grid, atoms});
             ctx->saved_data["rays_o"] = rays_o;
