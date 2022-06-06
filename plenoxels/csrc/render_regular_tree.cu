@@ -40,15 +40,15 @@ template<class scalar_t, uint32_t BASIS_DIM>
 __global__ void
 trace_ray(
     const Acc32<scalar_t, 2> coarse_grid,
-    const Acc32<scalar_t, 2> atoms,
+    const Acc32<scalar_t, 3> atoms,
     const Acc32<scalar_t, 2> rays_o,
     const Acc32<scalar_t, 2> rays_d,
     Acc32<scalar_t, 2> out,
     const fast_divmod fast_divmod_fine_reso,
     const uint32_t coarse_reso,
     const uint32_t n_rays,
-    const scalar_t scaling,
-    const scalar_t offset,
+    const scalar_t * __restrict__ scaling,
+    const scalar_t * __restrict__ offset,
     const RenderOptions opt
 )
 {
@@ -61,18 +61,18 @@ trace_ray(
 	if (ray_id >= n_rays || warp_lane >= D) return;
 
     // shared memory. This is done to save some register space, no actual sharing occurs.
-    __shared__ scalar_t spfunc_val[CUDA_WARPS_PER_BLOCK][9];
+    __shared__ scalar_t sphfunc_val[CUDA_WARPS_PER_BLOCK][9];
     __shared__ Ray<scalar_t> ray_spec[CUDA_WARPS_PER_BLOCK];
-    __shared__ typename cub::WarpReduce<scalar_t>::TempStorage temp_storage[CUDA_WARPS_PER_BLOCK];
+    __shared__ typename cub::WarpReduce<scalar_t>::TempStorage cub_storage[CUDA_WARPS_PER_BLOCK];
     // dynamically allocated shmem. This is actually shared
-    scalar_t* coarse_w_smem = shared_memory_proxy<T>()  // CUDA_WARPS_PER_BLOCK * S
+    scalar_t* coarse_w_smem = shared_memory_proxy<scalar_t>();  // CUDA_WARPS_PER_BLOCK * S
 
     // Setup the ray-spec. Will copy data from rays_o, rays_d
     ray_spec[warp_offset].set(rays_o[ray_id].data(), rays_d[ray_id].data());
     // Spherical harmonics are computed before ray normalization
-    calc_sphfunc(/*basis_dim=*/sh_basis_dim, /*dir=*/ray_spec[warp_offset].dir, /*out=*/sphfunc_val[warp_offset]);
+    calc_sphfunc(/*basis_dim=*/BASIS_DIM, /*dir=*/ray_spec[warp_offset].dir, /*out=*/sphfunc_val[warp_offset]);
     // Finish ray-spec initialization
-    ray_find_bounds(ray_spec[warp_offset], scaling, offset, opt.step_size, opt.near_plane);
+    ray_find_bounds(ray_spec[warp_offset], scaling, offset, (scalar_t)opt.step_size, (scalar_t)opt.near_plane);
     __syncwarp((1U << D) - 1);
 
     if (ray_spec[warp_offset].tmin > ray_spec[warp_offset].tmax) {  // Ray doesn't hit box
@@ -91,9 +91,9 @@ trace_ray(
                           /*out=*/&interp_val, fast_divmod_fine_reso, coarse_reso, warp_lane, warp_offset);
         sigma = interp_val;
         // broadcast sigma (stored in last coordinate) to other threads in warp
-        __shfl_sync(warp_mask, &sigma, /*srcLane=*/D - 1);
+        __shfl_sync((1U << D) - 1, &sigma, /*srcLane=*/D - 1);
         if (sigma > opt.sigma_thresh) {
-            lane_color *= spfunc_val[warp_offset][lane_colorgrp_id]; // bank conflict
+            interp_val *= sphfunc_val[warp_offset][lane_colorgrp_id]; // bank conflict
             const scalar_t pcnt = ray_spec[warp_offset].world_step * sigma;
             const scalar_t weight = myexp(log_light_intensity) * (1.f - myexp(-pcnt));
             log_light_intensity -= pcnt;
@@ -101,14 +101,14 @@ trace_ray(
             // The reduction will also happen on the last lane which only holds sigma.
             // The value computed there is ignored.
             scalar_t lane_color_total = cub::WarpReduce<scalar_t>(cub_storage).HeadSegmentedSum(
-                lane_color, lane_colorgrp_id == 0);
+                interp_val, lane_colorgrp_id == 0);
             outv += weight * mymax(lane_color_total + 0.5f, 0.0f);  // clamp [+0, infty)
             if (myexp(log_light_intensity) < opt.stop_thresh) {
                 log_light_intensity = -1e3f;
                 break;
             }
         }
-        t += step_size;
+        t += opt.step_size;
     }
     outv += myexp(log_light_intensity) * 1.0f;
     if (lane_colorgrp_id == 0 && lane_colorgrp < 3) {
@@ -224,7 +224,10 @@ class DictTreeRender : public Function<DictTreeRender> {
 
             const uint32_t num_rays = rays_o.size(0);
 
-            auto out = torch::zeros({num_rays, 3}, atoms.options());
+            auto out = torch::zeros({num_rays, 3}, coarse_grid.options());
+            auto scaling_t = torch::tensor({scaling, scaling, scaling}, coarse_grid.options());
+            auto offset_t = torch::tensor({offset, offset, offset}, coarse_grid.options());
+
             const dim3 grid_size(n_blocks_linear(num_rays, CUDA_WARPS_PER_BLOCK));
             const dim3 block_size(CUDA_THREADS_PER_BLOCK);
             const uint32_t shared_mem = CUDA_WARPS_PER_BLOCK * coarse_grid.size(1);
@@ -232,8 +235,6 @@ class DictTreeRender : public Function<DictTreeRender> {
             fast_divmod fast_divmod_fine_reso((int32_t)fine_reso);
 
             AT_DISPATCH_FLOATING_TYPES(coarse_grid.scalar_type(), "dispatch_l2interpv2_fwd", [&] {
-                template<class scalar_t, uint32_t BASIS_DIM>
-                __global__ void
                 trace_ray<scalar_t, 1><<<grid_size, block_size, shared_mem * sizeof(scalar_t), stream.stream()>>>(
                     coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
                     atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
@@ -243,8 +244,8 @@ class DictTreeRender : public Function<DictTreeRender> {
                     fast_divmod_fine_reso,
                     (uint32_t)coarse_reso,
                     num_rays,
-                    (scalar_t)scaling,
-                    (scalar_t)offset,
+                    scaling.data_ptr<scalar_t>(),
+                    offset.data_ptr<scalar_t>(),
                     opt
                 );
             });

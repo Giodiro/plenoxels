@@ -77,7 +77,7 @@ __device__ __constant__ const float C3[] = {
 
 template <typename T>
 __device__ __inline__ void calc_sh(
-    const int basis_dim,
+    const uint32_t basis_dim,
     const T* __restrict__ dir,
     T* __restrict__ out)
 {
@@ -102,7 +102,7 @@ __device__ __inline__ void calc_sh(
 
 template <typename T>
 __device__ __inline__ void calc_sphfunc(
-    const int basis_dim,
+    const uint32_t basis_dim,
     const T* __restrict__ dir, // Pre-normalized
     T* __restrict__ out
 )
@@ -123,24 +123,6 @@ __device__ __inline__ void calc_sphfunc_backward(
 {
     if (grad_basis_data == nullptr) return;
     // nothing needed
-}
-
-template <typename T>
-__device__ __inline__
-T _intersect_aabb_unit(
-    const T* __restrict__ center,
-    const T* __restrict__ invdir)
-{
-    // Intersect unit AABB
-    T tmax = 1e9f;
-    T t1, t2;
-    #pragma unroll 3
-    for (int i = 0; i < 3; ++i) {
-        t1 = - center[i] * invdir[i];
-        t2 = t1 +  invdir[i];
-        tmax = min(tmax, max(t1, t2));
-    }
-    return tmax;
 }
 
 template <typename T>
@@ -165,7 +147,7 @@ __device__ __inline__ void ray_find_bounds(
     const T* __restrict__ scaling,
     const T* __restrict__ offset,
     const T step_size,
-    const T near_plane,
+    const T near_plane
 )
 {
     // Warning: modifies ray.origin, normalizing it to 0-1 range
