@@ -242,7 +242,7 @@ trace_ray(
 
 
 
-template <typename scalar_t>
+template <typename scalar_t, uint32_t BASIS_DIM>
 __device__ __inline__
 void trace_ray_cuvol_backward(
         const Acc32<scalar_t, 2> grad_output,  // N, 3
@@ -277,6 +277,8 @@ void trace_ray_cuvol_backward(
     __shared__ scalar_t sphfunc_val[CUDA_WARPS_PER_BLOCK][9];
     __shared__ Ray<scalar_t> ray_spec[CUDA_WARPS_PER_BLOCK];
     __shared__ typename WarpReduce::TempStorage cub_storage[CUDA_WARPS_PER_BLOCK];
+    // dynamically allocated shmem. This is actually shared
+    scalar_t* coarse_w_smem = shared_memory_proxy<scalar_t>();  // CUDA_WARPS_PER_BLOCK * S
 
     // Setup the ray-spec. Will copy data from rays_o, rays_d
     ray_spec[warp_offset].set(rays_o[ray_id].data(), rays_d[ray_id].data());
@@ -286,7 +288,7 @@ void trace_ray_cuvol_backward(
     ray_find_bounds(ray_spec[warp_offset], scaling, offset, (scalar_t)opt.step_size, (scalar_t)opt.near_plane);
 
     scalar_t c_grad_out[3];
-    const scalar_t norm_factor = 2.0f / (3 * num_rays);
+    const scalar_t norm_factor = 2.0f / (3 * n_rays);
     #pragma unroll 3
     for (int i = 0; i < 3; ++i) {
         c_grad_out[i] = (color_cache[ray_id][i] - grad_output[ray_id][i]) * norm_factor;
@@ -405,7 +407,13 @@ class DictTreeRender : public Function<DictTreeRender> {
             if (atoms.size(2) > 32) {
                 throw std::invalid_argument("Data dimension must be at most 32");
             }
-            RenderOptions opt = {.step_size = step_size, .sigma_thresh = sigma_thresh, .stop_thresh = stop_thresh, .near_plane = 0.0};
+            RenderOptions opt = {
+                .step_size = (float)step_size,
+                .sigma_thresh = (float)sigma_thresh,
+                .stop_thresh = (float)stop_thresh,
+                .near_plane = 0.0f,
+                .last_sample_opaque = true
+            };
 
             const uint32_t num_rays = rays_o.size(0);
 
@@ -441,7 +449,9 @@ class DictTreeRender : public Function<DictTreeRender> {
             ctx->saved_data["coarse_reso"] = coarse_reso;
             ctx->saved_data["scaling"] = scaling;
             ctx->saved_data["offset"] = offset;
-            ctx->saved_data["opt"] = opt;
+            ctx->saved_data["step_size"] = step_size;
+            ctx->saved_data["sigma_thresh"] = sigma_thresh;
+            ctx->saved_data["stop_thresh"] = stop_thresh;
             return out;
         }
 
@@ -457,7 +467,13 @@ class DictTreeRender : public Function<DictTreeRender> {
             const int64_t fine_reso = ctx->saved_data["fine_reso"].toInt();
             const double scaling = ctx->saved_data["scaling"].toDouble();
             const double offset = ctx->saved_data["offset"].toDouble();
-            const RenderOptions opt = ctx->saved_data["opt"].toCustomClass<RenderOptions>();
+            const RenderOptions opt = {
+                .step_size = (float)ctx->saved_data["step_size"].toDouble(),
+                .sigma_thresh = (float)ctx->saved_data["sigma_thresh"].toDouble(),
+                .stop_thresh = (float)ctx->saved_data["stop_thresh"].toDouble(),
+                .near_plane = 0.0f,
+                .last_sample_opaque = true
+            };
             fast_divmod fast_divmod_fine_reso((int32_t)fine_reso);
 
             const Tensor grad_output = grad_outputs[0];
@@ -475,7 +491,7 @@ class DictTreeRender : public Function<DictTreeRender> {
             const uint32_t shared_mem = CUDA_WARPS_PER_BLOCK * coarse_grid.size(1);
 
             AT_DISPATCH_FLOATING_TYPES(coarse_grid.scalar_type(), "trace_ray_cuvol_bwd", [&] {
-                trace_ray_cuvol_backward<scalar_t><<<grid_size, block_size, shared_mem * sizeof(scalar_t), stream.stream()>>>(
+                trace_ray_cuvol_backward<scalar_t, 1><<<grid_size, block_size, shared_mem * sizeof(scalar_t), stream.stream()>>>(
                     grad_output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
                     fwd_output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
                     coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),

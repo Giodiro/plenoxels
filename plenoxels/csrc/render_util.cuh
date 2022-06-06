@@ -37,6 +37,7 @@ struct RenderOptions {
     float sigma_thresh;
     float stop_thresh;
     float near_plane;
+    bool last_sample_opaque;
 };
 
 
