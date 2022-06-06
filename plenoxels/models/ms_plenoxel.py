@@ -63,11 +63,17 @@ class DictPlenoxels(nn.Module):
         print("Ray-marching with step-size = %.4e  -  %d intersections" %
               (self.step_size, self.n_intersections))
 
-        self.grids = nn.ParameterList([nn.Parameter(
-            torch.empty(coarse_reso ** 3, sum(num_atoms))) for _ in range(self.num_scenes)])
         atoms = []
-        for reso, n_atoms in zip(self.fine_reso, self.num_atoms):
-            atoms.append(nn.Parameter(torch.empty(reso ** 3, n_atoms, self.data_dim)))
+        if self.use_csrc:
+            self.grids = nn.ParameterList([nn.Parameter(
+                torch.empty(coarse_reso ** 3, sum(num_atoms))) for _ in range(self.num_scenes)])
+            for reso, n_atoms in zip(self.fine_reso, self.num_atoms):
+                atoms.append(nn.Parameter(torch.empty(reso ** 3, n_atoms, self.data_dim)))
+        else:
+            self.grids = nn.ParameterList([nn.Parameter(
+                torch.empty(coarse_reso, coarse_reso, coarse_reso, sum(num_atoms))) for _ in range(self.num_scenes)])
+            for reso, n_atoms in zip(self.fine_reso, self.num_atoms):
+                atoms.append(nn.Parameter(torch.empty(reso, reso, reso, n_atoms, self.data_dim)))
         self.atoms = nn.ParameterList(atoms)
         self.init_params()
 
@@ -201,7 +207,7 @@ class DictPlenoxels(nn.Module):
                     fine_neighbor_vals = self.atoms[i][
                         fine_neighbors[:,n,0], fine_neighbors[:,n,1], fine_neighbors[:,n,2], ...]  # [n_pts, n_atoms, data_dim]
                     result = torch.sum(coarse_neighbor_vals[:,:,None] * fine_neighbor_vals, dim=1)  # [n_pts, data_dim]
-                    if n == 0 and self.noise_std > 0:
+                    if n == 0:
                         consistency_loss = consistency_loss + self.patch_consistency_loss(
                             coarse_neighbor_vals[::10,:], dict_id=i)
                     weights = torch.prod(1. - fine_offsets[:, n, :], dim=-1, keepdim=True)  # [n_pts, 1]
