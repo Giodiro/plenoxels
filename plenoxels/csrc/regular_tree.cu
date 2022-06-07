@@ -7,6 +7,10 @@
 #include <ATen/cuda/CUDAEvent.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <cub/warp/warp_reduce.cuh>
+#include <cub/warp/block_reduce.cuh>
+
+#include "cuda_util.cuh"
+
 
 template <typename T, size_t N>
 using Acc32 = torch::GenericPackedTensorAccessor<T, N, torch::RestrictPtrTraits, int32_t>;
@@ -52,68 +56,67 @@ calc_interp_weights(scalar_t * __restrict__ weights_out,
 }
 
 
-template<class scalar_t>
+template<class scalar_t, uint32_t S>
 __global__ void
-__launch_bounds__(CUDA_THREADS_PER_BLOCK)
 k_l2_interp_v2(Acc32<scalar_t, 2> coarse_grid,  // Rc^3, S
-               Acc32<scalar_t, 3> atoms,        // Rf^3, S, D
+               Acc32<scalar_t, 3> atoms,        // Rf^3, D, S
                Acc32<scalar_t, 2> points,       // N, 3
                Acc32<scalar_t, 2> out,          // N, D
                const fast_divmod fast_divmod_fine_reso,
                const uint32_t coarse_reso)
 {
-    extern __shared__ __align__(sizeof(double2)) unsigned char smem[];
-    scalar_t* coarse_w = reinterpret_cast<scalar_t *>(smem);  // num warps in block * S
-    const uint32_t point_id = (blockIdx.x * blockDim.x + threadIdx.x) / WARP_SIZE;
-    const uint32_t warp_lane = threadIdx.x % WARP_SIZE;
+    typedef cub::BlockReduce<scalar_t, blockDim.x> BlockReduce;
+    __shared__ typename BlockReduce::TempStorage cub_storage;
+
+    const uint32_t point_id = blockIdx.x;
+    const uint32_t dim_id = blockIdx.y * blockDim.y;
+    const uint32_t rf_id = blockIdx.z * blockDim.z;
+    const uint32_t s_idx = threadIdx.x;
+    constexpr uint32_t num_s_per_thread = S / blockDim.x;
+
     const uint32_t tot_reso = coarse_reso * fast_divmod_fine_reso.d_;
-    const uint32_t D = atoms.size(2);
-    const uint32_t S = coarse_grid.size(1);
-    const uint32_t warp_offset = (threadIdx.x / WARP_SIZE) * S;  // warp_block_id * S
-    const uint32_t warp_mask = __ballot_sync(0xffffffff, warp_lane < D);
-    if (warp_lane >= D || point_id >= points.size(0)) { return; }
-
     const scalar_t fp[3] = {points[point_id][0] * tot_reso, points[point_id][1] * tot_reso, points[point_id][2] * tot_reso};
-
     int32_t cn[3];           // corner of coarse-neighbor cell in 'coarse-grid' coordinates
     int32_t fn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
     int32_t rfn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
 
     scalar_t acc = 0.0f;
     scalar_t interpolation_weight;
+    scalar_t cg_reg[num_s_per_thread];
+    scalar_t a_reg[num_s_per_thread];
+
+    for (int s = 0; s < num_s_per_thread; s++) {
+        a_reg[s] = s * blockDim.x + s_idx < S ?
+                    atoms[rf_id][dim_id][s * blockDim.x + s_idx] :
+                    0.0f;
+    }
 
     int32_t cn_realcoo;
-    int32_t fn_realcoo;
     for (int i = 0; i < 8; i++) {
         fn[0] = floor2int(fp[0] + OFFSET[i][0]);
         fn[1] = floor2int(fp[1] + OFFSET[i][1]);
         fn[2] = floor2int(fp[2] + OFFSET[i][2]);
-        if (fn[0] < 0 || fn[0] >= tot_reso ||
-            fn[1] < 0 || fn[1] >= tot_reso ||
-            fn[2] < 0 || fn[2] >= tot_reso) {
-            continue;
-        }
         fast_divmod_fine_reso.divmod(fn[0], cn[0], rfn[0]);  // fn[0] = fn[0] / fine_reso, cn[0] = fn[0] % fine_reso;
         fast_divmod_fine_reso.divmod(fn[1], cn[1], rfn[1]);
         fast_divmod_fine_reso.divmod(fn[2], cn[2], rfn[2]);
         cn_realcoo = coo2idx(cn[0], cn[1], cn[2], coarse_reso);
-        fn_realcoo = coo2idx(rfn[0], rfn[1], rfn[2], fast_divmod_fine_reso.d_);
-
-        interpolation_weight = (1.0f - myabs(fp[0] - static_cast<scalar_t>(fn[0]) - 0.5f)) *
-                               (1.0f - myabs(fp[1] - static_cast<scalar_t>(fn[1]) - 0.5f)) *
-                               (1.0f - myabs(fp[2] - static_cast<scalar_t>(fn[2]) - 0.5f));
-        // load w from coarse_grid to shared mem using all active threads in warp
-        for (int s = warp_lane; s < S; s += D) {
-            coarse_w[warp_offset + s] = coarse_grid[cn_realcoo][s];
+        if (coo2idx(rfn[0], rfn[1], rfn[2], fast_divmod_fine_reso.d_) == rf_id) {
+            interpolation_weight = (1.0f - myabs(fp[0] - static_cast<scalar_t>(fn[0]) - 0.5f)) *
+                                   (1.0f - myabs(fp[1] - static_cast<scalar_t>(fn[1]) - 0.5f)) *
+                                   (1.0f - myabs(fp[2] - static_cast<scalar_t>(fn[2]) - 0.5f));
+            for (int s = 0; s < num_s_per_thread; s++) {
+                cg_reg[s] = s * blockDim.x + s_idx < S ? coarse_grid[cn_realcoo][s * blockDim.x + s_idx] : 0.0f;
+            }
+            for (int s = 0; s < num_s_per_thread; s++) {
+                acc = myfma(cg_reg[s], a_reg[s], acc);
+            }
+            acc *= interpolation_weight;
         }
-        __syncwarp(warp_mask);
-        for (int s = 0; s < S; s++) {
-            // pseudo: out += coarse_grid[cn][s] * iw[j] * atoms[fn][s][d]
-            acc = myfma(coarse_w[warp_offset + s] * interpolation_weight, atoms[fn_realcoo][s][warp_lane], acc);
-        }
-        __syncwarp(warp_mask);
     }
-    out[point_id][warp_lane] = acc;
+    // Reduce across thread-block. Output valid only in t0
+    acc = BlockReduce(cub_storage).Sum(acc);
+    // Atomic add to output
+    atomicAdd(&out[point_id][dim_id], acc);
 }
 
 
@@ -282,7 +285,7 @@ class L2InterpFunctionv2 : public Function<L2InterpFunctionv2> {
     public:
         static Tensor forward(AutogradContext *ctx,
                               Tensor coarse_grid,   // Rc^3, S
-                              Tensor atoms,         // Rf^3, S, D
+                              Tensor atoms,         // Rf^3, D, S
                               Tensor points,        // N, 3
                               int64_t fine_reso,
                               int64_t coarse_reso)
@@ -293,29 +296,33 @@ class L2InterpFunctionv2 : public Function<L2InterpFunctionv2> {
             if (coarse_grid.size(0) != coarse_reso * coarse_reso * coarse_reso) {
                 throw std::invalid_argument("Coarse-grid has wrong first dimension");
             }
-            if (coarse_grid.size(1) != atoms.size(1)) {
+            if (coarse_grid.size(1) != atoms.size(2)) {
                 throw std::invalid_argument("Coarse-grid and atoms dimension 1 doesn't match");
             }
             if (atoms.size(0) != fine_reso * fine_reso * fine_reso) {
                 throw std::invalid_argument("Atoms has wrong first dimension");
             }
-            if (atoms.size(2) > 32) {
-                throw std::invalid_argument("Data dimension must be at most 32");
-            }
+//            if (atoms.size(1) > 32) {
+//                throw std::invalid_argument("Data dimension must be at most 32");
+//            }
 
             ctx->save_for_backward({coarse_grid, atoms});
             ctx->saved_data["points"] = points;
             ctx->saved_data["fine_reso"] = fine_reso;
             ctx->saved_data["coarse_reso"] = coarse_reso;
 
-            auto out = torch::zeros({points.size(0), atoms.size(2)}, torch::dtype(atoms.dtype()).device(atoms.device()));
-            const dim3 grid_size(n_blocks_linear(points.size(0), CUDA_WARPS_PER_BLOCK));
-            const dim3 block_size(CUDA_THREADS_PER_BLOCK);
-            const uint32_t shared_mem = CUDA_WARPS_PER_BLOCK * coarse_grid.size(1);
+            const int64_t D = atoms.size(1);
+            auto out = torch::zeros({points.size(0), D}, atoms.options());
+
+            const dim3 grid_size((uint32_t)points.size(0), (uint32_t)D, (uint32_t)(fine_reso * fine_reso * fine_reso));
+            const dim3 block_size(32);
+//            const dim3 grid_size(n_blocks_linear(points.size(0), CUDA_WARPS_PER_BLOCK));
+//            const dim3 block_size(CUDA_THREADS_PER_BLOCK);
+//            const uint32_t shared_mem = CUDA_WARPS_PER_BLOCK * coarse_grid.size(1);
 
             fast_divmod fast_divmod_fine_reso((int32_t)fine_reso);
             AT_DISPATCH_FLOATING_TYPES(coarse_grid.scalar_type(), "dispatch_l2interpv2_fwd", [&] {
-                k_l2_interp_v2<scalar_t><<<grid_size, block_size, shared_mem * sizeof(scalar_t), stream.stream()>>>(
+                k_l2_interp_v2<scalar_t><<<grid_size, block_size, 0, stream.stream()>>>(
                     coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
                     atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
                     points.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
