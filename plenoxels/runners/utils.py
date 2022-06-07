@@ -24,18 +24,33 @@ def get_freer_gpu():
 
 
 def init_data(cfg):
-    resolution = cfg.data.resolution
-    tr_dsets, tr_loaders, ts_dsets = [], [], []
+    resolution = [cfg.data.resolution]
+    downsample = [cfg.data.downsample]
+    if cfg.data.resolution == None:
+        # None is code for automatic resolution adjustment to match the fine dictionaries
+        # also adjust the downsampling so that the number of rays isn't so huge for small dicts
+        resolution = []
+        downsample = []
+        for fine in cfg.model.fine_reso:
+            resolution.append(cfg.model.coarse_reso * fine)
+            downsample.append(800.0/(cfg.model.coarse_reso * fine))
+    # Training datasets are lists of lists, where each inner list is different resolutions for the same scene
+    # Test datasets are a single list over the different scenes, all at full resolution
+    tr_dsets, tr_loaders, ts_dsets = [], [], [] 
     for data_dir in cfg.data.datadirs:
-        tr_dsets.append(SyntheticNerfDataset(
-            data_dir, split='train', downsample=cfg.data.downsample, resolution=resolution,
-            max_frames=cfg.data.max_tr_frames))
-        tr_loaders.append(torch.utils.data.DataLoader(
-            tr_dsets[-1], batch_size=cfg.optim.batch_size, shuffle=True, num_workers=3,
-            prefetch_factor=4, pin_memory=True))
+        train, train_load = [], []
+        for reso, down in zip(resolution, downsample):
+            train.append(SyntheticNerfDataset(
+                data_dir, split='train', downsample=down, resolution=reso,
+                max_frames=cfg.data.max_tr_frames))
+            train_load.append(torch.utils.data.DataLoader(
+                train[-1], batch_size=cfg.optim.batch_size, shuffle=True, num_workers=3,
+                prefetch_factor=4, pin_memory=True))
+        tr_dsets.append(train)
+        tr_loaders.append(train_load)
         ts_dsets.append(SyntheticNerfDataset(
-            data_dir, split='test', downsample=1, resolution=800,
-            max_frames=cfg.data.max_ts_frames))
+                data_dir, split='test', downsample=1, resolution=800,
+                max_frames=cfg.data.max_ts_frames))
     return tr_dsets, tr_loaders, ts_dsets
 
 

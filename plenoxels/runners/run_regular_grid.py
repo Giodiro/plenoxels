@@ -41,24 +41,28 @@ def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_coef, tv_coef, consist
             optim, T_max=epochs * batches_per_epoch * num_dsets // batches_per_dset, eta_min=eta_min)
     TB_WRITER.add_scalar("lr", optim.param_groups[0]["lr"], 0)
 
-    tr_iterators = [iter(dl) for dl in tr_loaders]
+    tr_iterators = [[iter(dl) for dl in tr_loader] for tr_loader in tr_loaders]
     renderer.cuda()
+    renderer.train()
 
     tot_step = 0
     for e in range(epochs):
         # pb = tqdm(range(0, batches_per_epoch * num_dsets, batches_per_dset), desc=f"epoch {e + 1}")
         losses = [defaultdict(lambda: EMA(ema_weight)) for _ in range(num_dsets)]
         pb = tqdm(total=batches_per_epoch * num_dsets, desc=f"Epoch {e + 1}")
+        level = -1
         for _ in range(0, batches_per_epoch, batches_per_dset):
+            # Each epoch, rotate what resolution is being focused on
+            level = (level + 1) % len(tr_loaders[0])
             for dset_id in range(num_dsets):
                 for i in range(batches_per_dset):
                     try:
-                        rays_o, rays_d, imgs = next(tr_iterators[dset_id])
+                        rays_o, rays_d, imgs = next(tr_iterators[dset_id][level])
                         imgs = imgs.cuda()
                         rays_o = rays_o.cuda()
                         rays_d = rays_d.cuda()
                         optim.zero_grad()
-                        rgb_preds, alpha, depth, consistency_loss = renderer(rays_o, rays_d, grid_id=dset_id)
+                        rgb_preds, alpha, depth, consistency_loss = renderer(rays_o, rays_d, grid_id=dset_id, consistency_coef=consistency_coef, level=level)
 
                         diff_losses = dict(mse=F.mse_loss(rgb_preds, imgs))
                         if l1_coef > 0:
@@ -79,7 +83,7 @@ def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_coef, tv_coef, consist
                         tot_step += 1
                     except StopIteration:
                         # Reset the training-iterator which has no more samples
-                        tr_iterators[dset_id] = iter(tr_loaders[dset_id])
+                        tr_iterators[dset_id][level] = iter(tr_loaders[dset_id][level])
             if lr_sched is not None:
                 lr_sched.step()
                 TB_WRITER.add_scalar("lr", lr_sched.get_last_lr()[0], tot_step)  # one lr per parameter-group
@@ -119,7 +123,7 @@ def load_model_from_logdir(cfg, logdir, tr_dsets, efficient_dict) -> DictPlenoxe
 
 def init_model(cfg, tr_dsets, efficient_dict):
     sh_encoder = plenoxel_sh_encoder(cfg.sh.degree)
-    radii = [dset.radius for dset in tr_dsets]
+    radii = [dset[0].radius for dset in tr_dsets]
     render = DictPlenoxels(
         sh_deg=cfg.sh.degree, sh_encoder=sh_encoder,
         radius=radii, num_atoms=cfg.model.num_atoms, num_scenes=len(tr_dsets),

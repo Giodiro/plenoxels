@@ -178,7 +178,9 @@ class DictPlenoxels(nn.Module):
         # Compute loss
         return F.mse_loss(new_weights, weights)
 
-    def forward(self, rays_o, rays_d, grid_id, verbose=False):
+    def forward(self, rays_o, rays_d, grid_id, consistency_coef=0, level=None, verbose=False):
+        if level is None:
+            level = len(self.fine_reso) - 1
         grid = self.grids[grid_id]
         with torch.autograd.no_grad():
             intersections = self.sample_proposal(rays_o, rays_d, grid_id)
@@ -194,7 +196,8 @@ class DictPlenoxels(nn.Module):
             atom_idx = 0
             data_interp = torch.zeros(len(intrs_pts), self.data_dim, device=rays_o.device)
             consistency_loss = 0
-            for i, (reso, n_atoms) in enumerate(zip(self.fine_reso, self.num_atoms)):
+            # Only work with the fine dicts up to the given level
+            for i, (reso, n_atoms) in enumerate(zip(self.fine_reso[0:level+1], self.num_atoms[0:level+1])):
                 fine_offsets, fine_neighbors = self.get_neighbors(
                     self.normalizegrid(intrs_pts, dset_id=grid_id, dict_id=i), fine_reso=reso)  # [n_pts, 8, 3]
                 # Get corresponding coarse grid indices for each fine neighbor
@@ -207,7 +210,7 @@ class DictPlenoxels(nn.Module):
                     fine_neighbor_vals = self.atoms[i][
                         fine_neighbors[:,n,0], fine_neighbors[:,n,1], fine_neighbors[:,n,2], ...]  # [n_pts, n_atoms, data_dim]
                     result = torch.sum(coarse_neighbor_vals[:,:,None] * fine_neighbor_vals, dim=1)  # [n_pts, data_dim]
-                    if n == 0:
+                    if n == 0 and consistency_coef > 0:
                         consistency_loss = consistency_loss + self.patch_consistency_loss(
                             coarse_neighbor_vals[::10,:], dict_id=i)
                     weights = torch.prod(1. - fine_offsets[:, n, :], dim=-1, keepdim=True)  # [n_pts, 1]
@@ -217,7 +220,8 @@ class DictPlenoxels(nn.Module):
             # Normalize pts in [0, 1]
             intrs_pts = self.normalize01(intrs_pts, grid_id)
             atom_idx = 0
-            for i, (reso, n_atoms) in enumerate(zip(self.fine_reso, self.num_atoms)):
+            # Only work with the fine dicts up to the given level
+            for i, (reso, n_atoms) in enumerate(zip(self.fine_reso[0:level+1], self.num_atoms[0:level+1])):
                 if i == 0:
                     data_interp = torch.ops.plenoxels.l2_interp_v2(
                             grid[..., atom_idx: atom_idx + n_atoms], self.atoms[i], intrs_pts, reso, self.coarse_reso, 1, 1)
