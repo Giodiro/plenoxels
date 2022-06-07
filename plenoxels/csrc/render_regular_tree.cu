@@ -197,7 +197,6 @@ trace_ray(
     calc_sphfunc(/*basis_dim=*/BASIS_DIM, /*dir=*/ray_spec[warp_offset].dir, /*out=*/sphfunc_val[warp_offset]);
     // Finish ray-spec initialization
     ray_find_bounds(ray_spec[warp_offset], scaling, offset, (scalar_t)opt.step_size, (scalar_t)opt.near_plane);
-    //__syncwarp((1U << D) - 1);
 
     if (ray_spec[warp_offset].tmin > ray_spec[warp_offset].tmax) {  // Ray doesn't hit box
         out[ray_id][min(lane_colorgrp, 2)] = 1.0f;
@@ -245,7 +244,7 @@ trace_ray(
 
 template <typename scalar_t, uint32_t BASIS_DIM>
 __global__ void
-trace_ray_cuvol_backward(
+trace_ray_backward(
         const Acc32<scalar_t, 2> grad_output,  // N, 3
         const Acc32<scalar_t, 2> color_cache,  // N, 3
         const Acc32<scalar_t, 2> coarse_grid,
@@ -292,6 +291,7 @@ trace_ray_cuvol_backward(
     const scalar_t norm_factor = 2.0f / (3 * n_rays);
     #pragma unroll 3
     for (int i = 0; i < 3; ++i) {
+        // TODO: Figure out what the commented-out normalization did (from svox).
         c_grad_out[i] = grad_output[ray_id][i];//(color_cache[ray_id][i] - grad_output[ray_id][i]) * norm_factor;
     }
     scalar_t accum = fmaf(color_cache[ray_id][0], c_grad_out[0],
@@ -415,6 +415,7 @@ class DictTreeRender : public Function<DictTreeRender> {
             auto out = torch::zeros({num_rays, 3}, coarse_grid.options());
             auto scaling_t = torch::tensor({scaling, scaling, scaling}, coarse_grid.options());
             auto offset_t = torch::tensor({offset, offset, offset}, coarse_grid.options());
+            const uint32_t data_dim = atoms.size(2);
 
             const dim3 grid_size(n_blocks_linear(num_rays, CUDA_WARPS_PER_BLOCK));
             const dim3 block_size(CUDA_THREADS_PER_BLOCK);
@@ -423,19 +424,54 @@ class DictTreeRender : public Function<DictTreeRender> {
             fast_divmod fast_divmod_fine_reso((int32_t)fine_reso);
 
             AT_DISPATCH_FLOATING_TYPES(coarse_grid.scalar_type(), "trace_ray", [&] {
-                trace_ray<scalar_t, 1><<<grid_size, block_size, shared_mem * sizeof(scalar_t), stream.stream()>>>(
-                    coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                    atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
-                    rays_o.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                    rays_d.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                    out.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                    fast_divmod_fine_reso,
-                    (uint32_t)coarse_reso,
-                    num_rays,
-                    scaling_t.data_ptr<scalar_t>(),
-                    offset_t.data_ptr<scalar_t>(),
-                    opt
-                );
+                switch (data_dim) {
+                    case 4:
+                        trace_ray<scalar_t, 1><<<grid_size, block_size, shared_mem * sizeof(scalar_t), stream.stream()>>>(
+                            coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
+                            rays_o.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            rays_d.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            out.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            fast_divmod_fine_reso,
+                            (uint32_t)coarse_reso,
+                            num_rays,
+                            scaling_t.data_ptr<scalar_t>(),
+                            offset_t.data_ptr<scalar_t>(),
+                            opt
+                        );
+                        break;
+                    case 13:
+                        trace_ray<scalar_t, 4><<<grid_size, block_size, shared_mem * sizeof(scalar_t), stream.stream()>>>(
+                            coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
+                            rays_o.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            rays_d.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            out.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            fast_divmod_fine_reso,
+                            (uint32_t)coarse_reso,
+                            num_rays,
+                            scaling_t.data_ptr<scalar_t>(),
+                            offset_t.data_ptr<scalar_t>(),
+                            opt
+                        );
+                        break;
+                    case 28:
+                        trace_ray<scalar_t, 9><<<grid_size, block_size, shared_mem * sizeof(scalar_t), stream.stream()>>>(
+                            coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
+                            rays_o.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            rays_d.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            out.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            fast_divmod_fine_reso,
+                            (uint32_t)coarse_reso,
+                            num_rays,
+                            scaling_t.data_ptr<scalar_t>(),
+                            offset_t.data_ptr<scalar_t>(),
+                            opt
+                        );
+                        break;
+                    // TODO: default
+                }
             });
             ctx->save_for_backward({coarse_grid, atoms, out});
             ctx->saved_data["rays_o"] = rays_o;
@@ -480,28 +516,70 @@ class DictTreeRender : public Function<DictTreeRender> {
             Tensor d_atoms = torch::zeros_like(atoms);
             auto scaling_t = torch::tensor({scaling, scaling, scaling}, coarse_grid.options());
             auto offset_t = torch::tensor({offset, offset, offset}, coarse_grid.options());
+            const uint32_t data_dim = atoms.size(2);
 
             const dim3 grid_size(n_blocks_linear(rays_o.size(0), CUDA_WARPS_PER_BLOCK));
             const dim3 block_size(CUDA_THREADS_PER_BLOCK);
             const uint32_t shared_mem = CUDA_WARPS_PER_BLOCK * coarse_grid.size(1);
 
             AT_DISPATCH_FLOATING_TYPES(coarse_grid.scalar_type(), "trace_ray_cuvol_bwd", [&] {
-                trace_ray_cuvol_backward<scalar_t, 1><<<grid_size, block_size, shared_mem * sizeof(scalar_t), stream.stream()>>>(
-                    grad_output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                    fwd_output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                    coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                    atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
-                    rays_o.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                    rays_d.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                    d_coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                    d_atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
-                    fast_divmod_fine_reso,
-                    (uint32_t)coarse_reso,
-                    (uint32_t)rays_o.size(0),
-                    scaling_t.data_ptr<scalar_t>(),
-                    offset_t.data_ptr<scalar_t>(),
-                    opt
-                );
+                switch (data_dim) {
+                    case 4:
+                        trace_ray_backward<scalar_t, 1><<<grid_size, block_size, shared_mem * sizeof(scalar_t), stream.stream()>>>(
+                            grad_output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            fwd_output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
+                            rays_o.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            rays_d.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            d_coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            d_atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
+                            fast_divmod_fine_reso,
+                            (uint32_t)coarse_reso,
+                            (uint32_t)rays_o.size(0),
+                            scaling_t.data_ptr<scalar_t>(),
+                            offset_t.data_ptr<scalar_t>(),
+                            opt
+                        );
+                        break;
+                    case 13:
+                        trace_ray_backward<scalar_t, 4><<<grid_size, block_size, shared_mem * sizeof(scalar_t), stream.stream()>>>(
+                            grad_output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            fwd_output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
+                            rays_o.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            rays_d.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            d_coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            d_atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
+                            fast_divmod_fine_reso,
+                            (uint32_t)coarse_reso,
+                            (uint32_t)rays_o.size(0),
+                            scaling_t.data_ptr<scalar_t>(),
+                            offset_t.data_ptr<scalar_t>(),
+                            opt
+                        );
+                        break;
+                    case 28:
+                        trace_ray_backward<scalar_t, 9><<<grid_size, block_size, shared_mem * sizeof(scalar_t), stream.stream()>>>(
+                            grad_output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            fwd_output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
+                            rays_o.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            rays_d.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            d_coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
+                            d_atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
+                            fast_divmod_fine_reso,
+                            (uint32_t)coarse_reso,
+                            (uint32_t)rays_o.size(0),
+                            scaling_t.data_ptr<scalar_t>(),
+                            offset_t.data_ptr<scalar_t>(),
+                            opt
+                        );
+                        break;
+                    // TODO: default
+                }
             });
             return {d_coarse_grid, d_atoms, Tensor(), Tensor(), Tensor(), Tensor(), Tensor(), Tensor(), Tensor(), Tensor(), Tensor()};
         }

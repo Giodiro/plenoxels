@@ -49,8 +49,7 @@ __device__ __inline__ double lerp(double a, double b, double w) {
     return fma(w, b - a, a);
 }
 
-__host__ __device__ __inline__ int round_up(int num, int multiple)
-{
+__host__ __device__ __inline__ int round_up(int num, int multiple) {
     return ((num + multiple - 1) / multiple) * multiple;
 }
 
