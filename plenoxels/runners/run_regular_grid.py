@@ -13,6 +13,7 @@ from tqdm import tqdm
 from plenoxels import multiscene_config
 from plenoxels.ema import EMA
 from plenoxels.models import DictPlenoxels
+from plenoxels.runners.utils import render_patches
 from plenoxels.tc_harmonics import plenoxel_sh_encoder
 
 from plenoxels.runners.utils import *
@@ -93,7 +94,10 @@ def train_epoch(renderer, tr_loaders, ts_dsets, optim, l1_coef, tv_coef, consist
         for ts_dset_id, ts_dset in enumerate(ts_dsets):
             psnr = plot_ts_imageio(
                 ts_dset, ts_dset_id, renderer, log_dir,
-                iteration=e, batch_size=batch_size, image_id=0, verbose=True)
+                iteration=tot_step, batch_size=batch_size, image_id=0, verbose=True,
+                summary_writer=TB_WRITER)
+            render_patches(renderer, patch_level=0, log_dir=log_dir, iteration=tot_step,
+                           summary_writer=TB_WRITER)
             TB_WRITER.add_scalar(f"TestPSNR/D{ts_dset_id}", psnr, tot_step)
         model_save_path = os.path.join(log_dir, "model.pt")
         torch.save(renderer.state_dict(), model_save_path)

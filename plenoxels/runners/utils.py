@@ -2,12 +2,17 @@ import os
 import math
 from typing import Tuple, Union
 
+import imageio
 import numpy as np
+import scipy.spatial
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import torch.utils.data
 import matplotlib.pyplot as plt
 
-from plenoxels.synthetic_nerf_dataset import SyntheticNerfDataset
+from plenoxels.nerf_rendering import sigma2alpha, shrgb2rgb
+from plenoxels.synthetic_nerf_dataset import SyntheticNerfDataset, get_rays
 
 __all__ = (
     "get_freer_gpu",
@@ -15,6 +20,8 @@ __all__ = (
     "plot_ts",
     "plot_ts_imageio",
 )
+
+from plenoxels.tc_harmonics import plenoxel_sh_encoder
 
 
 def get_freer_gpu():
@@ -33,10 +40,10 @@ def init_data(cfg):
         downsample = []
         for fine in cfg.model.fine_reso:
             resolution.append(cfg.model.coarse_reso * fine)
-            downsample.append(800.0/(cfg.model.coarse_reso * fine * 2.0))
+            downsample.append(800.0 / (cfg.model.coarse_reso * fine * 2.0))
     # Training datasets are lists of lists, where each inner list is different resolutions for the same scene
     # Test datasets are a single list over the different scenes, all at full resolution
-    tr_dsets, tr_loaders, ts_dsets = [], [], [] 
+    tr_dsets, tr_loaders, ts_dsets = [], [], []
     for data_dir in cfg.data.datadirs:
         train, train_load = [], []
         for reso, down in zip(resolution, downsample):
@@ -49,9 +56,26 @@ def init_data(cfg):
         tr_dsets.append(train)
         tr_loaders.append(train_load)
         ts_dsets.append(SyntheticNerfDataset(
-                data_dir, split='test', downsample=1, resolution=800,
-                max_frames=cfg.data.max_ts_frames))
+            data_dir, split='test', downsample=1, resolution=800,
+            max_frames=cfg.data.max_ts_frames))
     return tr_dsets, tr_loaders, ts_dsets
+
+
+def save_image(img_or_fig, log_dir, img_name, iteration, summary_writer):
+    if log_dir is not None:
+        out_path = os.path.join(log_dir, f"{img_name}_iter{iteration}.png")
+        if isinstance(img_or_fig, plt.Figure):
+            img_or_fig.savefig(out_path)
+            plt.close(img_or_fig)
+        else:
+            # imageio wants channels last
+            imageio.imwrite(out_path, img_or_fig)
+    if summary_writer is not None:
+        if isinstance(img_or_fig, plt.Figure):
+            summary_writer.add_figure(img_name, img_or_fig, global_step=iteration)
+            plt.close(img_or_fig)
+        else:
+            summary_writer.add_image(img_name, img_or_fig, global_step=iteration, dataformats="HWC")
 
 
 def render_ts_img(data: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
@@ -69,7 +93,7 @@ def render_ts_img(data: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
     return pred, rgb
 
 
-def plot_ts(ts_dset, dset_id, renderer, log_dir, iteration, batch_size=10_000):
+def plot_ts(ts_dset, dset_id, renderer, log_dir, iteration, summary_writer=None, batch_size=10_000):
     psnr_list = []
     with torch.autograd.no_grad():
         for ts_el in ts_dset:
@@ -85,12 +109,85 @@ def plot_ts(ts_dset, dset_id, renderer, log_dir, iteration, batch_size=10_000):
     ax[0].imshow(pred)
     ax[1].imshow(rgb)
     ax[0].set_title(f"PSNR={psnr:.2f}")
-    fig.savefig(os.path.join(log_dir, f"dset{dset_id}_iter{iteration}.png"))
-    plt.close(fig)
+    save_image(fig, log_dir, f"dset-{dset_id}-ts-0", iteration, summary_writer)
 
 
-def plot_ts_imageio(ts_dset, dset_id, renderer, log_dir, iteration: Union[int, str], batch_size=10_000, image_id=0, verbose=True) -> float:
-    import imageio
+def render_patches(renderer, patch_level, log_dir, iteration, summary_writer=None):
+    def get_intersections(rays_o: torch.Tensor, rays_d: torch.Tensor, radius: float, step_size: float, n_samples: int):
+        dev, dt = rays_o.device, rays_o.dtype
+        offsets_pos = (radius - rays_o) / rays_d  # [batch, 3]
+        offsets_neg = (-radius - rays_o) / rays_d  # [batch, 3]
+        offsets_in = torch.minimum(offsets_pos, offsets_neg)  # [batch, 3]
+        start = torch.amax(offsets_in, dim=-1, keepdim=True)  # [batch, 1]
+        steps = torch.arange(n_samples, dtype=dt, device=dev).unsqueeze(0)  # [1, n_intrs]
+        steps = steps.repeat(rays_d.shape[0], 1)  # [batch, n_intrs]
+        intersections = start + steps * step_size  # [batch, n_intrs]
+        return intersections
+
+    def render(sh_encoder, n_samples, angle, orig, img_size, patch):
+        voxel_len = math.sqrt(3) / n_samples
+        rot = scipy.spatial.transform.Rotation.from_euler('ZYX', angle, degrees=True)
+        orig = rot.apply(orig)  # This is random
+        rot_mat = rot.as_matrix()
+        rot_mat = np.concatenate((rot_mat, orig.reshape(3, 1)), axis=1)
+        rays = get_rays(img_size, img_size, focal=img_size * 2, c2w=torch.from_numpy(rot_mat))
+        rays_o = rays[0].view(-1, 3).float()
+        rays_d = rays[1].view(-1, 3).float()
+        intersections = get_intersections(
+            rays_o=rays_o, rays_d=rays_d, step_size=voxel_len,
+            n_samples=n_samples, radius=1.0)
+        intersections_trunc = intersections[:, :-1]
+        intrs_pts = rays_o.unsqueeze(1) + intersections_trunc.unsqueeze(2) * rays_d.unsqueeze(1)
+        intrs_pts = intrs_pts.flip(-1)
+        data_interp = F.grid_sample(
+            patch.unsqueeze(0), intrs_pts.view(1, -1, 1, 1, 3), mode='bilinear',
+            align_corners=False, padding_mode='zeros')  # [1, ch, n, 1, 1]
+        data_interp = data_interp.squeeze().transpose(0, 1)
+        sigma = data_interp[:, -1].view(intersections_trunc.shape)
+        cdata = data_interp[:, :-1].view(*intersections_trunc.shape, -1)
+
+        sigma = F.relu(sigma)
+        alpha, abs_light = sigma2alpha(sigma, intersections, rays_d)
+        sh_mult = sh_encoder(rays_d)  # batch, ch/3
+        sh_mult = sh_mult.unsqueeze(1).unsqueeze(1).expand(-1, cdata.shape[1], -1, -1)
+        cdata = cdata.view(cdata.shape[0], cdata.shape[1], 3, sh_mult.shape[-1])
+
+        rgb = torch.sum(sh_mult * cdata, dim=-1)
+        rgb = shrgb2rgb(rgb, abs_light, True)
+        return rgb
+
+    with torch.autograd.no_grad():
+        atoms = renderer.atoms
+        if isinstance(atoms, nn.ParameterList):
+            atoms = atoms[patch_level]
+        sh_level = (atoms.shape[-1] - 1) // 3 - 1
+        sh_encoder = plenoxel_sh_encoder(sh_level)
+        if atoms.dim() == 3:
+            reso = int(np.round(atoms.shape[0] ** (1/3)))
+            atoms = atoms.view(reso, reso, reso, atoms.shape[1], atoms.shape[2])
+        atoms = atoms.permute(3, 4, 0, 1, 2)  # n_atoms, data_dim, reso, reso, reso
+
+        if atoms.shape[0] > 64:
+            n_atoms = 64
+        if atoms.shape[0] < 64:
+            n_atoms = 32
+        if atoms.shape[0] < 32:
+            n_atoms = 16
+        fig, ax = plt.subplots(nrows=int(math.sqrt(n_atoms)), ncols=int(math.sqrt(n_atoms)))
+        ax = ax.flatten()
+        origin = np.array([0, 0, 4], dtype=np.float32)
+
+        for i in range(len(ax)):
+            rgb = render(sh_encoder, n_samples=40, angle=(0, 0, 90), orig=origin, img_size=60, patch=atoms[i])
+            ax[i].imshow(rgb.view(int(math.sqrt(rgb.shape[0])), int(math.sqrt(rgb.shape[0])), 3))
+            ax[i].set_xticks([])
+            ax[i].set_yticks([])
+        fig.tight_layout(pad=0.4, h_pad=0.0, w_pad=0.0)
+        save_image(fig, log_dir, f"patches-{patch_level}", iteration, summary_writer)
+
+
+def plot_ts_imageio(ts_dset, dset_id, renderer, log_dir, iteration: Union[int, str],
+                    batch_size=10_000, image_id=0, verbose=True, summary_writer=None) -> float:
     with torch.autograd.no_grad():
         ts_el = ts_dset[image_id]
         pred, rgb = render_ts_img(
@@ -102,5 +199,5 @@ def plot_ts_imageio(ts_dset, dset_id, renderer, log_dir, iteration: Union[int, s
         print(f"D{dset_id} Test PSNR={psnr:.2f}")
     vis = torch.cat((torch.clamp(pred, 0, 1), rgb), dim=1)
     vis = (vis * 255).numpy().astype(np.uint8)
-    imageio.imwrite(os.path.join(log_dir, f"dset{dset_id}_iter{iteration}_img{image_id}.png"), vis)
+    save_image(vis, log_dir, f"dset-{dset_id}-ts-{image_id}", iteration, summary_writer)
     return psnr.item()
