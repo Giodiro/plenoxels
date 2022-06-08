@@ -154,14 +154,14 @@ class DictPlenoxels(nn.Module):
         voxel_len = self.get_fine_voxel_len(dset_id=dset_id, dict_id=dict_id)
         return (pts + radius) / voxel_len
 
-    def encode_patches(self, patches, dict_id: int, k=1):
+    def encode_patches(self, patches, dict_id: int, k=5):
         # Compute the inverse dictionary
         atoms = self.atoms[dict_id]
         atoms = atoms.permute(0,1,2,4,3).reshape(-1, self.num_atoms[dict_id])  # [patch_size, num_atoms]
         U, S, Vh = torch.linalg.svd(atoms, full_matrices=False)
         # Keep only the top k singular values
         filtered_S = torch.zeros_like(S)
-        filtered_S[0:k] = S[0:k]
+        filtered_S[0:k] = 1.0 / S[0:k]  # Take the inverse
         pinv = torch.conj(Vh.T) @ torch.diag(filtered_S) @ torch.conj(U.T)
         # pinv = torch.linalg.pinv(atoms) # [num_atoms, patch_size]
         # Apply to the patches
