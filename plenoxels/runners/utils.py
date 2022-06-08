@@ -138,7 +138,9 @@ def render_patches(renderer, patch_level, log_dir, iteration, summary_writer=Non
             n_samples=n_samples, radius=1.0)
         intersections_trunc = intersections[:, :-1]
         intrs_pts = rays_o.unsqueeze(1) + intersections_trunc.unsqueeze(2) * rays_d.unsqueeze(1)
-        intrs_pts = intrs_pts.flip(-1)
+        intrs_pts = intrs_pts.flip(-1).to(device=patch.device)
+        intersections = intersections.to(device=patch.device)
+        rays_d = rays_d.to(device=patch.device)
         data_interp = F.grid_sample(
             patch.unsqueeze(0), intrs_pts.view(1, -1, 1, 1, 3), mode='bilinear',
             align_corners=False, padding_mode='zeros')  # [1, ch, n, 1, 1]
@@ -154,7 +156,7 @@ def render_patches(renderer, patch_level, log_dir, iteration, summary_writer=Non
 
         rgb = torch.sum(sh_mult * cdata, dim=-1)
         rgb = shrgb2rgb(rgb, abs_light, True)
-        return rgb
+        return rgb.cpu()
 
     with torch.autograd.no_grad():
         atoms = renderer.atoms
@@ -167,11 +169,11 @@ def render_patches(renderer, patch_level, log_dir, iteration, summary_writer=Non
             atoms = atoms.view(reso, reso, reso, atoms.shape[1], atoms.shape[2])
         atoms = atoms.permute(3, 4, 0, 1, 2)  # n_atoms, data_dim, reso, reso, reso
 
-        if atoms.shape[0] > 64:
+        if atoms.shape[0] >= 64:
             n_atoms = 64
-        if atoms.shape[0] < 64:
+        elif atoms.shape[0] < 64:
             n_atoms = 32
-        if atoms.shape[0] < 32:
+        elif atoms.shape[0] < 32:
             n_atoms = 16
         fig, ax = plt.subplots(nrows=int(math.sqrt(n_atoms)), ncols=int(math.sqrt(n_atoms)))
         ax = ax.flatten()
