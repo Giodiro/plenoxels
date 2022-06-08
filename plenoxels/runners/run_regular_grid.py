@@ -136,33 +136,57 @@ def init_optim(cfg, model):
     return torch.optim.Adam(model.parameters(), lr=cfg.optim.lr)
 
 
+def init_coarse_optim(cfg, model):
+    return torch.optim.Adam(model.grids, lr=cfg.optim.lr)
+
+
 if __name__ == "__main__":
-    cfg_, run_test_ = multiscene_config.parse_config()
+    train_cfg, reload_cfg = multiscene_config.parse_config()
     gpu = get_freer_gpu()
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
     print(f'gpu is {gpu}')
-
-    log_dir_ = os.path.join(cfg_.logdir, cfg_.expname)
-    os.makedirs(log_dir_, exist_ok=True)
+    print(f'reload config is {reload_cfg}')
+    print(f'train config is {train_cfg}')
     # Make config immutable
-    cfg_.freeze()
-    # Initialize tensorboard
-    TB_WRITER = SummaryWriter(log_dir=log_dir_)
-    print(cfg_)
+    if train_cfg is not None:
+        train_cfg.freeze()
+    if reload_cfg is not None:
+        reload_cfg.freeze()
+    # Set up the training
+    cfg_ = train_cfg if train_cfg is not None else reload_cfg
+    train_log_dir = os.path.join(cfg_.logdir, cfg_.expname)
+    os.makedirs(train_log_dir, exist_ok=True)
+    TB_WRITER = SummaryWriter(log_dir=train_log_dir)
     tr_dsets_, tr_loaders_, ts_dsets_ = init_data(cfg_)
-    if run_test_:
-        print("Running tests only.")
-        model_ = load_model_from_logdir(cfg_, logdir=log_dir_, tr_dsets=tr_dsets_, efficient_dict=False)
-        test_model(renderer=model_, ts_dsets=ts_dsets_, log_dir=log_dir_,
-                   batch_size=cfg_.optim.batch_size, num_test_imgs=1)
+    # Set up the model
+    if reload_cfg is not None:
+        reload_log_dir = os.path.join(reload_cfg.logdir, reload_cfg.expname)
+        model_ = load_model_from_logdir(reload_cfg, logdir=reload_log_dir, tr_dsets=tr_dsets_, efficient_dict=False)
+        if train_cfg is None:
+            print("Running tests only.")
+            test_model(renderer=model_, ts_dsets=ts_dsets_, log_dir=reload_log_dir,
+                    batch_size=reload_cfg.optim.batch_size, num_test_imgs=1)
+        else:
+            print("Applying pretrained patch dicts to new scenes")
+            # Keep the reloaded patch dictionaries, but initialize new coarse grids
+            fresh_model_ = init_model(cfg_, tr_dsets=tr_dsets_, efficient_dict=False)
+            fresh_model_.atoms = model_.atoms
+            model_ = fresh_model_
+            # Only optimize the coarse grids
+            optim_ = init_coarse_optim(cfg_, model_)
+            train_epoch(renderer=model_, tr_loaders=tr_loaders_, ts_dsets=ts_dsets_, optim=optim_,
+                    batches_per_epoch=cfg_.optim.batches_per_epoch, epochs=cfg_.optim.num_epochs,
+                    log_dir=train_log_dir, batch_size=cfg_.optim.batch_size,
+                    l1_coef=cfg_.optim.regularization.l1_weight, tv_coef=cfg_.optim.regularization.tv_weight,
+                    consistency_coef=cfg_.optim.regularization.consistency_weight, cosine=cfg_.optim.cosine)
     else:
         # Save configuration as yaml into logdir
-        with open(os.path.join(log_dir_, "config.yaml"), "w") as fh:
+        with open(os.path.join(train_log_dir, "config.yaml"), "w") as fh:
             fh.write(cfg_.dump())
         model_ = init_model(cfg_, tr_dsets=tr_dsets_, efficient_dict=False)
         optim_ = init_optim(cfg_, model_)
         train_epoch(renderer=model_, tr_loaders=tr_loaders_, ts_dsets=ts_dsets_, optim=optim_,
                     batches_per_epoch=cfg_.optim.batches_per_epoch, epochs=cfg_.optim.num_epochs,
-                    log_dir=log_dir_, batch_size=cfg_.optim.batch_size,
+                    log_dir=train_log_dir, batch_size=cfg_.optim.batch_size,
                     l1_coef=cfg_.optim.regularization.l1_weight, tv_coef=cfg_.optim.regularization.tv_weight,
                     consistency_coef=cfg_.optim.regularization.consistency_weight, cosine=cfg_.optim.cosine)
