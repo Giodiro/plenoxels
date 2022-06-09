@@ -9,6 +9,8 @@
 #include <cub/warp/warp_reduce.cuh>
 #include <cub/block/block_reduce.cuh>
 
+#include "cuda_fp16.h"
+
 #include "cuda_util.cuh"
 
 
@@ -41,69 +43,89 @@ static const float OFFSET[8][3] = {{-0.5, -0.5, -0.5}, {-0.5, -0.5, 0.5}, {-0.5,
 #define NUM_POINTS_PER_THREAD 16
 #define INNER_POINTS_PER_THREAD 4
 
-#define V1_FWD_BLOCK_SIZE = 512;
-#define V1_WARPS_PER_BLOCK = V1_FWD_BLOCK_SIZE / 32;
+#define V1_FWD_BLOCK_SIZE 512
+#define V1_WARPS_PER_BLOCK (V1_FWD_BLOCK_SIZE >> 5)
 
 
 template<class scalar_t, int32_t S, int32_t POW2_RF>
 __global__ void
-__launch_bounds__(CUDA_THREADS_PER_BLOCK)
-k_l2_interp_v1(Acc32<scalar_t, 2> coarse_grid,  // Rc^3, S
-               Acc32<scalar_t, 3> atoms,        // Rf^3, S, D
-               Acc32<scalar_t, 2> points,       // N, 3
-               Acc32<scalar_t, 2> out,          // N, D
-               const uint32_t coarse_reso)
+k_l2_interp_v1(const __half* __restrict__ coarse_grid,  // Rc^3, S
+               const __half* __restrict__ atoms,  // Rf^3, S, D
+               const float* __restrict__ points,  // N, 3
+               float * __restrict__ out,  // N, D
+               const uint32_t coarse_reso,
+               const uint32_t D,
+               const uint32_t N)
 {
     constexpr int32_t fine_reso = 2 << (POW2_RF - 1);
     const int32_t point_id = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
-    const int32_t warp_lane = threadIdx.x % 0x1F;
-    const int32_t warp_offset = (threadIdx.x >> 5) * S;  // warp_block_id * S
+    const int32_t warp_lane = threadIdx.x & 0x1F;
+    const int32_t warp_offset = (threadIdx.x >> 5) * S / 2;  // warp_block_id * S
+    if (point_id >= N) { return; }
 
-    const int32_t D = atoms.size(2);
-    const uint32_t warp_mask = __ballot_sync(0xffffffff, warp_lane < D);
-    if (warp_lane >= D || point_id >= points.size(0)) { return; }
-
-    __shared__ scalar_t coarse_w[V1_WARPS_PER_BLOCK * S]
-    const scalar_t fp[3] = {points[point_id][0] * coarse_reso * fine_reso,
-                            points[point_id][1] * coarse_reso * fine_reso,
-                            points[point_id][2] * coarse_reso * fine_reso};
+    __shared__ __half2 coarse_w[V1_WARPS_PER_BLOCK * S / 2];
+    const float fp[3] = {points[point_id * 3] * coarse_reso * fine_reso,
+                         points[point_id * 3 + 1] * coarse_reso * fine_reso,
+                         points[point_id * 3 + 2] * coarse_reso * fine_reso};
 
     int32_t cn[3];           // corner of coarse-neighbor cell in 'coarse-grid' coordinates
     int32_t fn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
-    int32_t rfn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
+    int32_t rfn[3];          // corner of fine-neighbor cell in 'full-grid' coordinates
 
-    scalar_t acc = 0.0f;
-    scalar_t interpolation_weight;
+    __half2 acc2 = __float2half2_rn(0.0f);
+    __half2 iw2;
 
     int32_t cn_realcoo, fn_realcoo;
     for (int i = 0; i < 8; i++) {
         fn[0] = clamp(floor2int(fp[0] + OFFSET[i][0]), 0, fine_reso * coarse_reso - 1);
-        fast_divmod_pow2<POW2_RF>(fn[0], cn[0], rfn[0]);
-
         fn[1] = clamp(floor2int(fp[1] + OFFSET[i][1]), 0, fine_reso * coarse_reso - 1);
-        fast_divmod_pow2<POW2_RF>(fn[1], cn[1], rfn[1]);
-
         fn[2] = clamp(floor2int(fp[2] + OFFSET[i][2]), 0, fine_reso * coarse_reso - 1);
+        fast_divmod_pow2<POW2_RF>(fn[0], cn[0], rfn[0]);
+        fast_divmod_pow2<POW2_RF>(fn[1], cn[1], rfn[1]);
         fast_divmod_pow2<POW2_RF>(fn[2], cn[2], rfn[2]);
+
+        float iw = (1.0f - myabs(fp[0] - static_cast<scalar_t>(fn[0]) - 0.5f)) *
+                   (1.0f - myabs(fp[1] - static_cast<scalar_t>(fn[1]) - 0.5f)) *
+                   (1.0f - myabs(fp[2] - static_cast<scalar_t>(fn[2]) - 0.5f));
+        iw2 = __float2half2_rn(iw);
 
         cn_realcoo = coo2idx(cn[0], cn[1], cn[2], coarse_reso);
         fn_realcoo = coo2idx(rfn[0], rfn[1], rfn[2], fine_reso);
 
-        interpolation_weight = (1.0f - myabs(fp[0] - static_cast<scalar_t>(fn[0]) - 0.5f)) *
-                               (1.0f - myabs(fp[1] - static_cast<scalar_t>(fn[1]) - 0.5f)) *
-                               (1.0f - myabs(fp[2] - static_cast<scalar_t>(fn[2]) - 0.5f));
-        // load w from coarse_grid to shared mem using all active threads in warp
-        for (int s = warp_lane; s < S; s += D) {
-            coarse_w[warp_offset + s] = coarse_grid[cn_realcoo][s];
+        // load w from coarse_grid to shared mem using all threads in warp
+        for (int s = warp_lane * 2; s < S; s += 32 * 2) {
+            __half2 load_tmp = __ldg(
+                reinterpret_cast<const __half2*>(
+                    coarse_grid + cn_realcoo * S + s));
+            /*if (__low2float(load_tmp) != __low2float(load_tmp) || __high2float(load_tmp) != __high2float(load_tmp)) {
+                printf("Nan when loading from coarse-grid: %f %f\n", __low2float(load_tmp), __high2float(load_tmp));
+            }*/
+            coarse_w[warp_offset + s / 2] = load_tmp;
+            //printf("GRID - warp-lane=%d, warp-offset=%d , s=%d, accessing %d\n", warp_lane, warp_offset, s, warp_offset + s / 2);
         }
-        __syncwarp(warp_mask);
-        for (int s = 0; s < S; s++) {
-            // pseudo: out += coarse_grid[cn][s] * iw[j] * atoms[fn][s][d]
-            acc = myfma(coarse_w[warp_offset + s] * interpolation_weight, atoms[fn_realcoo][s][warp_lane], acc);
+        __syncwarp();
+        for (int s = 0; s < S; s += 2) {
+            __half atom_weight1 = warp_lane > D ? __float2half(0.0f) : 
+                __ldg(atoms + fn_realcoo * S * D + s * D + warp_lane);
+            __half atom_weight2 = warp_lane > D ? __float2half(0.0f) : 
+                __ldg(atoms + fn_realcoo * S * D + (s + 1) * D + warp_lane);
+
+            __half2 atom_weight = __halves2half2(atom_weight1, atom_weight2);
+            //printf("SECOND - accessing %d\n", warp_offset + s / 2);
+            acc2 = __hfma2(coarse_w[warp_offset + s / 2], atom_weight, acc2);
+            /*if (__low2float(acc2) != __low2float(acc2) || __high2float(acc2) != __high2float(acc2)) {
+                printf("NaN encountered. atom_weight: %f %f - coarse_w: %f %f\n", __low2float(atom_weight), __high2float(atom_weight), __low2float(coarse_w[warp_offset + s/2]), __high2float(coarse_w[warp_offset + s/2]));
+            }*/
+            //scalar_t atom_weight = warp_lane > D ? 0.0f: atoms[fn_realcoo][s][warp_lane];
+            //acc = myfma(coarse_w[warp_offset + s] * interpolation_weight, atom_weight, acc);
+            //printf("A: %f, CG: %f, ACC: %f\n", __low2float(atom_weight), __low2float(coarse_w[warp_offset + s / 2]), __low2float(acc2));
         }
-        __syncwarp(warp_mask);
+        __syncwarp();
+        acc2 = __hmul2(iw2, acc2);
     }
-    out[point_id][warp_lane] = acc;
+    if (warp_lane < D) {
+        out[point_id * D + warp_lane] = __low2float(acc2) + __high2float(acc2);
+    }
 }
 
 
@@ -231,13 +253,13 @@ class L2InterpFunctionv1 : public Function<L2InterpFunctionv1> {
             if (coarse_grid.size(0) != coarse_reso * coarse_reso * coarse_reso) {
                 throw std::invalid_argument("Coarse-grid has wrong first dimension");
             }
-            if (coarse_grid.size(1) != atoms.size(2)) {
+            if (coarse_grid.size(1) != atoms.size(1)) {
                 throw std::invalid_argument("Coarse-grid and atoms dimension 1 doesn't match");
             }
             if (atoms.size(0) != fine_reso * fine_reso * fine_reso) {
                 throw std::invalid_argument("Atoms has wrong first dimension");
             }
-            if (atoms.size(1) > 32) {
+            if (atoms.size(2) > 32) {
                 throw std::invalid_argument("Data dimension must be at most 32");
             }
 
@@ -246,43 +268,43 @@ class L2InterpFunctionv1 : public Function<L2InterpFunctionv1> {
             ctx->saved_data["fine_reso"] = fine_reso;
             ctx->saved_data["coarse_reso"] = coarse_reso;
 
-            const int64_t D = atoms.size(2);
-            const int64_t S = atoms.size(1);
-            auto out = torch::zeros({points.size(0), D}, atoms.options());
+            const int32_t D = atoms.size(2);
+            const int32_t S = atoms.size(1);
+            const int32_t N = points.size(0);
+            auto out = torch::zeros({N, D}, points.options());
 
-            const dim3 grid_size(n_blocks_linear(points.size(0), V1_WARPS_PER_BLOCK));
+            const dim3 grid_size(n_blocks_linear(N, V1_WARPS_PER_BLOCK));
             const dim3 block_size(V1_FWD_BLOCK_SIZE);
 
-            fast_divmod fast_divmod_fine_reso((int32_t)fine_reso);
-            AT_DISPATCH_FLOATING_TYPES(coarse_grid.scalar_type(), "dispatch_l2interpv1_fwd", [&] {
+            AT_DISPATCH_FLOATING_TYPES_AND(torch::kHalf, coarse_grid.scalar_type(), "dispatch_l2interpv1_fwd", [&] {
                 switch(fine_reso) {
                     case 4:
                         switch (S) {
                             case 64:
-                                k_l2_interp_v1<scalar_t, 64, 1><<<grid_size, block_size, 0, stream.stream()>>>(
-                                    coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                                    atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
-                                    points.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                                    out.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                                    (uint32_t)coarse_reso
+                                k_l2_interp_v1<scalar_t, 64, 2><<<grid_size, block_size, 0, stream.stream()>>>(
+                                    (__half*)coarse_grid.data_ptr<at::Half>(),
+                                    (__half*)atoms.data_ptr<at::Half>(),
+                                    points.data_ptr<float>(),
+                                    out.data_ptr<float>(),
+                                    (uint32_t)coarse_reso, D, N
                                 );
                                 break;
                             case 128:
-                                k_l2_interp_v1<scalar_t, 128, 1><<<grid_size, block_size, 0, stream.stream()>>>(
-                                    coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                                    atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
-                                    points.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                                    out.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                                    (uint32_t)coarse_reso
+                                k_l2_interp_v1<scalar_t, 128, 2><<<grid_size, block_size, 0, stream.stream()>>>(
+                                    (__half*)coarse_grid.data_ptr<at::Half>(),
+                                    (__half*)atoms.data_ptr<at::Half>(),
+                                    points.data_ptr<float>(),
+                                    out.data_ptr<float>(),
+                                    (uint32_t)coarse_reso, D, N
                                 );
                                 break;
                             case 256:
-                                k_l2_interp_v1<scalar_t, 256, 1><<<grid_size, block_size, 0, stream.stream()>>>(
-                                    coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                                    atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
-                                    points.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                                    out.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                                    (uint32_t)coarse_reso
+                                k_l2_interp_v1<scalar_t, 256, 2><<<grid_size, block_size, 0, stream.stream()>>>(
+                                    (__half*)coarse_grid.data_ptr<at::Half>(),
+                                    (__half*)atoms.data_ptr<at::Half>(),
+                                    points.data_ptr<float>(),
+                                    out.data_ptr<float>(),
+                                    (uint32_t)coarse_reso, D, N
                                 );
                                 break;
                         }
@@ -291,29 +313,29 @@ class L2InterpFunctionv1 : public Function<L2InterpFunctionv1> {
                         switch (S) {
                             case 64:
                                 k_l2_interp_v1<scalar_t, 64, 3><<<grid_size, block_size, 0, stream.stream()>>>(
-                                    coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                                    atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
-                                    points.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                                    out.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                                    (uint32_t)coarse_reso
+                                    (__half*)coarse_grid.data_ptr<at::Half>(),
+                                    (__half*)atoms.data_ptr<at::Half>(),
+                                    points.data_ptr<float>(),
+                                    out.data_ptr<float>(),
+                                    (uint32_t)coarse_reso, D, N
                                 );
                                 break;
                             case 128:
                                 k_l2_interp_v1<scalar_t, 128, 3><<<grid_size, block_size, 0, stream.stream()>>>(
-                                    coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                                    atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
-                                    points.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                                    out.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                                    (uint32_t)coarse_reso
+                                    (__half*)coarse_grid.data_ptr<at::Half>(),
+                                    (__half*)atoms.data_ptr<at::Half>(),
+                                    points.data_ptr<float>(),
+                                    out.data_ptr<float>(),
+                                    (uint32_t)coarse_reso, D, N
                                 );
                                 break;
                             case 256:
                                 k_l2_interp_v1<scalar_t, 256, 3><<<grid_size, block_size, 0, stream.stream()>>>(
-                                    coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                                    atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
-                                    points.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                                    out.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                                    (uint32_t)coarse_reso
+                                    (__half*)coarse_grid.data_ptr<at::Half>(),
+                                    (__half*)atoms.data_ptr<at::Half>(),
+                                    points.data_ptr<float>(),
+                                    out.data_ptr<float>(),
+                                    (uint32_t)coarse_reso, D, N
                                 );
                                 break;
                         }

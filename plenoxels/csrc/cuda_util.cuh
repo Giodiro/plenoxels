@@ -63,6 +63,11 @@ __host__ __device__ __inline__ int round_up(int num, int multiple) {
     return ((num + multiple - 1) / multiple) * multiple;
 }
 
+template <typename T>
+__host__ __device__ constexpr T div_round_up(T val, T divisor) {
+        return (val + divisor - 1) / divisor;
+}
+
 
 template <int pow2>
 __host__ __device__ __inline__ void fast_divmod_pow2(const int n, int& __restrict__ q, int& __restrict__ r) {
