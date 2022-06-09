@@ -19,6 +19,8 @@ __all__ = (
     "init_data",
     "plot_ts",
     "plot_ts_imageio",
+    "render_patches",
+    "user_ask_options",
 )
 
 from plenoxels.tc_harmonics import plenoxel_sh_encoder
@@ -203,3 +205,15 @@ def plot_ts_imageio(ts_dset, dset_id, renderer, log_dir, iteration: Union[int, s
     vis = (vis * 255).numpy().astype(np.uint8)
     save_image(vis, log_dir, f"dset-{dset_id}-ts-{image_id}", iteration, summary_writer)
     return psnr.item()
+
+
+def user_ask_options(prompt: str, opt1: str, opt2: str) -> str:
+    prompt_wopt = f"{prompt} ({opt1}, {opt2})"
+    while True:
+        out = input(prompt_wopt)
+        if out == opt1:
+            return opt1
+        elif out == opt2:
+            return opt2
+        else:
+            print(f"Invalid option {out}. Please type '{opt1}' or '{opt2}'")
