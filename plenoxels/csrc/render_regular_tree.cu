@@ -224,35 +224,34 @@ trace_ray(
     const float     * __restrict__ scaling,
     const float     * __restrict__ offset,
     const int32_t coarse_reso,
-    const int32_t D,
     const int32_t N,
     const int32_t S,
     const RenderOptions opt
 )
 {
-    constexpr int32_t fine_reso = 2 << (POW2_RF - 1);
+    constexpr int32_t D = BASIS_DIM * 3 + 1;
     const int32_t warp_lane = threadIdx.x & 0x1F;
-    const int32_t warp_offset = (threadIdx.x >> 5) * S / 2;
-    const uint32_t ray_id = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
-    const uint32_t lane_colorgrp = warp_lane / BASIS_DIM;
-    const uint32_t lane_colorgrp_id = warp_lane % BASIS_DIM;
-    typedef cub::WarpReduce<scalar_t> WarpReduce;
+    const int32_t warp_offset = (threadIdx.x >> 5);
+    const int32_t ray_id = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    const int32_t lane_colorgrp = warp_lane / BASIS_DIM;
+    const int32_t lane_colorgrp_id = warp_lane % BASIS_DIM;
+    typedef cub::WarpReduce<float> WarpReduce;
 	if (ray_id >= N) return;
 
     // shared memory. This is done to save some register space, no actual sharing occurs.
-    __shared__ scalar_t sphfunc_val[CUDA_WARPS_PER_BLOCK][9];
-    __shared__ Ray<scalar_t> ray_spec[CUDA_WARPS_PER_BLOCK];
+    __shared__ float sphfunc_val[CUDA_WARPS_PER_BLOCK][9];
+    __shared__ Ray<float> ray_spec[CUDA_WARPS_PER_BLOCK];
     __shared__ typename WarpReduce::TempStorage cub_storage[CUDA_WARPS_PER_BLOCK];
-    __shared__ scalar_t interpolated[CUDA_WARPS_PER_BLOCK][D];
+    __shared__ float interpolated[CUDA_WARPS_PER_BLOCK][D];
     // dynamically allocated shmem. This is actually shared
-    __half2 * coarse_w = shared_memory_proxy<__half2>(); // V1_WARPS_PER_BLOCK * S / 2;
+    __half2 * cg_shmem = shared_memory_proxy<__half2>(); // V1_WARPS_PER_BLOCK * S / 2;
 
     // Setup the ray-spec. Will copy data from rays_o, rays_d
     ray_spec[warp_offset].set(rays_o + ray_id * 3, rays_d + ray_id * 3);
     // Spherical harmonics are computed before ray normalization
     calc_sphfunc(/*basis_dim=*/BASIS_DIM, /*dir=*/ray_spec[warp_offset].dir, /*out=*/sphfunc_val[warp_offset]);
     // Finish ray-spec initialization
-    ray_find_bounds(ray_spec[warp_offset], scaling, offset, (scalar_t)opt.step_size, (scalar_t)opt.near_plane);
+    ray_find_bounds(ray_spec[warp_offset], scaling, offset, opt.step_size, opt.near_plane);
 
     if (ray_spec[warp_offset].tmin > ray_spec[warp_offset].tmax) {  // Ray doesn't hit box
         out[ray_id * 3 + min(lane_colorgrp, 2)] = 1.0f;
@@ -262,14 +261,13 @@ trace_ray(
     float t = ray_spec[warp_offset].tmin;
     float outv = 0.0f;
     float log_light_intensity = 0.0f;
-    float interp_val;
     while (t <= ray_spec[warp_offset].tmax) {
         ray_spec[warp_offset].update_pos(t);
 
 //        dictionary_interp(
 //            coarse_grid, atoms, /*point=*/ray_spec[warp_offset].pos, /*coarse_w_smem=*/coarse_w_smem,
 //            /*out=*/&interp_val, fast_divmod_fine_reso, coarse_reso, warp_lane, warp_offset);
-        k_l2_interp_hlf_single_pt(
+        k_l2_interp_hlf_single_pt<POW2_RF>(
             coarse_grid, atoms, /*point=*/ray_spec[warp_offset].pos, /*out=*/interpolated[warp_offset], /*cg_shmem=*/cg_shmem,
             coarse_reso, D, S);
 
@@ -469,8 +467,7 @@ class DictTreeRender : public Function<DictTreeRender> {
                 .near_plane = 0.0f,
                 .last_sample_opaque = false
             };
-
-            const uint32_t N = rays_o.size(0);
+            const int32_t N = rays_o.size(0);
             const int32_t D = atoms.size(2);
             const int32_t S = atoms.size(1);
 
@@ -480,13 +477,13 @@ class DictTreeRender : public Function<DictTreeRender> {
 
             const dim3 grid_size(div_round_up(N, CUDA_WARPS_PER_BLOCK));
             const dim3 block_size(CUDA_THREADS_PER_BLOCK);
-            const uint32_t shared_mem = CUDA_WARPS_PER_BLOCK * S;
+            const int32_t shared_mem = CUDA_WARPS_PER_BLOCK * S;
 
-            #define CALL_KERNEL(T, RF, BD)
-                trace_ray<RF, BD><<<grid_size, block_size, shared_mem * sizeof(T), stream.stream()>>>(               \
+            #define CALL_KERNEL(T, RF, BD)                                                                              \
+                trace_ray<RF, BD><<<grid_size, block_size, shared_mem * sizeof(T), stream.stream()>>>(                  \
                     coarse_grid.data_ptr<T>(), atoms.data_ptr<T>(), rays_o.data_ptr<float>(), rays_d.data_ptr<float>(), \
-                    out.data_ptr<float>(), scaling.data_ptr<float>(), offset.data_ptr<float>(),                         \
-                    coarse_reso, D, N, S, opt)
+                    out.data_ptr<float>(), scaling_t.data_ptr<float>(), offset_t.data_ptr<float>(),                     \
+                    coarse_reso, N, S, opt)
             if (coarse_grid.scalar_type() == at::ScalarType::Half) {
                 switch (fine_reso) {
                 case 2:
@@ -494,7 +491,7 @@ class DictTreeRender : public Function<DictTreeRender> {
                         case 4: CALL_KERNEL(c10::Half, 1, 1); break;
                         case 13: CALL_KERNEL(c10::Half, 1, 4); break;
                         case 28: CALL_KERNEL(c10::Half, 1, 9); break;
-                        case default: throw std::invalid_argument("data-dim must be 4, 13 or 28.");
+                        default: throw std::invalid_argument("data-dim must be 4, 13 or 28.");
                     }
                     break;
                 case 4:
@@ -502,7 +499,7 @@ class DictTreeRender : public Function<DictTreeRender> {
                         case 4: CALL_KERNEL(c10::Half, 2, 1); break;
                         case 13: CALL_KERNEL(c10::Half, 2, 4); break;
                         case 28: CALL_KERNEL(c10::Half, 2, 9); break;
-                        case default: throw std::invalid_argument("data-dim must be 4, 13 or 28.");
+                        default: throw std::invalid_argument("data-dim must be 4, 13 or 28.");
                     }
                     break;
                 case 8:
@@ -510,10 +507,10 @@ class DictTreeRender : public Function<DictTreeRender> {
                         case 4: CALL_KERNEL(c10::Half, 3, 1); break;
                         case 13: CALL_KERNEL(c10::Half, 3, 4); break;
                         case 28: CALL_KERNEL(c10::Half, 3, 9); break;
-                        case default: throw std::invalid_argument("data-dim must be 4, 13 or 28.");
+                        default: throw std::invalid_argument("data-dim must be 4, 13 or 28.");
                     }
                     break;
-                case default: throw std::invalid_argument("fine-resolution must be 2, 4 or 8.");
+                default: throw std::invalid_argument("fine-resolution must be 2, 4 or 8.");
                 }
             } else {
                 throw std::invalid_argument("Input data must be float16.");
@@ -564,7 +561,7 @@ class DictTreeRender : public Function<DictTreeRender> {
             auto offset_t = torch::tensor({offset, offset, offset}, coarse_grid.options());
             const uint32_t data_dim = atoms.size(2);
 
-            const dim3 grid_size(n_blocks_linear(rays_o.size(0), CUDA_WARPS_PER_BLOCK));
+            const dim3 grid_size(div_round_up((int)rays_o.size(0), CUDA_WARPS_PER_BLOCK));
             const dim3 block_size(CUDA_THREADS_PER_BLOCK);
             const uint32_t shared_mem = CUDA_WARPS_PER_BLOCK * coarse_grid.size(1);
 
