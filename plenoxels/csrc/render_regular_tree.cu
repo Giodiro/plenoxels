@@ -34,131 +34,99 @@ static const float OFFSET[8][3] = {{-0.5, -0.5, -0.5}, {-0.5, -0.5, 0.5}, {-0.5,
                                    {0.5, -0.5, -0.5},  {0.5, -0.5, 0.5},  {0.5, 0.5, -0.5},  {0.5, 0.5, 0.5}};
 
 
-template<typename scalar_t>
-__device__ __inline__ void dictionary_grad(
-    const Acc32<scalar_t, 2> coarse_grid,   // Rc^3, S
-    const Acc32<scalar_t, 3> atoms,         // Rf^3, S, D
-    Acc32<scalar_t, 2> d_coarse_grid,       // Rc^3, S
-    Acc32<scalar_t, 3> d_atoms,             // Rf^3, S, D
-    const scalar_t grad_output,             // 1
-    const scalar_t * __restrict__ point,    // 3
-    const fast_divmod& __restrict__ fast_divmod_fine_reso,
-    typename cub::WarpReduce<scalar_t>::TempStorage& __restrict__ cub_storage,
-    const uint32_t coarse_reso,
-    const uint32_t warp_lane
-)
+template<int32_t POW2_RF>
+__device__ __inline__ void coo_iw_hlf(
+    const float * __restrict__ p_wcoo,
+    const float * __restrict__ iw_multiplier,
+    const int32_t fine_reso,
+    const int32_t coarse_reso,
+    const int32_t neighbor_id,
+    int32_t * cn_wcoo,
+    int32_t * fn_wcoo,
+    __half2 * iw)
 {
-    const uint32_t tot_reso = coarse_reso * fast_divmod_fine_reso.d_;
-    const uint32_t D = atoms.size(2);
-    const uint32_t S = coarse_grid.size(1);
-    const scalar_t fp[3] = {point[0] * tot_reso, point[1] * tot_reso, point[2] * tot_reso};
-
-    int32_t cn[3];           // corner of coarse-neighbor cell in 'coarse-grid' coordinates
-    int32_t fn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
-    int32_t rfn[3];          // corner of fine-neighbor cell in 'full-grid' coordinates
-
-    scalar_t interp_weight;
-    int32_t cn_realcoo;
-    int32_t fn_realcoo;
-    for (int i = 0; i < 8; i++) {
-        fn[0] = floor2int(fp[0] + OFFSET[i][0]);
-        fn[1] = floor2int(fp[1] + OFFSET[i][1]);
-        fn[2] = floor2int(fp[2] + OFFSET[i][2]);
-        if (fn[0] < 0 || fn[0] >= tot_reso ||
-            fn[1] < 0 || fn[1] >= tot_reso ||
-            fn[2] < 0 || fn[2] >= tot_reso) {
-            continue;
-        }
-        fast_divmod_fine_reso.divmod(fn[0], cn[0], rfn[0]);  // fn[0] = fn[0] / fine_reso, cn[0] = fn[0] % fine_reso;
-        fast_divmod_fine_reso.divmod(fn[1], cn[1], rfn[1]);
-        fast_divmod_fine_reso.divmod(fn[2], cn[2], rfn[2]);
-        cn_realcoo = coo2idx(cn[0], cn[1], cn[2], coarse_reso);
-        fn_realcoo = coo2idx(rfn[0], rfn[1], rfn[2], fast_divmod_fine_reso.d_);
-
-        interp_weight = (1.0f - myabs(fp[0] - static_cast<scalar_t>(fn[0]) - 0.5f)) *
-                        (1.0f - myabs(fp[1] - static_cast<scalar_t>(fn[1]) - 0.5f)) *
-                        (1.0f - myabs(fp[2] - static_cast<scalar_t>(fn[2]) - 0.5f));
-        interp_weight *= grad_output;
-
-        for (uint32_t s = 0; s < S; s++) {
-            atomicAdd(
-                &d_atoms[fn_realcoo][s][warp_lane],
-                coarse_grid[cn_realcoo][s] * interp_weight);  // TODO: NOT COALESCED.
-
-            scalar_t grad_cg = cub::WarpReduce<scalar_t>(cub_storage).Sum(
-                atoms[fn_realcoo][s][warp_lane] * interp_weight, (int)D);
-            if (warp_lane == 0) {
-                atomicAdd(&d_coarse_grid[cn_realcoo][s], grad_cg);  // TODO: NOT COALESCED.
-            }
-            __syncwarp((1U << D) - 1);
-        }
-    }
+    int32_t fn[3], cn[3], rfn[3];
+    fn[0] = clamp(floor2int(p_wcoo[0] + OFFSET[neighbor_id][0]), 0, fine_reso * coarse_reso - 1);
+    fn[1] = clamp(floor2int(p_wcoo[1] + OFFSET[neighbor_id][1]), 0, fine_reso * coarse_reso - 1);
+    fn[2] = clamp(floor2int(p_wcoo[2] + OFFSET[neighbor_id][2]), 0, fine_reso * coarse_reso - 1);
+    fast_divmod_pow2<POW2_RF>(fn[0], cn[0], rfn[0]);
+    fast_divmod_pow2<POW2_RF>(fn[1], cn[1], rfn[1]);
+    fast_divmod_pow2<POW2_RF>(fn[2], cn[2], rfn[2]);
+    *iw = __float2half2_rn(
+        (1.0f - myabs(p_wcoo[0] - static_cast<float>(fn[0]) - 0.5f)) *
+        (1.0f - myabs(p_wcoo[1] - static_cast<float>(fn[1]) - 0.5f)) *
+        (1.0f - myabs(p_wcoo[2] - static_cast<float>(fn[2]) - 0.5f)) *
+        (iw_multiplier == nullptr ? 1.0f : *iw_multiplier)
+    );
+    *cn_wcoo = coo2idx(cn[0], cn[1], cn[2], coarse_reso);
+    *fn_wcoo = coo2idx(rfn[0], rfn[1], rfn[2], fine_reso);
 }
 
 
-template<typename scalar_t>
-__device__ __inline__ void
-dictionary_interp(const Acc32<scalar_t, 2> coarse_grid,  // Rc^3, S
-                  const Acc32<scalar_t, 3> atoms,        // Rf^3, S, D
-                  const scalar_t * __restrict__ point,    // 3
-                        scalar_t * __restrict__ coarse_w_smem,  // num warps in block * S
-                        scalar_t * __restrict__ out,      // 1
-                  const fast_divmod& __restrict__ fast_divmod_fine_reso,
-                  const uint32_t coarse_reso,
-                  const uint32_t warp_lane,
-                  const uint32_t warp_offset)
+template<int32_t POW2_RF>
+__device__ __inline__ void dictgrad_hlf_singlept(
+    const c10::Half * __restrict__ coarse_grid,     // Rc^3, S
+    const c10::Half * __restrict__ atoms,           // Rf^3, S, D
+          c10::Half * __restrict__ d_coarse_grid,   // Rc^3, S
+          c10::Half * __restrict__ d_atoms,         // Rf^3, S, D
+    const float                    grad_output,     // 1
+    const float     * __restrict__ point,           // 3
+    typename cub::WarpReduce<__half2>::TempStorage& __restrict__ cub_storage,
+    const int32_t coarse_reso,
+    const int32_t D,
+    const int32_t S)
 {
-    const uint32_t tot_reso = coarse_reso * fast_divmod_fine_reso.d_;
-    const uint32_t D = atoms.size(2);
-    const uint32_t S = coarse_grid.size(1);
-    const scalar_t fp[3] = {point[0] * tot_reso, point[1] * tot_reso, point[2] * tot_reso};
+    constexpr int32_t fine_reso = 2 << (POW2_RF - 1);
+    const int32_t warp_lane = threadIdx.x & 0x1F;
+    const int32_t warp_offset = (threadIdx.x >> 5) * (S >> 1);
 
-    int32_t cn[3];           // corner of coarse-neighbor cell in 'coarse-grid' coordinates
-    int32_t fn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
-    int32_t rfn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
+    const float fp[3] = {
+        point[0] * coarse_reso * fine_reso, point[1] * coarse_reso * fine_reso, point[2] * coarse_reso * fine_reso};
 
     scalar_t interp_weight;
-    *out = 0.0f;
-
-    int32_t cn_realcoo;
-    int32_t fn_realcoo;
+    int32_t cn_wcoo, fn_wcoo;
+    __half2 iw;
     for (int i = 0; i < 8; i++) {
-        fn[0] = floor2int(fp[0] + OFFSET[i][0]);
-        fn[1] = floor2int(fp[1] + OFFSET[i][1]);
-        fn[2] = floor2int(fp[2] + OFFSET[i][2]);
-        if (fn[0] < 0 || fn[0] >= tot_reso ||
-            fn[1] < 0 || fn[1] >= tot_reso ||
-            fn[2] < 0 || fn[2] >= tot_reso) {
-            continue;
-        }
-        fast_divmod_fine_reso.divmod(fn[0], cn[0], rfn[0]);  // fn[0] = fn[0] / fine_reso, cn[0] = fn[0] % fine_reso;
-        fast_divmod_fine_reso.divmod(fn[1], cn[1], rfn[1]);
-        fast_divmod_fine_reso.divmod(fn[2], cn[2], rfn[2]);
-        cn_realcoo = coo2idx(cn[0], cn[1], cn[2], coarse_reso);
-        fn_realcoo = coo2idx(rfn[0], rfn[1], rfn[2], fast_divmod_fine_reso.d_);
+        coo_iw_hlf<POW2_RF>(fp, &grad_output, fine_reso, coarse_reso, i, &cn_wcoo, &fn_coo, &iw);
 
-        interp_weight = (1.0f - myabs(fp[0] - static_cast<scalar_t>(fn[0]) - 0.5f)) *
-                        (1.0f - myabs(fp[1] - static_cast<scalar_t>(fn[1]) - 0.5f)) *
-                        (1.0f - myabs(fp[2] - static_cast<scalar_t>(fn[2]) - 0.5f));
-        // load w from coarse_grid to shared mem using all active threads in warp
-        for (int s = warp_lane; s < S; s += D) {
-            coarse_w_smem[warp_offset * S + s] = coarse_grid[cn_realcoo][s];
+        for (int s = warp_lane * 2; s < S; s += 64) {
+            cg_shmem[warp_offset + s >> 1] = __hmul2(
+                __ldg(reinterpret_cast<const __half2*>(coarse_grid + cn_wcoo * S + s)),
+                iw
+            );
         }
-        __syncwarp((1U << D) - 1);
-        for (int s = 0; s < S; s++) {
-            // pseudo: out += coarse_grid[cn][s] * iw[j] * atoms[fn][s][d]
-            myfma(coarse_w_smem[warp_offset * S + s] * interp_weight,
-                  atoms[fn_realcoo][s][warp_lane],
-                  out);
+        __syncwarp();
+
+        for (int s = 0; s < S; s += 2) {
+            // Gradient with respect to atoms
+            if (warp_lane <= D) {
+                atomicAdd(
+                    (__half*)d_atoms + fn_wcoo * S * D + s * D + warp_lane,
+                    __low2half(cg_shmem[warp_offset + s >> 1])
+                );
+                atomicAdd(
+                    (__half*)d_atoms + fn_wcoo * S * D + (s + 1) * D + warp_lane,
+                    __high2half(cg_shmem[warp_offset + s >> 2])
+                );
+            }
+            // Gradient wrt coarse-grid
+            __half2 grad_cg = warp_lane > D ? __float2half2_rn(0.0f) :
+                __halves2half2(__ldg((__half*)atoms + fn_wcoo * S * D + s * D + warp_lane),
+                               __ldg((__half*)atoms + fn_wcoo * S * D + (s + 1) * D + warp_lane));
+            grad_cg = __hmul2(grad_cg, iw);
+            grad_cg = cub::WarpReduce<__half2>(cub_storage).Sum(grad_cg);
+            if (warp_lane == 0) {
+                atomicAdd(reinterpret_cast<__half2*>(d_coarse_grid + cn_wcoo * S + s), grad_cg)
+            }
         }
-        __syncwarp((1U << D) - 1);
+        __syncwarp();
     }
 }
 
 
 template<int32_t POW2_RF>
 __device__ __inline__ void
-k_l2_interp_hlf_single_pt(
+dict_hlf_singlept(
     const c10::Half * __restrict__ coarse_grid,  // Rc^3, S
     const c10::Half * __restrict__ atoms,        // Rf^3, S, D
     const float     * __restrict__ point,        // 3
@@ -170,30 +138,18 @@ k_l2_interp_hlf_single_pt(
 {
     constexpr int32_t fine_reso = 2 << (POW2_RF - 1);
     const int32_t warp_lane = threadIdx.x & 0x1F;
-    const int32_t warp_offset = (threadIdx.x >> 5) * S / 2;
+    const int32_t warp_offset = (threadIdx.x >> 5) * S >> 1;
 
     const float fp[3] = {
         point[0] * coarse_reso * fine_reso, point[1] * coarse_reso * fine_reso, point[2] * coarse_reso * fine_reso};
-    int32_t cn[3];           // corner of coarse-neighbor cell in 'coarse-grid' coordinates
-    int32_t fn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
-    int32_t rfn[3];          // corner of fine-neighbor cell in 'fine-grid' coordinates
     __half2 acc2 = __float2half2_rn(0.0f);
+    int32_t cn_wcoo, fn_coo;
+    __half2 iw;
     for (int i = 0; i < 8; i++) {
-        fn[0] = clamp(floor2int(fp[0] + OFFSET[i][0]), 0, fine_reso * coarse_reso - 1);
-        fn[1] = clamp(floor2int(fp[1] + OFFSET[i][1]), 0, fine_reso * coarse_reso - 1);
-        fn[2] = clamp(floor2int(fp[2] + OFFSET[i][2]), 0, fine_reso * coarse_reso - 1);
-        fast_divmod_pow2<POW2_RF>(fn[0], cn[0], rfn[0]);
-        fast_divmod_pow2<POW2_RF>(fn[1], cn[1], rfn[1]);
-        fast_divmod_pow2<POW2_RF>(fn[2], cn[2], rfn[2]);
-        __half2 iw = __float2half2_rn(
-            (1.0f - myabs(fp[0] - static_cast<float>(fn[0]) - 0.5f)) *
-            (1.0f - myabs(fp[1] - static_cast<float>(fn[1]) - 0.5f)) *
-            (1.0f - myabs(fp[2] - static_cast<float>(fn[2]) - 0.5f)));
-        int32_t cn_wcoo = coo2idx(cn[0], cn[1], cn[2], coarse_reso);
-        int32_t fn_wcoo = coo2idx(rfn[0], rfn[1], rfn[2], fine_reso);
+        coo_iw_hlf<POW2_RF>(fp, nullptr, fine_reso, coarse_reso, i, &cn_wcoo, &fn_coo, &iw);
         // load w from coarse_grid to shared mem using all threads in warp
         for (int s = warp_lane * 2; s < S; s += 32 * 2) {
-            cg_shmem[warp_offset + s / 2] = __ldg(
+            cg_shmem[warp_offset + s >> 1] = __ldg(
                 reinterpret_cast<const __half2*>(coarse_grid + cn_wcoo * S + s));
         }
         __syncwarp();
@@ -201,7 +157,7 @@ k_l2_interp_hlf_single_pt(
             __half2 atom_weight = warp_lane > D ? __float2half2_rn(0.0f) :
                 __halves2half2(__ldg((__half*)atoms + fn_wcoo * S * D + s * D + warp_lane),
                                __ldg((__half*)atoms + fn_wcoo * S * D + (s + 1) * D + warp_lane));
-            acc2 = __hfma2(cg_shmem[warp_offset + s / 2], atom_weight, acc2);
+            acc2 = __hfma2(cg_shmem[warp_offset + s >> 1], atom_weight, acc2);
         }
         acc2 = __hmul2(iw, acc2);
         __syncwarp();
@@ -238,19 +194,17 @@ trace_ray(
     typedef cub::WarpReduce<float> WarpReduce;
 	if (ray_id >= N) return;
 
-    // shared memory. This is done to save some register space, no actual sharing occurs.
+    // shared memory.
     __shared__ float sphfunc_val[CUDA_WARPS_PER_BLOCK][9];
     __shared__ Ray<float> ray_spec[CUDA_WARPS_PER_BLOCK];
     __shared__ typename WarpReduce::TempStorage cub_storage[CUDA_WARPS_PER_BLOCK];
     __shared__ float interpolated[CUDA_WARPS_PER_BLOCK][D];
-    // dynamically allocated shmem. This is actually shared
     __half2 * cg_shmem = shared_memory_proxy<__half2>(); // V1_WARPS_PER_BLOCK * S / 2;
 
     // Setup the ray-spec. Will copy data from rays_o, rays_d
     ray_spec[warp_offset].set(rays_o + ray_id * 3, rays_d + ray_id * 3);
     // Spherical harmonics are computed before ray normalization
     calc_sphfunc(/*basis_dim=*/BASIS_DIM, /*dir=*/ray_spec[warp_offset].dir, /*out=*/sphfunc_val[warp_offset]);
-    // Finish ray-spec initialization
     ray_find_bounds(ray_spec[warp_offset], scaling, offset, opt.step_size, opt.near_plane);
 
     if (ray_spec[warp_offset].tmin > ray_spec[warp_offset].tmax) {  // Ray doesn't hit box
@@ -258,22 +212,12 @@ trace_ray(
         return;
     }
 
-    float t = ray_spec[warp_offset].tmin;
-    float outv = 0.0f;
-    float log_light_intensity = 0.0f;
+    float t = ray_spec[warp_offset].tmin, outv = 0.0f, log_light_intensity = 0.0f;
     while (t <= ray_spec[warp_offset].tmax) {
         ray_spec[warp_offset].update_pos(t);
-
-//        dictionary_interp(
-//            coarse_grid, atoms, /*point=*/ray_spec[warp_offset].pos, /*coarse_w_smem=*/coarse_w_smem,
-//            /*out=*/&interp_val, fast_divmod_fine_reso, coarse_reso, warp_lane, warp_offset);
-        k_l2_interp_hlf_single_pt<POW2_RF>(
+        dict_hlf_singlept<POW2_RF>(
             coarse_grid, atoms, /*point=*/ray_spec[warp_offset].pos, /*out=*/interpolated[warp_offset], /*cg_shmem=*/cg_shmem,
             coarse_reso, D, S);
-
-//        sigma = interp_val;  // This has an effect only in last thread in active warp.
-//        // broadcast sigma (stored in last coordinate) to other threads in warp
-//        sigma = __shfl_sync((1U << D) - 1, sigma, /*srcLane=*/D - 1);
         __syncwarp();
         if (interpolated[warp_offset][D - 1] > opt.sigma_thresh) {
             float interp_val = warp_lane > (D - 1) ? 0.0f :
@@ -302,117 +246,108 @@ trace_ray(
 
 
 
-template <typename scalar_t, uint32_t BASIS_DIM>
+template <int32_t POW2_RF, uint32_t BASIS_DIM>
 __global__ void
 trace_ray_backward(
-        const Acc32<scalar_t, 2> grad_output,  // N, 3
-        const Acc32<scalar_t, 2> color_cache,  // N, 3
-        const Acc32<scalar_t, 2> coarse_grid,
-        const Acc32<scalar_t, 3> atoms,
-        const Acc32<scalar_t, 2> rays_o,
-        const Acc32<scalar_t, 2> rays_d,
-        Acc32<scalar_t, 2> d_coarse_grid,
-        Acc32<scalar_t, 3> d_atoms,
-        const fast_divmod fast_divmod_fine_reso,
-        const uint32_t coarse_reso,
-        const uint32_t n_rays,
-        const scalar_t * __restrict__ scaling,
-        const scalar_t * __restrict__ offset,
+        const float * __restrict__ grad_output,  // N, 3
+        const float * __restrict__ color_cache,  // N, 3
+        const c10::Half * __restrict__ coarse_grid,
+        const c10::Half * __restrict__ atoms,
+        const float * __restrict__ rays_o,
+        const float * __restrict__ rays_d,
+        const c10::Half * __restrict__ d_coarse_grid,
+        const c10::Half * __restrict__ d_atoms,
+        const float * __restrict__ scaling,
+        const float * __restrict__ offset,
+        const int32_t coarse_reso,
+        const int32_t N,
+        const int32_t S,
         const RenderOptions opt
 )
 {
-    const uint32_t ray_id = (blockIdx.x * blockDim.x + threadIdx.x) / WARP_SIZE;
-    const uint32_t warp_offset = threadIdx.x / WARP_SIZE;
-    const uint32_t warp_lane = threadIdx.x % WARP_SIZE;
-    const uint32_t lane_colorgrp = warp_lane / BASIS_DIM;
-    const uint32_t lane_colorgrp_id = warp_lane % BASIS_DIM;
+    constexpr int32_t D = BASIS_DIM * 3 + 1;
+    const int32_t warp_lane = threadIdx.x & 0x1F;
+    const int32_t warp_offset = (threadIdx.x >> 5);
+    const int32_t ray_id = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    const int32_t lane_colorgrp = warp_lane / BASIS_DIM;
+    const int32_t lane_colorgrp_id = warp_lane % BASIS_DIM;
     // if BASIS_DIM=9, leader_mask=0000 1000 0000 0100 0000 0010 0000 0001 selecting the leaders of the color
     // groups and the final sigma dimension
     const uint32_t leader_mask = 1U | (1U << BASIS_DIM) | (1U << (2 * BASIS_DIM)) | (1U << (3 * BASIS_DIM));
-    const uint32_t D = atoms.size(2);  // D is also BASIS_DIM * 3 + 1
-    typedef cub::WarpReduce<scalar_t> WarpReduce;
-	if (ray_id >= n_rays || warp_lane >= D) return;
+    typedef cub::WarpReduce<float> WarpReducef;
+    typedef cub::WarpReduce<__half2> WarpReduceh2;
+	if (ray_id >= N) return;
 
-    // shared memory. This is done to save some register space, no actual sharing occurs.
+    // shared memory.
     __shared__ scalar_t sphfunc_val[CUDA_WARPS_PER_BLOCK][9];
     __shared__ Ray<scalar_t> ray_spec[CUDA_WARPS_PER_BLOCK];
-    __shared__ typename WarpReduce::TempStorage cub_storage[CUDA_WARPS_PER_BLOCK];
-    // dynamically allocated shmem. This is actually shared
-    scalar_t* coarse_w_smem = shared_memory_proxy<scalar_t>();  // CUDA_WARPS_PER_BLOCK * S
+    __shared__ typename WarpReducef::TempStorage cub_storage[CUDA_WARPS_PER_BLOCK];
+    __shared__ typename WarpReduceh2::TempStorage cub_storage_h2[CUDA_WARPS_PER_BLOCK];
+    __shared__ float interpolated[CUDA_WARPS_PER_BLOCK][D];
+    __half2 * cg_shmem = shared_memory_proxy<__half2>(); // V1_WARPS_PER_BLOCK * S / 2;
 
     // Setup the ray-spec. Will copy data from rays_o, rays_d
     ray_spec[warp_offset].set(rays_o[ray_id].data(), rays_d[ray_id].data());
     // Spherical harmonics are computed before ray normalization
     calc_sphfunc(/*basis_dim=*/BASIS_DIM, /*dir=*/ray_spec[warp_offset].dir, /*out=*/sphfunc_val[warp_offset]);
-    // Finish ray-spec initialization
     ray_find_bounds(ray_spec[warp_offset], scaling, offset, (scalar_t)opt.step_size, (scalar_t)opt.near_plane);
 
-    scalar_t c_grad_out[3];
-    const scalar_t norm_factor = 2.0f / (3 * n_rays);
+    float c_grad_out[3];
+    // const float norm_factor = 2.0f / (3 * N);
     #pragma unroll 3
     for (int i = 0; i < 3; ++i) {
         // TODO: Figure out what the commented-out normalization did (from svox).
-        c_grad_out[i] = grad_output[ray_id][i];//(color_cache[ray_id][i] - grad_output[ray_id][i]) * norm_factor;
+        c_grad_out[i] = grad_output[ray_id * 3 + i];//(color_cache[ray_id][i] - grad_output[ray_id][i]) * norm_factor;
     }
-    scalar_t accum = fmaf(color_cache[ray_id][0], c_grad_out[0],
-                      fmaf(color_cache[ray_id][1], c_grad_out[1],
-                           color_cache[ray_id][2] * c_grad_out[2]));
+    float accum = fmaf(color_cache[ray_id * 3], c_grad_out[0],
+                      fmaf(color_cache[ray_id * 3 + 1], c_grad_out[1],
+                           color_cache[ray_id * 3 + 2] * c_grad_out[2]));
 
-    if (ray_spec[warp_offset].tmin > ray_spec[warp_offset].tmax) {
-        return;
-    }
+    if (ray_spec[warp_offset].tmin > ray_spec[warp_offset].tmax) { return; }
 
-    scalar_t t = ray_spec[warp_offset].tmin;
-    const scalar_t gout = lane_colorgrp < 3 ? c_grad_out[lane_colorgrp] : 0.0f;  // avoid out-of-bounds on sigma thread
-    scalar_t log_light_intensity = 0.0f;
-    scalar_t sigma, interp_val;
-
-    // remat samples
+    float t = ray_spec[warp_offset].tmin;
+    const float gout = lane_colorgrp < 3 ? c_grad_out[lane_colorgrp] : 0.0f;  // avoid out-of-bounds on sigma thread
+    float log_light_intensity = 0.0f;
     while (t <= ray_spec[warp_offset].tmax) {
         ray_spec[warp_offset].update_pos(t);
 
-        dictionary_interp(
-            coarse_grid, atoms, /*point=*/ray_spec[warp_offset].pos, /*coarse_w_smem=*/coarse_w_smem,
-            /*out=*/&interp_val, fast_divmod_fine_reso, coarse_reso, warp_lane, warp_offset);
-        sigma = interp_val;  // This has an effect only in last thread in active warp.
-        // broadcast sigma (stored in last coordinate) to other threads in warp
-        sigma = __shfl_sync((1U << D) - 1, sigma, /*srcLane=*/D - 1);
+        dict_hlf_singlept<POW2_RF>(
+            coarse_grid, atoms, /*point=*/ray_spec[warp_offset].pos, /*out=*/interpolated[warp_offset], /*cg_shmem=*/cg_shmem,
+            coarse_reso, D, S);
+        __syncwarp();
 
-        if (sigma > opt.sigma_thresh) {
-            scalar_t weighted_lane_color = interp_val * sphfunc_val[warp_offset][lane_colorgrp_id];
-            const scalar_t pcnt = ray_spec[warp_offset].world_step * sigma;
-            const scalar_t weight = myexp(log_light_intensity) * (1.f - myexp(-pcnt));
+        if (interpolated[warp_offset][D - 1] > opt.sigma_thresh) {
+            float weighted_lane_color = warp_lane > (D - 1) ? 0.0f :
+                interpolated[warp_offset][warp_lane] * sphfunc_val[warp_offset][lane_colorgrp_id];
+            const float pcnt = ray_spec[warp_offset].world_step * sigma;
+            const float weight = myexp(log_light_intensity) * (1.f - myexp(-pcnt));
             log_light_intensity -= pcnt;
 
             // Sum over all dimensions for the color of lane_colorgrp_id. Only valid in the head.
-            const scalar_t lane_color_total = WarpReduce(cub_storage[warp_offset]).HeadSegmentedSum(
+            const float lane_color_total = WarpReduce(cub_storage[warp_offset]).HeadSegmentedSum(
                 weighted_lane_color, lane_colorgrp_id == 0) + 0.5f;
-            scalar_t total_color = mymax(lane_color_total, 0.0f);  // Clamp to [+0, infty)
-            scalar_t color_in_01 = total_color == lane_color_total;
-            total_color *= gout;  // the multiplication zeroes out total_color for the sigma lane
+            float total_color = mymax(lane_color_total, 0.0f);  // Clamp to [+0, infty)
+            float color_in_01 = total_color == lane_color_total;
+            total_color *= gout;  // the multiplication zeroes out total_color for the lanes >= D - 1
 
             // For each 'leader' thread (first thread in a colorgroup), sum the values in the other leaders.
             total_color += __shfl_up_sync(leader_mask, total_color, /*delta=*/BASIS_DIM);
             total_color += __shfl_up_sync(leader_mask, total_color, /*delta=*/2 * BASIS_DIM);
-            //scalar_t total_color_c1 = __shfl_sync(leader_mask, total_color, /*srcLane=*/BASIS_DIM);
-            //total_color += __shfl_sync(leader_mask, total_color, 2 * BASIS_DIM);
-            ///total_color += total_color_c1;
 
-            // for sigma thread this will be something random
-            color_in_01 = __shfl_sync((1U << D) - 1, color_in_01, /*srcLane=*/lane_colorgrp * BASIS_DIM);
-            const scalar_t grad_common = weight * color_in_01 * gout;
-            const scalar_t curr_grad_color = sphfunc_val[warp_offset][lane_colorgrp_id] * grad_common;
+            // for sigma thread (and all lanes >= D - 1) this will be something random
+            color_in_01 = __shfl_sync(0xffffffff, color_in_01, /*srcLane=*/lane_colorgrp * BASIS_DIM);
+            const float grad_common = weight * color_in_01 * gout;
+            const float curr_grad_color = sphfunc_val[warp_offset][lane_colorgrp_id] * grad_common;
 
             accum -= weight * total_color;
-            scalar_t curr_grad_sigma = ray_spec[warp_offset].world_step * (total_color * myexp(log_light_intensity) - accum);
+            float curr_grad_sigma = ray_spec[warp_offset].world_step * (total_color * myexp(log_light_intensity) - accum);
 
-            dictionary_grad(coarse_grid, atoms, d_coarse_grid, d_atoms, 
-                            /*grad_output=*/warp_lane < D - 1 ? curr_grad_color : curr_grad_sigma,
-                            /*point=*/ray_spec[warp_offset].pos, fast_divmod_fine_reso,
-                            cub_storage[warp_offset], coarse_reso, warp_lane);
-            if (myexp(log_light_intensity) < opt.stop_thresh) {
-                break;
-            }
+            dictgrad_hlf_singlept<POW2_RF>(
+                coarse_grid, atoms, d_coarse_grid, d_atoms,
+                /*grad_output=*/warp_lane < D - 1 ? curr_grad_color : curr_grad_sigma,
+                /*point=*/ray_spec[warp_offset].pos, cub_storage_h2[warp_offset], coarse_reso, D, S);
+            )
+            if (myexp(log_light_intensity) < opt.stop_thresh) { break; }
         }
         t += opt.step_size;
     }
@@ -548,82 +483,60 @@ class DictTreeRender : public Function<DictTreeRender> {
                 .near_plane = 0.0f,
                 .last_sample_opaque = false
             };
-            fast_divmod fast_divmod_fine_reso((int32_t)fine_reso);
-
+            const int32_t N = rays_o.size(0);
+            const int32_t D = atoms.size(2);
+            const int32_t S = atoms.size(1);
             const Tensor grad_output = grad_outputs[0];
-
             const at::cuda::CUDAGuard device_guard(coarse_grid.device());
             const auto stream = at::cuda::getCurrentCUDAStream();
 
             Tensor d_coarse_grid = torch::zeros_like(coarse_grid);
             Tensor d_atoms = torch::zeros_like(atoms);
-            auto scaling_t = torch::tensor({scaling, scaling, scaling}, coarse_grid.options());
-            auto offset_t = torch::tensor({offset, offset, offset}, coarse_grid.options());
-            const uint32_t data_dim = atoms.size(2);
+            auto scaling_t = torch::tensor({scaling, scaling, scaling}, rays_o.options());
+            auto offset_t = torch::tensor({offset, offset, offset}, rays_o.options());
 
-            const dim3 grid_size(div_round_up((int)rays_o.size(0), CUDA_WARPS_PER_BLOCK));
+            const dim3 grid_size(div_round_up(N, CUDA_WARPS_PER_BLOCK));
             const dim3 block_size(CUDA_THREADS_PER_BLOCK);
-            const uint32_t shared_mem = CUDA_WARPS_PER_BLOCK * coarse_grid.size(1);
+            const int32_t shared_mem = CUDA_WARPS_PER_BLOCK * S;
 
-            AT_DISPATCH_FLOATING_TYPES(coarse_grid.scalar_type(), "trace_ray_cuvol_bwd", [&] {
-                switch (data_dim) {
-                    case 4:
-                        trace_ray_backward<scalar_t, 1><<<grid_size, block_size, shared_mem * sizeof(scalar_t), stream.stream()>>>(
-                            grad_output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                            fwd_output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                            coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                            atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
-                            rays_o.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                            rays_d.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                            d_coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                            d_atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
-                            fast_divmod_fine_reso,
-                            (uint32_t)coarse_reso,
-                            (uint32_t)rays_o.size(0),
-                            scaling_t.data_ptr<scalar_t>(),
-                            offset_t.data_ptr<scalar_t>(),
-                            opt
-                        );
-                        break;
-                    case 13:
-                        trace_ray_backward<scalar_t, 4><<<grid_size, block_size, shared_mem * sizeof(scalar_t), stream.stream()>>>(
-                            grad_output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                            fwd_output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                            coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                            atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
-                            rays_o.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                            rays_d.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                            d_coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                            d_atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
-                            fast_divmod_fine_reso,
-                            (uint32_t)coarse_reso,
-                            (uint32_t)rays_o.size(0),
-                            scaling_t.data_ptr<scalar_t>(),
-                            offset_t.data_ptr<scalar_t>(),
-                            opt
-                        );
-                        break;
-                    case 28:
-                        trace_ray_backward<scalar_t, 9><<<grid_size, block_size, shared_mem * sizeof(scalar_t), stream.stream()>>>(
-                            grad_output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                            fwd_output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                            coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                            atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
-                            rays_o.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                            rays_d.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                            d_coarse_grid.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
-                            d_atoms.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>(),
-                            fast_divmod_fine_reso,
-                            (uint32_t)coarse_reso,
-                            (uint32_t)rays_o.size(0),
-                            scaling_t.data_ptr<scalar_t>(),
-                            offset_t.data_ptr<scalar_t>(),
-                            opt
-                        );
-                        break;
-                    // TODO: default
+            #define CALL_KERNEL(T, RF, BD)                                                                              \
+                trace_ray_backward<RF, BD><<<grid_size, block_size, shared_mem * sizeof(T), stream.stream()>>>(         \
+                    grad_output.data_ptr<float>(), fwd_output.data_ptr<float>(), coarse_grid.data_ptr<c10::Half>(),     \
+                    atoms.data_ptr<c10::Half>(), rays_o.data_ptr<float>(), rays_d.data_ptr<float>(),                    \
+                    d_coarse_grid.data_ptr<c10::Half>(), d_atoms.data_ptr<c10::Half>(), scaling_t.data_ptr<float>(),    \
+                    offset_t.data_ptr<float>(), coarse_reso, N, S, opt)
+            if (coarse_grid.scalar_type() == at::ScalarType::Half) {
+                switch (fine_reso) {
+                case 2:
+                    switch (D) {
+                        case 4: CALL_KERNEL(c10::Half, 1, 1); break;
+                        case 13: CALL_KERNEL(c10::Half, 1, 4); break;
+                        case 28: CALL_KERNEL(c10::Half, 1, 9); break;
+                        default: throw std::invalid_argument("data-dim must be 4, 13 or 28.");
+                    }
+                    break;
+                case 4:
+                    switch (D) {
+                        case 4: CALL_KERNEL(c10::Half, 2, 1); break;
+                        case 13: CALL_KERNEL(c10::Half, 2, 4); break;
+                        case 28: CALL_KERNEL(c10::Half, 2, 9); break;
+                        default: throw std::invalid_argument("data-dim must be 4, 13 or 28.");
+                    }
+                    break;
+                case 8:
+                    switch (D) {
+                        case 4: CALL_KERNEL(c10::Half, 3, 1); break;
+                        case 13: CALL_KERNEL(c10::Half, 3, 4); break;
+                        case 28: CALL_KERNEL(c10::Half, 3, 9); break;
+                        default: throw std::invalid_argument("data-dim must be 4, 13 or 28.");
+                    }
+                    break;
+                default: throw std::invalid_argument("fine-resolution must be 2, 4 or 8.");
                 }
-            });
+            } else {
+                throw std::invalid_argument("Input data must be float16.");
+            }
+            #undef CALL_KERNEL
             return {d_coarse_grid, d_atoms, Tensor(), Tensor(), Tensor(), Tensor(), Tensor(), Tensor(), Tensor(), Tensor(), Tensor()};
         }
 };
