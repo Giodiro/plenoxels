@@ -35,8 +35,6 @@ static const float OFFSET[8][3] = {{-0.5, -0.5, -0.5}, {-0.5, -0.5, 0.5}, {-0.5,
                                    {0.5, -0.5, -0.5},  {0.5, -0.5, 0.5},  {0.5, 0.5, -0.5},  {0.5, 0.5, 0.5}};
 
 
-
-
 template<int32_t POW2_RF>
 __device__ __inline__ void compute_coo_iw(
     const float * __restrict__ p_wcoo,
@@ -109,27 +107,23 @@ k_l2_interp(const input_t* __restrict__ coarse_grid,  // Rc^3, S
 
 
 template<int32_t POW2_RF>
-__global__ void
-k_l2_interp_hlf(const c10::Half * __restrict__ coarse_grid,  // Rc^3, S
-                const c10::Half * __restrict__ atoms,  // Rf^3, S, D
-                const float     * __restrict__ points,  // N, 3
-                      float     * __restrict__ out,  // N, D
-                const int32_t coarse_reso,
-                const int32_t D,
-                const int32_t N,
-                const int32_t S)
+__device__ __inline__ void
+k_l2_interp_hlf_single_pt(
+    const c10::Half * __restrict__ coarse_grid,  // Rc^3, S
+    const c10::Half * __restrict__ atoms,        // Rf^3, S, D
+    const float     * __restrict__ point,        // 3
+          float     * __restrict__ out,          // D
+          __half2   * __restrict__ cg_shmem,     // V1_WARPS_PER_BLOCK * S / 2
+    const int32_t coarse_reso,
+    const int32_t D,
+    const int32_t S)
 {
     constexpr int32_t fine_reso = 2 << (POW2_RF - 1);
-    const int32_t point_id = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
     const int32_t warp_lane = threadIdx.x & 0x1F;
-    const int32_t warp_offset = (threadIdx.x >> 5) * S / 2;  // warp_block_id * S
-    if (point_id >= N) { return; }
+    const int32_t warp_offset = (threadIdx.x >> 5) * S / 2;
 
-    __half2 * coarse_w = shared_memory_proxy<__half2>(); // V1_WARPS_PER_BLOCK * S / 2;
-    const float fp[3] = {points[point_id * 3] * coarse_reso * fine_reso,
-                         points[point_id * 3 + 1] * coarse_reso * fine_reso,
-                         points[point_id * 3 + 2] * coarse_reso * fine_reso};
-
+    const float fp[3] = {
+        point[0] * coarse_reso * fine_reso, point[1] * coarse_reso * fine_reso, point[2] * coarse_reso * fine_reso};
     int32_t cn[3];           // corner of coarse-neighbor cell in 'coarse-grid' coordinates
     int32_t fn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
     int32_t rfn[3];          // corner of fine-neighbor cell in 'fine-grid' coordinates
@@ -149,7 +143,7 @@ k_l2_interp_hlf(const c10::Half * __restrict__ coarse_grid,  // Rc^3, S
         int32_t fn_wcoo = coo2idx(rfn[0], rfn[1], rfn[2], fine_reso);
         // load w from coarse_grid to shared mem using all threads in warp
         for (int s = warp_lane * 2; s < S; s += 32 * 2) {
-            coarse_w[warp_offset + s / 2] = __ldg(
+            cg_shmem[warp_offset + s / 2] = __ldg(
                 reinterpret_cast<const __half2*>(coarse_grid + cn_wcoo * S + s));
         }
         __syncwarp();
@@ -157,14 +151,38 @@ k_l2_interp_hlf(const c10::Half * __restrict__ coarse_grid,  // Rc^3, S
             __half2 atom_weight = warp_lane > D ? __float2half2_rn(0.0f) :
                 __halves2half2(__ldg((__half*)atoms + fn_wcoo * S * D + s * D + warp_lane),
                                __ldg((__half*)atoms + fn_wcoo * S * D + (s + 1) * D + warp_lane));
-            acc2 = __hfma2(coarse_w[warp_offset + s / 2], atom_weight, acc2);
+            acc2 = __hfma2(cg_shmem[warp_offset + s / 2], atom_weight, acc2);
         }
-        __syncwarp();
         acc2 = __hmul2(iw, acc2);
+        __syncwarp();
     }
     if (warp_lane < D) {
-        out[point_id * D + warp_lane] = __low2float(acc2) + __high2float(acc2);
+        out[warp_lane] = __low2float(acc2) + __high2float(acc2);
     }
+}
+
+
+template<int32_t POW2_RF>
+__global__ void
+k_l2_interp_hlf(const c10::Half * __restrict__ coarse_grid,  // Rc^3, S
+                const c10::Half * __restrict__ atoms,  // Rf^3, S, D
+                const float     * __restrict__ points,  // N, 3
+                      float     * __restrict__ out,  // N, D
+                const int32_t coarse_reso,
+                const int32_t D,
+                const int32_t N,
+                const int32_t S)
+{
+    constexpr int32_t fine_reso = 2 << (POW2_RF - 1);
+    const int32_t point_id = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    const int32_t warp_lane = threadIdx.x & 0x1F;
+    const int32_t warp_offset = (threadIdx.x >> 5) * S / 2;  // warp_block_id * S
+    if (point_id >= N) { return; }
+
+    __half2 * coarse_w = shared_memory_proxy<__half2>(); // V1_WARPS_PER_BLOCK * S / 2;
+
+    k_l2_interp_hlf_single_pt<POW2_RF>(
+        coarse_grid, atoms, points + point_id * 3, out + point_id * D, coarse_w, coarse_reso, D, S);
 }
 
 
