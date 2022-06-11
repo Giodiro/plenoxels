@@ -54,20 +54,25 @@ def parse_config():
     parser.add_argument("--config-updates", default=[], nargs='*')
     parser.add_argument("--logdir", default=None)
     args = parser.parse_args()
-    if args.logdir is not None:
-        assert args.config is None, "logdir and config cannot be specified together"
-    if args.config is not None:
-        assert args.logdir is None, "logdir and config cannot be specified together"
-    cfg = get_cfg_defaults()
+    # Allow up to two configs, one for reloading and one for training
+    reload_cfg = None
+    train_cfg = None
+    assert args.logdir is not None or args.config is not None, "Must specify at least one config"
+    # Passing both a logdir and a config means train new scenes using pretrained dicts
     if args.logdir is not None:
         logged_config_file = os.path.join(args.logdir, "config.yaml")
         if not os.path.isfile(logged_config_file):
             raise RuntimeError(f"logdir {args.logdir} doesn't specify a config-file")
         print(f"Loading configuration from logs at {logged_config_file}")
-        cfg.merge_from_file(logged_config_file)
-    elif args.config is not None:
-        cfg.merge_from_file(args.config)
-    cfg.merge_from_list(args.config_updates)
+        reload_cfg = get_cfg_defaults()
+        reload_cfg.merge_from_file(logged_config_file)
+    if args.config is not None:
+        train_cfg = get_cfg_defaults()
+        # Reuse the same config as was reloaded, but make updates for datasets and logdir
+        if reload_cfg is not None:
+            train_cfg.merge_from_file(logged_config_file)
+        train_cfg.merge_from_file(args.config)
+    train_cfg.merge_from_list(args.config_updates)
     print(f"[{datetime.now()}] Starting")
-    return cfg, args.logdir is not None
+    return train_cfg, reload_cfg
 
