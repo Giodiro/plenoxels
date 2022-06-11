@@ -33,6 +33,7 @@ __constant__
 static const float OFFSET[8][3] = {{-0.5, -0.5, -0.5}, {-0.5, -0.5, 0.5}, {-0.5, 0.5, -0.5}, {-0.5, 0.5, 0.5},
                                    {0.5, -0.5, -0.5},  {0.5, -0.5, 0.5},  {0.5, 0.5, -0.5},  {0.5, 0.5, 0.5}};
 
+template <int32_t POW2_RF>
 __device__ __inline__ void coo_iw_coords(
     const float * __restrict__ p_wcoo,
     int32_t * __restrict__ fn,
@@ -86,6 +87,38 @@ template <typename T, int32_t POW2_RF> struct render_dict_kernels
             cg_shmem[warp_offset + s] = __ldg(coarse_grid + cn_wcoo * S + s);
         }
     }
+
+    static __device__ __inline__ void grad_loop(
+        const T * __restrict__ coarse_grid_shmem,
+        const T * __restrict__ atoms,
+              T * __restrict__ d_coarse_grid,
+              T * __restrict__ d_atoms,
+        typename cub::WarpReduce<__half2>::TempStorage& __restrict__ cub_storage,
+        const __half2 iw,
+        const int32_t cn_wcoo,
+        const int32_t fn_wcoo,
+        const int32_t warp_lane,
+        const int32_t warp_offset,
+        const int32_t S,
+        const int32_t D
+    )
+    {
+        for (int s = 0; s < S; s++) {
+            // Gradient wrt atoms
+            if (warp_lane < D) {
+                atomicAdd(
+                    d_atoms + fn_wcoo * S * D + s * D + warp_lane,
+                    cg_shmem[warp_offset + s] * iw
+                );
+            }
+            // Gradient wrt coarse-grid
+            T tmp = warp_lane < D ? atoms[fn_wcoo * S * D + s * D + warp_lane] : 0.0f;
+            tmp = cub::WarpReduce<T>(cub_storage).Sum(tmp * iw);
+            if (warp_lane == 0) {
+                atomicAdd(d_coarse_grid + cn_wcoo * S + s, tmp);
+            }
+        }
+    }
 };
 
 template <int32_t POW2_RF> struct render_dict_kernels<__half2, POW2_RF>
@@ -117,8 +150,49 @@ template <int32_t POW2_RF> struct render_dict_kernels<__half2, POW2_RF>
         const int32_t warp_offset,
         const int32_t S)
     {
-        for (int s = warp_lane; s < S; s += 32) {
+        for (int s = warp_lane; s < (S >> 1); s += 32) {
             cg_shmem[warp_offset + s] = __ldg(coarse_grid + cn_wcoo * (S >> 1) + s);
+        }
+    }
+
+    static __device__ __inline__ void grad_loop(
+        const __half2 * __restrict__ coarse_grid_shmem,
+        const __half2 * __restrict__ atoms,
+              __half2 * __restrict__ d_coarse_grid,
+              __half2 * __restrict__ d_atoms,
+        typename cub::WarpReduce<__half2>::TempStorage& __restrict__ cub_storage,
+        const __half2 iw,
+        const int32_t cn_wcoo,
+        const int32_t fn_wcoo,
+        const int32_t warp_lane,
+        const int32_t warp_offset,
+        const int32_t S,
+        const int32_t D
+    )
+    {
+        for (int s = 0; s < (S >> 1); s++) {
+            // Gradient wrt atoms
+            __half2 tmp2 = __hmul2(cg_shmem[warp_offset + s], iw);
+            if (warp_lane < D) {
+                atomicAdd(
+                    (__half*)d_atoms + fn_wcoo * S * D + s * 2 * D + warp_lane,
+                    __low2half(tmp2)
+                );
+                atomicAdd(
+                    (__half*)d_atoms + fn_wcoo * S * D + (s * 2 + 1) * D + warp_lane,
+                    __high2half(tmp2)
+                );
+            }
+            // Gradient wrt coarse-grid
+            tmp2 = warp_lane < D ?
+                __halves2half2(__ldg((__half*)atoms + fn_wcoo * S * D + (s * 2) * D + warp_lane),
+                               __ldg((__half*)atoms + fn_wcoo * S * D + (s * 2 + 1) * D + warp_lane))
+                : __float2half2_rn(0.0f);
+            tmp2 = __hmul2(tmp2, iw);
+            tmp2 = cub::WarpReduce<__half2>(cub_storage).Reduce(tmp2, Half2Sum());
+            if (warp_lane == 0) {
+                atomicAdd(d_coarse_grid + cn_wcoo * (S >> 1) + s, tmp2);
+            }
         }
     }
 };
@@ -145,6 +219,25 @@ template <typename T, int32_t POW2_RF> __device__ __inline__ void static_load_cg
 {
     return render_dict_kernels<T, POW2_RF>::load_cg_block(coarse_grid, coarse_grid_shmem, cn_wcoo, warp_lane, warp_offset, S);
 }
+
+template <typename T, int32_t POW2_RF> __device__ __inline__ void static_grad_loop(
+        const T * __restrict__ coarse_grid_shmem,
+        const T * __restrict__ atoms,
+              T * __restrict__ d_coarse_grid,
+              T * __restrict__ d_atoms,
+        typename cub::WarpReduce<__half2>::TempStorage& __restrict__ cub_storage,
+        const __half2 iw,
+        const int32_t cn_wcoo,
+        const int32_t fn_wcoo,
+        const int32_t warp_lane,
+        const int32_t warp_offset,
+        const int32_t S,
+        const int32_t D)
+{
+    return render_dict_kernels<T, POW2_RF>::grad_loop(coarse_grid_shmem, atoms, d_coarse_grid, d_atoms,
+        cub_storage, iw, cn_wcoo, fn_wcoo, warp_lane, warp_offset, S, D);
+}
+
 /*
 template<int32_t POW2_RF>
 __device__ __inline__ void coo_iw(
@@ -231,30 +324,8 @@ __device__ __inline__ void dict_grad_onept(
         static_coo_iw<__half2, POW2_RF>(fp, &grad_output, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
         static_load_cg_block<__half2, POW2_RF>(coarse_grid, cg_shmem, cn_wcoo, warp_lane, warp_offset, S);
         __syncwarp();
-
-        for (int s = 0; s < S; s += 2) {
-            // Gradient with respect to atoms
-            __half2 tmp2 = __hmul2(cg_shmem[warp_offset + s >> 1], iw);
-            if (warp_lane < D) {
-                atomicAdd(
-                    (__half*)d_atoms + fn_wcoo * S * D + s * D + warp_lane,
-                    __low2half(tmp2)
-                );
-                atomicAdd(
-                    (__half*)d_atoms + fn_wcoo * S * D + (s + 1) * D + warp_lane,
-                    __high2half(tmp2)
-                );
-            }
-            // Gradient wrt coarse-grid
-            tmp2 = warp_lane >= D ? __float2half2_rn(0.0f) :
-                __halves2half2(__ldg((__half*)atoms + fn_wcoo * S * D + s * D + warp_lane),
-                               __ldg((__half*)atoms + fn_wcoo * S * D + (s + 1) * D + warp_lane));
-            tmp2 = __hmul2(tmp2, iw);
-            tmp2 = cub::WarpReduce<__half2>(cub_storage).Reduce(tmp2, Half2Sum());
-            if (warp_lane == 0) {
-                atomicAdd(reinterpret_cast<__half2*>(d_coarse_grid + cn_wcoo * S + s), tmp2);
-            }
-        }
+        static_grad_loop<__half2, POW2_RF>(cg_shmem, atoms, d_coarse_grid, d_atoms, cub_storage, iw, cn_wcoo,
+            fn_wcoo, warp_lane, warp_offset, S, D);
         __syncwarp();
     }
 }
@@ -284,10 +355,7 @@ dict_hlf_singlept(
     for (int i = 0; i < 8; i++) {
         static_coo_iw<__half2, POW2_RF>(fp, nullptr, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
         // load w from coarse_grid to shared mem using all threads in warp
-        for (int s = warp_lane * 2; s < S; s += 32 * 2) {
-            cg_shmem[warp_offset + s >> 1] = __ldg(
-                reinterpret_cast<const __half2*>(coarse_grid + cn_wcoo * S + s));
-        }
+        static_load_cg_block<__half2, POW2_RF>(coarse_grid, cg_shmem, cn_wcoo, warp_lane, warp_offset, S);
         __syncwarp();
         for (int s = 0; s < S; s += 2) {
             __half2 atom_weight = warp_lane >= D ? __float2half2_rn(0.0f) :
