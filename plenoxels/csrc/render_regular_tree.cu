@@ -33,33 +33,31 @@ __constant__
 static const float OFFSET[8][3] = {{-0.5, -0.5, -0.5}, {-0.5, -0.5, 0.5}, {-0.5, 0.5, -0.5}, {-0.5, 0.5, 0.5},
                                    {0.5, -0.5, -0.5},  {0.5, -0.5, 0.5},  {0.5, 0.5, -0.5},  {0.5, 0.5, 0.5}};
 
+__device__ __inline__ void coo_iw_coords(
+    const float * __restrict__ p_wcoo,
+    int32_t * __restrict__ fn,
+    int32_t * __restrict__ cn_wcoo,
+    int32_t * __restrict__ fn_wcoo,
+    const int32_t coarse_reso,
+    const int32_t neighbor_id)
+{
+    constexpr int32_t fine_reso = 2 << (POW2_RF - 1);
+    int32_t cn[3], rfn[3];
+    fn[0] = clamp(floor2int(p_wcoo[0] + OFFSET[neighbor_id][0]), 0, fine_reso * coarse_reso - 1);
+    fn[1] = clamp(floor2int(p_wcoo[1] + OFFSET[neighbor_id][1]), 0, fine_reso * coarse_reso - 1);
+    fn[2] = clamp(floor2int(p_wcoo[2] + OFFSET[neighbor_id][2]), 0, fine_reso * coarse_reso - 1);
+    fast_divmod_pow2<POW2_RF>(fn[0], cn[0], rfn[0]);
+    fast_divmod_pow2<POW2_RF>(fn[1], cn[1], rfn[1]);
+    fast_divmod_pow2<POW2_RF>(fn[2], cn[2], rfn[2]);
+    *cn_wcoo = coo2idx(cn[0], cn[1], cn[2], coarse_reso);
+    *fn_wcoo = coo2idx(rfn[0], rfn[1], rfn[2], fine_reso);
+}
 
 template <typename T, int32_t POW2_RF> struct render_dict_kernels
 {
-    static __device__ __inline__ void coo_iw_coords(
-        const float * __restrict__ p_wcoo,
-        int32_t * __restrict__ fn,
-        int32_t * __restrict__ cn_wcoo,
-        int32_t * __restrict__ fn_wcoo,
-        const int32_t coarse_reso,
-        const int32_t neighbor_id,
-    {
-        constexpr int32_t fine_reso = 2 << (POW2_RF - 1);
-        int32_t cn[3], rfn[3];
-        fn[0] = clamp(floor2int(p_wcoo[0] + OFFSET[neighbor_id][0]), 0, fine_reso * coarse_reso - 1);
-        fn[1] = clamp(floor2int(p_wcoo[1] + OFFSET[neighbor_id][1]), 0, fine_reso * coarse_reso - 1);
-        fn[2] = clamp(floor2int(p_wcoo[2] + OFFSET[neighbor_id][2]), 0, fine_reso * coarse_reso - 1);
-        fast_divmod_pow2<POW2_RF>(fn[0], cn[0], rfn[0]);
-        fast_divmod_pow2<POW2_RF>(fn[1], cn[1], rfn[1]);
-        fast_divmod_pow2<POW2_RF>(fn[2], cn[2], rfn[2]);
-        *cn_wcoo = coo2idx(cn[0], cn[1], cn[2], coarse_reso);
-        *fn_wcoo = coo2idx(rfn[0], rfn[1], rfn[2], fine_reso);
-    }
-
     static __device__ __inline__ void coo_iw(
         const float * __restrict__ p_wcoo,
         const float * __restrict__ iw_multiplier,
-        const int32_t fine_reso,
         const int32_t coarse_reso,
         const int32_t neighbor_id,
         int32_t * __restrict__ cn_wcoo,
@@ -67,7 +65,7 @@ template <typename T, int32_t POW2_RF> struct render_dict_kernels
         T       * __restrict__ iw)
     {
         int32_t fn[3];
-        coo_iw_coords(p_wcoo, fn, cn_wcoo, fn_wcoo, coarse_reso, neighbor_id);
+        coo_iw_coords<POW2_RF>(p_wcoo, fn, cn_wcoo, fn_wcoo, coarse_reso, neighbor_id);
         *iw = static_cast<T>(
             (1.0f - myabs(p_wcoo[0] - static_cast<float>(fn[0]) - 0.5f)) *
             (1.0f - myabs(p_wcoo[1] - static_cast<float>(fn[1]) - 0.5f)) *
@@ -76,7 +74,18 @@ template <typename T, int32_t POW2_RF> struct render_dict_kernels
         );
     }
 
-
+    static __device__ __inline__ void load_cg_block(
+        const T * __restrict__ coarse_grid,
+              T * __restrict__ coarse_grid_shmem,
+        const int32_t cn_wcoo,
+        const int32_t warp_lane,
+        const int32_t warp_offset,
+        const int32_t S)
+    {
+        for (int s = warp_lane; s < S; s += 32) {
+            cg_shmem[warp_offset + s] = __ldg(coarse_grid + cn_wcoo * S + s);
+        }
+    }
 };
 
 template <int32_t POW2_RF> struct render_dict_kernels<__half2, POW2_RF>
@@ -84,7 +93,6 @@ template <int32_t POW2_RF> struct render_dict_kernels<__half2, POW2_RF>
     static __device__ __inline__ void coo_iw(
         const float * __restrict__ p_wcoo,
         const float * __restrict__ iw_multiplier,
-        const int32_t fine_reso,
         const int32_t coarse_reso,
         const int32_t neighbor_id,
         int32_t * __restrict__ cn_wcoo,
@@ -92,31 +100,51 @@ template <int32_t POW2_RF> struct render_dict_kernels<__half2, POW2_RF>
         __half2 * __restrict__ iw)
     {
         int32_t fn[3];
-        coo_iw_coords(p_wcoo, fn, cn_wcoo, fn_wcoo, coarse_reso, neighbor_id);
+        coo_iw_coords<POW2_RF>(p_wcoo, fn, cn_wcoo, fn_wcoo, coarse_reso, neighbor_id);
         *iw = __float2half2_rn(
             (1.0f - myabs(p_wcoo[0] - static_cast<float>(fn[0]) - 0.5f)) *
             (1.0f - myabs(p_wcoo[1] - static_cast<float>(fn[1]) - 0.5f)) *
             (1.0f - myabs(p_wcoo[2] - static_cast<float>(fn[2]) - 0.5f)) *
             (iw_multiplier == nullptr ? 1.0f : *iw_multiplier)
         );
-        *cn_wcoo = coo2idx(cn[0], cn[1], cn[2], coarse_reso);
-        *fn_wcoo = coo2idx(rfn[0], rfn[1], rfn[2], fine_reso);
+    }
+
+    static __device__ __inline__ void load_cg_block(
+        const __half2 * __restrict__ coarse_grid,
+              __half2 * __restrict__ coarse_grid_shmem,
+        const int32_t cn_wcoo,
+        const int32_t warp_lane,
+        const int32_t warp_offset,
+        const int32_t S)
+    {
+        for (int s = warp_lane; s < S; s += 32) {
+            cg_shmem[warp_offset + s] = __ldg(coarse_grid + cn_wcoo * (S >> 1) + s);
+        }
     }
 };
 
 template <typename T, int32_t POW2_RF> __device__ __inline__ void static_coo_iw(
         const float * __restrict__ p_wcoo,
         const float * __restrict__ iw_multiplier,
-        const int32_t fine_reso,
         const int32_t coarse_reso,
         const int32_t neighbor_id,
         int32_t * cn_wcoo,
         int32_t * fn_wcoo,
         T * iw)
 {
-    return render_dict_kernels<T, POW2_RF>::coo_iw(p_wcoo, iw_multiplier, fine_reso, coarse_reso, neighbor_id, cn_wcoo, fn_wcoo, iw);
+    return render_dict_kernels<T, POW2_RF>::coo_iw(p_wcoo, iw_multiplier, coarse_reso, neighbor_id, cn_wcoo, fn_wcoo, iw);
 }
 
+template <typename T, int32_t POW2_RF> __device__ __inline__ void static_load_cg_block(
+        const T * __restrict__ coarse_grid,
+              T * __restrict__ coarse_grid_shmem,
+        const int32_t cn_wcoo,
+        const int32_t warp_lane,
+        const int32_t warp_offset,
+        const int32_t S)
+{
+    return render_dict_kernels<T, POW2_RF>::load_cg_block(coarse_grid, coarse_grid_shmem, cn_wcoo, warp_lane, warp_offset, S);
+}
 /*
 template<int32_t POW2_RF>
 __device__ __inline__ void coo_iw(
@@ -200,13 +228,8 @@ __device__ __inline__ void dict_grad_onept(
     int32_t cn_wcoo, fn_wcoo;
     __half2 iw;
     for (int i = 0; i < 8; i++) {
-        static_coo_iw<__half2, POW2_RF>(fp, &grad_output, fine_reso, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
-//        coo_iw<POW2_RF>(fp, &grad_output, fine_reso, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
-
-        for (int s = warp_lane * 2; s < S; s += 64) {
-            cg_shmem[warp_offset + s >> 1] =
-                __ldg(reinterpret_cast<const __half2*>(coarse_grid + cn_wcoo * S + s));
-        }
+        static_coo_iw<__half2, POW2_RF>(fp, &grad_output, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
+        static_load_cg_block<__half2, POW2_RF>(coarse_grid, cg_shmem, cn_wcoo, warp_lane, warp_offset, S);
         __syncwarp();
 
         for (int s = 0; s < S; s += 2) {
@@ -259,8 +282,7 @@ dict_hlf_singlept(
     int32_t cn_wcoo, fn_wcoo;
     __half2 iw;
     for (int i = 0; i < 8; i++) {
-//        coo_iw_hlf<POW2_RF>(fp, nullptr, fine_reso, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
-        static_coo_iw<__half2, POW2_RF>(fp, nullptr, fine_reso, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
+        static_coo_iw<__half2, POW2_RF>(fp, nullptr, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
         // load w from coarse_grid to shared mem using all threads in warp
         for (int s = warp_lane * 2; s < S; s += 32 * 2) {
             cg_shmem[warp_offset + s >> 1] = __ldg(
