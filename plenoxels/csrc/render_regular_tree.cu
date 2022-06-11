@@ -101,27 +101,26 @@ __device__ __inline__ void dictgrad_hlf_singlept(
         coo_iw_hlf<POW2_RF>(fp, &grad_output, fine_reso, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
 
         for (int s = warp_lane * 2; s < S; s += 64) {
-            cg_shmem[warp_offset + s >> 1] = __hmul2(
-                __ldg(reinterpret_cast<const __half2*>(coarse_grid + cn_wcoo * S + s)),
-                iw
-            );
+            cg_shmem[warp_offset + s >> 1] =
+                __ldg(reinterpret_cast<const __half2*>(coarse_grid + cn_wcoo * S + s));
         }
         __syncwarp();
 
         for (int s = 0; s < S; s += 2) {
             // Gradient with respect to atoms
-            if (warp_lane <= D) {
+            __half2 cg = __hmul2(cg_shmem[warp_offset + s >> 1], iw);
+            if (warp_lane < D) {
                 atomicAdd(
                     (__half*)d_atoms + fn_wcoo * S * D + s * D + warp_lane,
-                    __low2half(cg_shmem[warp_offset + s >> 1])
+                    __low2half(cg)
                 );
                 atomicAdd(
                     (__half*)d_atoms + fn_wcoo * S * D + (s + 1) * D + warp_lane,
-                    __high2half(cg_shmem[warp_offset + s >> 2])
+                    __high2half(cg)
                 );
             }
             // Gradient wrt coarse-grid
-            __half2 grad_cg = warp_lane > D ? __float2half2_rn(0.0f) :
+            __half2 grad_cg = warp_lane >= D ? __float2half2_rn(0.0f) :
                 __halves2half2(__ldg((__half*)atoms + fn_wcoo * S * D + s * D + warp_lane),
                                __ldg((__half*)atoms + fn_wcoo * S * D + (s + 1) * D + warp_lane));
             grad_cg = __hmul2(grad_cg, iw);
@@ -165,7 +164,7 @@ dict_hlf_singlept(
         }
         __syncwarp();
         for (int s = 0; s < S; s += 2) {
-            __half2 atom_weight = warp_lane > D ? __float2half2_rn(0.0f) :
+            __half2 atom_weight = warp_lane >= D ? __float2half2_rn(0.0f) :
                 __halves2half2(__ldg((__half*)atoms + fn_wcoo * S * D + s * D + warp_lane),
                                __ldg((__half*)atoms + fn_wcoo * S * D + (s + 1) * D + warp_lane));
             acc2 = __hfma2(cg_shmem[warp_offset + s >> 1], atom_weight, acc2);
@@ -231,7 +230,7 @@ trace_ray(
             coarse_reso, D, S);
         __syncwarp();
         if (interpolated[warp_offset][D - 1] > opt.sigma_thresh) {
-            float interp_val = warp_lane > (D - 1) ? 0.0f :
+            float interp_val = warp_lane >= (D - 1) ? 0.0f :
                 interpolated[warp_offset][warp_lane] * sphfunc_val[warp_offset][lane_colorgrp_id];
             const float pcnt = ray_spec[warp_offset].world_step * interpolated[warp_offset][D - 1];
             const float weight = myexp(log_light_intensity) * (1.f - myexp(-pcnt));
@@ -257,10 +256,10 @@ trace_ray(
 
 
 
-template <int32_t POW2_RF, uint32_t BASIS_DIM>
+template <int32_t POW2_RF, int32_t BASIS_DIM>
 __global__ void
 trace_ray_backward(
-        const float * __restrict__ grad_output,  // N, 3
+        const Acc32<float, 2> grad_output,  // N, 3
         const float * __restrict__ color_cache,  // N, 3
         const c10::Half * __restrict__ coarse_grid,
         const c10::Half * __restrict__ atoms,
@@ -305,10 +304,9 @@ trace_ray_backward(
 
     float c_grad_out[3];
     // const float norm_factor = 2.0f / (3 * N);
-    #pragma unroll 3
     for (int i = 0; i < 3; ++i) {
         // TODO: Figure out what the commented-out normalization did (from svox).
-        c_grad_out[i] = grad_output[ray_id * 3 + i];//(color_cache[ray_id][i] - grad_output[ray_id][i]) * norm_factor;
+        c_grad_out[i] = grad_output[ray_id][i];//(color_cache[ray_id][i] - grad_output[ray_id][i]) * norm_factor;
     }
     float accum = fmaf(color_cache[ray_id * 3], c_grad_out[0],
                       fmaf(color_cache[ray_id * 3 + 1], c_grad_out[1],
@@ -328,7 +326,7 @@ trace_ray_backward(
         __syncwarp();
 
         if (interpolated[warp_offset][D - 1] > opt.sigma_thresh) {
-            float weighted_lane_color = warp_lane > (D - 1) ? 0.0f :
+            float weighted_lane_color = warp_lane >= (D - 1) ? 0.0f :
                 interpolated[warp_offset][warp_lane] * sphfunc_val[warp_offset][lane_colorgrp_id];
             const float pcnt = ray_spec[warp_offset].world_step * interpolated[warp_offset][D - 1];
             const float weight = myexp(log_light_intensity) * (1.f - myexp(-pcnt));
@@ -425,6 +423,8 @@ class DictTreeRender : public Function<DictTreeRender> {
             const dim3 block_size(CUDA_THREADS_PER_BLOCK);
             const int32_t shared_mem = CUDA_WARPS_PER_BLOCK * S;
 
+            //std::cout << coarse_grid << std::endl;
+
             #define CALL_KERNEL(T, RF, BD)                                                                              \
                 trace_ray<RF, BD><<<grid_size, block_size, shared_mem * sizeof(T), stream.stream()>>>(                  \
                     coarse_grid.data_ptr<T>(), atoms.data_ptr<T>(), rays_o.data_ptr<float>(), rays_d.data_ptr<float>(), \
@@ -512,7 +512,8 @@ class DictTreeRender : public Function<DictTreeRender> {
 
             #define CALL_KERNEL(T, RF, BD)                                                                              \
                 trace_ray_backward<RF, BD><<<grid_size, block_size, shared_mem * sizeof(T), stream.stream()>>>(         \
-                    grad_output.data_ptr<float>(), fwd_output.data_ptr<float>(), coarse_grid.data_ptr<c10::Half>(),     \
+                    grad_output.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),                            \
+                    fwd_output.data_ptr<float>(), coarse_grid.data_ptr<c10::Half>(),     \
                     atoms.data_ptr<c10::Half>(), rays_o.data_ptr<float>(), rays_d.data_ptr<float>(),                    \
                     d_coarse_grid.data_ptr<c10::Half>(), d_atoms.data_ptr<c10::Half>(), scaling_t.data_ptr<float>(),    \
                     offset_t.data_ptr<float>(), coarse_reso, N, S, opt)
