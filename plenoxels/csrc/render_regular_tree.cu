@@ -34,9 +34,82 @@ static const float OFFSET[8][3] = {{-0.5, -0.5, -0.5}, {-0.5, -0.5, 0.5}, {-0.5,
                                    {0.5, -0.5, -0.5},  {0.5, -0.5, 0.5},  {0.5, 0.5, -0.5},  {0.5, 0.5, 0.5}};
 
 
+template <typename T, int32_t POW2_RF> struct render_dict_kernels
+{
+    static __device__ __inline__ void coo_iw(
+        const float * __restrict__ p_wcoo,
+        const float * __restrict__ iw_multiplier,
+        const int32_t fine_reso,
+        const int32_t coarse_reso,
+        const int32_t neighbor_id,
+        int32_t * cn_wcoo,
+        int32_t * fn_wcoo,
+        T   * iw)
+    {
+        int32_t fn[3], cn[3], rfn[3];
+        fn[0] = clamp(floor2int(p_wcoo[0] + OFFSET[neighbor_id][0]), 0, fine_reso * coarse_reso - 1);
+        fn[1] = clamp(floor2int(p_wcoo[1] + OFFSET[neighbor_id][1]), 0, fine_reso * coarse_reso - 1);
+        fn[2] = clamp(floor2int(p_wcoo[2] + OFFSET[neighbor_id][2]), 0, fine_reso * coarse_reso - 1);
+        fast_divmod_pow2<POW2_RF>(fn[0], cn[0], rfn[0]);
+        fast_divmod_pow2<POW2_RF>(fn[1], cn[1], rfn[1]);
+        fast_divmod_pow2<POW2_RF>(fn[2], cn[2], rfn[2]);
+        *iw = static_cast<T>(
+            (1.0f - myabs(p_wcoo[0] - static_cast<float>(fn[0]) - 0.5f)) *
+            (1.0f - myabs(p_wcoo[1] - static_cast<float>(fn[1]) - 0.5f)) *
+            (1.0f - myabs(p_wcoo[2] - static_cast<float>(fn[2]) - 0.5f)) *
+            (iw_multiplier == nullptr ? 1.0f : *iw_multiplier)
+        );
+        *cn_wcoo = coo2idx(cn[0], cn[1], cn[2], coarse_reso);
+        *fn_wcoo = coo2idx(rfn[0], rfn[1], rfn[2], fine_reso);
+    }
+};
 
+template <int32_t POW2_RF> struct render_dict_kernels<__half2, POW2_RF>
+{
+    static __device__ __inline__ void coo_iw(
+        const float * __restrict__ p_wcoo,
+        const float * __restrict__ iw_multiplier,
+        const int32_t fine_reso,
+        const int32_t coarse_reso,
+        const int32_t neighbor_id,
+        int32_t * cn_wcoo,
+        int32_t * fn_wcoo,
+        __half2 * iw)
+    {
+        int32_t fn[3], cn[3], rfn[3];
+        fn[0] = clamp(floor2int(p_wcoo[0] + OFFSET[neighbor_id][0]), 0, fine_reso * coarse_reso - 1);
+        fn[1] = clamp(floor2int(p_wcoo[1] + OFFSET[neighbor_id][1]), 0, fine_reso * coarse_reso - 1);
+        fn[2] = clamp(floor2int(p_wcoo[2] + OFFSET[neighbor_id][2]), 0, fine_reso * coarse_reso - 1);
+        fast_divmod_pow2<POW2_RF>(fn[0], cn[0], rfn[0]);
+        fast_divmod_pow2<POW2_RF>(fn[1], cn[1], rfn[1]);
+        fast_divmod_pow2<POW2_RF>(fn[2], cn[2], rfn[2]);
+        *iw = __float2half2_rn(
+            (1.0f - myabs(p_wcoo[0] - static_cast<float>(fn[0]) - 0.5f)) *
+            (1.0f - myabs(p_wcoo[1] - static_cast<float>(fn[1]) - 0.5f)) *
+            (1.0f - myabs(p_wcoo[2] - static_cast<float>(fn[2]) - 0.5f)) *
+            (iw_multiplier == nullptr ? 1.0f : *iw_multiplier)
+        );
+        *cn_wcoo = coo2idx(cn[0], cn[1], cn[2], coarse_reso);
+        *fn_wcoo = coo2idx(rfn[0], rfn[1], rfn[2], fine_reso);
+    }
+};
+
+template <typename T, int32_t POW2_RF> __device__ __inline__ void static_coo_iw(
+        const float * __restrict__ p_wcoo,
+        const float * __restrict__ iw_multiplier,
+        const int32_t fine_reso,
+        const int32_t coarse_reso,
+        const int32_t neighbor_id,
+        int32_t * cn_wcoo,
+        int32_t * fn_wcoo,
+        T * iw)
+{
+    return render_dict_kernels<T, POW2_RF>::coo_iw(p_wcoo, iw_multiplier, fine_reso, coarse_reso, neighbor_id, cn_wcooc, fn_wcoo, iw);
+}
+
+/*
 template<int32_t POW2_RF>
-__device__ __inline__ void coo_iw_hlf(
+__device__ __inline__ void coo_iw(
     const float * __restrict__ p_wcoo,
     const float * __restrict__ iw_multiplier,
     const int32_t fine_reso,
@@ -63,16 +136,45 @@ __device__ __inline__ void coo_iw_hlf(
     *fn_wcoo = coo2idx(rfn[0], rfn[1], rfn[2], fine_reso);
 }
 
+template<int32_t POW2_RF>
+__device__ __inline__ void coo_iw(
+    const float * __restrict__ p_wcoo,
+    const float * __restrict__ iw_multiplier,
+    const int32_t fine_reso,
+    const int32_t coarse_reso,
+    const int32_t neighbor_id,
+    int32_t * cn_wcoo,
+    int32_t * fn_wcoo,
+    float   * iw)
+{
+    int32_t fn[3], cn[3], rfn[3];
+    fn[0] = clamp(floor2int(p_wcoo[0] + OFFSET[neighbor_id][0]), 0, fine_reso * coarse_reso - 1);
+    fn[1] = clamp(floor2int(p_wcoo[1] + OFFSET[neighbor_id][1]), 0, fine_reso * coarse_reso - 1);
+    fn[2] = clamp(floor2int(p_wcoo[2] + OFFSET[neighbor_id][2]), 0, fine_reso * coarse_reso - 1);
+    fast_divmod_pow2<POW2_RF>(fn[0], cn[0], rfn[0]);
+    fast_divmod_pow2<POW2_RF>(fn[1], cn[1], rfn[1]);
+    fast_divmod_pow2<POW2_RF>(fn[2], cn[2], rfn[2]);
+    *iw = (
+        (1.0f - myabs(p_wcoo[0] - static_cast<float>(fn[0]) - 0.5f)) *
+        (1.0f - myabs(p_wcoo[1] - static_cast<float>(fn[1]) - 0.5f)) *
+        (1.0f - myabs(p_wcoo[2] - static_cast<float>(fn[2]) - 0.5f)) *
+        (iw_multiplier == nullptr ? 1.0f : *iw_multiplier)
+    );
+    *cn_wcoo = coo2idx(cn[0], cn[1], cn[2], coarse_reso);
+    *fn_wcoo = coo2idx(rfn[0], rfn[1], rfn[2], fine_reso);
+}
+*/
+
 
 template<int32_t POW2_RF>
-__device__ __inline__ void dictgrad_hlf_singlept(
+__device__ __inline__ void dict_grad_onept(
     const c10::Half * __restrict__ coarse_grid,     // Rc^3, S
     const c10::Half * __restrict__ atoms,           // Rf^3, S, D
           c10::Half * __restrict__ d_coarse_grid,   // Rc^3, S
           c10::Half * __restrict__ d_atoms,         // Rf^3, S, D
     const float                    grad_output,     // 1
     const float     * __restrict__ point,           // 3
-          __half2   * __restrict__ cg_shmem,     // V1_WARPS_PER_BLOCK * S / 2
+          __half2   * __restrict__ cg_shmem,        // V1_WARPS_PER_BLOCK * S / 2
     typename cub::WarpReduce<__half2>::TempStorage& __restrict__ cub_storage,
     const int32_t coarse_reso,
     const int32_t D,
@@ -88,7 +190,8 @@ __device__ __inline__ void dictgrad_hlf_singlept(
     int32_t cn_wcoo, fn_wcoo;
     __half2 iw;
     for (int i = 0; i < 8; i++) {
-        coo_iw_hlf<POW2_RF>(fp, &grad_output, fine_reso, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
+        static_coo_iw<__half2, POW2_RF>(fp, &grad_output, fine_reso, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
+//        coo_iw<POW2_RF>(fp, &grad_output, fine_reso, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
 
         for (int s = warp_lane * 2; s < S; s += 64) {
             cg_shmem[warp_offset + s >> 1] =
@@ -146,7 +249,8 @@ dict_hlf_singlept(
     int32_t cn_wcoo, fn_wcoo;
     __half2 iw;
     for (int i = 0; i < 8; i++) {
-        coo_iw_hlf<POW2_RF>(fp, nullptr, fine_reso, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
+//        coo_iw_hlf<POW2_RF>(fp, nullptr, fine_reso, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
+        static_coo_iw<__half2, POW2_RF>(fp, &grad_output, fine_reso, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
         // load w from coarse_grid to shared mem using all threads in warp
         for (int s = warp_lane * 2; s < S; s += 32 * 2) {
             cg_shmem[warp_offset + s >> 1] = __ldg(
@@ -340,7 +444,7 @@ trace_ray_backward(
             accum -= weight * total_color;
             const float curr_grad_sigma = ray_spec[warp_offset].world_step * (total_color * myexp(log_light_intensity) - accum);
 
-            dictgrad_hlf_singlept<POW2_RF>(
+            dict_grad_onept<POW2_RF>(
                 coarse_grid, atoms, d_coarse_grid, d_atoms,
                 /*grad_output=*/warp_lane < D - 1 ? curr_grad_color : curr_grad_sigma,
                 /*point=*/ray_spec[warp_offset].pos, cg_shmem,
