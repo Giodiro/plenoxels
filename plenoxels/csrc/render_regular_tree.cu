@@ -98,25 +98,25 @@ __device__ __inline__ void dictgrad_hlf_singlept(
 
         for (int s = 0; s < S; s += 2) {
             // Gradient with respect to atoms
-            __half2 cg = __hmul2(cg_shmem[warp_offset + s >> 1], iw);
+            __half2 tmp2 = __hmul2(cg_shmem[warp_offset + s >> 1], iw);
             if (warp_lane < D) {
                 atomicAdd(
                     (__half*)d_atoms + fn_wcoo * S * D + s * D + warp_lane,
-                    __low2half(cg)
+                    __low2half(tmp2)
                 );
                 atomicAdd(
                     (__half*)d_atoms + fn_wcoo * S * D + (s + 1) * D + warp_lane,
-                    __high2half(cg)
+                    __high2half(tmp2)
                 );
             }
             // Gradient wrt coarse-grid
-            __half2 grad_cg = warp_lane >= D ? __float2half2_rn(0.0f) :
+            tmp2 = warp_lane >= D ? __float2half2_rn(0.0f) :
                 __halves2half2(__ldg((__half*)atoms + fn_wcoo * S * D + s * D + warp_lane),
                                __ldg((__half*)atoms + fn_wcoo * S * D + (s + 1) * D + warp_lane));
-            grad_cg = __hmul2(grad_cg, iw);
-            grad_cg = cub::WarpReduce<__half2>(cub_storage).Reduce(grad_cg, Half2Sum());
+            tmp2 = __hmul2(tmp2, iw);
+            tmp2 = cub::WarpReduce<__half2>(cub_storage).Reduce(tmp2, Half2Sum());
             if (warp_lane == 0) {
-                atomicAdd(reinterpret_cast<__half2*>(d_coarse_grid + cn_wcoo * S + s), grad_cg);
+                atomicAdd(reinterpret_cast<__half2*>(d_coarse_grid + cn_wcoo * S + s), tmp2);
             }
         }
         __syncwarp();
@@ -292,12 +292,12 @@ trace_ray_backward(
     calc_sphfunc(/*basis_dim=*/BASIS_DIM, /*dir=*/ray_spec[warp_offset].dir, /*out=*/sphfunc_val[warp_offset]);
     ray_find_bounds(ray_spec[warp_offset], scaling, offset, opt.step_size, opt.near_plane);
 
-    float c_grad_out[3];
+    const float c_grad_out[3] = {grad_output[ray_id][0], grad_output[ray_id][1], grad_output[ray_id][2]};
     // const float norm_factor = 2.0f / (3 * N);
-    for (int i = 0; i < 3; ++i) {
+    //for (int i = 0; i < 3; ++i) {
         // TODO: Figure out what the commented-out normalization did (from svox).
-        c_grad_out[i] = grad_output[ray_id][i];//(color_cache[ray_id][i] - grad_output[ray_id][i]) * norm_factor;
-    }
+    //    c_grad_out[i] = grad_output[ray_id][i];//(color_cache[ray_id][i] - grad_output[ray_id][i]) * norm_factor;
+    //}
     float accum = fmaf(color_cache[ray_id * 3], c_grad_out[0],
                       fmaf(color_cache[ray_id * 3 + 1], c_grad_out[1],
                            color_cache[ray_id * 3 + 2] * c_grad_out[2]));
@@ -334,12 +334,11 @@ trace_ray_backward(
             total_color += __shfl_up_sync(leader_mask, total_color, /*delta=*/2 * BASIS_DIM);
 
             // for sigma thread (and all lanes >= D - 1) this will be something random
-            color_in_01 = __shfl_sync(0xffffffff, color_in_01, /*srcLane=*/lane_colorgrp * BASIS_DIM);
-            const float grad_common = weight * color_in_01 * gout;
-            const float curr_grad_color = sphfunc_val[warp_offset][lane_colorgrp_id] * grad_common;
+            color_in_01 = __shfl_sync(0xffffffff, color_in_01, /*srcLane=*/lane_colorgrp * BASIS_DIM);  // this will be 0 or 1.
+            const float curr_grad_color = sphfunc_val[warp_offset][lane_colorgrp_id] * (weight * color_in_01 * gout);
 
             accum -= weight * total_color;
-            float curr_grad_sigma = ray_spec[warp_offset].world_step * (total_color * myexp(log_light_intensity) - accum);
+            const float curr_grad_sigma = ray_spec[warp_offset].world_step * (total_color * myexp(log_light_intensity) - accum);
 
             dictgrad_hlf_singlept<POW2_RF>(
                 coarse_grid, atoms, d_coarse_grid, d_atoms,
