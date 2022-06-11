@@ -84,7 +84,7 @@ template <typename T, int32_t POW2_RF> struct render_dict_kernels
         const int32_t S)
     {
         for (int s = warp_lane; s < S; s += 32) {
-            cg_shmem[warp_offset + s] = __ldg(coarse_grid + cn_wcoo * S + s);
+            coarse_grid_shmem[warp_offset + s] = __ldg(coarse_grid + cn_wcoo * S + s);
         }
     }
 
@@ -108,7 +108,7 @@ template <typename T, int32_t POW2_RF> struct render_dict_kernels
             if (warp_lane < D) {
                 atomicAdd(
                     d_atoms + fn_wcoo * S * D + s * D + warp_lane,
-                    cg_shmem[warp_offset + s] * iw
+                    coarse_grid_shmem[warp_offset + s] * iw
                 );
             }
             // Gradient wrt coarse-grid
@@ -151,7 +151,7 @@ template <int32_t POW2_RF> struct render_dict_kernels<__half2, POW2_RF>
         const int32_t S)
     {
         for (int s = warp_lane; s < (S >> 1); s += 32) {
-            cg_shmem[warp_offset + s] = __ldg(coarse_grid + cn_wcoo * (S >> 1) + s);
+            coarse_grid_shmem[warp_offset + s] = __ldg(coarse_grid + cn_wcoo * (S >> 1) + s);
         }
     }
 
@@ -172,7 +172,7 @@ template <int32_t POW2_RF> struct render_dict_kernels<__half2, POW2_RF>
     {
         for (int s = 0; s < (S >> 1); s++) {
             // Gradient wrt atoms
-            __half2 tmp2 = __hmul2(cg_shmem[warp_offset + s], iw);
+            __half2 tmp2 = __hmul2(coarse_grid_shmem[warp_offset + s], iw);
             if (warp_lane < D) {
                 atomicAdd(
                     (__half*)d_atoms + fn_wcoo * S * D + s * 2 * D + warp_lane,
@@ -322,10 +322,12 @@ __device__ __inline__ void dict_grad_onept(
     __half2 iw;
     for (int i = 0; i < 8; i++) {
         static_coo_iw<__half2, POW2_RF>(fp, &grad_output, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
-        static_load_cg_block<__half2, POW2_RF>(coarse_grid, cg_shmem, cn_wcoo, warp_lane, warp_offset, S);
+        static_load_cg_block<__half2, POW2_RF>(
+            reinterpret_cast<const __half2*>(coarse_grid), cg_shmem, cn_wcoo, warp_lane, warp_offset, S);
         __syncwarp();
-        static_grad_loop<__half2, POW2_RF>(cg_shmem, atoms, d_coarse_grid, d_atoms, cub_storage, iw, cn_wcoo,
-            fn_wcoo, warp_lane, warp_offset, S, D);
+        static_grad_loop<__half2, POW2_RF>(
+            cg_shmem, reinterpret_cast<const __half2*>(atoms), reinterpret_cast<const __half2*>(d_coarse_grid),
+            reinterpret_cast<const __half2*>(d_atoms), cub_storage, iw, cn_wcoo, fn_wcoo, warp_lane, warp_offset, S, D);
         __syncwarp();
     }
 }
@@ -355,7 +357,7 @@ dict_hlf_singlept(
     for (int i = 0; i < 8; i++) {
         static_coo_iw<__half2, POW2_RF>(fp, nullptr, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
         // load w from coarse_grid to shared mem using all threads in warp
-        static_load_cg_block<__half2, POW2_RF>(coarse_grid, cg_shmem, cn_wcoo, warp_lane, warp_offset, S);
+        static_load_cg_block<__half2, POW2_RF>(reinterpret_cast<const __half2*>(coarse_grid), cg_shmem, cn_wcoo, warp_lane, warp_offset, S);
         __syncwarp();
         for (int s = 0; s < S; s += 2) {
             __half2 atom_weight = warp_lane >= D ? __float2half2_rn(0.0f) :
