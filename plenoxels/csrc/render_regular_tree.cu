@@ -34,6 +34,17 @@ static const float OFFSET[8][3] = {{-0.5, -0.5, -0.5}, {-0.5, -0.5, 0.5}, {-0.5,
                                    {0.5, -0.5, -0.5},  {0.5, -0.5, 0.5},  {0.5, 0.5, -0.5},  {0.5, 0.5, 0.5}};
 
 
+struct Half2Sum
+{
+    /// Boolean max operator, returns <tt>(a > b) ? a : b</tt>
+    __device__ __forceinline__ __half2 operator()(const __half2 &a, const __half2 &b) const
+    {
+        return __hadd2(a, b);
+    }
+};
+
+
+
 template<int32_t POW2_RF>
 __device__ __inline__ void coo_iw_hlf(
     const float * __restrict__ p_wcoo,
@@ -71,6 +82,7 @@ __device__ __inline__ void dictgrad_hlf_singlept(
           c10::Half * __restrict__ d_atoms,         // Rf^3, S, D
     const float                    grad_output,     // 1
     const float     * __restrict__ point,           // 3
+          __half2   * __restrict__ cg_shmem,     // V1_WARPS_PER_BLOCK * S / 2
     typename cub::WarpReduce<__half2>::TempStorage& __restrict__ cub_storage,
     const int32_t coarse_reso,
     const int32_t D,
@@ -83,11 +95,10 @@ __device__ __inline__ void dictgrad_hlf_singlept(
     const float fp[3] = {
         point[0] * coarse_reso * fine_reso, point[1] * coarse_reso * fine_reso, point[2] * coarse_reso * fine_reso};
 
-    scalar_t interp_weight;
     int32_t cn_wcoo, fn_wcoo;
     __half2 iw;
     for (int i = 0; i < 8; i++) {
-        coo_iw_hlf<POW2_RF>(fp, &grad_output, fine_reso, coarse_reso, i, &cn_wcoo, &fn_coo, &iw);
+        coo_iw_hlf<POW2_RF>(fp, &grad_output, fine_reso, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
 
         for (int s = warp_lane * 2; s < S; s += 64) {
             cg_shmem[warp_offset + s >> 1] = __hmul2(
@@ -114,9 +125,9 @@ __device__ __inline__ void dictgrad_hlf_singlept(
                 __halves2half2(__ldg((__half*)atoms + fn_wcoo * S * D + s * D + warp_lane),
                                __ldg((__half*)atoms + fn_wcoo * S * D + (s + 1) * D + warp_lane));
             grad_cg = __hmul2(grad_cg, iw);
-            grad_cg = cub::WarpReduce<__half2>(cub_storage).Sum(grad_cg);
+            grad_cg = cub::WarpReduce<__half2>(cub_storage).Reduce(grad_cg, Half2Sum());
             if (warp_lane == 0) {
-                atomicAdd(reinterpret_cast<__half2*>(d_coarse_grid + cn_wcoo * S + s), grad_cg)
+                atomicAdd(reinterpret_cast<__half2*>(d_coarse_grid + cn_wcoo * S + s), grad_cg);
             }
         }
         __syncwarp();
@@ -143,10 +154,10 @@ dict_hlf_singlept(
     const float fp[3] = {
         point[0] * coarse_reso * fine_reso, point[1] * coarse_reso * fine_reso, point[2] * coarse_reso * fine_reso};
     __half2 acc2 = __float2half2_rn(0.0f);
-    int32_t cn_wcoo, fn_coo;
+    int32_t cn_wcoo, fn_wcoo;
     __half2 iw;
     for (int i = 0; i < 8; i++) {
-        coo_iw_hlf<POW2_RF>(fp, nullptr, fine_reso, coarse_reso, i, &cn_wcoo, &fn_coo, &iw);
+        coo_iw_hlf<POW2_RF>(fp, nullptr, fine_reso, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
         // load w from coarse_grid to shared mem using all threads in warp
         for (int s = warp_lane * 2; s < S; s += 32 * 2) {
             cg_shmem[warp_offset + s >> 1] = __ldg(
@@ -255,8 +266,8 @@ trace_ray_backward(
         const c10::Half * __restrict__ atoms,
         const float * __restrict__ rays_o,
         const float * __restrict__ rays_d,
-        const c10::Half * __restrict__ d_coarse_grid,
-        const c10::Half * __restrict__ d_atoms,
+              c10::Half * __restrict__ d_coarse_grid,
+              c10::Half * __restrict__ d_atoms,
         const float * __restrict__ scaling,
         const float * __restrict__ offset,
         const int32_t coarse_reso,
@@ -279,18 +290,18 @@ trace_ray_backward(
 	if (ray_id >= N) return;
 
     // shared memory.
-    __shared__ scalar_t sphfunc_val[CUDA_WARPS_PER_BLOCK][9];
-    __shared__ Ray<scalar_t> ray_spec[CUDA_WARPS_PER_BLOCK];
+    __shared__ float sphfunc_val[CUDA_WARPS_PER_BLOCK][9];
+    __shared__ Ray<float> ray_spec[CUDA_WARPS_PER_BLOCK];
     __shared__ typename WarpReducef::TempStorage cub_storage[CUDA_WARPS_PER_BLOCK];
     __shared__ typename WarpReduceh2::TempStorage cub_storage_h2[CUDA_WARPS_PER_BLOCK];
     __shared__ float interpolated[CUDA_WARPS_PER_BLOCK][D];
     __half2 * cg_shmem = shared_memory_proxy<__half2>(); // V1_WARPS_PER_BLOCK * S / 2;
 
     // Setup the ray-spec. Will copy data from rays_o, rays_d
-    ray_spec[warp_offset].set(rays_o[ray_id].data(), rays_d[ray_id].data());
+    ray_spec[warp_offset].set(rays_o + ray_id * 3, rays_d + ray_id * 3);
     // Spherical harmonics are computed before ray normalization
     calc_sphfunc(/*basis_dim=*/BASIS_DIM, /*dir=*/ray_spec[warp_offset].dir, /*out=*/sphfunc_val[warp_offset]);
-    ray_find_bounds(ray_spec[warp_offset], scaling, offset, (scalar_t)opt.step_size, (scalar_t)opt.near_plane);
+    ray_find_bounds(ray_spec[warp_offset], scaling, offset, opt.step_size, opt.near_plane);
 
     float c_grad_out[3];
     // const float norm_factor = 2.0f / (3 * N);
@@ -319,12 +330,12 @@ trace_ray_backward(
         if (interpolated[warp_offset][D - 1] > opt.sigma_thresh) {
             float weighted_lane_color = warp_lane > (D - 1) ? 0.0f :
                 interpolated[warp_offset][warp_lane] * sphfunc_val[warp_offset][lane_colorgrp_id];
-            const float pcnt = ray_spec[warp_offset].world_step * sigma;
+            const float pcnt = ray_spec[warp_offset].world_step * interpolated[warp_offset][D - 1];
             const float weight = myexp(log_light_intensity) * (1.f - myexp(-pcnt));
             log_light_intensity -= pcnt;
 
             // Sum over all dimensions for the color of lane_colorgrp_id. Only valid in the head.
-            const float lane_color_total = WarpReduce(cub_storage[warp_offset]).HeadSegmentedSum(
+            const float lane_color_total = WarpReducef(cub_storage[warp_offset]).HeadSegmentedSum(
                 weighted_lane_color, lane_colorgrp_id == 0) + 0.5f;
             float total_color = mymax(lane_color_total, 0.0f);  // Clamp to [+0, infty)
             float color_in_01 = total_color == lane_color_total;
@@ -345,8 +356,8 @@ trace_ray_backward(
             dictgrad_hlf_singlept<POW2_RF>(
                 coarse_grid, atoms, d_coarse_grid, d_atoms,
                 /*grad_output=*/warp_lane < D - 1 ? curr_grad_color : curr_grad_sigma,
-                /*point=*/ray_spec[warp_offset].pos, cub_storage_h2[warp_offset], coarse_reso, D, S);
-            )
+                /*point=*/ray_spec[warp_offset].pos, cg_shmem,
+                cub_storage_h2[warp_offset], coarse_reso, D, S);
             if (myexp(log_light_intensity) < opt.stop_thresh) { break; }
         }
         t += opt.step_size;
