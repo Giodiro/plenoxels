@@ -49,6 +49,7 @@ def train_epoch(renderer,
     num_dsets = len(tr_loaders)
 
     tr_iterators = [[iter(dl) for dl in tr_loader] for tr_loader in tr_loaders]
+    n_loader_levels = len(tr_loaders[0]) - 1
     renderer.cuda()
     renderer.train()
 
@@ -60,11 +61,11 @@ def train_epoch(renderer,
         level = -1
         for _ in range(0, batches_per_epoch, batches_per_dset):
             # Each epoch, rotate what resolution is being focused on
-            level = (level + 1) % len(tr_loaders[0])
             for dset_id in range(num_dsets):
                 for i in range(batches_per_dset):
+                    level = (level + 1) % len(renderer.atoms)
                     try:
-                        rays_o, rays_d, imgs = next(tr_iterators[dset_id][level])
+                        rays_o, rays_d, imgs = next(tr_iterators[dset_id][min(level, n_loader_levels)])
                         imgs = imgs.cuda()
                         rays_o = rays_o.cuda()
                         rays_d = rays_d.cuda()
@@ -94,7 +95,7 @@ def train_epoch(renderer,
                         tot_step += 1
                     except StopIteration:
                         # Reset the training-iterator which has no more samples
-                        tr_iterators[dset_id][level] = iter(tr_loaders[dset_id][level])
+                        tr_iterators[dset_id][min(level, n_loader_levels)] = iter(tr_loaders[dset_id][min(level, n_loader_levels)])
             if lr_sched is not None:
                 lr_sched.step()
                 TB_WRITER.add_scalar("lr", lr_sched.get_last_lr()[0],
@@ -107,8 +108,11 @@ def train_epoch(renderer,
                 ts_dset, ts_dset_id, renderer, log_dir,
                 iteration=tot_step, batch_size=batch_size, image_id=0, verbose=True,
                 summary_writer=TB_WRITER)
-            render_patches(
-                renderer, patch_level=0, log_dir=log_dir, iteration=tot_step, summary_writer=TB_WRITER)
+            render_patches(renderer, patch_level=0, log_dir=log_dir, iteration=tot_step,
+                           summary_writer=TB_WRITER)
+            if len(renderer.atoms) > 1:
+                render_patches(renderer, patch_level=1, log_dir=log_dir, iteration=tot_step,
+                               summary_writer=TB_WRITER)
             TB_WRITER.add_scalar(f"TestPSNR/D{ts_dset_id}", psnr, tot_step)
         torch.save({
             'epoch': e,
