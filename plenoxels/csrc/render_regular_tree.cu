@@ -34,16 +34,6 @@ static const float OFFSET[8][3] = {{-0.5, -0.5, -0.5}, {-0.5, -0.5, 0.5}, {-0.5,
                                    {0.5, -0.5, -0.5},  {0.5, -0.5, 0.5},  {0.5, 0.5, -0.5},  {0.5, 0.5, 0.5}};
 
 
-struct Half2Sum
-{
-    /// Boolean max operator, returns <tt>(a > b) ? a : b</tt>
-    __device__ __forceinline__ __half2 operator()(const __half2 &a, const __half2 &b) const
-    {
-        return __hadd2(a, b);
-    }
-};
-
-
 
 template<int32_t POW2_RF>
 __device__ __inline__ void coo_iw_hlf(

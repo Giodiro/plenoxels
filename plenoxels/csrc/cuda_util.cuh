@@ -118,3 +118,11 @@ __device__ T* shared_memory_proxy()
     extern __shared__ unsigned char memory[];
     return reinterpret_cast<T*>(memory);
 }
+
+struct Half2Sum
+{
+    __device__ __forceinline__ __half2 operator()(const __half2 &a, const __half2 &b) const
+    {
+        return __hadd2(a, b);
+    }
+};
