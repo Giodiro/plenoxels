@@ -1,26 +1,30 @@
-expname: "c64_f2.64,4.64_c2f"
+expname: "lego_c128_f2.64"
 use_csrc: True
 
 data:
   datadirs:
+    # - /data/datasets/nerf/data/nerf_synthetic/ship
+    # - /data/datasets/nerf/data/nerf_synthetic/mic
+    # - /data/datasets/nerf/data/nerf_synthetic/materials
+    # - /data/datasets/nerf/data/nerf_synthetic/hotdog
     - /data/datasets/nerf/data/nerf_synthetic/lego
-    - /data/datasets/nerf/data/nerf_synthetic/chair
-    - /data/datasets/nerf/data/nerf_synthetic/drums
-    - /data/datasets/nerf/data/nerf_synthetic/ficus
+    # - /data/datasets/nerf/data/nerf_synthetic/chair
+    # - /data/datasets/nerf/data/nerf_synthetic/drums
+    # - /data/datasets/nerf/data/nerf_synthetic/ficus
   resolution: None
   max_tr_frames: None
   max_ts_frames: 10
 
 model:
-  num_atoms: [64, 64]
-  coarse_reso: 64
-  fine_reso: [2, 4]
+  num_atoms: [64]
+  coarse_reso: 128
+  fine_reso: [2]
   noise_std: 0.0
 
 optim:
   batch_size: 2500
   batches_per_epoch: 400 # From each scene
-  num_epochs: 100
+  num_epochs: 10
   lr: 1e-2
   cosine: False
   regularization:
@@ -28,6 +32,5 @@ optim:
     tv_weight: 0.0
     consistency_weight: 0.0
   
-
 sh:
   degree: 0

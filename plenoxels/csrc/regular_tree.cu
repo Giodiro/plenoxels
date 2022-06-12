@@ -326,7 +326,7 @@ __global__ void k_l2_interp_v2_d_cg2(Acc32<scalar_t, 2> grad_output,   // N, D
     int32_t cn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
     int32_t fn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
     scalar_t fn_center[3];   // center of fine-neighbor cell in 'full-grid' coordinates
-    scalar_t grad[8];  // TODO: This is hardcoded randomly, allows up to 256 atoms
+    scalar_t grad[10];  // TODO: This is hardcoded randomly, allows up to 256 atoms
     scalar_t interp_weights[8];
     calc_interp_weights(interp_weights, fp, fn_center);
 
@@ -340,8 +340,8 @@ __global__ void k_l2_interp_v2_d_cg2(Acc32<scalar_t, 2> grad_output,   // N, D
     //const uint32_t num_atoms_per_warp = (S + WARP_SIZE - 1) / WARP_SIZE;
 
     for (int i = 0; i < 8; i++) {
-        #pragma unroll 8
-        for (int j = 0; j < 8; j++) { grad[j] = 0.0; }
+        #pragma unroll 10
+        for (int j = 0; j < 10; j++) { grad[j] = 0.0; }
         cn[0] = floor2int(cp[0] + OFFSET[i][0]);
         cn[1] = floor2int(cp[1] + OFFSET[i][1]);
         cn[2] = floor2int(cp[2] + OFFSET[i][2]);
