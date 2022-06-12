@@ -54,14 +54,15 @@ __device__ __inline__ void coo_iw_coords(
     *fn_wcoo = coo2idx(rfn[0], rfn[1], rfn[2], fine_reso);
 }
 
-template <typename T, int32_t POW2_RF>
+template <int32_t POW2_RF>
 struct DictRendererKernels
 {
 private:
-    template<typename TT, int32_t II>
+    template<typename TT>
     struct Proxy { };
 
 public:
+    template <typename T>
     __device__ __inline__ void single_point_fwd(const T   * __restrict__ coarse_grid,  // Rc^3, S
                                                 const T   * __restrict__ atoms,        // Rf^3, S, D
                                                 const float     * __restrict__ point,        // 3
@@ -105,7 +106,8 @@ public:
 
 private:
 
-    __device__ __inline__ void coo_iw(Proxy<T, POW2_RF>,
+    template<typename T>
+    __device__ __inline__ void coo_iw(Proxy<T>,
                                       const float * __restrict__ p_wcoo,
                                       const float * __restrict__ iw_multiplier,
                                       const int32_t coarse_reso,
@@ -123,7 +125,7 @@ private:
             (iw_multiplier == nullptr ? 1.0f : *iw_multiplier)
         );
     }
-    __device__ __inline__ void coo_iw(Proxy<__half2, POW2_RF>,
+    __device__ __inline__ void coo_iw(Proxy<__half2>,
                                       const float * __restrict__ p_wcoo,
                                       const float * __restrict__ iw_multiplier,
                                       const int32_t coarse_reso,
@@ -142,6 +144,7 @@ private:
         );
     }
 
+    template<typename T>
     __device__ __inline__ void load_cg_block(Proxy<T, POW2_RF>,
                                             const T * __restrict__ cg,
                                             T * __restrict__ cg_out,
@@ -165,6 +168,7 @@ private:
         }
     }
 
+    template<typename T>
     __device__ __inline__ void forward_loop(Proxy<T, POW2_RF>,
                                             const T * __restrict__ cg_sh,
                                             const T * __restrict__ atoms,
@@ -193,6 +197,7 @@ private:
         }
     }
 
+    template<typename T>
     __device__ __inline__ void grad_loop(Proxy<T, POW2_RF>,
                                         const T * __restrict__ coarse_grid_shmem,
                                         const T * __restrict__ atoms,
@@ -257,7 +262,8 @@ private:
         }
     }
 
-    __device__ __inline__ void single_point_fwd_impl(Proxy<T, POW2_RF> p,
+    template<typename T>
+    __device__ __inline__ void single_point_fwd_impl(Proxy<T> p,
                                                     const T   * __restrict__ coarse_grid,  // Rc^3, S
                                                     const T   * __restrict__ atoms,        // Rf^3, S, D
                                                     const float     * __restrict__ point,        // 3
@@ -286,7 +292,7 @@ private:
             out[warp_lane] = acc;
         }
     }
-    __device__ __inline__ void single_point_fwd_impl(Proxy<__half2, POW2_RF> p,
+    __device__ __inline__ void single_point_fwd_impl(Proxy<__half2> p,
         const __half2   * __restrict__ coarse_grid,  // Rc^3, S
         const __half2   * __restrict__ atoms,        // Rf^3, S, D
         const float     * __restrict__ point,        // 3
