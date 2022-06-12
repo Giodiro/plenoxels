@@ -121,7 +121,7 @@ template <typename T, int32_t POW2_RF> struct render_dict_kernels
         const int32_t fn_wcoo, const int32_t warp_lane, const int32_t S, const int32_t D)
     {
         for (int s = 0; s < S; s ++) {
-            atom_weight = warp_lane < D ? atoms[fn_coo * S * D + s * D + warp_lane] : 0.0f;
+            T atom_weight = warp_lane < D ? atoms[fn_wcoo * S * D + s * D + warp_lane] : 0.0f;
             *acc = myfma(cg_sh[s], atom_weight, *acc);
         }
     }
@@ -338,7 +338,7 @@ template <typename T, int32_t POW2_RF> __device__ __inline__ void static_single_
         const int32_t D,
         const int32_t S)
 {
-    return render_dict_kernels<T, POW2_RF>::single_point_bwd(coarse_grid, atoms, d_coarse_grid, grad_output, point, cg_shmem, cub_storage, coarse_reso, D, S);
+    return render_dict_kernels<T, POW2_RF>::single_point_bwd(coarse_grid, atoms, d_coarse_grid, d_atoms, grad_output, point, cg_shmem, cub_storage, coarse_reso, D, S);
 }
 
 
@@ -406,8 +406,8 @@ trace_ray(
     while (t <= ray_spec[warp_offset].tmax) {
         ray_spec[warp_offset].update_pos(t);
         static_single_point_fwd<__half2, POW2_RF>(
-            coarse_grid, atoms, /*point=*/ray_spec[warp_offset].pos, /*out=*/interpolated[warp_offset],
-            /*cg_shmem=*/cg_shmem[warp_offset * (S >> 1)], coarse_reso, D, S);
+            reinterpret_cast<const __half2*>(coarse_grid), reinterpret_cast<const __half2*>(atoms), /*point=*/ray_spec[warp_offset].pos, /*out=*/interpolated[warp_offset],
+            /*cg_shmem=*/cg_shmem + warp_offset * (S >> 1), coarse_reso, D, S);
         __syncwarp();  // sync to get the `interpolated` array in each thread.
         if (interpolated[warp_offset][D - 1] > opt.sigma_thresh) {
             float interp_val = warp_lane >= (D - 1) ? 0.0f :
@@ -501,8 +501,8 @@ trace_ray_backward(
         ray_spec[warp_offset].update_pos(t);
 
         static_single_point_fwd<__half2, POW2_RF>(
-            coarse_grid, atoms, /*point=*/ray_spec[warp_offset].pos, /*out=*/interpolated[warp_offset],
-            /*cg_shmem=*/cg_shmem[warp_offset * (S >> 1)], coarse_reso, D, S);
+            reinterpret_cast<const __half2*>(coarse_grid), reinterpret_cast<const __half2*>(atoms), /*point=*/ray_spec[warp_offset].pos, /*out=*/interpolated[warp_offset],
+            /*cg_shmem=*/cg_shmem + warp_offset * (S >> 1), coarse_reso, D, S);
         __syncwarp();
 
         if (interpolated[warp_offset][D - 1] > opt.sigma_thresh) {
@@ -531,9 +531,9 @@ trace_ray_backward(
             const float curr_grad_sigma = ray_spec[warp_offset].world_step * (total_color * myexp(log_light_intensity) - accum);
 
             static_single_point_bwd<__half2, POW2_RF>(
-                coarse_grid, atoms, d_coarse_grid, d_atoms,
+                reinterpret_cast<const __half2*>(coarse_grid), reinterpret_cast<const __half2*>(atoms), reinterpret_cast<__half2*>(d_coarse_grid), reinterpret_cast<__half2*>(d_atoms),
                 /*grad_output=*/warp_lane < D - 1 ? curr_grad_color : curr_grad_sigma,
-                /*point=*/ray_spec[warp_offset].pos, cg_shmem[warp_offset * (S >> 1)],
+                /*point=*/ray_spec[warp_offset].pos, cg_shmem + warp_offset * (S >> 1),
                 cub_storage_h2[warp_offset], coarse_reso, D, S);
             if (myexp(log_light_intensity) < opt.stop_thresh) { break; }
         }
