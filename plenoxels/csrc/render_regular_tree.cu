@@ -55,10 +55,10 @@ __device__ __inline__ void coo_iw_coords(
 }
 
 template <int32_t POW2_RF>
-struct DictRendererKernels
+class DictRendererKernels
 {
 private:
-    template<typename TT>
+    template<class TT>
     struct Proxy { };
 
 public:
@@ -72,7 +72,7 @@ public:
                                                 const int32_t D,
                                                 const int32_t S) const
     {
-        single_point_fwd_impl(Proxy<T>(), coarse_grid, atoms, points, out, cg_shmem, coarse_reso, D, S);
+        single_point_fwd_impl(Proxy<T>(), coarse_grid, atoms, point, out, cg_shmem, coarse_reso, D, S);
     }
 
     template <typename T>
