@@ -25,6 +25,27 @@ using Acc64 = torch::GenericPackedTensorAccessor<T, N, torch::RestrictPtrTraits,
 #define WARP_SIZE 32
 
 
+
+inline at::ScalarType scalar_type(at::ScalarType s) {
+      return s;
+}
+
+#define AT_DISPATCH_FLOATING_TYPES_AND_CUHALF(TYPE, NAME, ...)                  \
+    [&] {                                                                       \
+      const auto& the_type = TYPE;                                              \
+      /* don't use TYPE again in case it is an expensive or side-effect op */   \
+      at::ScalarType _st = scalar_type(the_type);                               \
+      RECORD_KERNEL_FUNCTION_DTYPE(NAME, _st);                                  \
+      switch (_st) {                                                            \
+        AT_PRIVATE_CASE_TYPE(NAME, at::ScalarType::Double, double, __VA_ARGS__) \
+        AT_PRIVATE_CASE_TYPE(NAME, at::ScalarType::Float, float, __VA_ARGS__)   \
+        AT_PRIVATE_CASE_TYPE(NAME, at::ScalarType::Half, __half, __VA_ARGS__) \
+        default:                                                                \
+          AT_ERROR(#NAME, " not implemented for '", toString(_st), "'");        \
+      }                                                                         \
+}()
+
+
 __device__ __inline__ int32_t coo2idx(int32_t x, int32_t y, int32_t z, uint32_t grid_size) {
     return x + y * grid_size + z * grid_size * grid_size;
 }
@@ -192,8 +213,8 @@ private:
                                         const T * __restrict__ atoms,
                                               T * __restrict__ d_coarse_grid,
                                               T * __restrict__ d_atoms,
-                                        typename cub::WarpReduce<__half2>::TempStorage& __restrict__ cub_storage,
-                                        const __half2 iw,
+                                        typename cub::WarpReduce<T>::TempStorage& __restrict__ cub_storage,
+                                        const T iw,
                                         const int32_t cn_wcoo,
                                         const int32_t fn_wcoo,
                                         const int32_t warp_lane,
@@ -375,11 +396,11 @@ private:
 };
 
 
-template<int32_t POW2_RF, int32_t BASIS_DIM>
+template<typename scalar_t, int32_t POW2_RF, int32_t BASIS_DIM>
 __global__ void
 trace_ray(
-    const c10::Half * __restrict__ coarse_grid,  // Rc^3, S
-    const c10::Half * __restrict__ atoms,        // Rf^3, S, D
+    const scalar_t * __restrict__ coarse_grid,  // Rc^3, S
+    const scalar_t * __restrict__ atoms,        // Rf^3, S, D
     const float     * __restrict__ rays_o,       // N, 3
     const float     * __restrict__ rays_d,       // N, 3
           float     * __restrict__ out,          // N, 3
@@ -406,7 +427,7 @@ trace_ray(
     __shared__ Ray<float> ray_spec[CUDA_WARPS_PER_BLOCK];
     __shared__ typename WarpReduce::TempStorage cub_storage[CUDA_WARPS_PER_BLOCK];
     __shared__ float interpolated[CUDA_WARPS_PER_BLOCK][D];
-    __half * cg_shmem = shared_memory_proxy<__half>(); // V1_WARPS_PER_BLOCK * S / 2;
+    scalar_t * cg_shmem = shared_memory_proxy<scalar_t>(); // V1_WARPS_PER_BLOCK * S / 2;
 
     // Setup the ray-spec. Will copy data from rays_o, rays_d
     ray_spec[warp_offset].set(rays_o + ray_id * 3, rays_d + ray_id * 3);
@@ -423,9 +444,9 @@ trace_ray(
     while (t <= ray_spec[warp_offset].tmax) {
         ray_spec[warp_offset].update_pos(t);
 
-        inner_renderer.template single_point_fwd<__half>(
-            reinterpret_cast<const __half*>(coarse_grid), reinterpret_cast<const __half*>(atoms), /*point=*/ray_spec[warp_offset].pos, /*out=*/interpolated[warp_offset],
-            /*cg_shmem=*/reinterpret_cast<__half*>(cg_shmem + warp_offset * S), coarse_reso, D, S);
+        inner_renderer.template single_point_fwd<scalar_t>(
+            reinterpret_cast<const scalar_t*>(coarse_grid), reinterpret_cast<const scalar_t*>(atoms), /*point=*/ray_spec[warp_offset].pos, /*out=*/interpolated[warp_offset],
+            /*cg_shmem=*/reinterpret_cast<scalar_t*>(cg_shmem + warp_offset * S), coarse_reso, D, S);
         __syncwarp();  // sync to get the `interpolated` array in each thread.
         if (interpolated[warp_offset][D - 1] > opt.sigma_thresh) {
             float interp_val = warp_lane >= (D - 1) ? 0.0f :
@@ -459,12 +480,12 @@ __global__ void
 trace_ray_backward(
         const Acc32<float, 2> grad_output,  // N, 3
         const float * __restrict__ color_cache,  // N, 3
-        const c10::Half * __restrict__ coarse_grid,
-        const c10::Half * __restrict__ atoms,
+        const scalar_t * __restrict__ coarse_grid,
+        const scalar_t * __restrict__ atoms,
         const float * __restrict__ rays_o,
         const float * __restrict__ rays_d,
-              c10::Half * __restrict__ d_coarse_grid,
-              c10::Half * __restrict__ d_atoms,
+              scalar_t * __restrict__ d_coarse_grid,
+              scalar_t * __restrict__ d_atoms,
         const float * __restrict__ scaling,
         const float * __restrict__ offset,
         const int32_t coarse_reso,
@@ -484,7 +505,7 @@ trace_ray_backward(
     // groups and the final sigma dimension
     const uint32_t leader_mask = 1U | (1U << BASIS_DIM) | (1U << (2 * BASIS_DIM)) | (1U << (3 * BASIS_DIM));
     typedef cub::WarpReduce<float> WarpReducef;
-    typedef cub::WarpReduce<__half2> WarpReduceh2;
+    typedef cub::WarpReduce<scalar_t> WarpReduceh2;
 	if (ray_id >= N) return;
 
     // shared memory.
@@ -493,7 +514,7 @@ trace_ray_backward(
     __shared__ typename WarpReducef::TempStorage cub_storage[CUDA_WARPS_PER_BLOCK];
     __shared__ typename WarpReduceh2::TempStorage cub_storage_h2[CUDA_WARPS_PER_BLOCK];
     __shared__ float interpolated[CUDA_WARPS_PER_BLOCK][D];
-    __half2 * cg_shmem = shared_memory_proxy<__half2>(); // V1_WARPS_PER_BLOCK * S / 2;
+    scalar_t * cg_shmem = shared_memory_proxy<scalar_t>(); // V1_WARPS_PER_BLOCK * S / 2;
 
     // Setup the ray-spec. Will copy data from rays_o, rays_d
     ray_spec[warp_offset].set(rays_o + ray_id * 3, rays_d + ray_id * 3);
@@ -519,10 +540,10 @@ trace_ray_backward(
     while (t <= ray_spec[warp_offset].tmax) {
         ray_spec[warp_offset].update_pos(t);
 
-        inner_renderer.template single_point_fwd<__half>(
-            reinterpret_cast<const __half*>(coarse_grid), reinterpret_cast<const __half*>(atoms),
+        inner_renderer.template single_point_fwd<scalar_t>(
+            reinterpret_cast<const scalar_t*>(coarse_grid), reinterpret_cast<const scalar_t*>(atoms),
             /*point=*/ray_spec[warp_offset].pos, /*out=*/interpolated[warp_offset],
-            /*cg_shmem=*/reinterpret_cast<__half*>(cg_shmem + warp_offset * S), coarse_reso, D, S);
+            /*cg_shmem=*/reinterpret_cast<scalar_t*>(cg_shmem + warp_offset * S), coarse_reso, D, S);
         __syncwarp();
 
         if (interpolated[warp_offset][D - 1] > opt.sigma_thresh) {
@@ -550,10 +571,10 @@ trace_ray_backward(
             accum -= weight * total_color;
             const float curr_grad_sigma = ray_spec[warp_offset].world_step * (total_color * myexp(log_light_intensity) - accum);
 
-            inner_renderer.template single_point_bwd<__half>(
-                reinterpret_cast<const __half*>(coarse_grid), reinterpret_cast<const __half*>(atoms), reinterpret_cast<__half*>(d_coarse_grid), reinterpret_cast<__half*>(d_atoms),
+            inner_renderer.template single_point_bwd<scalar_t>(
+                reinterpret_cast<const scalar_t*>(coarse_grid), reinterpret_cast<const scalar_t*>(atoms), reinterpret_cast<scalar_t*>(d_coarse_grid), reinterpret_cast<scalar_t*>(d_atoms),
                 /*grad_output=*/warp_lane < D - 1 ? curr_grad_color : curr_grad_sigma,
-                /*point=*/ray_spec[warp_offset].pos, reinterpret_cast<__half*>(cg_shmem + warp_offset * S),
+                /*point=*/ray_spec[warp_offset].pos, reinterpret_cast<scalar_t*>(cg_shmem + warp_offset * S),
                 cub_storage_h2[warp_offset], coarse_reso, D, S);
             if (myexp(log_light_intensity) < opt.stop_thresh) { break; }
         }
@@ -564,13 +585,22 @@ trace_ray_backward(
 
 
 
-
 using torch::autograd::variable_list;
 using torch::autograd::tensor_list;
 using torch::autograd::Function;
 using torch::autograd::AutogradContext;
 using torch::autograd::Variable;
 using torch::Tensor;
+
+
+template <typename scalar_t> 
+scalar_t * tensor2ptr(Tensor tensor) {
+    return tensor.data_ptr<scalar_t>();
+}
+template <>
+__half * tensor2ptr<__half>(Tensor tensor) {
+    return (__half*)tensor.data_ptr<c10::Half>();
+}
 
 
 class DictTreeRender : public Function<DictTreeRender> {
@@ -623,41 +653,43 @@ class DictTreeRender : public Function<DictTreeRender> {
             const int32_t shared_mem = CUDA_WARPS_PER_BLOCK * S;
 
             #define CALL_KERNEL(T, RF, BD)                                                                              \
-                trace_ray<RF, BD><<<grid_size, block_size, shared_mem * 2, stream.stream()>>>(                  \
-                    coarse_grid.data_ptr<T>(), atoms.data_ptr<T>(), rays_o.data_ptr<float>(), rays_d.data_ptr<float>(), \
+                trace_ray<T, RF, BD><<<grid_size, block_size, shared_mem * sizeof(T), stream.stream()>>>(                  \
+                    tensor2ptr<T>(coarse_grid), tensor2ptr<T>(atoms), rays_o.data_ptr<float>(), rays_d.data_ptr<float>(), \
                     out.data_ptr<float>(), scaling_t.data_ptr<float>(), offset_t.data_ptr<float>(),                     \
-                    coarse_reso, N, S, opt)
-            if (coarse_grid.scalar_type() == at::ScalarType::Half) {
+                    (int32_t)coarse_reso, N, S, opt)
+            //if (coarse_grid.scalar_type() == at::ScalarType::Half) {
+            AT_DISPATCH_FLOATING_TYPES_AND_CUHALF(coarse_grid.scalar_type(), "trace_ray", [&] {
                 switch (fine_reso) {
                 case 2:
                     switch (D) {
-                        case 4: CALL_KERNEL(c10::Half, 1, 1); break;
-                        case 13: CALL_KERNEL(c10::Half, 1, 4); break;
-                        case 28: CALL_KERNEL(c10::Half, 1, 9); break;
+                        case 4: CALL_KERNEL(scalar_t, 1, 1); break;
+                        case 13: CALL_KERNEL(scalar_t, 1, 4); break;
+                        case 28: CALL_KERNEL(scalar_t, 1, 9); break;
                         default: throw std::invalid_argument("data-dim must be 4, 13 or 28.");
                     }
                     break;
                 case 4:
                     switch (D) {
-                        case 4: CALL_KERNEL(c10::Half, 2, 1); break;
-                        case 13: CALL_KERNEL(c10::Half, 2, 4); break;
-                        case 28: CALL_KERNEL(c10::Half, 2, 9); break;
+                        case 4: CALL_KERNEL(scalar_t, 2, 1); break;
+                        case 13: CALL_KERNEL(scalar_t, 2, 4); break;
+                        case 28: CALL_KERNEL(scalar_t, 2, 9); break;
                         default: throw std::invalid_argument("data-dim must be 4, 13 or 28.");
                     }
                     break;
                 case 8:
                     switch (D) {
-                        case 4: CALL_KERNEL(c10::Half, 3, 1); break;
-                        case 13: CALL_KERNEL(c10::Half, 3, 4); break;
-                        case 28: CALL_KERNEL(c10::Half, 3, 9); break;
+                        case 4: CALL_KERNEL(scalar_t, 3, 1); break;
+                        case 13: CALL_KERNEL(scalar_t, 3, 4); break;
+                        case 28: CALL_KERNEL(scalar_t, 3, 9); break;
                         default: throw std::invalid_argument("data-dim must be 4, 13 or 28.");
                     }
                     break;
                 default: throw std::invalid_argument("fine-resolution must be 2, 4 or 8.");
                 }
-            } else {
-                throw std::invalid_argument("Input data must be float16.");
-            }
+            }); 
+            //else {
+              //  throw std::invalid_argument("Input data must be float16.");
+            //}
             #undef CALL_KERNEL
             ctx->save_for_backward({coarse_grid, atoms, out});
             ctx->saved_data["rays_o"] = rays_o;
@@ -708,43 +740,41 @@ class DictTreeRender : public Function<DictTreeRender> {
             const int32_t shared_mem = CUDA_WARPS_PER_BLOCK * S;
 
             #define CALL_KERNEL(T, RF, BD)                                                                              \
-                trace_ray_backward<RF, BD><<<grid_size, block_size, shared_mem * sizeof(T), stream.stream()>>>(         \
+                trace_ray_backward<T, RF, BD><<<grid_size, block_size, shared_mem * sizeof(T), stream.stream()>>>(         \
                     grad_output.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),                            \
-                    fwd_output.data_ptr<float>(), coarse_grid.data_ptr<c10::Half>(),     \
-                    atoms.data_ptr<c10::Half>(), rays_o.data_ptr<float>(), rays_d.data_ptr<float>(),                    \
-                    d_coarse_grid.data_ptr<c10::Half>(), d_atoms.data_ptr<c10::Half>(), scaling_t.data_ptr<float>(),    \
-                    offset_t.data_ptr<float>(), coarse_reso, N, S, opt)
-            if (coarse_grid.scalar_type() == at::ScalarType::Half) {
+                    fwd_output.data_ptr<float>(), tensor2ptr<T>(coarse_grid),     \
+                    tensor2ptr<T>(atoms), rays_o.data_ptr<float>(), rays_d.data_ptr<float>(),                    \
+                    tensor2ptr<T>(d_coarse_grid), tensor2ptr<T>(d_atoms), scaling_t.data_ptr<float>(),    \
+                    offset_t.data_ptr<float>(), (int32_t)coarse_reso, N, S, opt)
+            AT_DISPATCH_FLOATING_TYPES_AND_CUHALF(coarse_grid.scalar_type(), "trace_ray_backward", [&] {
                 switch (fine_reso) {
                 case 2:
                     switch (D) {
-                        case 4: CALL_KERNEL(c10::Half, 1, 1); break;
-                        case 13: CALL_KERNEL(c10::Half, 1, 4); break;
-                        case 28: CALL_KERNEL(c10::Half, 1, 9); break;
+                        case 4: CALL_KERNEL(scalar_t, 1, 1); break;
+                        case 13: CALL_KERNEL(scalar_t, 1, 4); break;
+                        case 28: CALL_KERNEL(scalar_t, 1, 9); break;
                         default: throw std::invalid_argument("data-dim must be 4, 13 or 28.");
                     }
                     break;
                 case 4:
                     switch (D) {
-                        case 4: CALL_KERNEL(c10::Half, 2, 1); break;
-                        case 13: CALL_KERNEL(c10::Half, 2, 4); break;
-                        case 28: CALL_KERNEL(c10::Half, 2, 9); break;
+                        case 4: CALL_KERNEL(scalar_t, 2, 1); break;
+                        case 13: CALL_KERNEL(scalar_t, 2, 4); break;
+                        case 28: CALL_KERNEL(scalar_t, 2, 9); break;
                         default: throw std::invalid_argument("data-dim must be 4, 13 or 28.");
                     }
                     break;
                 case 8:
                     switch (D) {
-                        case 4: CALL_KERNEL(c10::Half, 3, 1); break;
-                        case 13: CALL_KERNEL(c10::Half, 3, 4); break;
-                        case 28: CALL_KERNEL(c10::Half, 3, 9); break;
+                        case 4: CALL_KERNEL(scalar_t, 3, 1); break;
+                        case 13: CALL_KERNEL(scalar_t, 3, 4); break;
+                        case 28: CALL_KERNEL(scalar_t, 3, 9); break;
                         default: throw std::invalid_argument("data-dim must be 4, 13 or 28.");
                     }
                     break;
                 default: throw std::invalid_argument("fine-resolution must be 2, 4 or 8.");
                 }
-            } else {
-                throw std::invalid_argument("Input data must be float16.");
-            }
+            });
             #undef CALL_KERNEL
             return {d_coarse_grid, d_atoms, Tensor(), Tensor(), Tensor(), Tensor(), Tensor(), Tensor(), Tensor(), Tensor(), Tensor()};
         }
