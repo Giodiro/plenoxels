@@ -72,9 +72,10 @@ public:
                                                 const int32_t D,
                                                 const int32_t S)
     {
-        single_point_fwd_impl(Proxy<T, POW2_RF>(), coarse_grid, atoms, points, out, cg_shmem, coarse_reso, D, S);
+        single_point_fwd_impl(Proxy<T>(), coarse_grid, atoms, points, out, cg_shmem, coarse_reso, D, S);
     }
 
+    template <typename T>
     __device__ __inline__ void single_point_bwd(
         const T * __restrict__ coarse_grid,     // Rc^3, S
         const T * __restrict__ atoms,           // Rf^3, S, D
@@ -96,10 +97,10 @@ public:
         int32_t cn_wcoo, fn_wcoo;
         T iw;
         for (int i = 0; i < 8; i++) {
-            coo_iw(Proxy<T, POW2_RF>(), fp, &grad_output, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
-            load_cg_block(Proxy<T, POW2_RF>(), coarse_grid, cg_shmem, cn_wcoo, warp_lane, S);
+            coo_iw(Proxy<T>(), fp, &grad_output, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
+            load_cg_block(Proxy<T>(), coarse_grid, cg_shmem, cn_wcoo, warp_lane, S);
             __syncwarp();
-            grad_loop(Proxy<T, POW2_RF>(), cg_shmem, atoms, d_coarse_grid, d_atoms, cub_storage, iw, cn_wcoo, fn_wcoo, warp_lane, S, D);
+            grad_loop(Proxy<T>(), cg_shmem, atoms, d_coarse_grid, d_atoms, cub_storage, iw, cn_wcoo, fn_wcoo, warp_lane, S, D);
             __syncwarp();
         }
     }
@@ -145,7 +146,7 @@ private:
     }
 
     template<typename T>
-    __device__ __inline__ void load_cg_block(Proxy<T, POW2_RF>,
+    __device__ __inline__ void load_cg_block(Proxy<T>,
                                             const T * __restrict__ cg,
                                             T * __restrict__ cg_out,
                                             const int32_t cn_wcoo,
@@ -156,7 +157,7 @@ private:
             cg_out[s] = __ldg(cg + cn_wcoo * S + s);
         }
     }
-    __device__ __inline__ void load_cg_block(Proxy<__half2, POW2_RF>,
+    __device__ __inline__ void load_cg_block(Proxy<__half2>,
                                             const __half2 * __restrict__ coarse_grid,
                                                   __half2 * __restrict__ coarse_grid_shmem,
                                             const int32_t cn_wcoo,
@@ -169,7 +170,7 @@ private:
     }
 
     template<typename T>
-    __device__ __inline__ void forward_loop(Proxy<T, POW2_RF>,
+    __device__ __inline__ void forward_loop(Proxy<T>,
                                             const T * __restrict__ cg_sh,
                                             const T * __restrict__ atoms,
                                             T * __restrict__ acc,
@@ -181,7 +182,7 @@ private:
             *acc = myfma(cg_sh[s], atom_weight, *acc);
         }
     }
-    __device__ __inline__ void forward_loop(Proxy<__half2, POW2_RF>,
+    __device__ __inline__ void forward_loop(Proxy<__half2>,
                                                     const __half2 * __restrict__ cg_sh,
                                                     const __half2 * __restrict__ atoms,
                                                     __half2 * __restrict__ acc,
@@ -198,7 +199,7 @@ private:
     }
 
     template<typename T>
-    __device__ __inline__ void grad_loop(Proxy<T, POW2_RF>,
+    __device__ __inline__ void grad_loop(Proxy<T>,
                                         const T * __restrict__ coarse_grid_shmem,
                                         const T * __restrict__ atoms,
                                               T * __restrict__ d_coarse_grid,
@@ -227,7 +228,7 @@ private:
             }
         }
     }
-    __device__ __inline__ void grad_loop(Proxy<__half2, POW2_RF>,
+    __device__ __inline__ void grad_loop(Proxy<__half2>,
         const __half2 * __restrict__ coarse_grid_shmem,
         const __half2 * __restrict__ atoms,
               __half2 * __restrict__ d_coarse_grid,
