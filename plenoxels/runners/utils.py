@@ -45,6 +45,7 @@ def init_data(cfg):
             downsample.append(800.0 / (cfg.model.coarse_reso * fine * 2.0))
     # Training datasets are lists of lists, where each inner list is different resolutions for the same scene
     # Test datasets are a single list over the different scenes, all at full resolution
+    print(f"Loading datasets with reso={resolution}, downsample={downsample}")
     tr_dsets, tr_loaders, ts_dsets = [], [], []
     for data_dir in cfg.data.datadirs:
         train, train_load = [], []
