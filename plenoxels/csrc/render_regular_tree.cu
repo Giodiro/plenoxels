@@ -304,7 +304,7 @@ private:
               __half2   * __restrict__ cg_shmem,     // V1_WARPS_PER_BLOCK * S / 2
         const int32_t coarse_reso,
         const int32_t D,
-        const int32_t S)
+        const int32_t S) const
     {
         __half2 test = __float2half2_rn(0.5f);
         printf("test %f\n", __low2float(test));
