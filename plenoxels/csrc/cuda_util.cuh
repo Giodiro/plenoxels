@@ -112,7 +112,7 @@ struct fast_divmod {
 
 // https://stackoverflow.com/questions/27570552/templated-cuda-kernel-with-dynamic-shared-memory
 template <typename T>
-__device__ T* shared_memory_proxy()
+__device__ __inline__ T* shared_memory_proxy()
 {
     // do we need an __align__() here? I don't think so...
     extern __shared__ unsigned char memory[];
