@@ -54,109 +54,27 @@ __device__ __inline__ void coo_iw_coords(
     *fn_wcoo = coo2idx(rfn[0], rfn[1], rfn[2], fine_reso);
 }
 
-template <typename T, int32_t POW2_RF> struct render_dict_kernels
+template <typename T, int32_t POW2_RF>
+struct DictRendererKernels
 {
-    static __device__ __inline__ void coo_iw(
-        const float * __restrict__ p_wcoo,
-        const float * __restrict__ iw_multiplier,
-        const int32_t coarse_reso,
-        const int32_t neighbor_id,
-        int32_t * __restrict__ cn_wcoo,
-        int32_t * __restrict__ fn_wcoo,
-        T       * __restrict__ iw)
+private:
+    template<typename TT, int32_t II>
+    struct Proxy { };
+
+public:
+    __device__ __inline__ void single_point_fwd(const T   * __restrict__ coarse_grid,  // Rc^3, S
+                                                const T   * __restrict__ atoms,        // Rf^3, S, D
+                                                const float     * __restrict__ point,        // 3
+                                                      float     * __restrict__ out,          // D
+                                                      T   * __restrict__ cg_shmem,     // V1_WARPS_PER_BLOCK * S / 2
+                                                const int32_t coarse_reso,
+                                                const int32_t D,
+                                                const int32_t S)
     {
-        int32_t fn[3];
-        coo_iw_coords<POW2_RF>(p_wcoo, fn, cn_wcoo, fn_wcoo, coarse_reso, neighbor_id);
-        *iw = static_cast<T>(
-            (1.0f - myabs(p_wcoo[0] - static_cast<float>(fn[0]) - 0.5f)) *
-            (1.0f - myabs(p_wcoo[1] - static_cast<float>(fn[1]) - 0.5f)) *
-            (1.0f - myabs(p_wcoo[2] - static_cast<float>(fn[2]) - 0.5f)) *
-            (iw_multiplier == nullptr ? 1.0f : *iw_multiplier)
-        );
+        single_point_fwd_impl(Proxy<T, POW2_RF>(), coarse_grid, atoms, points, out, cg_shmem, coarse_reso, D, S);
     }
 
-    static __device__ __inline__ void load_cg_block(
-        const T * __restrict__ cg, T * __restrict__ cg_out,
-        const int32_t cn_wcoo, const int32_t warp_lane,
-        const int32_t S)
-    {
-        for (int s = warp_lane; s < S; s += 32) {
-            cg_out[s] = __ldg(cg + cn_wcoo * S + s);
-        }
-    }
-
-    static __device__ __inline__ void grad_loop(
-        const T * __restrict__ coarse_grid_shmem,
-        const T * __restrict__ atoms,
-              T * __restrict__ d_coarse_grid,
-              T * __restrict__ d_atoms,
-        typename cub::WarpReduce<__half2>::TempStorage& __restrict__ cub_storage,
-        const __half2 iw,
-        const int32_t cn_wcoo,
-        const int32_t fn_wcoo,
-        const int32_t warp_lane,
-        const int32_t S,
-        const int32_t D
-    )
-    {
-        for (int s = 0; s < S; s++) {
-            // Gradient wrt atoms
-            if (warp_lane < D) {
-                atomicAdd(
-                    d_atoms + fn_wcoo * S * D + s * D + warp_lane,
-                    coarse_grid_shmem[s] * iw
-                );
-            }
-            // Gradient wrt coarse-grid
-            T tmp = warp_lane < D ? atoms[fn_wcoo * S * D + s * D + warp_lane] : 0.0f;
-            tmp = cub::WarpReduce<T>(cub_storage).Sum(tmp * iw);
-            if (warp_lane == 0) {
-                atomicAdd(d_coarse_grid + cn_wcoo * S + s, tmp);
-            }
-        }
-    }
-
-    static __device__ __inline__ void forward_loop(
-        const T * __restrict__ cg_sh, const T * __restrict__ atoms, T * __restrict__ acc,
-        const int32_t fn_wcoo, const int32_t warp_lane, const int32_t S, const int32_t D)
-    {
-        for (int s = 0; s < S; s ++) {
-            T atom_weight = warp_lane < D ? atoms[fn_wcoo * S * D + s * D + warp_lane] : 0.0f;
-            *acc = myfma(cg_sh[s], atom_weight, *acc);
-        }
-    }
-
-    static __device__ __inline__ void single_point_fwd(
-        const T   * __restrict__ coarse_grid,  // Rc^3, S
-        const T   * __restrict__ atoms,        // Rf^3, S, D
-        const float     * __restrict__ point,        // 3
-              float     * __restrict__ out,          // D
-              T   * __restrict__ cg_shmem,     // V1_WARPS_PER_BLOCK * S / 2
-        const int32_t coarse_reso,
-        const int32_t D,
-        const int32_t S)
-    {
-        constexpr int32_t fine_reso = 2 << (POW2_RF - 1);
-        const int32_t warp_lane = threadIdx.x & 0x1F;
-
-        const float fp[3] = {
-            point[0] * coarse_reso * fine_reso, point[1] * coarse_reso * fine_reso, point[2] * coarse_reso * fine_reso};
-        T iw, acc = 0.0f;
-        int32_t cn_wcoo, fn_wcoo;
-        for (int i = 0; i < 8; i++) {
-            coo_iw(fp, nullptr, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
-            load_cg_block(coarse_grid, cg_shmem, cn_wcoo, warp_lane, S);
-            __syncwarp();
-            forward_loop(cg_shmem, atoms, &acc, fn_wcoo, warp_lane, S, D);
-            __syncwarp();
-            acc *= iw;
-        }
-        if (warp_lane < D) {
-            out[warp_lane] = acc;
-        }
-    }
-
-    static __device__ __inline__ void single_point_bwd(
+    __device__ __inline__ void single_point_bwd(
         const T * __restrict__ coarse_grid,     // Rc^3, S
         const T * __restrict__ atoms,           // Rf^3, S, D
               T * __restrict__ d_coarse_grid,   // Rc^3, S
@@ -177,25 +95,42 @@ template <typename T, int32_t POW2_RF> struct render_dict_kernels
         int32_t cn_wcoo, fn_wcoo;
         T iw;
         for (int i = 0; i < 8; i++) {
-            coo_iw(fp, &grad_output, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
-            load_cg_block(coarse_grid, cg_shmem, cn_wcoo, warp_lane, S);
+            coo_iw(Proxy<T, POW2_RF>(), fp, &grad_output, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
+            load_cg_block(Proxy<T, POW2_RF>(), coarse_grid, cg_shmem, cn_wcoo, warp_lane, S);
             __syncwarp();
-            grad_loop(cg_shmem, atoms, d_coarse_grid, d_atoms, cub_storage, iw, cn_wcoo, fn_wcoo, warp_lane, S, D);
+            grad_loop(Proxy<T, POW2_RF>(), cg_shmem, atoms, d_coarse_grid, d_atoms, cub_storage, iw, cn_wcoo, fn_wcoo, warp_lane, S, D);
             __syncwarp();
         }
     }
-};
 
-template <int32_t POW2_RF> struct render_dict_kernels<__half2, POW2_RF>
-{
-    static __device__ __inline__ void coo_iw(
-        const float * __restrict__ p_wcoo,
-        const float * __restrict__ iw_multiplier,
-        const int32_t coarse_reso,
-        const int32_t neighbor_id,
-        int32_t * __restrict__ cn_wcoo,
-        int32_t * __restrict__ fn_wcoo,
-        __half2 * __restrict__ iw)
+private:
+
+    __device__ __inline__ void coo_iw(Proxy<T, POW2_RF>,
+                                      const float * __restrict__ p_wcoo,
+                                      const float * __restrict__ iw_multiplier,
+                                      const int32_t coarse_reso,
+                                      const int32_t neighbor_id,
+                                      int32_t * __restrict__ cn_wcoo,
+                                      int32_t * __restrict__ fn_wcoo,
+                                      T       * __restrict__ iw)
+    {
+        int32_t fn[3];
+        coo_iw_coords<POW2_RF>(p_wcoo, fn, cn_wcoo, fn_wcoo, coarse_reso, neighbor_id);
+        *iw = static_cast<T>(
+            (1.0f - myabs(p_wcoo[0] - static_cast<float>(fn[0]) - 0.5f)) *
+            (1.0f - myabs(p_wcoo[1] - static_cast<float>(fn[1]) - 0.5f)) *
+            (1.0f - myabs(p_wcoo[2] - static_cast<float>(fn[2]) - 0.5f)) *
+            (iw_multiplier == nullptr ? 1.0f : *iw_multiplier)
+        );
+    }
+    __device__ __inline__ void coo_iw(Proxy<__half2, POW2_RF>,
+                                      const float * __restrict__ p_wcoo,
+                                      const float * __restrict__ iw_multiplier,
+                                      const int32_t coarse_reso,
+                                      const int32_t neighbor_id,
+                                      int32_t * __restrict__ cn_wcoo,
+                                      int32_t * __restrict__ fn_wcoo,
+                                      __half2 * __restrict__ iw)
     {
         int32_t fn[3];
         coo_iw_coords<POW2_RF>(p_wcoo, fn, cn_wcoo, fn_wcoo, coarse_reso, neighbor_id);
@@ -207,21 +142,48 @@ template <int32_t POW2_RF> struct render_dict_kernels<__half2, POW2_RF>
         );
     }
 
-    static __device__ __inline__ void load_cg_block(
-        const __half2 * __restrict__ coarse_grid,
-              __half2 * __restrict__ coarse_grid_shmem,
-        const int32_t cn_wcoo,
-        const int32_t warp_lane,
-        const int32_t S)
+    __device__ __inline__ void load_cg_block(Proxy<T, POW2_RF>,
+                                            const T * __restrict__ cg,
+                                            T * __restrict__ cg_out,
+                                            const int32_t cn_wcoo,
+                                            const int32_t warp_lane,
+                                            const int32_t S)
+    {
+        for (int s = warp_lane; s < S; s += 32) {
+            cg_out[s] = __ldg(cg + cn_wcoo * S + s);
+        }
+    }
+    __device__ __inline__ void load_cg_block(Proxy<__half2, POW2_RF>,
+                                            const __half2 * __restrict__ coarse_grid,
+                                                  __half2 * __restrict__ coarse_grid_shmem,
+                                            const int32_t cn_wcoo,
+                                            const int32_t warp_lane,
+                                            const int32_t S)
     {
         for (int s = warp_lane; s < (S >> 1); s += 32) {
             coarse_grid_shmem[s] = __ldg(coarse_grid + cn_wcoo * (S >> 1) + s);
         }
     }
 
-    static __device__ __inline__ void forward_loop(
-        const __half2 * __restrict__ cg_sh, const __half2 * __restrict__ atoms, __half2 * __restrict__ acc,
-        const int32_t fn_wcoo, const int32_t warp_lane, const int32_t S, const int32_t D)
+    __device__ __inline__ void forward_loop(Proxy<T, POW2_RF>,
+                                            const T * __restrict__ cg_sh,
+                                            const T * __restrict__ atoms,
+                                            T * __restrict__ acc,
+                                            const int32_t fn_wcoo, const int32_t warp_lane,
+                                            const int32_t S, const int32_t D)
+    {
+        for (int s = 0; s < S; s ++) {
+            T atom_weight = warp_lane < D ? atoms[fn_wcoo * S * D + s * D + warp_lane] : 0.0f;
+            *acc = myfma(cg_sh[s], atom_weight, *acc);
+        }
+    }
+    __device__ __inline__ void forward_loop(Proxy<__half2, POW2_RF>,
+                                                    const __half2 * __restrict__ cg_sh,
+                                                    const __half2 * __restrict__ atoms,
+                                                    __half2 * __restrict__ acc,
+                                                    const int32_t fn_wcoo,
+                                                    const int32_t warp_lane,
+                                                    const int32_t S, const int32_t D)
     {
         for (int s = 0; s < S; s += 2) {
             __half2 atom_weight = warp_lane >= D ? __float2half2_rn(0.0f) :
@@ -231,7 +193,36 @@ template <int32_t POW2_RF> struct render_dict_kernels<__half2, POW2_RF>
         }
     }
 
-    static __device__ __inline__ void grad_loop(
+    __device__ __inline__ void grad_loop(Proxy<T, POW2_RF>,
+                                        const T * __restrict__ coarse_grid_shmem,
+                                        const T * __restrict__ atoms,
+                                              T * __restrict__ d_coarse_grid,
+                                              T * __restrict__ d_atoms,
+                                        typename cub::WarpReduce<__half2>::TempStorage& __restrict__ cub_storage,
+                                        const __half2 iw,
+                                        const int32_t cn_wcoo,
+                                        const int32_t fn_wcoo,
+                                        const int32_t warp_lane,
+                                        const int32_t S,
+                                        const int32_t D)
+    {
+        for (int s = 0; s < S; s++) {
+            // Gradient wrt atoms
+            if (warp_lane < D) {
+                atomicAdd(
+                    d_atoms + fn_wcoo * S * D + s * D + warp_lane,
+                    coarse_grid_shmem[s] * iw
+                );
+            }
+            // Gradient wrt coarse-grid
+            T tmp = warp_lane < D ? atoms[fn_wcoo * S * D + s * D + warp_lane] : 0.0f;
+            tmp = cub::WarpReduce<T>(cub_storage).Sum(tmp * iw);
+            if (warp_lane == 0) {
+                atomicAdd(d_coarse_grid + cn_wcoo * S + s, tmp);
+            }
+        }
+    }
+    __device__ __inline__ void grad_loop(Proxy<__half2, POW2_RF>,
         const __half2 * __restrict__ coarse_grid_shmem,
         const __half2 * __restrict__ atoms,
               __half2 * __restrict__ d_coarse_grid,
@@ -266,7 +257,36 @@ template <int32_t POW2_RF> struct render_dict_kernels<__half2, POW2_RF>
         }
     }
 
-    static __device__ __inline__ void single_point_fwd(
+    __device__ __inline__ void single_point_fwd_impl(Proxy<T, POW2_RF> p,
+                                                    const T   * __restrict__ coarse_grid,  // Rc^3, S
+                                                    const T   * __restrict__ atoms,        // Rf^3, S, D
+                                                    const float     * __restrict__ point,        // 3
+                                                          float     * __restrict__ out,          // D
+                                                          T   * __restrict__ cg_shmem,     // V1_WARPS_PER_BLOCK * S / 2
+                                                    const int32_t coarse_reso,
+                                                    const int32_t D,
+                                                    const int32_t S)
+    {
+        constexpr int32_t fine_reso = 2 << (POW2_RF - 1);
+        const int32_t warp_lane = threadIdx.x & 0x1F;
+
+        const float fp[3] = {
+            point[0] * coarse_reso * fine_reso, point[1] * coarse_reso * fine_reso, point[2] * coarse_reso * fine_reso};
+        T iw, acc = 0.0f;
+        int32_t cn_wcoo, fn_wcoo;
+        for (int i = 0; i < 8; i++) {
+            coo_iw(p, fp, nullptr, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
+            load_cg_block(p, coarse_grid, cg_shmem, cn_wcoo, warp_lane, S);
+            __syncwarp();
+            forward_loop(p, cg_shmem, atoms, &acc, fn_wcoo, warp_lane, S, D);
+            __syncwarp();
+            acc *= iw;
+        }
+        if (warp_lane < D) {
+            out[warp_lane] = acc;
+        }
+    }
+    __device__ __inline__ void single_point_fwd_impl(Proxy<__half2, POW2_RF> p,
         const __half2   * __restrict__ coarse_grid,  // Rc^3, S
         const __half2   * __restrict__ atoms,        // Rf^3, S, D
         const float     * __restrict__ point,        // 3
@@ -283,10 +303,10 @@ template <int32_t POW2_RF> struct render_dict_kernels<__half2, POW2_RF>
         __half2 iw, acc2 = __float2half2_rn(0.0f);
         int32_t cn_wcoo, fn_wcoo;
         for (int i = 0; i < 8; i++) {
-            coo_iw(fp, nullptr, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
-            load_cg_block(coarse_grid, cg_shmem, cn_wcoo, warp_lane, S);
+            coo_iw(p, fp, nullptr, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
+            load_cg_block(p, coarse_grid, cg_shmem, cn_wcoo, warp_lane, S);
             __syncwarp();
-            forward_loop(cg_shmem, atoms, &acc2, fn_wcoo, warp_lane, S, D);
+            forward_loop(p, cg_shmem, atoms, &acc2, fn_wcoo, warp_lane, S, D);
             __syncwarp();
             acc2 = __hmul2(iw, acc2);
         }
@@ -294,69 +314,7 @@ template <int32_t POW2_RF> struct render_dict_kernels<__half2, POW2_RF>
             out[warp_lane] = __low2float(acc2) + __high2float(acc2);
         }
     }
-
-    static __device__ __inline__ void single_point_bwd(
-        const __half2 * __restrict__ coarse_grid,     // Rc^3, S
-        const __half2 * __restrict__ atoms,           // Rf^3, S, D
-              __half2 * __restrict__ d_coarse_grid,   // Rc^3, S
-              __half2 * __restrict__ d_atoms,         // Rf^3, S, D
-        const float                    grad_output,     // 1
-        const float     * __restrict__ point,           // 3
-              __half2   * __restrict__ cg_shmem,        // S / 2
-        typename cub::WarpReduce<__half2>::TempStorage& __restrict__ cub_storage,
-        const int32_t coarse_reso,
-        const int32_t D,
-        const int32_t S)
-    {
-        constexpr int32_t fine_reso = 2 << (POW2_RF - 1);
-        const int32_t warp_lane = threadIdx.x & 0x1F;
-        const float fp[3] = {
-            point[0] * coarse_reso * fine_reso, point[1] * coarse_reso * fine_reso, point[2] * coarse_reso * fine_reso};
-
-        int32_t cn_wcoo, fn_wcoo;
-        __half2 iw;
-        for (int i = 0; i < 8; i++) {
-            coo_iw(fp, &grad_output, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
-            load_cg_block(coarse_grid, cg_shmem, cn_wcoo, warp_lane, S);
-            __syncwarp();
-            grad_loop(cg_shmem, atoms, d_coarse_grid, d_atoms, cub_storage, iw, cn_wcoo, fn_wcoo, warp_lane, S, D);
-            __syncwarp();
-        }
-    }
 };
-
-template <typename T, int32_t POW2_RF> __device__ __inline__ void static_single_point_bwd(
-        const T * __restrict__ coarse_grid,     // Rc^3, S
-        const T * __restrict__ atoms,           // Rf^3, S, D
-              T * __restrict__ d_coarse_grid,   // Rc^3, S
-              T * __restrict__ d_atoms,         // Rf^3, S, D
-        const float                    grad_output,     // 1
-        const float     * __restrict__ point,           // 3
-              T   * __restrict__ cg_shmem,        // S / 2
-        typename cub::WarpReduce<T>::TempStorage& __restrict__ cub_storage,
-        const int32_t coarse_reso,
-        const int32_t D,
-        const int32_t S)
-{
-    return render_dict_kernels<T, POW2_RF>::single_point_bwd(coarse_grid, atoms, d_coarse_grid, d_atoms, grad_output, point, cg_shmem, cub_storage, coarse_reso, D, S);
-}
-
-
-
-template <typename T, int32_t POW2_RF> __device__ __inline__ void static_single_point_fwd(
-        const T   * __restrict__ coarse_grid,  // Rc^3, S
-        const T   * __restrict__ atoms,        // Rf^3, S, D
-        const float     * __restrict__ point,        // 3
-              float     * __restrict__ out,          // D
-              T   * __restrict__ cg_shmem,     // V1_WARPS_PER_BLOCK * S / 2
-        const int32_t coarse_reso,
-        const int32_t D,
-        const int32_t S)
-
-{
-    return render_dict_kernels<T, POW2_RF>::single_point_fwd(coarse_grid, atoms, point, out, cg_shmem, coarse_reso, D, S);
-}
-
 
 
 template<int32_t POW2_RF, int32_t BASIS_DIM>
@@ -381,6 +339,7 @@ trace_ray(
     const int32_t ray_id = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
     const int32_t lane_colorgrp = warp_lane / BASIS_DIM;
     const int32_t lane_colorgrp_id = warp_lane % BASIS_DIM;
+    const DictRendererKernels<__half2, POW2_RF> inner_renderer = DictRendererKernels<__half2, POW2_RF>();
     typedef cub::WarpReduce<float> WarpReduce;
 	if (ray_id >= N) return;
 
@@ -405,7 +364,8 @@ trace_ray(
     float t = ray_spec[warp_offset].tmin, outv = 0.0f, log_light_intensity = 0.0f;
     while (t <= ray_spec[warp_offset].tmax) {
         ray_spec[warp_offset].update_pos(t);
-        static_single_point_fwd<__half2, POW2_RF>(
+
+        inner_renderer.single_point_fwd(
             reinterpret_cast<const __half2*>(coarse_grid), reinterpret_cast<const __half2*>(atoms), /*point=*/ray_spec[warp_offset].pos, /*out=*/interpolated[warp_offset],
             /*cg_shmem=*/cg_shmem + warp_offset * (S >> 1), coarse_reso, D, S);
         __syncwarp();  // sync to get the `interpolated` array in each thread.
@@ -461,6 +421,7 @@ trace_ray_backward(
     const int32_t ray_id = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
     const int32_t lane_colorgrp = warp_lane / BASIS_DIM;
     const int32_t lane_colorgrp_id = warp_lane % BASIS_DIM;
+    const DictRendererKernels<__half2, POW2_RF> inner_renderer = DictRendererKernels<__half2, POW2_RF>();
     // if BASIS_DIM=9, leader_mask=0000 1000 0000 0100 0000 0010 0000 0001 selecting the leaders of the color
     // groups and the final sigma dimension
     const uint32_t leader_mask = 1U | (1U << BASIS_DIM) | (1U << (2 * BASIS_DIM)) | (1U << (3 * BASIS_DIM));
@@ -500,7 +461,7 @@ trace_ray_backward(
     while (t <= ray_spec[warp_offset].tmax) {
         ray_spec[warp_offset].update_pos(t);
 
-        static_single_point_fwd<__half2, POW2_RF>(
+        inner_renderer.single_point_fwd(
             reinterpret_cast<const __half2*>(coarse_grid), reinterpret_cast<const __half2*>(atoms), /*point=*/ray_spec[warp_offset].pos, /*out=*/interpolated[warp_offset],
             /*cg_shmem=*/cg_shmem + warp_offset * (S >> 1), coarse_reso, D, S);
         __syncwarp();
@@ -530,7 +491,7 @@ trace_ray_backward(
             accum -= weight * total_color;
             const float curr_grad_sigma = ray_spec[warp_offset].world_step * (total_color * myexp(log_light_intensity) - accum);
 
-            static_single_point_bwd<__half2, POW2_RF>(
+            inner_renderer.single_point_bwd(
                 reinterpret_cast<const __half2*>(coarse_grid), reinterpret_cast<const __half2*>(atoms), reinterpret_cast<__half2*>(d_coarse_grid), reinterpret_cast<__half2*>(d_atoms),
                 /*grad_output=*/warp_lane < D - 1 ? curr_grad_color : curr_grad_sigma,
                 /*point=*/ray_spec[warp_offset].pos, cg_shmem + warp_offset * (S >> 1),
