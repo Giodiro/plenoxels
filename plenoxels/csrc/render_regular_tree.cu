@@ -75,38 +75,38 @@ public:
         single_point_fwd_impl(Proxy<T>(), coarse_grid, atoms, point, out, cg_shmem, coarse_reso, D, S);
     }
 
-    template <typename T>
-    __device__ __inline__ void single_point_bwd(
-        const T * __restrict__ coarse_grid,     // Rc^3, S
-        const T * __restrict__ atoms,           // Rf^3, S, D
-              T * __restrict__ d_coarse_grid,   // Rc^3, S
-              T * __restrict__ d_atoms,         // Rf^3, S, D
-        const float                    grad_output,     // 1
-        const float     * __restrict__ point,           // 3
-              T   * __restrict__ cg_shmem,        // S / 2
-        typename cub::WarpReduce<T>::TempStorage& __restrict__ cub_storage,
-        const int32_t coarse_reso,
-        const int32_t D,
-        const int32_t S) const
-    {
-        constexpr int32_t fine_reso = 2 << (POW2_RF - 1);
-        const int32_t warp_lane = threadIdx.x & 0x1F;
-        const float fp[3] = {
-            point[0] * coarse_reso * fine_reso, point[1] * coarse_reso * fine_reso, point[2] * coarse_reso * fine_reso};
-
-        int32_t cn_wcoo, fn_wcoo;
-        T iw;
-        for (int i = 0; i < 8; i++) {
-            coo_iw(Proxy<T>(), fp, &grad_output, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
-            load_cg_block(Proxy<T>(), coarse_grid, cg_shmem, cn_wcoo, warp_lane, S);
-            __syncwarp();
-            grad_loop(Proxy<T>(), cg_shmem, atoms, d_coarse_grid, d_atoms, cub_storage, iw, cn_wcoo, fn_wcoo, warp_lane, S, D);
-            __syncwarp();
-        }
-    }
+//    template <typename T>
+//    __device__ __inline__ void single_point_bwd(
+//        const T * __restrict__ coarse_grid,     // Rc^3, S
+//        const T * __restrict__ atoms,           // Rf^3, S, D
+//              T * __restrict__ d_coarse_grid,   // Rc^3, S
+//              T * __restrict__ d_atoms,         // Rf^3, S, D
+//        const float                    grad_output,     // 1
+//        const float     * __restrict__ point,           // 3
+//              T   * __restrict__ cg_shmem,        // S / 2
+//        typename cub::WarpReduce<T>::TempStorage& __restrict__ cub_storage,
+//        const int32_t coarse_reso,
+//        const int32_t D,
+//        const int32_t S) const
+//    {
+//        constexpr int32_t fine_reso = 2 << (POW2_RF - 1);
+//        const int32_t warp_lane = threadIdx.x & 0x1F;
+//        const float fp[3] = {
+//            point[0] * coarse_reso * fine_reso, point[1] * coarse_reso * fine_reso, point[2] * coarse_reso * fine_reso};
+//
+//        int32_t cn_wcoo, fn_wcoo;
+//        T iw;
+//        for (int i = 0; i < 8; i++) {
+//            coo_iw(Proxy<T>(), fp, &grad_output, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
+//            load_cg_block(Proxy<T>(), coarse_grid, cg_shmem, cn_wcoo, warp_lane, S);
+//            __syncwarp();
+//            grad_loop(Proxy<T>(), cg_shmem, atoms, d_coarse_grid, d_atoms, cub_storage, iw, cn_wcoo, fn_wcoo, warp_lane, S, D);
+//            __syncwarp();
+//        }
+//    }
 
 private:
-
+    /*
     template<typename T>
     __device__ __inline__ void coo_iw(Proxy<T>,
                                       const float * __restrict__ p_wcoo,
@@ -262,6 +262,7 @@ private:
             }
         }
     }
+    */
 
     template<typename T>
     __device__ __inline__ void single_point_fwd_impl(Proxy<T> p,
@@ -274,24 +275,26 @@ private:
                                                     const int32_t D,
                                                     const int32_t S) const
     {
-        constexpr int32_t fine_reso = 2 << (POW2_RF - 1);
-        const int32_t warp_lane = threadIdx.x & 0x1F;
-
-        const float fp[3] = {
-            point[0] * coarse_reso * fine_reso, point[1] * coarse_reso * fine_reso, point[2] * coarse_reso * fine_reso};
-        T iw, acc = 0.0f;
-        int32_t cn_wcoo, fn_wcoo;
-        for (int i = 0; i < 8; i++) {
-            coo_iw(p, fp, nullptr, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
-            load_cg_block(p, coarse_grid, cg_shmem, cn_wcoo, warp_lane, S);
-            __syncwarp();
-            forward_loop(p, cg_shmem, atoms, &acc, fn_wcoo, warp_lane, S, D);
-            __syncwarp();
-            acc *= iw;
-        }
-        if (warp_lane < D) {
-            out[warp_lane] = acc;
-        }
+        T test = 0.0f;
+        printf("test %f\n", test);
+//        constexpr int32_t fine_reso = 2 << (POW2_RF - 1);
+//        const int32_t warp_lane = threadIdx.x & 0x1F;
+//
+//        const float fp[3] = {
+//            point[0] * coarse_reso * fine_reso, point[1] * coarse_reso * fine_reso, point[2] * coarse_reso * fine_reso};
+//        T iw, acc = 0.0f;
+//        int32_t cn_wcoo, fn_wcoo;
+//        for (int i = 0; i < 8; i++) {
+//            coo_iw(p, fp, nullptr, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
+//            load_cg_block(p, coarse_grid, cg_shmem, cn_wcoo, warp_lane, S);
+//            __syncwarp();
+//            forward_loop(p, cg_shmem, atoms, &acc, fn_wcoo, warp_lane, S, D);
+//            __syncwarp();
+//            acc *= iw;
+//        }
+//        if (warp_lane < D) {
+//            out[warp_lane] = acc;
+//        }
     }
     __device__ __inline__ void single_point_fwd_impl(Proxy<__half2> p,
         const __half2   * __restrict__ coarse_grid,  // Rc^3, S
@@ -303,23 +306,25 @@ private:
         const int32_t D,
         const int32_t S)
     {
-        constexpr int32_t fine_reso = 2 << (POW2_RF - 1);
-        const int32_t warp_lane = threadIdx.x & 0x1F;
-        const float fp[3] = {
-            point[0] * coarse_reso * fine_reso, point[1] * coarse_reso * fine_reso, point[2] * coarse_reso * fine_reso};
-        __half2 iw, acc2 = __float2half2_rn(0.0f);
-        int32_t cn_wcoo, fn_wcoo;
-        for (int i = 0; i < 8; i++) {
-            coo_iw(p, fp, nullptr, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
-            load_cg_block(p, coarse_grid, cg_shmem, cn_wcoo, warp_lane, S);
-            __syncwarp();
-            forward_loop(p, cg_shmem, atoms, &acc2, fn_wcoo, warp_lane, S, D);
-            __syncwarp();
-            acc2 = __hmul2(iw, acc2);
-        }
-        if (warp_lane < D) {
-            out[warp_lane] = __low2float(acc2) + __high2float(acc2);
-        }
+        __half2 test = __float2half2_rn(0.5f);
+        printf("test %f\n", __low2float(test));
+//        constexpr int32_t fine_reso = 2 << (POW2_RF - 1);
+//        const int32_t warp_lane = threadIdx.x & 0x1F;
+//        const float fp[3] = {
+//            point[0] * coarse_reso * fine_reso, point[1] * coarse_reso * fine_reso, point[2] * coarse_reso * fine_reso};
+//        __half2 iw, acc2 = __float2half2_rn(0.0f);
+//        int32_t cn_wcoo, fn_wcoo;
+//        for (int i = 0; i < 8; i++) {
+//            coo_iw(p, fp, nullptr, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
+//            load_cg_block(p, coarse_grid, cg_shmem, cn_wcoo, warp_lane, S);
+//            __syncwarp();
+//            forward_loop(p, cg_shmem, atoms, &acc2, fn_wcoo, warp_lane, S, D);
+//            __syncwarp();
+//            acc2 = __hmul2(iw, acc2);
+//        }
+//        if (warp_lane < D) {
+//            out[warp_lane] = __low2float(acc2) + __high2float(acc2);
+//        }
     }
 };
 
@@ -372,7 +377,7 @@ trace_ray(
     while (t <= ray_spec[warp_offset].tmax) {
         ray_spec[warp_offset].update_pos(t);
 
-        inner_renderer.single_point_fwd(
+        inner_renderer.single_point_fwd<__half2>(
             reinterpret_cast<const __half2*>(coarse_grid), reinterpret_cast<const __half2*>(atoms), /*point=*/ray_spec[warp_offset].pos, /*out=*/interpolated[warp_offset],
             /*cg_shmem=*/cg_shmem + warp_offset * (S >> 1), coarse_reso, D, S);
         __syncwarp();  // sync to get the `interpolated` array in each thread.
@@ -402,112 +407,6 @@ trace_ray(
 }
 
 
-
-template <int32_t POW2_RF, int32_t BASIS_DIM>
-__global__ void
-trace_ray_backward(
-        const Acc32<float, 2> grad_output,  // N, 3
-        const float * __restrict__ color_cache,  // N, 3
-        const c10::Half * __restrict__ coarse_grid,
-        const c10::Half * __restrict__ atoms,
-        const float * __restrict__ rays_o,
-        const float * __restrict__ rays_d,
-              c10::Half * __restrict__ d_coarse_grid,
-              c10::Half * __restrict__ d_atoms,
-        const float * __restrict__ scaling,
-        const float * __restrict__ offset,
-        const int32_t coarse_reso,
-        const int32_t N,
-        const int32_t S,
-        const RenderOptions opt
-)
-{
-    constexpr int32_t D = BASIS_DIM * 3 + 1;
-    const int32_t warp_lane = threadIdx.x & 0x1F;
-    const int32_t warp_offset = (threadIdx.x >> 5);
-    const int32_t ray_id = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
-    const int32_t lane_colorgrp = warp_lane / BASIS_DIM;
-    const int32_t lane_colorgrp_id = warp_lane % BASIS_DIM;
-    const DictRendererKernels<POW2_RF> inner_renderer = DictRendererKernels<POW2_RF>();
-    // if BASIS_DIM=9, leader_mask=0000 1000 0000 0100 0000 0010 0000 0001 selecting the leaders of the color
-    // groups and the final sigma dimension
-    const uint32_t leader_mask = 1U | (1U << BASIS_DIM) | (1U << (2 * BASIS_DIM)) | (1U << (3 * BASIS_DIM));
-    typedef cub::WarpReduce<float> WarpReducef;
-    typedef cub::WarpReduce<__half2> WarpReduceh2;
-	if (ray_id >= N) return;
-
-    // shared memory.
-    __shared__ float sphfunc_val[CUDA_WARPS_PER_BLOCK][9];
-    __shared__ Ray<float> ray_spec[CUDA_WARPS_PER_BLOCK];
-    __shared__ typename WarpReducef::TempStorage cub_storage[CUDA_WARPS_PER_BLOCK];
-    __shared__ typename WarpReduceh2::TempStorage cub_storage_h2[CUDA_WARPS_PER_BLOCK];
-    __shared__ float interpolated[CUDA_WARPS_PER_BLOCK][D];
-    __half2 * cg_shmem = shared_memory_proxy<__half2>(); // V1_WARPS_PER_BLOCK * S / 2;
-
-    // Setup the ray-spec. Will copy data from rays_o, rays_d
-    ray_spec[warp_offset].set(rays_o + ray_id * 3, rays_d + ray_id * 3);
-    // Spherical harmonics are computed before ray normalization
-    calc_sphfunc(/*basis_dim=*/BASIS_DIM, /*dir=*/ray_spec[warp_offset].dir, /*out=*/sphfunc_val[warp_offset]);
-    ray_find_bounds(ray_spec[warp_offset], scaling, offset, opt.step_size, opt.near_plane);
-
-    const float c_grad_out[3] = {grad_output[ray_id][0], grad_output[ray_id][1], grad_output[ray_id][2]};
-    // const float norm_factor = 2.0f / (3 * N);
-    //for (int i = 0; i < 3; ++i) {
-        // TODO: Figure out what the commented-out normalization did (from svox).
-    //    c_grad_out[i] = grad_output[ray_id][i];//(color_cache[ray_id][i] - grad_output[ray_id][i]) * norm_factor;
-    //}
-    float accum = fmaf(color_cache[ray_id * 3], c_grad_out[0],
-                      fmaf(color_cache[ray_id * 3 + 1], c_grad_out[1],
-                           color_cache[ray_id * 3 + 2] * c_grad_out[2]));
-
-    if (ray_spec[warp_offset].tmin > ray_spec[warp_offset].tmax) { return; }
-
-    float t = ray_spec[warp_offset].tmin;
-    const float gout = lane_colorgrp < 3 ? c_grad_out[lane_colorgrp] : 0.0f;  // avoid out-of-bounds on sigma thread
-    float log_light_intensity = 0.0f;
-    while (t <= ray_spec[warp_offset].tmax) {
-        ray_spec[warp_offset].update_pos(t);
-
-        inner_renderer.single_point_fwd(
-            reinterpret_cast<const __half2*>(coarse_grid), reinterpret_cast<const __half2*>(atoms), /*point=*/ray_spec[warp_offset].pos, /*out=*/interpolated[warp_offset],
-            /*cg_shmem=*/cg_shmem + warp_offset * (S >> 1), coarse_reso, D, S);
-        __syncwarp();
-
-        if (interpolated[warp_offset][D - 1] > opt.sigma_thresh) {
-            float weighted_lane_color = warp_lane >= (D - 1) ? 0.0f :
-                interpolated[warp_offset][warp_lane] * sphfunc_val[warp_offset][lane_colorgrp_id];
-            const float pcnt = ray_spec[warp_offset].world_step * interpolated[warp_offset][D - 1];
-            const float weight = myexp(log_light_intensity) * (1.f - myexp(-pcnt));
-            log_light_intensity -= pcnt;
-
-            // Sum over all dimensions for the color of lane_colorgrp_id. Only valid in the head.
-            const float lane_color_total = WarpReducef(cub_storage[warp_offset]).HeadSegmentedSum(
-                weighted_lane_color, lane_colorgrp_id == 0) + 0.5f;
-            float total_color = mymax(lane_color_total, 0.0f);  // Clamp to [+0, infty)
-            float color_in_01 = total_color == lane_color_total;
-            total_color *= gout;  // the multiplication zeroes out total_color for the lanes >= D - 1
-
-            // For each 'leader' thread (first thread in a colorgroup), sum the values in the other leaders.
-            total_color += __shfl_up_sync(leader_mask, total_color, /*delta=*/BASIS_DIM);
-            total_color += __shfl_up_sync(leader_mask, total_color, /*delta=*/2 * BASIS_DIM);
-
-            // for sigma thread (and all lanes >= D - 1) this will be something random
-            color_in_01 = __shfl_sync(0xffffffff, color_in_01, /*srcLane=*/lane_colorgrp * BASIS_DIM);  // this will be 0 or 1.
-            const float curr_grad_color = sphfunc_val[warp_offset][lane_colorgrp_id] * (weight * color_in_01 * gout);
-
-            accum -= weight * total_color;
-            const float curr_grad_sigma = ray_spec[warp_offset].world_step * (total_color * myexp(log_light_intensity) - accum);
-
-            inner_renderer.single_point_bwd(
-                reinterpret_cast<const __half2*>(coarse_grid), reinterpret_cast<const __half2*>(atoms), reinterpret_cast<__half2*>(d_coarse_grid), reinterpret_cast<__half2*>(d_atoms),
-                /*grad_output=*/warp_lane < D - 1 ? curr_grad_color : curr_grad_sigma,
-                /*point=*/ray_spec[warp_offset].pos, cg_shmem + warp_offset * (S >> 1),
-                cub_storage_h2[warp_offset], coarse_reso, D, S);
-            if (myexp(log_light_intensity) < opt.stop_thresh) { break; }
-        }
-        t += opt.step_size;
-    }
-}
 
 
 
@@ -655,44 +554,44 @@ class DictTreeRender : public Function<DictTreeRender> {
             const dim3 block_size(CUDA_THREADS_PER_BLOCK);
             const int32_t shared_mem = CUDA_WARPS_PER_BLOCK * S;
 
-            #define CALL_KERNEL(T, RF, BD)                                                                              \
-                trace_ray_backward<RF, BD><<<grid_size, block_size, shared_mem * sizeof(T), stream.stream()>>>(         \
-                    grad_output.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),                            \
-                    fwd_output.data_ptr<float>(), coarse_grid.data_ptr<c10::Half>(),     \
-                    atoms.data_ptr<c10::Half>(), rays_o.data_ptr<float>(), rays_d.data_ptr<float>(),                    \
-                    d_coarse_grid.data_ptr<c10::Half>(), d_atoms.data_ptr<c10::Half>(), scaling_t.data_ptr<float>(),    \
-                    offset_t.data_ptr<float>(), coarse_reso, N, S, opt)
-            if (coarse_grid.scalar_type() == at::ScalarType::Half) {
-                switch (fine_reso) {
-                case 2:
-                    switch (D) {
-                        case 4: CALL_KERNEL(c10::Half, 1, 1); break;
-                        case 13: CALL_KERNEL(c10::Half, 1, 4); break;
-                        case 28: CALL_KERNEL(c10::Half, 1, 9); break;
-                        default: throw std::invalid_argument("data-dim must be 4, 13 or 28.");
-                    }
-                    break;
-                case 4:
-                    switch (D) {
-                        case 4: CALL_KERNEL(c10::Half, 2, 1); break;
-                        case 13: CALL_KERNEL(c10::Half, 2, 4); break;
-                        case 28: CALL_KERNEL(c10::Half, 2, 9); break;
-                        default: throw std::invalid_argument("data-dim must be 4, 13 or 28.");
-                    }
-                    break;
-                case 8:
-                    switch (D) {
-                        case 4: CALL_KERNEL(c10::Half, 3, 1); break;
-                        case 13: CALL_KERNEL(c10::Half, 3, 4); break;
-                        case 28: CALL_KERNEL(c10::Half, 3, 9); break;
-                        default: throw std::invalid_argument("data-dim must be 4, 13 or 28.");
-                    }
-                    break;
-                default: throw std::invalid_argument("fine-resolution must be 2, 4 or 8.");
-                }
-            } else {
-                throw std::invalid_argument("Input data must be float16.");
-            }
+//            #define CALL_KERNEL(T, RF, BD)                                                                              \
+//                trace_ray_backward<RF, BD><<<grid_size, block_size, shared_mem * sizeof(T), stream.stream()>>>(         \
+//                    grad_output.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),                            \
+//                    fwd_output.data_ptr<float>(), coarse_grid.data_ptr<c10::Half>(),     \
+//                    atoms.data_ptr<c10::Half>(), rays_o.data_ptr<float>(), rays_d.data_ptr<float>(),                    \
+//                    d_coarse_grid.data_ptr<c10::Half>(), d_atoms.data_ptr<c10::Half>(), scaling_t.data_ptr<float>(),    \
+//                    offset_t.data_ptr<float>(), coarse_reso, N, S, opt)
+//            if (coarse_grid.scalar_type() == at::ScalarType::Half) {
+//                switch (fine_reso) {
+//                case 2:
+//                    switch (D) {
+//                        case 4: CALL_KERNEL(c10::Half, 1, 1); break;
+//                        case 13: CALL_KERNEL(c10::Half, 1, 4); break;
+//                        case 28: CALL_KERNEL(c10::Half, 1, 9); break;
+//                        default: throw std::invalid_argument("data-dim must be 4, 13 or 28.");
+//                    }
+//                    break;
+//                case 4:
+//                    switch (D) {
+//                        case 4: CALL_KERNEL(c10::Half, 2, 1); break;
+//                        case 13: CALL_KERNEL(c10::Half, 2, 4); break;
+//                        case 28: CALL_KERNEL(c10::Half, 2, 9); break;
+//                        default: throw std::invalid_argument("data-dim must be 4, 13 or 28.");
+//                    }
+//                    break;
+//                case 8:
+//                    switch (D) {
+//                        case 4: CALL_KERNEL(c10::Half, 3, 1); break;
+//                        case 13: CALL_KERNEL(c10::Half, 3, 4); break;
+//                        case 28: CALL_KERNEL(c10::Half, 3, 9); break;
+//                        default: throw std::invalid_argument("data-dim must be 4, 13 or 28.");
+//                    }
+//                    break;
+//                default: throw std::invalid_argument("fine-resolution must be 2, 4 or 8.");
+//                }
+//            } else {
+//                throw std::invalid_argument("Input data must be float16.");
+//            }
             #undef CALL_KERNEL
             return {d_coarse_grid, d_atoms, Tensor(), Tensor(), Tensor(), Tensor(), Tensor(), Tensor(), Tensor(), Tensor(), Tensor()};
         }
