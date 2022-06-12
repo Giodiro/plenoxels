@@ -346,7 +346,7 @@ trace_ray(
     const int32_t ray_id = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
     const int32_t lane_colorgrp = warp_lane / BASIS_DIM;
     const int32_t lane_colorgrp_id = warp_lane % BASIS_DIM;
-    const DictRendererKernels<__half2, POW2_RF> inner_renderer = DictRendererKernels<__half2, POW2_RF>();
+    const DictRendererKernels<POW2_RF> inner_renderer = DictRendererKernels<POW2_RF>();
     typedef cub::WarpReduce<float> WarpReduce;
 	if (ray_id >= N) return;
 
@@ -372,7 +372,7 @@ trace_ray(
     while (t <= ray_spec[warp_offset].tmax) {
         ray_spec[warp_offset].update_pos(t);
 
-        inner_renderer.single_point_fwd(
+        inner_renderer.single_point_fwd<__half2>(
             reinterpret_cast<const __half2*>(coarse_grid), reinterpret_cast<const __half2*>(atoms), /*point=*/ray_spec[warp_offset].pos, /*out=*/interpolated[warp_offset],
             /*cg_shmem=*/cg_shmem + warp_offset * (S >> 1), coarse_reso, D, S);
         __syncwarp();  // sync to get the `interpolated` array in each thread.
@@ -428,7 +428,7 @@ trace_ray_backward(
     const int32_t ray_id = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
     const int32_t lane_colorgrp = warp_lane / BASIS_DIM;
     const int32_t lane_colorgrp_id = warp_lane % BASIS_DIM;
-    const DictRendererKernels<__half2, POW2_RF> inner_renderer = DictRendererKernels<__half2, POW2_RF>();
+    const DictRendererKernels<POW2_RF> inner_renderer = DictRendererKernels<POW2_RF>();
     // if BASIS_DIM=9, leader_mask=0000 1000 0000 0100 0000 0010 0000 0001 selecting the leaders of the color
     // groups and the final sigma dimension
     const uint32_t leader_mask = 1U | (1U << BASIS_DIM) | (1U << (2 * BASIS_DIM)) | (1U << (3 * BASIS_DIM));
@@ -468,7 +468,7 @@ trace_ray_backward(
     while (t <= ray_spec[warp_offset].tmax) {
         ray_spec[warp_offset].update_pos(t);
 
-        inner_renderer.single_point_fwd(
+        inner_renderer.single_point_fwd<__half2>(
             reinterpret_cast<const __half2*>(coarse_grid), reinterpret_cast<const __half2*>(atoms), /*point=*/ray_spec[warp_offset].pos, /*out=*/interpolated[warp_offset],
             /*cg_shmem=*/cg_shmem + warp_offset * (S >> 1), coarse_reso, D, S);
         __syncwarp();
@@ -498,7 +498,7 @@ trace_ray_backward(
             accum -= weight * total_color;
             const float curr_grad_sigma = ray_spec[warp_offset].world_step * (total_color * myexp(log_light_intensity) - accum);
 
-            inner_renderer.single_point_bwd(
+            inner_renderer.single_point_bwd<__half2>(
                 reinterpret_cast<const __half2*>(coarse_grid), reinterpret_cast<const __half2*>(atoms), reinterpret_cast<__half2*>(d_coarse_grid), reinterpret_cast<__half2*>(d_atoms),
                 /*grad_output=*/warp_lane < D - 1 ? curr_grad_color : curr_grad_sigma,
                 /*point=*/ray_spec[warp_offset].pos, cg_shmem + warp_offset * (S >> 1),
