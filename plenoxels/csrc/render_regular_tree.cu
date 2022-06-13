@@ -558,7 +558,7 @@ dict_interp_backward(const Acc32<float, 2> grad_output,  // N, D
                            scalar_t * __restrict__ d_coarse_grid,
                            scalar_t * __restrict__ d_atoms,
                      const int32_t coarse_reso,
-                     const int32_t D
+                     const int32_t D,
                      const int32_t N,
                      const int32_t S)
 {
@@ -808,7 +808,7 @@ class DictInterpolate : public Function<DictInterpolate> {
 
             const dim3 grid_size(div_round_up(N, CUDA_WARPS_PER_BLOCK));
             const dim3 block_size(CUDA_THREADS_PER_BLOCK);
-            const int32_t shmem = CUDA_WARPS_PER_BLOCK * S;
+            const int32_t shared_mem = CUDA_WARPS_PER_BLOCK * S;
             #define CALL_KERNEL(T, RF)                                                                                  \
                 dict_interp<T, RF><<<grid_size, block_size, shared_mem * sizeof(T), stream.stream()>>>(                 \
                     tensor2ptr<T>(coarse_grid), tensor2ptr<T>(atoms), points.data_ptr<float>(), out.data_ptr<float>(),  \
@@ -843,8 +843,7 @@ class DictInterpolate : public Function<DictInterpolate> {
             Tensor d_atoms = torch::zeros_like(atoms);
             const dim3 grid_size(div_round_up(N, CUDA_WARPS_PER_BLOCK));
             const dim3 block_size(CUDA_THREADS_PER_BLOCK);
-            const int32_t shmem = CUDA_WARPS_PER_BLOCK * S;
-
+            const int32_t shared_mem = CUDA_WARPS_PER_BLOCK * S;
             #define CALL_KERNEL(T, RF)                                                                                  \
                 dict_interp_backward<T, RF><<<grid_size, block_size, shared_mem * sizeof(T), stream.stream()>>>(        \
                     grad_output.packed_accessor32<float, 2, torch::RestrictPtrTraits>(),                                \
