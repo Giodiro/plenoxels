@@ -104,7 +104,7 @@ private:
                                       int32_t * __restrict__ fn_wcoo,
                                       float   * __restrict__ iw) const
     {
-        constexpr int32_t fine_reso = 2 << (POW2_RF - 1);
+        constexpr int32_t fine_reso = POW2_RF <= 0 ? 1 : 2 << (POW2_RF - 1);
         int32_t fn[3], cn[3], rfn[3];
         fn[0] = clamp(floor2int(p_wcoo[0] + OFFSET[neighbor_id][0]), 0, fine_reso * coarse_reso - 1);
         fn[1] = clamp(floor2int(p_wcoo[1] + OFFSET[neighbor_id][1]), 0, fine_reso * coarse_reso - 1);
@@ -114,12 +114,10 @@ private:
         fast_divmod_pow2<POW2_RF>(fn[2], cn[2], rfn[2]);
         *cn_wcoo = coo2idx(cn[0], cn[1], cn[2], coarse_reso);
         *fn_wcoo = coo2idx(rfn[0], rfn[1], rfn[2], fine_reso);
-        *iw = static_cast<T>(
-            (1.0f - myabs(p_wcoo[0] - static_cast<float>(fn[0]) - 0.5f)) *
-            (1.0f - myabs(p_wcoo[1] - static_cast<float>(fn[1]) - 0.5f)) *
-            (1.0f - myabs(p_wcoo[2] - static_cast<float>(fn[2]) - 0.5f)) *
-            (iw_multiplier == nullptr ? 1.0f : *iw_multiplier)
-        );
+        *iw = (1.0f - myabs(p_wcoo[0] - static_cast<float>(fn[0]) - 0.5f)) *
+              (1.0f - myabs(p_wcoo[1] - static_cast<float>(fn[1]) - 0.5f)) *
+              (1.0f - myabs(p_wcoo[2] - static_cast<float>(fn[2]) - 0.5f)) *
+              (iw_multiplier == nullptr ? 1.0f : *iw_multiplier);
     }
 
     template<typename T>
@@ -157,12 +155,13 @@ private:
                                                      const int32_t D,
                                                      const int32_t S) const
     {
-        constexpr int32_t fine_reso = 2 << (POW2_RF - 1);
+        constexpr int32_t fine_reso = POW2_RF <= 0 ? 1 : 2 << (POW2_RF - 1);
         const int32_t warp_lane = threadIdx.x & 0x1F;
 
         const float fp[3] = {
             point[0] * coarse_reso * fine_reso, point[1] * coarse_reso * fine_reso, point[2] * coarse_reso * fine_reso};
-        T iw, acc = 0.0f;
+        T acc = 0.0f;
+        float iw;
         int32_t cn_wcoo, fn_wcoo;
         for (int i = 0; i < 8; i++) {
             coo_iw(fp, nullptr, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
@@ -170,7 +169,7 @@ private:
             __syncwarp();
             for (int s = 0; s < S; s++) {
                 T atom_weight = warp_lane < D ? atoms[fn_wcoo * S * D + s * D + warp_lane] : 0.0f;
-                acc = myfma(cg_shmem[s], atom_weight * iw, acc);
+                acc = myfma(cg_shmem[s], atom_weight * static_cast<T>(iw), acc);
             }
             __syncwarp();
         }
@@ -186,7 +185,7 @@ private:
         const int32_t D,
         const int32_t S) const
     {
-        constexpr int32_t fine_reso = 2 << (POW2_RF - 1);
+        constexpr int32_t fine_reso = POW2_RF <= 0 ? 1 : 2 << (POW2_RF - 1);
         const int32_t warp_lane = threadIdx.x & 0x1F;
         const float fp[3] = {
             point[0] * coarse_reso * fine_reso, point[1] * coarse_reso * fine_reso, point[2] * coarse_reso * fine_reso};
@@ -196,7 +195,7 @@ private:
         int32_t cn_wcoo, fn_wcoo;
         for (int i = 0; i < 8; i++) {
             coo_iw(fp, nullptr, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
-            iw_h2 = __float2half2(iw);
+            iw_h2 = __float2half2_rn(iw);
             load_cg_block(Proxy<__half2>(), reinterpret_cast<const __half2*>(coarse_grid), cg_shmem2, cn_wcoo, warp_lane, S);
             __syncwarp();
             for (int s = 0; s < S; s += 2) {
@@ -204,7 +203,7 @@ private:
                     __halves2half2(__ldg(atoms + fn_wcoo * S * D + s * D + warp_lane),
                                    __ldg(atoms + fn_wcoo * S * D + (s + 1) * D + warp_lane));
                 atom_weight = __hmul2(iw_h2, atom_weight);
-                acc2 = __hfma2(cg_shmem2[s >> 1], __hmul2(iw_h2, atom_weight), acc_h2);
+                acc_h2 = __hfma2(cg_shmem2[s >> 1], __hmul2(iw_h2, atom_weight), acc_h2);
             }
             __syncwarp();
         }
@@ -223,7 +222,7 @@ private:
                                                      typename cub::WarpReduce<T>::TempStorage& __restrict__ cub_storage,
                                                      const int32_t coarse_reso, const int32_t D, const int32_t S) const
     {
-        constexpr int32_t fine_reso = 2 << (POW2_RF - 1);
+        constexpr int32_t fine_reso = POW2_RF <= 0 ? 1 : 2 << (POW2_RF - 1);
         const int32_t warp_lane = threadIdx.x & 0x1F;
         const float fp[3] = {
             point[0] * coarse_reso * fine_reso, point[1] * coarse_reso * fine_reso, point[2] * coarse_reso * fine_reso};
@@ -262,7 +261,7 @@ private:
                                                      typename cub::WarpReduce<__half>::TempStorage& __restrict__ cub_storage,
                                                      const int32_t coarse_reso, const int32_t D, const int32_t S) const
     {
-        constexpr int32_t fine_reso = 2 << (POW2_RF - 1);
+        constexpr int32_t fine_reso = POW2_RF <= 0 ? 1 : 2 << (POW2_RF - 1);
         const int32_t warp_lane = threadIdx.x & 0x1F;
         const float fp[3] = {
             point[0] * coarse_reso * fine_reso, point[1] * coarse_reso * fine_reso, point[2] * coarse_reso * fine_reso};
@@ -337,7 +336,7 @@ trace_ray(
     scalar_t * cg_shmem = shared_memory_proxy<scalar_t>(); // V1_WARPS_PER_BLOCK * S / 2;
 
     // Setup the ray-spec. Will copy data from rays_o, rays_d
-    ray_spec[warp_offset].set(&rays_o[ray_id], &rays_d[ray_id]);
+    ray_spec[warp_offset].set(rays_o[ray_id].data(), rays_d[ray_id].data());
     // Spherical harmonics are computed before ray normalization
     calc_sphfunc(/*basis_dim=*/BASIS_DIM, /*dir=*/ray_spec[warp_offset].dir, /*out=*/sphfunc_val[warp_offset]);
     ray_find_bounds(ray_spec[warp_offset], scaling, offset, opt.step_size, opt.near_plane);
@@ -425,7 +424,7 @@ trace_ray_backward(
     scalar_t * cg_shmem = shared_memory_proxy<scalar_t>(); // V1_WARPS_PER_BLOCK * S / 2;
 
     // Setup the ray-spec. Will copy data from rays_o, rays_d
-    ray_spec[warp_offset].set(&rays_o[ray_id], &rays_d[ray_id]);
+    ray_spec[warp_offset].set(rays_o[ray_id].data(), rays_d[ray_id].data());
     // Spherical harmonics are computed before ray normalization
     calc_sphfunc(/*basis_dim=*/BASIS_DIM, /*dir=*/ray_spec[warp_offset].dir, /*out=*/sphfunc_val[warp_offset]);
     ray_find_bounds(ray_spec[warp_offset], scaling, offset, opt.step_size, opt.near_plane);
