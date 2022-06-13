@@ -202,7 +202,6 @@ private:
                 __half2 atom_weight = warp_lane >= D ? __float2half2_rn(0.0f) :
                     __halves2half2(__ldg(atoms + fn_wcoo * S * D + s * D + warp_lane),
                                    __ldg(atoms + fn_wcoo * S * D + (s + 1) * D + warp_lane));
-                atom_weight = __hmul2(iw_h2, atom_weight);
                 acc_h2 = __hfma2(cg_shmem2[s >> 1], __hmul2(iw_h2, atom_weight), acc_h2);
             }
             __syncwarp();
