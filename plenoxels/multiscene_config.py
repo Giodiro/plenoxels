@@ -20,6 +20,7 @@ _C.optim.batches_per_epoch = 500
 _C.optim.num_epochs = 10
 _C.optim.lr = 1e6
 _C.optim.cosine = False
+_C.optim.train_fp16 = False
 
 _C.optim.regularization = CN()
 _C.optim.regularization.l1_weight = 0.1

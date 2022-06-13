@@ -43,6 +43,7 @@ def train_epoch(renderer,
                 batch_size,
                 start_epoch=0,
                 start_tot_step=0,
+                train_fp16: bool = False,
                 ):
     batches_per_dset = 10
     ema_weight = 0.3  # this is only for printing of loss to screen.
@@ -52,6 +53,8 @@ def train_epoch(renderer,
     n_loader_levels = len(tr_loaders[0]) - 1
     renderer.cuda()
     renderer.train()
+
+    grad_scaler = torch.cuda.amp.GradScaler()
 
     tot_step = start_tot_step
     TB_WRITER.add_scalar("lr", optim.param_groups[0]["lr"], tot_step)
@@ -72,7 +75,7 @@ def train_epoch(renderer,
                         optim.zero_grad()
                         rgb_preds, alpha, depth, consistency_loss = renderer(
                             rays_o, rays_d, grid_id=dset_id, consistency_coef=consistency_coef,
-                            level=level)
+                            level=level, run_fp16=train_fp16)
 
                         # Compute and re-weight all the losses
                         diff_losses = dict(mse=F.mse_loss(rgb_preds, imgs))
@@ -83,8 +86,13 @@ def train_epoch(renderer,
                         if consistency_coef > 0 and consistency_loss is not None:
                             diff_losses["consistency"] = consistency_coef * consistency_loss
                         loss = sum(diff_losses.values())
-                        loss.backward()
-                        optim.step()
+                        if train_fp16:
+                            grad_scaler.scale(loss).backward()
+                            grad_scaler.step(optim)
+                            grad_scaler.update()
+                        else:
+                            loss.backward()
+                            optim.step()
 
                         for loss_name, loss_val in diff_losses.items():
                             losses[dset_id][loss_name].update(loss_val.item())
@@ -217,7 +225,8 @@ if __name__ == "__main__":
                 log_dir=train_log_dir, batch_size=cfg_.optim.batch_size,
                 l1_coef=cfg_.optim.regularization.l1_weight, tv_coef=cfg_.optim.regularization.tv_weight,
                 consistency_coef=cfg_.optim.regularization.consistency_weight, lr_sched=sched_,
-                start_epoch=checkpoint_data['epoch'] + 1, start_tot_step=checkpoint_data['tot_step'] + 1)
+                start_epoch=checkpoint_data['epoch'] + 1, start_tot_step=checkpoint_data['tot_step'] + 1,
+                train_fp16=cfg_.optim.train_fp16)
     elif reload_cfg is not None:
         # We're doing a transfer learning experiment. Loading a pretrained model, and fine-tuning on
         # new data.
@@ -244,7 +253,7 @@ if __name__ == "__main__":
                     l1_coef=train_cfg.optim.regularization.l1_weight,
                     tv_coef=train_cfg.optim.regularization.tv_weight,
                     consistency_coef=train_cfg.optim.regularization.consistency_weight,
-                    lr_sched=sched_)
+                    lr_sched=sched_, train_fp16=train_cfg.optim.train_fp16)
     else:
         # Normal training.
         with open(os.path.join(train_log_dir, "config.yaml"), "w") as fh:
@@ -257,4 +266,5 @@ if __name__ == "__main__":
             batches_per_epoch=cfg_.optim.batches_per_epoch, epochs=cfg_.optim.num_epochs,
             log_dir=train_log_dir, batch_size=cfg_.optim.batch_size,
             l1_coef=cfg_.optim.regularization.l1_weight, tv_coef=cfg_.optim.regularization.tv_weight,
-            consistency_coef=cfg_.optim.regularization.consistency_weight, lr_sched=sched_)
+            consistency_coef=cfg_.optim.regularization.consistency_weight, lr_sched=sched_,
+            train_fp16=cfg_.optim.train_fp16)

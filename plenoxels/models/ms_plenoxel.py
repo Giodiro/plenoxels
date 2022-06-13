@@ -197,17 +197,19 @@ class DictPlenoxels(nn.Module):
         if level is None:
             level = len(self.fine_reso) - 1
         scene_grids = self.grids[grid_id]
+        dtype = torch.float16 if run_fp16 else torch.float32
 
-        result = None
-        for i, reso in enumerate(self.fine_reso[0: level + 1]):
-            out = torch.ops.plenoxels.dict_tree_render(
-                scene_grids[i], self.atoms[i], rays_o, rays_d, reso, self.coarse_reso,
-                self.scalings[i], self.offsets[i], self.step_size, 1e-6, 1e-6)
-            if result is None:
-                result = out
-            else:
-                result = result + out
-        return result, None, None, None
+        # result = None
+        # for i, reso in enumerate(self.fine_reso[0: level + 1]):
+        #     out = torch.ops.plenoxels.dict_tree_render(
+        #         scene_grids[i].to(dtype=dtype), self.atoms[i].to(dtype=dtype), rays_o, rays_d,
+        #         reso, self.coarse_reso, self.scalings[i], self.offsets[i], self.step_size,
+        #         1e-6, 1e-6)
+        #     if result is None:
+        #         result = out
+        #     else:
+        #         result = result + out
+        # return result, None, None, None
 
         with torch.autograd.no_grad():
             intersections = self.sample_proposal(rays_o, rays_d, grid_id)
@@ -244,13 +246,15 @@ class DictPlenoxels(nn.Module):
             # Normalize pts in [0, 1]
             intrs_pts = self.normalize01(intrs_pts, grid_id)
             # Only work with the fine dicts up to the given level
+            data_interp = None
             for i, reso in enumerate(self.fine_reso[0:level+1]):
-                if i == 0:
-                    data_interp = torch.ops.plenoxels.dict_interpolatedict_interpolate(
-                            scene_grids[i], self.atoms[i], intrs_pts, reso, self.coarse_reso)
+                out = torch.ops.plenoxels.dict_interpolate(
+                    scene_grids[i].to(dtype=dtype), self.atoms[i].to(dtype=dtype), intrs_pts, reso,
+                    self.coarse_reso)
+                if data_interp is None:
+                    data_interp = out
                 else:
-                    data_interp = data_interp + torch.ops.plenoxels.dict_interpolate(
-                            scene_grids[i], self.atoms[i], intrs_pts, reso, self.coarse_reso)
+                    data_interp = data_interp + out
 
         # 1. Process density: Un-masked sigma (batch, n_intrs-1), and compute.
         sigma_masked = data_interp[:, -1]

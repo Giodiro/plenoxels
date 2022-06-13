@@ -164,7 +164,7 @@ def render_patches(renderer, patch_level, log_dir, iteration, summary_writer=Non
     with torch.autograd.no_grad():
         atoms = renderer.atoms
         if isinstance(atoms, nn.ParameterList):
-            atoms = atoms[patch_level]
+            atoms = atoms[patch_level].detach().float()
         sh_level = (atoms.shape[-1] - 1) // 3 - 1
         sh_encoder = plenoxel_sh_encoder(sh_level)
         if atoms.dim() == 3:
