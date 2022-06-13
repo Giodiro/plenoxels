@@ -551,16 +551,13 @@ dict_interp(const scalar_t * __restrict__ coarse_grid,  // Rc^3, S
 
 template <typename scalar_t, int32_t POW2_RF>
 __global__ void
-dict_interp_backward(const Acc32<float, 2> grad_output,  // N, D
+dict_interp_backward(const Acc32<float, 2> grad_output,             // N, D
                      const scalar_t * __restrict__ coarse_grid,
                      const scalar_t * __restrict__ atoms,
                      const float * __restrict__ points,
                            scalar_t * __restrict__ d_coarse_grid,
                            scalar_t * __restrict__ d_atoms,
-                     const int32_t coarse_reso,
-                     const int32_t D,
-                     const int32_t N,
-                     const int32_t S)
+                     const int32_t coarse_reso, const int32_t D, const int32_t N, const int32_t S)
 {
     const int32_t point_id = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
     const int32_t warp_lane = threadIdx.x & 0x1F;
@@ -815,9 +812,9 @@ class DictInterpolate : public Function<DictInterpolate> {
                     (int32_t)coarse_reso, D, N, S)
             AT_DISPATCH_FLOATING_TYPES_AND_CUHALF(coarse_grid.scalar_type(), "dict_interpolate_fwd", [&] {
                 switch(fine_reso) {
-                    case 2: CALL_KERNEL(scalar_t, 1);
-                    case 4: CALL_KERNEL(scalar_t, 2);
-                    case 8: CALL_KERNEL(scalar_t, 3);
+                    case 2: CALL_KERNEL(scalar_t, 1); break;
+                    case 4: CALL_KERNEL(scalar_t, 2); break;
+                    case 8: CALL_KERNEL(scalar_t, 3); break;
                     default: throw std::invalid_argument("fine resolution must be 2, 4, or 8.");
                 }
             });
