@@ -848,9 +848,9 @@ class DictInterpolate : public Function<DictInterpolate> {
                     tensor2ptr<T>(d_coarse_grid), tensor2ptr<T>(d_atoms), (int32_t)coarse_reso, D, N, S)
             AT_DISPATCH_FLOATING_TYPES_AND_CUHALF(coarse_grid.scalar_type(), "dict_interpolate_bwd", [&] {
                 switch(fine_reso) {
-                    case 2: CALL_KERNEL(scalar_t, 1);
-                    case 4: CALL_KERNEL(scalar_t, 2);
-                    case 8: CALL_KERNEL(scalar_t, 3);
+                    case 2: CALL_KERNEL(scalar_t, 1); break;
+                    case 4: CALL_KERNEL(scalar_t, 2); break;
+                    case 8: CALL_KERNEL(scalar_t, 3); break;
                     default: throw std::invalid_argument("fine resolution must be 2, 4, or 8.");
                 }
             });
