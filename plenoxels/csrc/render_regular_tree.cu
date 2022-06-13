@@ -226,7 +226,7 @@ private:
             point[0] * coarse_reso * fine_reso, point[1] * coarse_reso * fine_reso, point[2] * coarse_reso * fine_reso};
         __half2* cg_shmem2 = reinterpret_cast<__half2*>(cg_shmem);
         __half2 iw;
-        acc1 = 0.0f, acc2 = 0.0f;
+        float acc1 = 0.0f, acc2 = 0.0f;
         int32_t cn_wcoo, fn_wcoo;
         for (int i = 0; i < 8; i++) {
             coo_iw(Proxy<__half2>(), fp, nullptr, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
@@ -237,8 +237,8 @@ private:
                     __halves2half2(__ldg(atoms + fn_wcoo * S * D + s * D + warp_lane),
                                    __ldg(atoms + fn_wcoo * S * D + (s + 1) * D + warp_lane));
                 atom_weight = __hmul2(iw, atom_weight);
-                acc1 = fma(__low2float(cg_shmem[s >> 1]), __low2float(atom_weight), acc1);
-                acc2 = fma(__high2float(cg_shmem[s >> 1]), __high2float(atom_weight), acc2);
+                acc1 = fma(__low2float(cg_shmem2[s >> 1]), __low2float(atom_weight), acc1);
+                acc2 = fma(__high2float(cg_shmem2[s >> 1]), __high2float(atom_weight), acc2);
 
                 // acc2 = acc2 + cg * iw * atom
 //                acc2 = __hfma2(cg_shmem2[s >> 1], __hmul2(iw, atom_weight), acc2);
