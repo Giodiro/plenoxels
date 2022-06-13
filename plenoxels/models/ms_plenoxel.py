@@ -107,9 +107,24 @@ class DictPlenoxels(nn.Module):
         for scene_grids in self.grids:
             for grid in scene_grids:
                 nn.init.normal_(grid, std=0.01)
+                # nn.init.uniform_(grid, a=0.01, b=0.02)
         for atoms in self.atoms:
             nn.init.uniform_(atoms[..., :-1])
             nn.init.constant_(atoms[..., -1], 0.01)
+            # # Compute the atom norms 
+            # shape = atoms.shape # [..., n_atoms, data_dim]
+            # dims = [i for i in range(len(shape))]
+            # newdims = [dims[-2]] + dims[0:-2] + dims[-1:]
+            # norms = torch.permute(atoms, newdims) # [n_atoms, ..., data_dim]
+            # norms = torch.reshape(norms, (len(norms), -1))
+            # norms = torch.linalg.vector_norm(norms, dim=-1)
+            # # Clip so we don't divide by zero
+            # norms = torch.clamp(norms, min=1e-2)
+            # broadcastable_norms = torch.empty(size=[1]*(len(shape)-2) + [len(norms)] + [1])
+            # broadcastable_norms[...,:,0] = norms
+            # # Normalize each atom
+            # atoms.data = torch.div(atoms, broadcastable_norms)
+
 
     @torch.no_grad()
     def sample_proposal(self, rays_o, rays_d, dset_id: int):

@@ -94,6 +94,25 @@ def train_epoch(renderer,
                             loss.backward()
                             optim.step()
 
+                        # Clip all the weights to be nonnegative
+                        # for grid in renderer.grids:
+                        #     grid.data = torch.clamp(grid.data, min=0.0)
+                        # # Normalize all the atoms to be unit norm
+                        # for atoms in renderer.atoms:
+                        #     # Compute the atom norms 
+                        #     shape = atoms.shape # [..., n_atoms, data_dim]
+                        #     dims = [i for i in range(len(shape))]
+                        #     newdims = [dims[-2]] + dims[0:-2] + dims[-1:]
+                        #     norms = torch.permute(atoms, newdims) # [n_atoms, ..., data_dim]
+                        #     norms = torch.reshape(norms, (len(norms), -1))
+                        #     norms = torch.linalg.vector_norm(norms, dim=-1)
+                        #     # Clip so we don't divide by zero
+                        #     norms = torch.clamp(norms, min=1e-5)
+                        #     broadcastable_norms = torch.empty(size=[1]*(len(shape)-2) + [len(norms)] + [1])
+                        #     broadcastable_norms[...,:,0] = norms
+                        #     # Normalize each atom
+                        #     atoms.data = torch.div(atoms, broadcastable_norms.to(atoms.device))
+                            
                         for loss_name, loss_val in diff_losses.items():
                             losses[dset_id][loss_name].update(loss_val.item())
                             TB_WRITER.add_scalar(

@@ -32,8 +32,8 @@ ext_modules = [
         ],
         include_dirs=include_dirs,
         extra_compile_args={
-            "cxx": ["-std=c++14", "-G"],
-            "nvcc": ["-std=c++14", "--ptxas-options=-v", "-keep", "-lineinfo"]
+            "cxx": ["-std=c++14"],
+            "nvcc": ["-std=c++14", "--ptxas-options=-v", "-lineinfo"]
         },
     )
 ]

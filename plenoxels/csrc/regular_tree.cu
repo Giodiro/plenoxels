@@ -118,16 +118,32 @@ k_l2_interp_hlf_single_pt(
     const int32_t D,
     const int32_t S)
 {
-    constexpr int32_t fine_reso = 2 << (POW2_RF - 1);
-    const int32_t warp_lane = threadIdx.x & 0x1F;
-    const int32_t warp_offset = (threadIdx.x >> 5) * (S >> 1);
+    const uint32_t point_id = (blockIdx.x * blockDim.x + threadIdx.x) / WARP_SIZE;
+    const uint32_t warp_block_id = threadIdx.x / WARP_SIZE;
+    const uint32_t warp_lane = threadIdx.x % WARP_SIZE;
+    const uint32_t D = grad_output.size(1);
+    const uint32_t S = d_coarse_grid.size(1);
+    const uint32_t warp_mask = __ballot_sync(0xffffffff, warp_lane < S);
+    if (warp_lane >= S || point_id >= points.size(0)) { return; }
 
-    const float fp[3] = {point[0] * coarse_reso * fine_reso, point[1] * coarse_reso * fine_reso, point[2] * coarse_reso * fine_reso};
-    int32_t cn[3];           // corner of coarse-neighbor cell in 'coarse-grid' coordinates
+    const scalar_t cp[3] = {points[point_id][0] * coarse_reso, points[point_id][1] * coarse_reso, points[point_id][2] * coarse_reso};
+    const scalar_t fp[3] = {cp[0] * fine_reso, cp[1] * fine_reso, cp[2] * fine_reso};
+
+    int32_t cn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
     int32_t fn[3];           // corner of fine-neighbor cell in 'full-grid' coordinates
-    int32_t rfn[3];          // corner of fine-neighbor cell in 'fine-grid' coordinates
-    __half2 acc2 = __float2half2_rn(0.0f);
-    for (int i = 0; i < 8; i++) {
+    scalar_t fn_center[3];   // center of fine-neighbor cell in 'full-grid' coordinates
+    scalar_t grad[10];  // TODO: This is hardcoded randomly, allows up to 256 atoms
+    scalar_t interp_weights[8];
+    calc_interp_weights(interp_weights, fp, fn_center);
+
+    // Load grad_output into shmem
+    extern __shared__ __align__(sizeof(double2)) unsigned char smem[];
+    scalar_t* shmem_grad_output = reinterpret_cast<scalar_t *>(smem);
+    for (int d = warp_lane; d < D; d += min(WARP_SIZE, S)) {
+        shmem_grad_output[warp_block_id * D + d] = grad_output[point_id][d];
+    }
+    __syncwarp(warp_mask);
+    //const uint32_t num_atoms_per_warp = (S + WARP_SIZE - 1) / WARP_SIZE;
         fn[0] = clamp(floor2int(fp[0] + OFFSET[i][0]), 0, fine_reso * coarse_reso - 1);
         fn[1] = clamp(floor2int(fp[1] + OFFSET[i][1]), 0, fine_reso * coarse_reso - 1);
         fn[2] = clamp(floor2int(fp[2] + OFFSET[i][2]), 0, fine_reso * coarse_reso - 1);
@@ -144,6 +160,39 @@ k_l2_interp_hlf_single_pt(
         for (int s = warp_lane * 2; s < S; s += 64) {
             cg_shmem[warp_offset + s >> 1] = __ldg(
                 reinterpret_cast<const __half2*>(coarse_grid + cn_wcoo * S + s));
+        #pragma unroll 10
+        for (int j = 0; j < 10; j++) { grad[j] = 0.0; }
+        cn[0] = floor2int(cp[0] + OFFSET[i][0]);
+        cn[1] = floor2int(cp[1] + OFFSET[i][1]);
+        cn[2] = floor2int(cp[2] + OFFSET[i][2]);
+        if (cn[0] < 0 || cn[0] >= coarse_reso ||
+            cn[1] < 0 || cn[1] >= coarse_reso ||
+            cn[2] < 0 || cn[2] >= coarse_reso) { continue; }
+        const int32_t cn_realcoo = coo2idx(cn[0], cn[1], cn[2], coarse_reso);
+        // overwrite cn from coarse-grid-coordinates fo full-grid-coordinates
+        cn[0] *= fine_reso;
+        cn[1] *= fine_reso;
+        cn[2] *= fine_reso;
+        for (int j = 0; j < 8; j++) {
+            fn[0] = floor2int(fp[0] + OFFSET[j][0]);
+            fn[1] = floor2int(fp[1] + OFFSET[j][1]);
+            fn[2] = floor2int(fp[2] + OFFSET[j][2]);
+            fn_center[0] = static_cast<scalar_t>(fn[0]) + 0.5;
+            fn_center[1] = static_cast<scalar_t>(fn[1]) + 0.5;
+            fn_center[2] = static_cast<scalar_t>(fn[2]) + 0.5;
+            // The if-statement also takes care of any out-of-bounds neighbors (ignored)
+            if (static_cast<scalar_t>(cn[0]) <= fn_center[0] && static_cast<scalar_t>(cn[0]) + fine_reso >= fn_center[0] &&
+                static_cast<scalar_t>(cn[1]) <= fn_center[1] && static_cast<scalar_t>(cn[1]) + fine_reso >= fn_center[1] &&
+                static_cast<scalar_t>(cn[2]) <= fn_center[2] && static_cast<scalar_t>(cn[2]) + fine_reso >= fn_center[2])
+            {
+                const int32_t fn_realcoo = coo2idx(fn[0] - cn[0], fn[1] - cn[1], fn[2] - cn[2], fine_reso);
+                for (uint32_t d = 0; d < D; d++) {
+                    const scalar_t go_weight = interp_weights[j] * shmem_grad_output[warp_block_id * D + d];
+                    for (uint32_t s = warp_lane, s_w = 0; s < S; s += WARP_SIZE, s_w++) {
+                        grad[s_w] = myfma(atoms[fn_realcoo][d][s], go_weight, grad[s_w]);
+                    }
+                }
+            }
         }
         __syncwarp();
         for (int s = 0; s < S; s += 2) {
