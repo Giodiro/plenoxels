@@ -202,10 +202,9 @@ private:
             __syncwarp();
             for (int s = 0; s < S; s++) {
                 T atom_weight = warp_lane < D ? atoms[fn_wcoo * S * D + s * D + warp_lane] : 0.0f;
-                acc = myfma(cg_shmem[s], atom_weight, acc);
+                acc = myfma(cg_shmem[s], atom_weight * iw, acc);
             }
             __syncwarp();
-            acc *= iw;
         }
         if (warp_lane < D) {
             out[warp_lane] = acc;
@@ -236,10 +235,9 @@ private:
                 __half2 atom_weight = warp_lane >= D ? __float2half2_rn(0.0f) :
                     __halves2half2(__ldg(atoms + fn_wcoo * S * D + s * D + warp_lane),
                                    __ldg(atoms + fn_wcoo * S * D + (s + 1) * D + warp_lane));
-                acc2 = __hfma2(cg_shmem2[s >> 1], atom_weight, acc2);
+                acc2 = __hfma2(cg_shmem2[s >> 1], __hmul2(iw, atom_weight), acc2);
             }
             __syncwarp();
-            acc2 = __hmul2(iw, acc2);
         }
         if (warp_lane < D) {
             out[warp_lane] = __low2float(acc2) + __high2float(acc2);
