@@ -198,6 +198,17 @@ class DictPlenoxels(nn.Module):
             level = len(self.fine_reso) - 1
         scene_grids = self.grids[grid_id]
 
+        result = None
+        for i, reso in enumerate(self.fine_reso[0: level + 1]):
+            out = torch.ops.plenoxels.dict_tree_render(
+                scene_grids[i], self.atoms[i], rays_o, rays_d, reso, self.coarse_reso,
+                self.scalings[i], self.offsets[i], self.step_size, 1e-6, 1e-6)
+            if result is None:
+                result = out
+            else:
+                result = result + out
+        return result, None, None, None
+
         with torch.autograd.no_grad():
             intersections = self.sample_proposal(rays_o, rays_d, grid_id)
             intersections_trunc = intersections[:, :-1]  # [batch, n_intrs - 1]

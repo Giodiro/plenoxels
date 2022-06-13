@@ -80,7 +80,7 @@ def train_epoch(renderer,
                             diff_losses["l1"] = l1_coef * torch.abs(renderer.grids[dset_id]).mean()
                         if tv_coef > 0:
                             diff_losses["tv"] = tv_coef * renderer.tv_loss(dset_id)
-                        if consistency_coef > 0:
+                        if consistency_coef > 0 and consistency_loss is not None:
                             diff_losses["consistency"] = consistency_coef * consistency_loss
                         loss = sum(diff_losses.values())
                         loss.backward()
@@ -137,7 +137,6 @@ def test_model(renderer, ts_dsets, log_dir, batch_size, num_test_imgs=1):
 
 
 def init_model(cfg, tr_dsets, efficient_dict, checkpoint_data=None):
-    torch.autograd.gradcheck()
     sh_encoder = plenoxel_sh_encoder(cfg.sh.degree)
     radii = [dset[0].radius for dset in tr_dsets]
     renderer = DictPlenoxels(
