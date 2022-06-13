@@ -137,6 +137,7 @@ def test_model(renderer, ts_dsets, log_dir, batch_size, num_test_imgs=1):
 
 
 def init_model(cfg, tr_dsets, efficient_dict, checkpoint_data=None):
+    torch.autograd.gradcheck()
     sh_encoder = plenoxel_sh_encoder(cfg.sh.degree)
     radii = [dset[0].radius for dset in tr_dsets]
     renderer = DictPlenoxels(

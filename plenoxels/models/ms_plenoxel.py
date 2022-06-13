@@ -60,21 +60,25 @@ class DictPlenoxels(nn.Module):
         assert sorted(self.fine_reso) == self.fine_reso, "Fine-reso elements must be sorted increasingly"
 
         self.step_size, self.n_intersections = self.calc_step_size()
+        self.scalings, self.offsets = self.calc_scaling_offset()
         print("Ray-marching with step-size = %.4e  -  %d intersections" %
               (self.step_size, self.n_intersections))
 
-        atoms = []
-        if self.use_csrc:
-            self.grids = nn.ParameterList([nn.Parameter(
-                torch.empty(coarse_reso ** 3, sum(num_atoms))) for _ in range(self.num_scenes)])
+        def get_reso(_in_reso: int) -> Tuple[int, ...]:
+            if self.use_csrc:
+                return (_in_reso * _in_reso * _in_reso, )
+            else:
+                return (_in_reso, _in_reso, _in_reso)
+        self.atoms = nn.ParameterList()
+        for reso, n_atoms in zip(self.fine_reso, self.num_atoms):
+            self.atoms.append(nn.Parameter(torch.empty(*get_reso(reso), n_atoms, self.data_dim)))
+        self.grids = nn.ModuleList()
+        for scene in range(self.num_scenes):
+            scene_grids = nn.ParameterList()
             for reso, n_atoms in zip(self.fine_reso, self.num_atoms):
-                atoms.append(nn.Parameter(torch.empty(reso ** 3, n_atoms, self.data_dim)))
-        else:
-            self.grids = nn.ParameterList([nn.Parameter(
-                torch.empty(coarse_reso, coarse_reso, coarse_reso, sum(num_atoms))) for _ in range(self.num_scenes)])
-            for reso, n_atoms in zip(self.fine_reso, self.num_atoms):
-                atoms.append(nn.Parameter(torch.empty(reso, reso, reso, n_atoms, self.data_dim)))
-        self.atoms = nn.ParameterList(atoms)
+                scene_grids.append(nn.Parameter(torch.empty(*get_reso(coarse_reso), n_atoms)))
+            self.grids.append(scene_grids)
+
         self.init_params()
 
     def get_radius(self, dset_id: int) -> float:
@@ -94,9 +98,15 @@ class DictPlenoxels(nn.Module):
         n_intersections = self.coarse_reso * np.sqrt(3.) * 2 * self.fine_reso[-1]
         return step_size, n_intersections
 
+    def calc_scaling_offset(self) -> Tuple[List[float], List[float]]:
+        scalings = [1 / (radius * 2) for radius in self.radius]
+        offsets = [0.5 for _ in self.radius]
+        return scalings, offsets
+
     def init_params(self):
-        for grid in self.grids:
-            nn.init.normal_(grid, std=0.01)
+        for scene_grids in self.grids:
+            for grid in scene_grids:
+                nn.init.normal_(grid, std=0.01)
         for atoms in self.atoms:
             nn.init.uniform_(atoms[..., :-1])
             nn.init.constant_(atoms[..., -1], 0.01)
@@ -183,10 +193,11 @@ class DictPlenoxels(nn.Module):
         # Compute loss
         return F.mse_loss(new_weights, weights)
 
-    def forward(self, rays_o, rays_d, grid_id, consistency_coef=0, level=None, verbose=False):
+    def forward(self, rays_o, rays_d, grid_id, consistency_coef=0, level=None, run_fp16=False, verbose=False):
         if level is None:
             level = len(self.fine_reso) - 1
-        grid = self.grids[grid_id]
+        scene_grids = self.grids[grid_id]
+
         with torch.autograd.no_grad():
             intersections = self.sample_proposal(rays_o, rays_d, grid_id)
             intersections_trunc = intersections[:, :-1]  # [batch, n_intrs - 1]
@@ -198,20 +209,18 @@ class DictPlenoxels(nn.Module):
 
         consistency_loss = torch.tensor(0.0, device=rays_d.device)
         if not self.use_csrc:
-            atom_idx = 0
             data_interp = torch.zeros(len(intrs_pts), self.data_dim, device=rays_o.device)
             consistency_loss = 0
             # Only work with the fine dicts up to the given level
-            for i, (reso, n_atoms) in enumerate(zip(self.fine_reso[0:level+1], self.num_atoms[0:level+1])):
+            for i, reso in enumerate(self.fine_reso[0:level+1]):
                 fine_offsets, fine_neighbors = self.get_neighbors(
                     self.normalizegrid(intrs_pts, dset_id=grid_id, dict_id=i), fine_reso=reso)  # [n_pts, 8, 3]
                 # Get corresponding coarse grid indices for each fine neighbor
                 coarse_neighbors = torch.div(fine_neighbors, reso, rounding_mode='floor')  # [n_pts, 8, 3]
                 fine_neighbors = fine_neighbors % reso  # [n_pts, 8, 3]
                 for n in range(8):
-                    coarse_neighbor_vals = grid[
-                       coarse_neighbors[:,n,0], coarse_neighbors[:,n,1], coarse_neighbors[:,n,2],
-                       atom_idx: atom_idx + n_atoms]  # [n_pts, n_atoms]
+                    coarse_neighbor_vals = scene_grids[i][
+                       coarse_neighbors[:,n,0], coarse_neighbors[:,n,1], coarse_neighbors[:,n,2], ...]  # [n_pts, n_atoms]
                     fine_neighbor_vals = self.atoms[i][
                         fine_neighbors[:,n,0], fine_neighbors[:,n,1], fine_neighbors[:,n,2], ...]  # [n_pts, n_atoms, data_dim]
                     result = torch.sum(coarse_neighbor_vals[:,:,None] * fine_neighbor_vals, dim=1)  # [n_pts, data_dim]
@@ -220,20 +229,17 @@ class DictPlenoxels(nn.Module):
                             coarse_neighbor_vals[::10,:], dict_id=i)
                     weights = torch.prod(1. - fine_offsets[:, n, :], dim=-1, keepdim=True)  # [n_pts, 1]
                     data_interp = data_interp + weights * result
-                atom_idx += n_atoms
         else:
             # Normalize pts in [0, 1]
             intrs_pts = self.normalize01(intrs_pts, grid_id)
-            atom_idx = 0
             # Only work with the fine dicts up to the given level
-            for i, (reso, n_atoms) in enumerate(zip(self.fine_reso[0:level+1], self.num_atoms[0:level+1])):
+            for i, reso in enumerate(self.fine_reso[0:level+1]):
                 if i == 0:
-                    data_interp = torch.ops.plenoxels.l2_interp_v2(
-                            grid[..., atom_idx: atom_idx + n_atoms], self.atoms[i], intrs_pts, reso, self.coarse_reso, 1, 1)
+                    data_interp = torch.ops.plenoxels.dict_interpolatedict_interpolate(
+                            scene_grids[i], self.atoms[i], intrs_pts, reso, self.coarse_reso)
                 else:
-                    data_interp = data_interp + torch.ops.plenoxels.l2_interp_v2(
-                            grid[..., atom_idx: atom_idx + n_atoms], self.atoms[i], intrs_pts, reso, self.coarse_reso, 1, 1)
-                atom_idx += n_atoms
+                    data_interp = data_interp + torch.ops.plenoxels.dict_interpolate(
+                            scene_grids[i], self.atoms[i], intrs_pts, reso, self.coarse_reso)
 
         # 1. Process density: Un-masked sigma (batch, n_intrs-1), and compute.
         sigma_masked = data_interp[:, -1]
