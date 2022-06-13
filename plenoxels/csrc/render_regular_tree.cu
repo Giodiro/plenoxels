@@ -228,7 +228,7 @@ private:
             point[0] * coarse_reso * fine_reso, point[1] * coarse_reso * fine_reso, point[2] * coarse_reso * fine_reso};
 
         int32_t cn_wcoo, fn_wcoo;
-        T iw;
+        float iw;
         for (int i = 0; i < 8; i++) {
             coo_iw(fp, &grad_output, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
             load_cg_block(p, coarse_grid, cg_shmem, cn_wcoo, warp_lane, S);
@@ -238,11 +238,11 @@ private:
                 if (warp_lane < D) {
                     atomicAdd(
                         d_atoms + fn_wcoo * S * D + s * D + warp_lane,
-                        cg_shmem[s] * iw);
+                        cg_shmem[s] * static_cast<T>(iw));
                 }
                 // Gradient wrt coarse-grid
                 T tmp = warp_lane < D ? atoms[fn_wcoo * S * D + s * D + warp_lane] : 0.0f;
-                tmp = cub::WarpReduce<T>(cub_storage).Sum(tmp * iw);
+                tmp = cub::WarpReduce<T>(cub_storage).Sum(tmp * static_cast<T>(iw));
                 if (warp_lane == 0) {
                     atomicAdd(d_coarse_grid + cn_wcoo * S + s, tmp);
                 }
@@ -272,7 +272,7 @@ private:
         __half2* cg_shmem2 = reinterpret_cast<__half2*>(cg_shmem);
         for (int i = 0; i < 8; i++) {
             coo_iw(fp, &grad_output, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
-            iw_h2 = __float2half2(iw);
+            iw_h2 = __float2half2_rn(iw);
             load_cg_block(Proxy<__half2>(), reinterpret_cast<const __half2*>(coarse_grid), cg_shmem2, cn_wcoo, warp_lane, S);
             __syncwarp();
             for (int s = 0; s < (S >> 1); s++) {

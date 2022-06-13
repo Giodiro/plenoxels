@@ -74,6 +74,12 @@ __host__ __device__ __inline__ void fast_divmod_pow2(const int n, int& __restric
     q = n >> pow2;
     r = n & ((2 << (pow2 - 1)) - 1);
 }
+// divide by 1.
+template <>
+__host__ __device__ __inline__ void fast_divmod_pow2<0>(const int n, int& __restrict__ q, int& __restrict__ r) {
+    q = n;
+    r = 0;
+}
 
 // The code below is based on section 4 Unsigned division of paper https://gmplib.org/~tege/divcnst-pldi94.pdf
 // In current ORT, fast_divmod is used for calculating the position of a element in tensor,
