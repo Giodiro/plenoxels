@@ -17,6 +17,7 @@ from plenoxels.synthetic_nerf_dataset import SyntheticNerfDataset, get_rays
 __all__ = (
     "get_freer_gpu",
     "init_data",
+    "init_data_single_dset",
     "plot_ts",
     "plot_ts_imageio",
     "render_patches",
@@ -32,10 +33,28 @@ def get_freer_gpu():
     return np.argmax(memory_available)
 
 
+def init_data_single_dset(cfg):
+    resolution = cfg.data.resolution
+    downsample = cfg.data.downsample
+    if cfg.data.resolution is None:
+        # None is code for automatic resolution adjustment to match the model resolution
+        # also adjusting the downsampling.
+        resolution = cfg.model.resolution
+        downsample = 800 / (resolution * 2)
+    print(f"Loading dataset with resolution={resolution}, downsample={downsample}")
+    train = SyntheticNerfDataset(cfg.data.datadir, split='train', downsample=downsample,
+                                 resolution=resolution, max_frames=cfg.data.max_tr_frames)
+    train_load = torch.utils.data.DataLoader(train, batch_size=cfg.optim.batch_size, shuffle=True,
+                                             num_workers=3, prefetch_factor=1, pin_memory=True)
+    test = SyntheticNerfDataset(cfg.data.datadir, split='test', downsample=1, resolution=800,
+                                max_frames=cfg.data.max_ts_frames)
+    return train, train_load, test
+
+
 def init_data(cfg):
     resolution = [cfg.data.resolution]
     downsample = [cfg.data.downsample]
-    if cfg.data.resolution == None:
+    if cfg.data.resolution is None:
         # None is code for automatic resolution adjustment to match the fine dictionaries
         # also adjust the downsampling so that the number of rays isn't so huge for small dicts
         resolution = []
@@ -192,11 +211,15 @@ def render_patches(renderer, patch_level, log_dir, iteration, summary_writer=Non
 
 
 def plot_ts_imageio(ts_dset, dset_id, renderer, log_dir, iteration: Union[int, str],
-                    batch_size=10_000, image_id=0, verbose=True, summary_writer=None) -> float:
+                    batch_size=10_000, image_id=0, verbose=True, summary_writer=None,
+                    render_fn=None) -> float:
+    if render_fn is None:
+        def render_fn(ro, rd):
+            return renderer(ro, rd, dset_id)[0]
     with torch.autograd.no_grad():
         ts_el = ts_dset[image_id]
         pred, rgb = render_ts_img(
-            ts_el, model=lambda ro, rd: renderer(ro, rd, dset_id)[0],
+            ts_el, model=render_fn,
             batch_size=batch_size, img_h=ts_dset.img_h, img_w=ts_dset.img_w)
         mse = torch.mean((pred - rgb) ** 2)
         psnr = -10.0 * torch.log(mse) / math.log(10)
