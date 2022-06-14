@@ -14,3 +14,17 @@ drums/
 *.pdf
 *.svg
 *.so
+
+*.cudafe.*
+*.cpp4.*
+*.fatbin*
+*.module_id
+*.ptx
+*.cubin
+*.ncu-rep
+*.ncu-proj
+
+autodidact/
+
+tmp
+
