@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from plenoxels import multiscene_config
+from plenoxels.configs import multiscene_config, parse_config
 from plenoxels.ema import EMA
 from plenoxels.models import DictPlenoxels
 from plenoxels.tc_harmonics import plenoxel_sh_encoder
@@ -52,7 +52,6 @@ def train_epoch(renderer,
     tr_iterators = [[iter(dl) for dl in tr_loader] for tr_loader in tr_loaders]
     n_loader_levels = len(tr_loaders[0]) - 1
     renderer.cuda()
-    renderer.train()
 
     grad_scaler = torch.cuda.amp.GradScaler()
 
@@ -62,6 +61,7 @@ def train_epoch(renderer,
         losses = [defaultdict(lambda: EMA(ema_weight)) for _ in range(num_dsets)]
         pb = tqdm(total=batches_per_epoch * num_dsets, desc=f"Epoch {e + 1}")
         level = -1
+        renderer.train()
         for _ in range(0, batches_per_epoch, batches_per_dset):
             # Each epoch, rotate what resolution is being focused on
             for dset_id in range(num_dsets):
@@ -125,11 +125,11 @@ def train_epoch(renderer,
                         tr_iterators[dset_id][min(level, n_loader_levels)] = iter(tr_loaders[dset_id][min(level, n_loader_levels)])
             if lr_sched is not None:
                 lr_sched.step()
-                TB_WRITER.add_scalar("lr", lr_sched.get_last_lr()[0],
-                                     tot_step)  # one lr per parameter-group
+                TB_WRITER.add_scalar("lr", lr_sched.get_last_lr()[0], tot_step)  # one lr per parameter-group
         pb.close()
         # Save and evaluate model
         time_s = time.time()
+        renderer.eval()
         for ts_dset_id, ts_dset in enumerate(ts_dsets):
             psnr = plot_ts_imageio(
                 ts_dset, ts_dset_id, renderer, log_dir,
@@ -153,6 +153,7 @@ def train_epoch(renderer,
 
 def test_model(renderer, ts_dsets, log_dir, batch_size, num_test_imgs=1):
     renderer.cuda()
+    renderer.eval()
     for ts_dset_id, ts_dset in enumerate(ts_dsets):
         psnrs = []
         for image_id in range(num_test_imgs):
@@ -205,7 +206,7 @@ def init_optim(cfg, model, transfer_learning=False, checkpoint_data=None) -> tor
 
 
 if __name__ == "__main__":
-    train_cfg, reload_cfg = multiscene_config.parse_config()
+    train_cfg, reload_cfg = parse_config(multiscene_config.get_cfg_defaults())
     gpu = get_freer_gpu()
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
     print(f'gpu is {gpu}')
