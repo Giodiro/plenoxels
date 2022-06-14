@@ -73,7 +73,7 @@ def test_model(renderer, ts_dset, log_dir, batch_size, num_test_imgs=1):
     renderer.cuda()
     renderer.eval()
     psnrs = []
-    for image_id in range(num_test_imgs):
+    for image_id in tqdm(range(num_test_imgs), desc="test-dataset evaluation"):
         psnr = plot_ts_imageio(ts_dset, 0, renderer, log_dir, iteration="test",
                                batch_size=batch_size, image_id=image_id, verbose=False,
                                render_fn=lambda ro, rd: renderer(ro, rd))
