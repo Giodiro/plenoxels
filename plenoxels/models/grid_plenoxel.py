@@ -42,8 +42,8 @@ class RegularGrid(nn.Module):
         self.data = nn.Parameter(torch.empty(
             1, self.data_dim, resolution, resolution, resolution, dtype=torch.float32))
         with torch.no_grad():
-            self.atoms[0, :-1, ...].fill_(0.1)
-            self.atoms[..., -1, ...].fill_(0.01)
+            self.data[0, :-1, ...].fill_(0.1)
+            self.data[0, -1, ...].fill_(0.01)
 
     def __repr__(self):
         return (f"RegularGrid(data_dim={self.data_dim}, step_size={self.step_size}, "
