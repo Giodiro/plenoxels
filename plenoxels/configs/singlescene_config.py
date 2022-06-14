@@ -12,15 +12,15 @@ _C.sh.degree = 2
 _C.optim = CN()
 _C.optim.batch_size = 4000
 _C.optim.num_epochs = 10
-_C.optim.lr = 1e6
-_C.optim.cosine = False
+_C.optim.lr = 1e-2
+_C.optim.cosine = True
 
 _C.optim.regularization = CN()
 
 _C.data = CN()
 _C.data.datadir = "/data/DATASETS/SyntheticNerf/lego"
-_C.data.resolution = 256
-_C.data.downsample = 1.0
+_C.data.resolution = None
+_C.data.downsample = None
 _C.data.max_tr_frames = None
 _C.data.max_ts_frames = None
 

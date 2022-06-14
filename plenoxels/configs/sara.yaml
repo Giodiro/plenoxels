@@ -1,5 +1,5 @@
-expname: "lego_c128_f2.64"
-use_csrc: True
+expname: "lego_c32_f4.32_plainsoftmax"
+use_csrc: False
 
 data:
   datadirs:
@@ -16,16 +16,16 @@ data:
   max_ts_frames: 10
 
 model:
-  num_atoms: [64]
-  coarse_reso: 128
-  fine_reso: [2]
+  num_atoms: [32]
+  coarse_reso: 32
+  fine_reso: [4]
   noise_std: 0.0
 
 optim:
   batch_size: 2500
   batches_per_epoch: 400 # From each scene
   num_epochs: 10
-  lr: 1e-2
+  lr: 3e-2
   cosine: False
   regularization:
     l1_weight: 0.0
