@@ -22,13 +22,14 @@ def parse_config(defaults):
         print(f"Loading configuration from logs at {logged_config_file}")
         reload_cfg = defaults.clone()
         reload_cfg.merge_from_file(logged_config_file)
+        reload_cfg.merge_from_list(args.config_updates)
     if args.config is not None:
         train_cfg = defaults.clone()
         # Reuse the same config as was reloaded, but make updates for datasets and logdir
         if reload_cfg is not None:
             train_cfg.merge_from_file(logged_config_file)
         train_cfg.merge_from_file(args.config)
-    train_cfg.merge_from_list(args.config_updates)
+        train_cfg.merge_from_list(args.config_updates)
     print(f"[{datetime.now()}] Starting")
     return train_cfg, reload_cfg
 

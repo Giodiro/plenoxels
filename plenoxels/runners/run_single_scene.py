@@ -143,7 +143,7 @@ if __name__ == "__main__":
         if chosen_opt == "test":
             print("Running tests only.")
             model_ = init_model(cfg_, tr_dset=tr_dset_, checkpoint_data=checkpoint_data)
-            test_model(renderer=model_, ts_dset=ts_dset_, log_dir=cfg_,
+            test_model(renderer=model_, ts_dset=ts_dset_, log_dir=train_log_dir,
                        batch_size=reload_cfg.optim.batch_size, num_test_imgs=10)
             sys.exit(0)
         else:

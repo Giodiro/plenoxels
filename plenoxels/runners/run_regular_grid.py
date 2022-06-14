@@ -99,7 +99,7 @@ def train_epoch(renderer,
                         #     grid.data = torch.clamp(grid.data, min=0.0)
                         # # Normalize all the atoms to be unit norm
                         # for atoms in renderer.atoms:
-                        #     # Compute the atom norms 
+                        #     # Compute the atom norms
                         #     shape = atoms.shape # [..., n_atoms, data_dim]
                         #     dims = [i for i in range(len(shape))]
                         #     newdims = [dims[-2]] + dims[0:-2] + dims[-1:]
@@ -112,7 +112,7 @@ def train_epoch(renderer,
                         #     broadcastable_norms[...,:,0] = norms
                         #     # Normalize each atom
                         #     atoms.data = torch.div(atoms, broadcastable_norms.to(atoms.device))
-                            
+
                         for loss_name, loss_val in diff_losses.items():
                             losses[dset_id][loss_name].update(loss_val.item())
                             TB_WRITER.add_scalar(
@@ -233,8 +233,8 @@ if __name__ == "__main__":
         model_ = init_model(cfg_, tr_dsets=tr_dsets_, efficient_dict=False, checkpoint_data=checkpoint_data)
         if chosen_opt == "test":
             print("Running tests only.")
-            test_model(renderer=model_, ts_dsets=ts_dsets_, log_dir=cfg_,
-                       batch_size=reload_cfg.optim.batch_size, num_test_imgs=1)
+            test_model(renderer=model_, ts_dsets=ts_dsets_, log_dir=train_log_dir,
+                       batch_size=reload_cfg.optim.batch_size, num_test_imgs=len(ts_dsets_[0]))
         else:
             print(f"Resuming training from epoch {checkpoint_data['epoch'] + 1}")
             optim_ = init_optim(cfg_, model_, checkpoint_data=checkpoint_data)
