@@ -1,5 +1,7 @@
 import argparse
+import os
 from datetime import datetime
+
 
 def parse_config(defaults):
     # Build experiment configuration
