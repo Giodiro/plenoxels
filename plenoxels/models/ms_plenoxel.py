@@ -54,6 +54,7 @@ class DictPlenoxels(nn.Module):
         self.use_csrc = use_csrc
         self.num_scenes = num_scenes
         self.num_dicts = len(self.num_atoms)
+        self.time = 0
 
         assert len(self.num_atoms) == len(self.fine_reso), "Number of atoms != number of fine-reso items"
         assert len(self.radius) == self.num_scenes, "Radii != number of scenes"
@@ -213,6 +214,8 @@ class DictPlenoxels(nn.Module):
             level = len(self.fine_reso) - 1
         scene_grids = self.grids[grid_id]
         dtype = torch.float16 if run_fp16 else torch.float32
+        if self.training:
+            self.time += 1
 
         # result = None
         # for i, reso in enumerate(self.fine_reso[0: level + 1]):
@@ -249,6 +252,16 @@ class DictPlenoxels(nn.Module):
                 for n in range(8):
                     coarse_neighbor_vals = scene_grids[i][
                        coarse_neighbors[:,n,0], coarse_neighbors[:,n,1], coarse_neighbors[:,n,2], ...]  # [n_pts, n_atoms]
+                    # Apply Gumbel softmax
+                    # coarse_neighbor_vals = F.gumbel_softmax(coarse_neighbor_vals, tau=1. / np.log(1.0 + self.time), dim=-1)
+                    # coarse_neighbor_vals = F.softmax(coarse_neighbor_vals, dim=-1)
+                    # # Apply softmax passthrough trick
+                    # y_soft = F.softmax(coarse_neighbor_vals, dim=-1)
+                    # index = y_soft.topk(k=5, dim=-1)[1]
+                    # y_hard = torch.zeros_like(y_soft).scatter_(-1, index, 1.0)  # This will just pick the best single patch in the forward pass
+                    # y_hard = F.softmax(y_hard * coarse_neighbor_vals, dim=-1) # softmax of just the top k entries
+                    # coarse_neighbor_vals = y_hard - y_soft.detach() + y_soft  # And take gradients using softmax
+                    # Apply the patches
                     fine_neighbor_vals = self.atoms[i][
                         fine_neighbors[:,n,0], fine_neighbors[:,n,1], fine_neighbors[:,n,2], ...]  # [n_pts, n_atoms, data_dim]
                     result = torch.sum(coarse_neighbor_vals[:,:,None] * fine_neighbor_vals, dim=1)  # [n_pts, data_dim]

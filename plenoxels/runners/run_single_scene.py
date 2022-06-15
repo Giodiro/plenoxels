@@ -2,27 +2,29 @@ import os
 import sys
 import time
 from collections import defaultdict
+from typing import Optional
 
 import numpy as np
 import torch
-import torch.utils.data
 import torch.nn.functional as F
+import torch.utils.data
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from plenoxels.configs import parse_config, singlescene_config
 from plenoxels.ema import EMA
 from plenoxels.models.grid_plenoxel import RegularGrid
-from plenoxels.tc_harmonics import plenoxel_sh_encoder
-
 from plenoxels.runners.utils import *
+from plenoxels.tc_harmonics import plenoxel_sh_encoder
 
 TB_WRITER = None
 
 
-def train_epoch(renderer, tr_loader, ts_dset, optim, lr_sched, max_epochs, log_dir, batch_size, start_epoch=0, start_step=0):
+def train_epoch(renderer, tr_loader, ts_dset, optim, lr_sched, max_epochs, log_dir, batch_size,
+                train_fp16=False, start_epoch=0, start_step=0):
     ema_weight = 0.3
 
+    grad_scaler = torch.cuda.amp.GradScaler()
     renderer.cuda()
     tot_step = start_step
     TB_WRITER.add_scalar("lr", optim.param_groups[0]["lr"], tot_step)
@@ -37,10 +39,15 @@ def train_epoch(renderer, tr_loader, ts_dset, optim, lr_sched, max_epochs, log_d
             rays_d = rays_d.cuda()
             optim.zero_grad()
 
-            rgb_preds = renderer(rays_o, rays_d)
+            rgb_preds = renderer(rays_o, rays_d, use_fp16=train_fp16)
             loss = F.mse_loss(rgb_preds, imgs)
-            loss.backward()
-            optim.step()
+            if train_fp16:
+                grad_scaler.scale(loss).backward()
+                grad_scaler.step(optim)
+                grad_scaler.update()
+            else:
+                loss.backward()
+                optim.step()
 
             loss_val = loss.item()
             losses["mse"].update(loss_val)
@@ -73,7 +80,7 @@ def test_model(renderer, ts_dset, log_dir, batch_size, num_test_imgs=1):
     renderer.cuda()
     renderer.eval()
     psnrs = []
-    for image_id in range(num_test_imgs):
+    for image_id in tqdm(range(num_test_imgs), desc="test-dataset evaluation"):
         psnr = plot_ts_imageio(ts_dset, 0, renderer, log_dir, iteration="test",
                                batch_size=batch_size, image_id=image_id, verbose=False,
                                render_fn=lambda ro, rd: renderer(ro, rd))
@@ -131,7 +138,7 @@ if __name__ == "__main__":
     TB_WRITER = SummaryWriter(log_dir=train_log_dir)
 
     tr_dset_, tr_loader_, ts_dset_ = init_data_single_dset(cfg_)
-    checkpoint_data = {
+    checkpoint_data_ = {
         'epoch': -1,
         'tot_step': -1,
     }
@@ -139,28 +146,29 @@ if __name__ == "__main__":
         assert train_cfg is None, "run_regula_grid.py does not support setting train_cfg and reload_cfg"
         chosen_opt = user_ask_options(
             "Restart model training from checkpoint or evaluate model?", "train", "test")
-        checkpoint_data = torch.load(os.path.join(train_log_dir, "model.pt"), map_location='cpu')
+        checkpoint_data_ = torch.load(os.path.join(train_log_dir, "model.pt"), map_location='cpu')
         if chosen_opt == "test":
             print("Running tests only.")
-            model_ = init_model(cfg_, tr_dset=tr_dset_, checkpoint_data=checkpoint_data)
+            model_ = init_model(cfg_, tr_dset=tr_dset_, checkpoint_data=checkpoint_data_)
             test_model(renderer=model_, ts_dset=ts_dset_, log_dir=train_log_dir,
                        batch_size=reload_cfg.optim.batch_size, num_test_imgs=10)
             sys.exit(0)
         else:
-            print(f"Resuming training from epoch {checkpoint_data['epoch'] + 1}")
+            print(f"Resuming training from epoch {checkpoint_data_['epoch'] + 1}")
     else:
         # normal training
         with open(os.path.join(train_log_dir, "config.yaml"), "w") as fh:
             fh.write(cfg_.dump())
 
-    model_ = init_model(cfg_, tr_dset=tr_dset_, checkpoint_data=checkpoint_data)
-    optim_ = init_optim(cfg_, model_, checkpoint_data=checkpoint_data)
+    model_ = init_model(cfg_, tr_dset=tr_dset_, checkpoint_data=checkpoint_data_)
+    optim_ = init_optim(cfg_, model_, checkpoint_data=checkpoint_data_)
     sched_ = init_lr_scheduler(
         cfg_, optim_, num_batches_per_dset=cfg_.optim.num_epochs * len(tr_loader_),
-        checkpoint_data=checkpoint_data)
+        checkpoint_data=checkpoint_data_)
     train_epoch(
         renderer=model_, tr_loader=tr_loader_, ts_dset=ts_dset_, optim=optim_,
         max_epochs=cfg_.optim.num_epochs, log_dir=train_log_dir,
         batch_size=cfg_.optim.batch_size, lr_sched=sched_,
-        start_epoch=checkpoint_data['epoch'] + 1,
-        start_step=checkpoint_data['tot_step'] + 1)
+        start_epoch=checkpoint_data_['epoch'] + 1,
+        start_step=checkpoint_data_['tot_step'] + 1,
+        train_fp16=cfg_.optim.train_f16)

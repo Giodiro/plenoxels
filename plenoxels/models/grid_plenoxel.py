@@ -42,8 +42,8 @@ class RegularGrid(nn.Module):
         self.data = nn.Parameter(torch.empty(
             1, self.data_dim, resolution, resolution, resolution, dtype=torch.float32))
         with torch.no_grad():
-            self.atoms[0, :-1, ...].fill_(0.1)
-            self.atoms[..., -1, ...].fill_(0.01)
+            self.data[0, :-1, ...].fill_(0.1)
+            self.data[0, -1, ...].fill_(0.01)
 
     def __repr__(self):
         return (f"RegularGrid(data_dim={self.data_dim}, step_size={self.step_size}, "
@@ -73,7 +73,7 @@ class RegularGrid(nn.Module):
         intersections = start + steps * self.step_size  # [batch, n_intrs]
         return intersections
 
-    def forward(self, rays_o, rays_d):
+    def forward(self, rays_o, rays_d, use_fp16: bool = False):
         with torch.autograd.no_grad():
             intersections = self.sample_proposal(rays_o, rays_d)
             intersections_trunc = intersections[:, :-1]  # [batch, n_intrs - 1]
@@ -85,31 +85,32 @@ class RegularGrid(nn.Module):
             intrs_pts = intrs_pts[intrs_pts_mask]  # masked points
             intrs_pts = self.normalize_coord(intrs_pts)
 
-        data_interp = interp_regular(
-            self.data, intrs_pts.view(1, -1, 1, 1, 3))  # [ch, mask_pts]
-        if data_interp.dim() == 1:  # happens if mask_pts == 1
-            data_interp = data_interp.unsqueeze(1)
-        data_interp = data_interp.T  # [mask_pts, ch]
+        with torch.autocast(device_type="cuda", enabled=use_fp16):
+            data_interp = interp_regular(
+                self.data, intrs_pts.view(1, -1, 1, 1, 3))  # [ch, mask_pts]
+            if data_interp.dim() == 1:  # happens if mask_pts == 1
+                data_interp = data_interp.unsqueeze(1)
+            data_interp = data_interp.T  # [mask_pts, ch]
 
-        # 1. Process density: Un-masked sigma (batch, n_intrs-1), and compute.
-        sigma_masked = data_interp[:, -1]
-        sigma = torch.zeros(batch, nintrs, dtype=sigma_masked.dtype, device=sigma_masked.device)
-        sigma.masked_scatter_(intrs_pts_mask, sigma_masked)
-        sigma = F.relu(sigma)
-        alpha, abs_light = sigma2alpha(sigma, intersections, rays_d)  # both [batch, n_intrs-1]
+            # 1. Process density: Un-masked sigma (batch, n_intrs-1), and compute.
+            sigma_masked = data_interp[:, -1]
+            sigma = torch.zeros(batch, nintrs, dtype=sigma_masked.dtype, device=sigma_masked.device)
+            sigma.masked_scatter_(intrs_pts_mask, sigma_masked)
+            sigma = F.relu(sigma)
+            alpha, abs_light = sigma2alpha(sigma, intersections, rays_d)  # both [batch, n_intrs-1]
 
-        # 3. Create SH coefficients and mask them
-        sh_mult = self.sh_encoder(rays_d).unsqueeze(1).expand(batch, nintrs, -1)  # [batch, nintrs, ch/3]
-        sh_mult = sh_mult[intrs_pts_mask].unsqueeze(1)  # [mask_pts, 1, ch/3]
+            # 3. Create SH coefficients and mask them
+            sh_mult = self.sh_encoder(rays_d).unsqueeze(1).expand(batch, nintrs, -1)  # [batch, nintrs, ch/3]
+            sh_mult = sh_mult[intrs_pts_mask].unsqueeze(1)  # [mask_pts, 1, ch/3]
 
-        # 4. Interpolate rgbdata, use SH coefficients to get to RGB
-        sh_masked = data_interp[:, :-1]
-        sh_masked = sh_masked.view(-1, 3, sh_mult.shape[-1])  # [mask_pts, 3, ch/3]
-        rgb_masked = torch.sum(sh_mult * sh_masked, dim=-1)   # [mask_pts, 3]
+            # 4. Interpolate rgbdata, use SH coefficients to get to RGB
+            sh_masked = data_interp[:, :-1]
+            sh_masked = sh_masked.view(-1, 3, sh_mult.shape[-1])  # [mask_pts, 3, ch/3]
+            rgb_masked = torch.sum(sh_mult * sh_masked, dim=-1)   # [mask_pts, 3]
 
-        # 5. Post-process RGB
-        rgb = torch.zeros(batch, nintrs, 3, dtype=rgb_masked.dtype, device=rgb_masked.device)
-        rgb.masked_scatter_(intrs_pts_mask.unsqueeze(-1), rgb_masked)
-        rgb = shrgb2rgb(rgb, abs_light, self.white_bkgd)
+            # 5. Post-process RGB
+            rgb = torch.zeros(batch, nintrs, 3, dtype=rgb_masked.dtype, device=rgb_masked.device)
+            rgb.masked_scatter_(intrs_pts_mask.unsqueeze(-1), rgb_masked)
+            rgb = shrgb2rgb(rgb, abs_light, self.white_bkgd)
 
         return rgb

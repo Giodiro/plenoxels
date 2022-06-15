@@ -158,7 +158,7 @@ def test_model(renderer, ts_dsets, log_dir, batch_size, num_test_imgs=1):
     renderer.eval()
     for ts_dset_id, ts_dset in enumerate(ts_dsets):
         psnrs = []
-        for image_id in range(num_test_imgs):
+        for image_id in tqdm(range(num_test_imgs), desc=f"test-dataset {ts_dset_id} evaluation"):
             psnr = plot_ts_imageio(ts_dset, ts_dset_id, renderer, log_dir, iteration="test",
                                    batch_size=batch_size, image_id=image_id, verbose=False)
             psnrs.append(psnr)

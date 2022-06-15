@@ -40,7 +40,7 @@ def init_data_single_dset(cfg):
         # None is code for automatic resolution adjustment to match the model resolution
         # also adjusting the downsampling.
         resolution = cfg.model.resolution
-        downsample = 800 / (resolution * 2)
+        downsample = max(1.0, 800 / (resolution * 2))
     print(f"Loading dataset with resolution={resolution}, downsample={downsample}")
     train = SyntheticNerfDataset(cfg.data.datadir, split='train', downsample=downsample,
                                  resolution=resolution, max_frames=cfg.data.max_tr_frames)
@@ -184,7 +184,6 @@ def render_patches(renderer, patch_level, log_dir, iteration, summary_writer=Non
         atoms = renderer.atoms
         if isinstance(atoms, nn.ParameterList):
             atoms = atoms[patch_level].detach().float()
-
         sh_encoder = renderer.sh_encoder
         if atoms.dim() == 3:
             reso = int(np.round(atoms.shape[0] ** (1/3)))

@@ -1,7 +1,7 @@
 # Transfer configs must not change anything about the model
 
-expname: "c64_f2.64,4.64_c2f_downsampleless_transfer"
-use_csrc: True
+expname: "c32_f2.32,4.32_c2f_consistency0.1_k1_transfer"
+use_csrc: False
 
 data:
   datadirs:
@@ -16,7 +16,7 @@ data:
 optim:
   batch_size: 2500
   batches_per_epoch: 400 # From each scene
-  num_epochs: 100
+  num_epochs: 30
   lr: 1e-2
   cosine: False
   regularization:
