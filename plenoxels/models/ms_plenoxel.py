@@ -96,7 +96,8 @@ class DictPlenoxels(nn.Module):
         smallest_dset = np.argmin(self.radius).item()
         smallest_voxel = self.get_fine_voxel_len(dset_id=smallest_dset, dict_id=self.num_dicts - 1)
         step_size = smallest_voxel / 2
-        n_intersections = self.coarse_reso * np.sqrt(3.) * 2 * self.fine_reso[-1]
+        grid_diag = math.sqrt(3) * np.max(self.radius) * 2
+        n_intersections = int(grid_diag / step_size) - 1
         return step_size, n_intersections
 
     def calc_scaling_offset(self) -> Tuple[List[float], List[float]]:
@@ -306,9 +307,9 @@ class DictPlenoxels(nn.Module):
         rgb = shrgb2rgb(rgb, abs_light, True)
 
         # 6. Depth map (optional)
-        depth = depth_map(abs_light, intersections)
+        depth = depth_map(abs_light, intersections)  # [batch]
 
-        return rgb, alpha, depth, consistency_loss
+        return rgb, depth, alpha, consistency_loss
 
     def __repr__(self):
         return (f"DictPlenoxels(grids={self.grids}, num_atoms={self.num_atoms}, data_dim={self.data_dim}, "
