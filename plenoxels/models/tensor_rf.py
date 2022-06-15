@@ -18,7 +18,7 @@ class TensorRf(nn.Module):
         super().__init__()
         self.radius = radius
         self.resolution = resolution
-        self.step_ratio = 2.0
+        self.step_ratio = 0.5
         self.sh_encoder = sh_encoder
         self.n_rgb_comp = n_rgb_comp
         self.n_density_comp = n_sigma_comp
