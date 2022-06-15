@@ -117,7 +117,7 @@ def render_ts_img(data: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
             preds.append(output.cpu())
         elif isinstance(output, tuple):
             preds.append(output[0].cpu())
-            if len(tuple) > 1 and output[1] is not None:
+            if len(output) > 1 and output[1] is not None:
                 depths.append(output[1].cpu())
     pred = torch.cat(preds, 0).view(img_h, img_w, 3)
     depth = None
