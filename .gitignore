@@ -16,7 +16,9 @@ drums/
 *.so
 
 *.cudafe.*
+*.cudafe1.*
 *.cpp4.*
+*.cpp1.*
 *.fatbin*
 *.module_id
 *.ptx

@@ -80,7 +80,9 @@ def train_epoch(renderer,
                         # Compute and re-weight all the losses
                         diff_losses = dict(mse=F.mse_loss(rgb_preds, imgs))
                         if l1_coef > 0:
-                            diff_losses["l1"] = l1_coef * torch.abs(renderer.grids[dset_id]).mean()
+                            diff_losses["l1"] = 0
+                            for scene_grid in renderer.grids[dset_id]:
+                                diff_losses["l1"] += l1_coef * torch.abs(scene_grid).mean()
                         if tv_coef > 0:
                             diff_losses["tv"] = tv_coef * renderer.tv_loss(dset_id)
                         if consistency_coef > 0 and consistency_loss is not None:
