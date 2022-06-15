@@ -131,15 +131,20 @@ class DictPlenoxels(nn.Module):
     @torch.no_grad()
     def sample_proposal(self, rays_o, rays_d, dset_id: int):
         dev, dt = rays_o.device, rays_o.dtype
-        offsets_pos = (self.radius[dset_id] - rays_o) / rays_d  # [batch, 3]
-        offsets_neg = (-self.radius[dset_id] - rays_o) / rays_d  # [batch, 3]
+        rays_d_nodiv0 = torch.where(rays_d == 0, torch.full_like(rays_d, 1e-6), rays_d)
+        offsets_pos = (self.radius[dset_id] - rays_o) / rays_d_nodiv0  # [batch, 3]
+        offsets_neg = (-self.radius[dset_id] - rays_o) / rays_d_nodiv0  # [batch, 3]
         offsets_in = torch.minimum(offsets_pos, offsets_neg)  # [batch, 3]
         start = torch.amax(offsets_in, dim=-1, keepdim=True)  # [batch, 1]
 
         steps = torch.arange(self.n_intersections, dtype=dt, device=dev).unsqueeze(0)  # [1, n_intrs]
         steps = steps.repeat(rays_d.shape[0], 1)   # [batch, n_intrs]
         intersections = start + steps * self.step_size  # [batch, n_intrs]
-        return intersections
+        intersections_trunc = intersections[:, :-1]
+        intrs_pts = rays_o[..., None, :] + rays_d[..., None, :] * intersections_trunc[..., None]
+        # noinspection PyUnresolvedReferences
+        mask = ((-self.radius <= intrs_pts) & (intrs_pts <= self.radius)).all(dim=-1)
+        return intrs_pts, intersections, mask
 
     def tv_loss(self, grid_id):
         grid = self.grids[grid_id]
@@ -218,7 +223,7 @@ class DictPlenoxels(nn.Module):
         if self.training:
             self.time += 1
 
-        result = None
+        """result = None
         for i, reso in enumerate(self.fine_reso[0: level + 1]):
             out = torch.ops.plenoxels.dict_tree_render(
                 scene_grids[i].to(dtype=dtype), self.atoms[i].to(dtype=dtype), rays_o, rays_d,
@@ -228,20 +233,16 @@ class DictPlenoxels(nn.Module):
                 result = out
             else:
                 result = result + out
-        return result, None, None, None
+        return result, None, None, None"""
 
-        with torch.autograd.no_grad():
-            intersections = self.sample_proposal(rays_o, rays_d, grid_id)
-            intersections_trunc = intersections[:, :-1]  # [batch, n_intrs - 1]
-            batch, nintrs = intersections_trunc.shape
-            intrs_pts = rays_o.unsqueeze(1) + intersections_trunc.unsqueeze(2) * rays_d.unsqueeze(1)  # [batch, n_intrs - 1, 3]
-            # noinspection PyTypeChecker
-            intrs_pts_mask = torch.all((-self.radius[grid_id] < intrs_pts) & (intrs_pts < self.radius[grid_id]), dim=-1)  # [batch, n_intrs-1]
-            intrs_pts = intrs_pts[intrs_pts_mask]  # masked points
+        intrs_pts, intersections, intrs_pts_mask = self.sample_proposal(rays_o, rays_d, grid_id)
+        batch = intersections.shape[0]
+        nintrs = intersections.shape[1] - 1
+        intrs_pts = intrs_pts[intrs_pts_mask]
 
         consistency_loss = torch.tensor(0.0, device=rays_d.device)
         if not self.use_csrc:
-            data_interp = torch.zeros(len(intrs_pts), self.data_dim, device=rays_o.device)
+            data_interp = torch.zeros(batch, self.data_dim, device=rays_o.device)
             consistency_loss = 0
             # Only work with the fine dicts up to the given level
             for i, reso in enumerate(self.fine_reso[0:level+1]):
@@ -253,6 +254,12 @@ class DictPlenoxels(nn.Module):
                 for n in range(8):
                     coarse_neighbor_vals = scene_grids[i][
                        coarse_neighbors[:,n,0], coarse_neighbors[:,n,1], coarse_neighbors[:,n,2], ...]  # [n_pts, n_atoms]
+                    n_atoms = coarse_neighbor_vals.shape[1]
+                    coarse_neighbor_vals = coarse_neighbor_vals.view(-1, 4, n_atoms // 4)
+                    y_soft = F.softmax(coarse_neighbor_vals, dim=-1)
+                    index = y_soft.max(dim=-1, keepdim=True)[1]
+                    y_hard = torch.zeros_like(y_soft).scatter_(-1, index, 1.0)
+                    coarse_neighbor_vals = y_hard - y_soft.detach() + y_soft  # And take gradients using softmax
                     # Apply Gumbel softmax
                     # coarse_neighbor_vals = F.gumbel_softmax(coarse_neighbor_vals, tau=1. / np.log(1.0 + self.time), dim=-1)
                     # coarse_neighbor_vals = F.softmax(coarse_neighbor_vals, dim=-1)
@@ -265,10 +272,13 @@ class DictPlenoxels(nn.Module):
                     # Apply the patches
                     fine_neighbor_vals = self.atoms[i][
                         fine_neighbors[:,n,0], fine_neighbors[:,n,1], fine_neighbors[:,n,2], ...]  # [n_pts, n_atoms, data_dim]
-                    result = torch.sum(coarse_neighbor_vals[:,:,None] * fine_neighbor_vals, dim=1)  # [n_pts, data_dim]
+                    fine_neighbor_vals = fine_neighbor_vals.view(-1, 4, n_atoms // 4, fine_neighbors.shape[-1])  # [n_pts, 4, n_atoms/4, data_dim]
+                    result = torch.sum(coarse_neighbor_vals[..., None] * fine_neighbor_vals, dim=-2)  # [n_pts, 4, data_dim]
+                    result = result.view(result.shape[0], -1)
+
                     if n == 0 and consistency_coef > 0:
                         consistency_loss = consistency_loss + self.patch_consistency_loss(
-                            coarse_neighbor_vals[::10,:], dict_id=i)
+                            coarse_neighbor_vals[::10, :], dict_id=i)
                     weights = torch.prod(1. - fine_offsets[:, n, :], dim=-1, keepdim=True)  # [n_pts, 1]
                     data_interp = data_interp + weights * result
         else:
@@ -335,4 +345,3 @@ def make_weights_unit_norm(model: DictPlenoxels, scene_id: int, with_grad: bool 
         for grid in model.grids[scene_id]:
             norms = torch.linalg.norm(grid, ord=2, dim=-1, keepdim=True).clamp_(min=1e-5)  # reso^3, 1
             grid.data /= norms
-
