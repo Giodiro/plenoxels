@@ -93,7 +93,7 @@ class DictPlenoxels(nn.Module):
 
     def calc_step_size(self) -> Tuple[float, int]:
         # Smallest radius, largest fine-resolution
-        smallest_radius = np.argmin(self.radius).item()
+        smallest_radius = np.min(self.radius)
         largest_resolution = self.coarse_reso * self.fine_reso[-1]
         units = (smallest_radius * 2) / (largest_resolution - 1)
         step_size = units / 2
@@ -114,7 +114,7 @@ class DictPlenoxels(nn.Module):
         for atoms in self.atoms:
             nn.init.uniform_(atoms[..., :-1])
             nn.init.constant_(atoms[..., -1], 0.01)
-            # # Compute the atom norms 
+            # # Compute the atom norms
             # shape = atoms.shape # [..., n_atoms, data_dim]
             # dims = [i for i in range(len(shape))]
             # newdims = [dims[-2]] + dims[0:-2] + dims[-1:]
@@ -218,17 +218,17 @@ class DictPlenoxels(nn.Module):
         if self.training:
             self.time += 1
 
-        # result = None
-        # for i, reso in enumerate(self.fine_reso[0: level + 1]):
-        #     out = torch.ops.plenoxels.dict_tree_render(
-        #         scene_grids[i].to(dtype=dtype), self.atoms[i].to(dtype=dtype), rays_o, rays_d,
-        #         reso, self.coarse_reso, self.scalings[i], self.offsets[i], self.step_size,
-        #         1e-6, 1e-6)
-        #     if result is None:
-        #         result = out
-        #     else:
-        #         result = result + out
-        # return result, None, None, None
+        result = None
+        for i, reso in enumerate(self.fine_reso[0: level + 1]):
+            out = torch.ops.plenoxels.dict_tree_render(
+                scene_grids[i].to(dtype=dtype), self.atoms[i].to(dtype=dtype), rays_o, rays_d,
+                reso, self.coarse_reso, self.scalings[i], self.offsets[i], self.step_size,
+                1e-6, 1e-6)
+            if result is None:
+                result = out
+            else:
+                result = result + out
+        return result, None, None, None
 
         with torch.autograd.no_grad():
             intersections = self.sample_proposal(rays_o, rays_d, grid_id)
@@ -319,10 +319,9 @@ class DictPlenoxels(nn.Module):
 def make_atoms_unit_norm(model: DictPlenoxels, with_grad: bool = False):
     with torch.autograd.set_grad_enabled(with_grad):
         for atoms in model.atoms:
-            atoms_r = atoms.view(-1, atoms.shape[-1], atoms.shape[-2])  # reso^3, n_atoms, data_dim
-            atoms_r = atoms_r.transpose(0, 1)  # n_atoms, reso^3
-            atoms_r = atoms_r.view(atoms.shape[-1])  # n_atoms, reso^3
-
+            atoms_r = atoms.view(-1, atoms.shape[-2], atoms.shape[-1])  # reso^3, n_atoms, data_dim
+            atoms_r = atoms_r.transpose(1, 0)                           # n_atoms, reso^3, data_dim
+            atoms_r = atoms_r.reshape(atoms_r.shape[0], -1)             # n_atoms, reso^3*data_dim
             norms = torch.linalg.norm(atoms_r, ord=2, dim=1).clamp_(min=1e-5)  # n_atoms
             if atoms.dim() == 5:
                 norms = norms.view(1, 1, 1, -1, 1)
