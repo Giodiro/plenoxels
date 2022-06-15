@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 from plenoxels.configs import multiscene_config, parse_config
 from plenoxels.ema import EMA
-from plenoxels.models import DictPlenoxels, make_atoms_unit_norm
+from plenoxels.models import DictPlenoxels, make_weights_unit_norm
 from plenoxels.tc_harmonics import plenoxel_sh_encoder
 
 from plenoxels.runners.utils import *
@@ -101,7 +101,7 @@ def train_epoch(renderer,
                             loss.backward()
                             optim.step()
 
-                        make_atoms_unit_norm(renderer, with_grad=False)
+                        make_weights_unit_norm(renderer, with_grad=False)
                         # Clip all the weights to be nonnegative
                         # for grid in renderer.grids:
                         #     grid.data = torch.clamp(grid.data, min=0.0)

@@ -329,16 +329,10 @@ def make_atoms_unit_norm(model: DictPlenoxels, with_grad: bool = False):
                 norms = norms.view(1, -1, 1)
             atoms.data /= norms
 
-            # # Compute the atom norms
-            # shape = atoms.shape  # [..., n_atoms, data_dim]
-            # dims = [i for i in range(len(shape))]
-            # newdims = [dims[-2]] + dims[0:-2] + dims[-1:]
-            # norms = torch.permute(atoms, newdims) # [n_atoms, ..., data_dim]
-            # norms = torch.reshape(norms, (len(norms), -1))
-            # norms = torch.linalg.vector_norm(norms, dim=-1)
-            # # Clip so we don't divide by zero
-            # norms = torch.clamp(norms, min=1e-5)
-            # broadcastable_norms = torch.empty(size=[1]*(len(shape)-2) + [len(norms)] + [1])
-            # broadcastable_norms[...,:,0] = norms
-            # # Normalize each atom
-            # atoms.data = torch.div(atoms, broadcastable_norms.to(atoms.device))
+
+def make_weights_unit_norm(model: DictPlenoxels, scene_id: int, with_grad: bool = False):
+    with torch.autograd.set_grad_enabled(with_grad):
+        for grid in model.grids[scene_id]:
+            norms = torch.linalg.norm(grid, ord=2, dim=-1, keepdim=True).clamp_(min=1e-5)  # reso^3, 1
+            grid.data /= norms
+
