@@ -184,8 +184,8 @@ def render_patches(renderer, patch_level, log_dir, iteration, summary_writer=Non
         atoms = renderer.atoms
         if isinstance(atoms, nn.ParameterList):
             atoms = atoms[patch_level].detach().float()
-        sh_level = (atoms.shape[-1] - 1) // 3 - 1
-        sh_encoder = plenoxel_sh_encoder(sh_level)
+
+        sh_encoder = renderer.sh_encoder
         if atoms.dim() == 3:
             reso = int(np.round(atoms.shape[0] ** (1/3)))
             atoms = atoms.view(reso, reso, reso, atoms.shape[1], atoms.shape[2])
