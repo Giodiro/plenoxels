@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 
 from plenoxels.nerf_rendering import sigma2alpha, shrgb2rgb
 from plenoxels.synthetic_nerf_dataset import SyntheticNerfDataset, get_rays
@@ -19,6 +20,7 @@ __all__ = (
     "init_data",
     "init_data_single_dset",
     "plot_ts",
+    "test_model",
     "render_patches",
     "user_ask_options",
 )
@@ -154,6 +156,22 @@ def plot_ts(ts_dset, dset_id, renderer, log_dir, iteration, batch_size=10_000, i
                              f"Accepted values are 'imageio' and 'matplotlib'.")
         save_image(fig, log_dir, f"dset-{dset_id}-ts-0", iteration, summary_writer)
     return psnr.item()
+
+
+def test_model(renderer, ts_dset, log_dir, batch_size, render_fn, plot_type="imageio", num_test_imgs=None):
+    renderer.cuda()
+    renderer.eval()
+    if num_test_imgs is None:
+        num_test_imgs = len(ts_dset)
+    psnrs = []
+    plot_every = num_test_imgs // 5
+    for image_id in tqdm(range(num_test_imgs), desc=f"test-dataset evaluation"):
+        c_log_dir = log_dir if image_id % plot_every == plot_every - 1 else None
+        psnr = plot_ts(ts_dset, 0, renderer, c_log_dir, iteration="test",
+                       batch_size=batch_size, image_id=image_id, verbose=False,
+                       plot_type=plot_type, render_fn=render_fn)
+        psnrs.append(psnr)
+    print(f"Average PSNR (over {num_test_imgs} poses): {np.mean(psnrs):.2f}")
 
 
 def render_patches(renderer, patch_level, log_dir, iteration, summary_writer=None):

@@ -20,6 +20,12 @@ from plenoxels.tc_harmonics import plenoxel_sh_encoder
 TB_WRITER = None
 
 
+def default_render_fn(renderer):
+    def render_fn(ro, rd):
+        return renderer(ro, rd)
+    return render_fn
+
+
 def train_epoch(renderer, tr_loader, ts_dset, optim, lr_sched, max_epochs, log_dir, batch_size,
                 train_fp16=False, start_epoch=0, start_step=0):
     ema_weight = 0.3
@@ -64,7 +70,7 @@ def train_epoch(renderer, tr_loader, ts_dset, optim, lr_sched, max_epochs, log_d
         psnr = plot_ts(
             ts_dset, 0, renderer, log_dir,
             iteration=tot_step, batch_size=batch_size, image_id=0, verbose=True,
-            summary_writer=TB_WRITER, render_fn=lambda ro, rd: renderer(ro, rd), plot_type="imageio")
+            summary_writer=TB_WRITER, render_fn=default_render_fn(renderer), plot_type="imageio")
         TB_WRITER.add_scalar(f"TestPSNR", psnr, tot_step)
         torch.save({
             'epoch': e,
@@ -74,18 +80,6 @@ def train_epoch(renderer, tr_loader, ts_dset, optim, lr_sched, max_epochs, log_d
             'model': renderer.state_dict(),
         }, os.path.join(log_dir, "model.pt"))
         print(f"Plot test images & saved model to {log_dir} in {time.time() - time_s:.2f}s")
-
-
-def test_model(renderer, ts_dset, log_dir, batch_size, num_test_imgs=1):
-    renderer.cuda()
-    renderer.eval()
-    psnrs = []
-    for image_id in tqdm(range(num_test_imgs), desc="test-dataset evaluation"):
-        psnr = plot_ts(ts_dset, 0, renderer, log_dir, iteration="test",
-                       batch_size=batch_size, image_id=image_id, verbose=False,
-                       render_fn=lambda ro, rd: renderer(ro, rd), plot_type="imageio")
-        psnrs.append(psnr)
-    print(f"Average PSNR over {num_test_imgs} poses: {np.mean(psnrs):.2f}")
 
 
 def init_model(cfg, tr_dset, checkpoint_data=None):
@@ -150,8 +144,8 @@ if __name__ == "__main__":
         if chosen_opt == "test":
             print("Running tests only.")
             model_ = init_model(cfg_, tr_dset=tr_dset_, checkpoint_data=checkpoint_data_)
-            test_model(renderer=model_, ts_dset=ts_dset_, log_dir=train_log_dir,
-                       batch_size=reload_cfg.optim.batch_size, num_test_imgs=10)
+            test_model(model_, ts_dset_, train_log_dir, reload_cfg.optim.batch_size,
+                       render_fn=default_render_fn(model_), plot_type="imageio")
             sys.exit(0)
         else:
             print(f"Resuming training from epoch {checkpoint_data_['epoch'] + 1}")
