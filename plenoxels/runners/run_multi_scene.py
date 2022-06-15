@@ -20,6 +20,12 @@ from plenoxels.runners.utils import *
 TB_WRITER = None
 
 
+def default_render_fn(renderer, dset_id):
+    def render_fn(ro, rd):
+        return renderer(ro, rd, dset_id)
+    return render_fn
+
+
 def losses_to_postfix(losses: List[Dict[str, EMA]]) -> str:
     pfix_list = []
     for dset_id, loss_dict in enumerate(losses):
@@ -133,10 +139,10 @@ def train_epoch(renderer,
         time_s = time.time()
         renderer.eval()
         for ts_dset_id, ts_dset in enumerate(ts_dsets):
-            psnr = plot_ts_imageio(
-                ts_dset, ts_dset_id, renderer, log_dir,
+            psnr = plot_ts(
+                ts_dset, ts_dset_id, renderer, log_dir, render_fn=default_render_fn(renderer, 0),
                 iteration=tot_step, batch_size=batch_size, image_id=0, verbose=True,
-                summary_writer=TB_WRITER)
+                summary_writer=TB_WRITER, plot_type="matplotlib")
             render_patches(renderer, patch_level=0, log_dir=log_dir, iteration=tot_step,
                            summary_writer=TB_WRITER)
             if len(renderer.atoms) > 1:
@@ -159,8 +165,9 @@ def test_model(renderer, ts_dsets, log_dir, batch_size, num_test_imgs=1):
     for ts_dset_id, ts_dset in enumerate(ts_dsets):
         psnrs = []
         for image_id in tqdm(range(num_test_imgs), desc=f"test-dataset {ts_dset_id} evaluation"):
-            psnr = plot_ts_imageio(ts_dset, ts_dset_id, renderer, log_dir, iteration="test",
-                                   batch_size=batch_size, image_id=image_id, verbose=False)
+            psnr = plot_ts(ts_dset, ts_dset_id, renderer, log_dir, iteration="test",
+                           batch_size=batch_size, image_id=image_id, verbose=False,
+                           plot_type="imageio", render_fn=default_render_fn(renderer, 0))
             psnrs.append(psnr)
         print(f"Average PSNR (over {num_test_imgs} poses) for "
               f"dataset {ts_dset_id}: {np.mean(psnrs):.2f}")

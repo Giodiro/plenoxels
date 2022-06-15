@@ -61,10 +61,10 @@ def train_epoch(renderer, tr_loader, ts_dset, optim, lr_sched, max_epochs, log_d
         pb.close()
         # Save and evaluate model
         time_s = time.time()
-        psnr = plot_ts_imageio(
+        psnr = plot_ts(
             ts_dset, 0, renderer, log_dir,
             iteration=tot_step, batch_size=batch_size, image_id=0, verbose=True,
-            summary_writer=TB_WRITER, render_fn=lambda ro, rd: renderer(ro, rd))
+            summary_writer=TB_WRITER, render_fn=lambda ro, rd: renderer(ro, rd), plot_type="imageio")
         TB_WRITER.add_scalar(f"TestPSNR", psnr, tot_step)
         torch.save({
             'epoch': e,
@@ -82,13 +82,13 @@ def test_model(renderer, ts_dset, log_dir, batch_size, num_test_imgs=1):
     psnrs = []
     for image_id in tqdm(range(num_test_imgs), desc="test-dataset evaluation"):
         if image_id % 20 == 0:
-            psnr = plot_ts_imageio(ts_dset, 0, renderer, log_dir=None, iteration="test",
-                                batch_size=batch_size, image_id=image_id, verbose=False,
-                                render_fn=lambda ro, rd: renderer(ro, rd))
+            psnr = plot_ts(ts_dset, 0, renderer, log_dir, iteration="test",
+                           batch_size=batch_size, image_id=image_id, verbose=False,
+                           render_fn=lambda ro, rd: renderer(ro, rd), plot_type="imageio")
         else:
-            psnr = plot_ts_imageio(ts_dset, 0, renderer, log_dir, iteration="test",
-                                batch_size=batch_size, image_id=image_id, verbose=False,
-                                render_fn=lambda ro, rd: renderer(ro, rd))
+            psnr = plot_ts(ts_dset, 0, renderer, log_dir=None, iteration="test",
+                           batch_size=batch_size, image_id=image_id, verbose=False,
+                           render_fn=lambda ro, rd: renderer(ro, rd), plot_type="imageio")
         psnrs.append(psnr)
     print(f"Average PSNR over {num_test_imgs} poses: {np.mean(psnrs):.2f}")
 
