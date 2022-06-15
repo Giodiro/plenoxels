@@ -8,6 +8,12 @@ from plenoxels.nerf_rendering import sigma2alpha, shrgb2rgb, depth_map
 
 
 class TensorRf(nn.Module):
+    """
+    This is equivalent to the TensorVMSplit model in the official TensorRf repository.
+    Missing features:
+     - alpha-masking
+     - shrinking of the bounding box.
+    """
     def __init__(self, radius, resolution, sh_encoder, n_rgb_comp, n_sigma_comp, sh_deg, abs_light_thresh):
         super().__init__()
         self.radius = radius
