@@ -45,7 +45,7 @@ def losses_to_postfix(losses: Dict[str, EMA]) -> str:
 
 def get_lr_factor(cfg):
     lr_decay_iters = cfg.optim.lr_decay_iters if cfg.optim.lr_decay_iters > 0 else cfg.optim.max_steps
-    lr_factor = cfg.optim.lr_decay_target_ratio**(1/lr_decay_iters)
+    lr_factor = cfg.optim.lr_decay_target_ratio ** (1 / lr_decay_iters)
     print(f"lr decay targets ratio of {cfg.optim.lr_decay_target_ratio} in {lr_decay_iters} steps.")
     return lr_factor
 
@@ -53,17 +53,20 @@ def get_lr_factor(cfg):
 def render_wrap(renderer):
     def render(ro, rd):
         return renderer(ro, rd)[0]
+
     return render
 
 
-def train(renderer: TensorRf, tr_loader, ts_dset, optim, log_dir, cfg, batch_size, start_step: int = 0):
+def train(renderer: TensorRf, tr_loader, ts_dset, optim, log_dir, cfg, batch_size,
+          start_step: int = 0):
     renderer.cuda()
     renderer.train()
     losses = defaultdict(lambda: EMA(.3))
 
     upsample_iters = cfg.optim.upsample_iters
     reso_list = torch.logspace(
-        math.log(cfg.model.reso_init), math.log(cfg.model.reso_final), len(upsample_iters) + 1, base=math.e
+        math.log(cfg.model.reso_init), math.log(cfg.model.reso_final), len(upsample_iters) + 1,
+        base=math.e
     ).round().long().tolist()[1:]
     # Exclude resolutions which we may have already reached (if resuming from checkpoint).
     reso_list = [r for r in reso_list if r > renderer.resolution]
@@ -101,15 +104,16 @@ def train(renderer: TensorRf, tr_loader, ts_dset, optim, log_dir, cfg, batch_siz
             losses[loss_name].update(loss_val_)
             TB_WRITER.add_scalar(f"TensorRF/{loss_name}", loss_val_, tot_step)
             pb.set_postfix_str(losses_to_postfix(losses), refresh=False)
-        TB_WRITER.add_scalar("TensorRF/lr", optim.param_groups[0]['lr'], tot_step)  # one lr per parameter-group
+        TB_WRITER.add_scalar("TensorRF/lr", optim.param_groups[0]['lr'],
+                             tot_step)  # one lr per parameter-group
         # Save and evaluate model
         if tot_step % cfg.optim.test_every == cfg.optim.test_every - 1:
             time_s = time.time()
             renderer.eval()
-            psnr = plot_ts_imageio(
+            psnr = plot_ts(
                 ts_dset, 0, renderer, log_dir, render_fn=render_wrap(renderer),
                 iteration=tot_step, batch_size=batch_size, image_id=0, verbose=True,
-                summary_writer=TB_WRITER)
+                summary_writer=TB_WRITER, plot_type="imageio")
             TB_WRITER.add_scalar(f"TensorRF/TestPSNR", psnr, tot_step)
             renderer.train()
             torch.save({
@@ -139,9 +143,9 @@ def test_model(renderer, ts_dset, log_dir, batch_size, num_test_imgs=1):
     renderer.eval()
     psnrs = []
     for image_id in tqdm(range(num_test_imgs), desc="test-dataset evaluation"):
-        psnr = plot_ts_imageio(ts_dset, 0, renderer, log_dir, iteration="test",
-                               batch_size=batch_size, image_id=image_id, verbose=False,
-                               render_fn=render_wrap(renderer))
+        psnr = plot_ts(ts_dset, 0, renderer, log_dir, iteration="test",
+                       batch_size=batch_size, image_id=image_id, verbose=False,
+                       render_fn=render_wrap(renderer), plot_type="matplotlib")
         psnrs.append(psnr)
     print(f"Average PSNR over {num_test_imgs} poses: {np.mean(psnrs):.2f}")
 
@@ -161,8 +165,9 @@ def init_model(cfg, tr_dset, checkpoint_data=None):
 
 
 def init_optim(cfg, model: TensorRf, checkpoint_data=None):
-    spatial_params = (list(model.density_plane.parameters()) + list(model.density_line.parameters()) +
-                       list(model.rgb_plane.parameters()) + list(model.rgb_line.parameters()))
+    spatial_params = (
+                list(model.density_plane.parameters()) + list(model.density_line.parameters()) +
+                list(model.rgb_plane.parameters()) + list(model.rgb_line.parameters()))
     optim = torch.optim.Adam([
         {'params': spatial_params, 'lr': cfg.optim.lr_init_spatial},
         {'params': model.basis_mat.parameters(), 'lr': cfg.optim.lr_init_network}

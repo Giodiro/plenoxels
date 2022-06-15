@@ -1,6 +1,6 @@
 import os
 import math
-from typing import Tuple, Union
+from typing import Tuple, Union, Optional
 
 import imageio
 import numpy as np
@@ -19,7 +19,6 @@ __all__ = (
     "init_data",
     "init_data_single_dset",
     "plot_ts",
-    "plot_ts_imageio",
     "render_patches",
     "user_ask_options",
 )
@@ -105,35 +104,56 @@ def save_image(img_or_fig, log_dir, img_name, iteration, summary_writer):
 def render_ts_img(data: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
                   model,
                   batch_size: int,
-                  img_h: int, img_w: int) -> Tuple[torch.Tensor, torch.Tensor]:
+                  img_h: int, img_w: int) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
     rays_o, rays_d, rgb = data
-    preds = []
+    preds, depths = [], []
     for b in range(math.ceil(rays_o.shape[0] / batch_size)):
         rays_o_b = rays_o[b * batch_size: (b + 1) * batch_size].to("cuda")
         rays_d_b = rays_d[b * batch_size: (b + 1) * batch_size].to("cuda")
-        preds.append(model(rays_o_b, rays_d_b).cpu())
+        output = model(rays_o_b, rays_d_b)
+        if isinstance(output, torch.Tensor):
+            preds.append(output.cpu())
+        elif isinstance(output, tuple):
+            preds.append(output[0].cpu())
+            if len(tuple) > 1 and output[1] is not None:
+                depths.append(output[1].cpu())
     pred = torch.cat(preds, 0).view(img_h, img_w, 3)
+    depth = None
+    if len(depths) > 0:
+        depth = torch.cat(depths, 0).view(img_h, img_w)
     rgb = rgb.view(img_h, img_w, 3)
-    return pred, rgb
+    return pred, rgb, depth
 
 
-def plot_ts(ts_dset, dset_id, renderer, log_dir, iteration, summary_writer=None, batch_size=10_000):
-    psnr_list = []
+def plot_ts(ts_dset, dset_id, renderer, log_dir, iteration, batch_size=10_000, image_id=0,
+            verbose=True, summary_writer=None, render_fn=None, plot_type="imageio"):
+    if render_fn is None:
+        def render_fn(ro, rd):
+            return renderer(ro, rd, dset_id)[0]
     with torch.autograd.no_grad():
-        for ts_el in ts_dset:
-            pred, rgb = render_ts_img(
-                ts_el, model=lambda ro, rd: renderer(ro, rd, dset_id)[0],
-                batch_size=batch_size, img_h=ts_dset.img_h, img_w=ts_dset.img_w)
-            mse = torch.mean((pred - rgb) ** 2)
-            psnr = -10.0 * torch.log(mse) / math.log(10)
-            psnr_list.append(psnr)
-            break
-    psnr = np.mean(psnr_list)
-    fig, ax = plt.subplots(ncols=2)
-    ax[0].imshow(pred)
-    ax[1].imshow(rgb)
-    ax[0].set_title(f"PSNR={psnr:.2f}")
-    save_image(fig, log_dir, f"dset-{dset_id}-ts-0", iteration, summary_writer)
+        ts_el = ts_dset[image_id]
+        pred, rgb, opt_depth = render_ts_img(
+            ts_el, model=render_fn, batch_size=batch_size, img_h=ts_dset.img_h, img_w=ts_dset.img_w)
+        mse = torch.mean((pred - rgb) ** 2)
+        psnr = -10.0 * torch.log(mse) / math.log(10)
+    if verbose:
+        print(f"D{dset_id} Test PSNR={psnr:.2f}")
+    if log_dir is not None:
+        if plot_type == "imageio":
+            fig = torch.cat((torch.clamp(pred, 0, 1), rgb), dim=1)
+            fig = (fig * 255).numpy().astype(np.uint8)
+        elif plot_type == "matplotlib":
+            fig, ax = plt.subplots(ncols=2 if opt_depth is None else 3)
+            ax[0].imshow(pred)
+            ax[1].imshow(((pred - rgb) ** 2).sum(-1), cmap="plasma")
+            if opt_depth is not None:
+                ax[2].imshow(opt_depth, cmap="plasma")
+            ax[0].set_title(f"PSNR={psnr:.2f}")
+        else:
+            raise ValueError(f"plot-type {plot_type} invalid. "
+                             f"Accepted values are 'imageio' and 'matplotlib'.")
+        save_image(fig, log_dir, f"dset-{dset_id}-ts-0", iteration, summary_writer)
+    return psnr.item()
 
 
 def render_patches(renderer, patch_level, log_dir, iteration, summary_writer=None):
@@ -210,27 +230,6 @@ def render_patches(renderer, patch_level, log_dir, iteration, summary_writer=Non
             ax[i].set_yticks([])
         fig.tight_layout(pad=0.4, h_pad=0.0, w_pad=0.0)
         save_image(fig, log_dir, f"patches-{patch_level}", iteration, summary_writer)
-
-
-def plot_ts_imageio(ts_dset, dset_id, renderer, log_dir, iteration: Union[int, str],
-                    batch_size=10_000, image_id=0, verbose=True, summary_writer=None,
-                    render_fn=None) -> float:
-    if render_fn is None:
-        def render_fn(ro, rd):
-            return renderer(ro, rd, dset_id)[0]
-    with torch.autograd.no_grad():
-        ts_el = ts_dset[image_id]
-        pred, rgb = render_ts_img(
-            ts_el, model=render_fn,
-            batch_size=batch_size, img_h=ts_dset.img_h, img_w=ts_dset.img_w)
-        mse = torch.mean((pred - rgb) ** 2)
-        psnr = -10.0 * torch.log(mse) / math.log(10)
-    if verbose:
-        print(f"D{dset_id} Test PSNR={psnr:.2f}")
-    vis = torch.cat((torch.clamp(pred, 0, 1), rgb), dim=1)
-    vis = (vis * 255).numpy().astype(np.uint8)
-    save_image(vis, log_dir, f"dset-{dset_id}-ts-{image_id}", iteration, summary_writer)
-    return psnr.item()
 
 
 def user_ask_options(prompt: str, opt1: str, opt2: str) -> str:
