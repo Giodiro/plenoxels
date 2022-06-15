@@ -101,7 +101,7 @@ def train_epoch(renderer,
                             loss.backward()
                             optim.step()
 
-                        make_weights_unit_norm(renderer, with_grad=False)
+                        make_weights_unit_norm(renderer, with_grad=False, scene_id=dset_id)
                         # Clip all the weights to be nonnegative
                         # for grid in renderer.grids:
                         #     grid.data = torch.clamp(grid.data, min=0.0)
@@ -125,7 +125,7 @@ def train_epoch(renderer,
         renderer.eval()
         for ts_dset_id, ts_dset in enumerate(ts_dsets):
             psnr = plot_ts(
-                ts_dset, ts_dset_id, renderer, log_dir, render_fn=default_render_fn(renderer, 0),
+                ts_dset, ts_dset_id, renderer, log_dir, render_fn=default_render_fn(renderer, ts_dset_id),
                 iteration=tot_step, batch_size=batch_size, image_id=0, verbose=True,
                 summary_writer=TB_WRITER, plot_type="matplotlib")
             render_patches(renderer, patch_level=0, log_dir=log_dir, iteration=tot_step,
