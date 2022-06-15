@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 from plenoxels.configs import multiscene_config, parse_config
 from plenoxels.ema import EMA
-from plenoxels.models import DictPlenoxels
+from plenoxels.models import DictPlenoxels, make_atoms_unit_norm
 from plenoxels.tc_harmonics import plenoxel_sh_encoder
 
 from plenoxels.runners.utils import *

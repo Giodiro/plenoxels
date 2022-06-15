@@ -93,9 +93,10 @@ class DictPlenoxels(nn.Module):
 
     def calc_step_size(self) -> Tuple[float, int]:
         # Smallest radius, largest fine-resolution
-        smallest_dset = np.argmin(self.radius).item()
-        smallest_voxel = self.get_fine_voxel_len(dset_id=smallest_dset, dict_id=self.num_dicts - 1)
-        step_size = smallest_voxel / 2
+        smallest_radius = np.argmin(self.radius).item()
+        largest_resolution = self.coarse_reso * self.fine_reso[-1]
+        units = (smallest_radius * 2) / (largest_resolution - 1)
+        step_size = units / 2
         grid_diag = math.sqrt(3) * np.max(self.radius) * 2
         n_intersections = int(grid_diag / step_size) - 1
         return step_size, n_intersections
