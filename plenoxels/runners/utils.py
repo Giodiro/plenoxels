@@ -227,7 +227,8 @@ def plot_ts_imageio(ts_dset, dset_id, renderer, log_dir, iteration: Union[int, s
         print(f"D{dset_id} Test PSNR={psnr:.2f}")
     vis = torch.cat((torch.clamp(pred, 0, 1), rgb), dim=1)
     vis = (vis * 255).numpy().astype(np.uint8)
-    save_image(vis, log_dir, f"dset-{dset_id}-ts-{image_id}", iteration, summary_writer)
+    if log_dir is not None:
+        save_image(vis, log_dir, f"dset-{dset_id}-ts-{image_id}", iteration, summary_writer)
     return psnr.item()
 
 

@@ -40,7 +40,7 @@ class RegularGrid(nn.Module):
         self.sh_encoder = sh_encoder
 
         self.data = nn.Parameter(torch.empty(
-            1, self.data_dim, resolution, resolution, resolution, dtype=torch.float32))
+            1, self.data_dim, resolution, resolution, resolution))
         with torch.no_grad():
             self.data[0, :-1, ...].fill_(0.1)
             self.data[0, -1, ...].fill_(0.01)
@@ -85,9 +85,10 @@ class RegularGrid(nn.Module):
             intrs_pts = intrs_pts[intrs_pts_mask]  # masked points
             intrs_pts = self.normalize_coord(intrs_pts)
 
-        with torch.autocast(device_type="cuda", enabled=use_fp16):
+        with torch.autocast(device_type="cuda", enabled=False):
             data_interp = interp_regular(
                 self.data, intrs_pts.view(1, -1, 1, 1, 3))  # [ch, mask_pts]
+            
             if data_interp.dim() == 1:  # happens if mask_pts == 1
                 data_interp = data_interp.unsqueeze(1)
             data_interp = data_interp.T  # [mask_pts, ch]

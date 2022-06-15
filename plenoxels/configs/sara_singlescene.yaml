@@ -1,4 +1,4 @@
-expname: "plenoxel_lego_512"
+expname: "plenoxel_lego_512_v2"
 
 data:
   datadir: "/data/datasets/nerf/data/nerf_synthetic/lego"
@@ -11,9 +11,10 @@ model:
 
 optim:
   batch_size: 4000
-  num_epochs: 10
+  num_epochs: 50
   lr: 3e-2
-  cosine: True
+  cosine: False
+  train_f16: False
   
 sh:
   degree: 0

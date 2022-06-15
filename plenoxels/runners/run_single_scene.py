@@ -32,7 +32,7 @@ def train_epoch(renderer, tr_loader, ts_dset, optim, lr_sched, max_epochs, log_d
         losses = defaultdict(lambda: EMA(ema_weight))
         renderer.train()
         pb = tqdm(total=len(tr_loader), desc=f"Epoch {e + 1}")
-        for batch in tr_loader:
+        for i, batch in enumerate(tr_loader):
             rays_o, rays_d, imgs = batch
             imgs = imgs.cuda()
             rays_o = rays_o.cuda()
@@ -81,9 +81,14 @@ def test_model(renderer, ts_dset, log_dir, batch_size, num_test_imgs=1):
     renderer.eval()
     psnrs = []
     for image_id in tqdm(range(num_test_imgs), desc="test-dataset evaluation"):
-        psnr = plot_ts_imageio(ts_dset, 0, renderer, log_dir, iteration="test",
-                               batch_size=batch_size, image_id=image_id, verbose=False,
-                               render_fn=lambda ro, rd: renderer(ro, rd))
+        if image_id % 20 == 0:
+            psnr = plot_ts_imageio(ts_dset, 0, renderer, log_dir=None, iteration="test",
+                                batch_size=batch_size, image_id=image_id, verbose=False,
+                                render_fn=lambda ro, rd: renderer(ro, rd))
+        else:
+            psnr = plot_ts_imageio(ts_dset, 0, renderer, log_dir, iteration="test",
+                                batch_size=batch_size, image_id=image_id, verbose=False,
+                                render_fn=lambda ro, rd: renderer(ro, rd))
         psnrs.append(psnr)
     print(f"Average PSNR over {num_test_imgs} poses: {np.mean(psnrs):.2f}")
 
@@ -112,7 +117,8 @@ def init_lr_scheduler(cfg, optim, num_batches_per_dset: int, checkpoint_data=Non
 
 
 def init_optim(cfg, model, checkpoint_data=None):
-    optim = torch.optim.Adam(model.parameters(), lr=cfg.optim.lr)
+    # optim = torch.optim.Adam(model.parameters(), lr=cfg.optim.lr)
+    optim = torch.optim.RMSprop(model.parameters(), lr=cfg.optim.lr)
     if checkpoint_data is not None and checkpoint_data.get("optimizer", None) is not None:
         optim.load_state_dict(checkpoint_data['optimizer'])
         print("=> Loaded optimizer state from checkpoint")
@@ -151,7 +157,7 @@ if __name__ == "__main__":
             print("Running tests only.")
             model_ = init_model(cfg_, tr_dset=tr_dset_, checkpoint_data=checkpoint_data_)
             test_model(renderer=model_, ts_dset=ts_dset_, log_dir=train_log_dir,
-                       batch_size=reload_cfg.optim.batch_size, num_test_imgs=10)
+                       batch_size=reload_cfg.optim.batch_size, num_test_imgs=len(ts_dset_))
             sys.exit(0)
         else:
             print(f"Resuming training from epoch {checkpoint_data_['epoch'] + 1}")
