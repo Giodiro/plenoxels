@@ -79,6 +79,7 @@ class DictPlenoxels(nn.Module):
             for reso, n_atoms in zip(self.fine_reso, self.num_atoms):
                 scene_grids.append(nn.Parameter(torch.empty(*get_reso(coarse_reso), n_atoms)))
             self.grids.append(scene_grids)
+        self.closs_conv3d = torch.nn.Conv3d(in_channels=4, out_channels=sum(self.num_atoms), kernel_size=3)
 
         self.init_params()
 
@@ -215,6 +216,28 @@ class DictPlenoxels(nn.Module):
         # Compute loss
         return F.mse_loss(new_weights, weights)
 
+    def closs_v2(self, dict_id: int, single_ray_d: torch.Tensor):
+        grid = self.grids[dict_id][0]  # Rc^3, S
+        grid = grid[torch.randperm(grid.shape[0])[:100], :]  # subsample Rc^3
+        atoms = self.atoms[0]
+        rf3 = atoms.shape[0]
+        rf = int(rf3**(1/3))
+        patches = grid @ atoms.transpose(0, 1).reshape(grid.shape[1], -1)
+        patches = patches.reshape(-1, rf3, self.data_dim)  # Rc^3, Rf^3, D
+        patches = patches.view(-1, self.data_dim)
+        rgba = torch.empty(patches.shape[0], 4, device=patches.device)
+        rgba[:, -1] = F.relu(patches[:, -1])
+        sh_mult = self.sh_encoder(single_ray_d).expand(patches.shape[0], -1)  # [batch, ch/3]
+        sh_masked = patches[:, :-1]
+        sh_masked = sh_masked.view(-1, 3, sh_mult.shape[-1])  # [mask_pts, 3, ch/3]
+        rgba[:, :-1] = torch.sum(sh_mult * sh_masked, dim=-1)   # [mask_pts, 3]
+
+        # rgba -> grid
+        rgba = rgba.view(-1, rf, rf, rf, 4).permute(0, 4, 1, 2, 3)
+        rgba = self.closs_conv3d(rgba)
+        rgba = F.adaptive_max_pool3d(rgba, 1).squeeze()
+        return F.mse_loss(grid, rgba)
+
     def forward(self, rays_o, rays_d, grid_id, consistency_coef=0, level=None, run_fp16=False, verbose=False):
         if level is None:
             level = len(self.fine_reso) - 1
@@ -223,7 +246,7 @@ class DictPlenoxels(nn.Module):
         if self.training:
             self.time += 1
 
-        """result = None
+        result = None
         for i, reso in enumerate(self.fine_reso[0: level + 1]):
             out = torch.ops.plenoxels.dict_tree_render(
                 scene_grids[i].to(dtype=dtype), self.atoms[i].to(dtype=dtype), rays_o, rays_d,
@@ -233,7 +256,7 @@ class DictPlenoxels(nn.Module):
                 result = out
             else:
                 result = result + out
-        return result, None, None, None"""
+        return result, None, None, None
 
         intrs_pts, intersections, intrs_pts_mask = self.sample_proposal(rays_o, rays_d, grid_id)
         batch = intersections.shape[0]
@@ -242,7 +265,7 @@ class DictPlenoxels(nn.Module):
 
         consistency_loss = torch.tensor(0.0, device=rays_d.device)
         if not self.use_csrc:
-            data_interp = torch.zeros(batch, self.data_dim, device=rays_o.device)
+            data_interp = torch.zeros(intrs_pts.shape[0], self.data_dim, device=rays_o.device)
             consistency_loss = 0
             # Only work with the fine dicts up to the given level
             for i, reso in enumerate(self.fine_reso[0:level+1]):
@@ -255,11 +278,11 @@ class DictPlenoxels(nn.Module):
                     coarse_neighbor_vals = scene_grids[i][
                        coarse_neighbors[:,n,0], coarse_neighbors[:,n,1], coarse_neighbors[:,n,2], ...]  # [n_pts, n_atoms]
                     n_atoms = coarse_neighbor_vals.shape[1]
-                    coarse_neighbor_vals = coarse_neighbor_vals.view(-1, 4, n_atoms // 4)
-                    y_soft = F.softmax(coarse_neighbor_vals, dim=-1)
-                    index = y_soft.max(dim=-1, keepdim=True)[1]
-                    y_hard = torch.zeros_like(y_soft).scatter_(-1, index, 1.0)
-                    coarse_neighbor_vals = y_hard - y_soft.detach() + y_soft  # And take gradients using softmax
+                    # coarse_neighbor_vals = coarse_neighbor_vals.view(-1, 4, n_atoms // 4)
+                    # y_soft = F.softmax(coarse_neighbor_vals, dim=-1)
+                    # index = y_soft.max(dim=-1, keepdim=True)[1]
+                    # y_hard = torch.zeros_like(y_soft).scatter_(-1, index, 1.0)
+                    # coarse_neighbor_vals = y_hard - y_soft.detach() + y_soft  # And take gradients using softmax
                     # Apply Gumbel softmax
                     # coarse_neighbor_vals = F.gumbel_softmax(coarse_neighbor_vals, tau=1. / np.log(1.0 + self.time), dim=-1)
                     # coarse_neighbor_vals = F.softmax(coarse_neighbor_vals, dim=-1)
@@ -272,13 +295,13 @@ class DictPlenoxels(nn.Module):
                     # Apply the patches
                     fine_neighbor_vals = self.atoms[i][
                         fine_neighbors[:,n,0], fine_neighbors[:,n,1], fine_neighbors[:,n,2], ...]  # [n_pts, n_atoms, data_dim]
-                    fine_neighbor_vals = fine_neighbor_vals.view(-1, 4, n_atoms // 4, fine_neighbors.shape[-1])  # [n_pts, 4, n_atoms/4, data_dim]
-                    result = torch.sum(coarse_neighbor_vals[..., None] * fine_neighbor_vals, dim=-2)  # [n_pts, 4, data_dim]
+                    # fine_neighbor_vals = fine_neighbor_vals.view(-1, 4, n_atoms // 4, fine_neighbors.shape[-1])  # [n_pts, 4, n_atoms/4, data_dim]
+                    result = torch.sum(coarse_neighbor_vals[..., None] * fine_neighbor_vals, dim=-2)  # [n_pts, data_dim]
                     result = result.view(result.shape[0], -1)
 
-                    if n == 0 and consistency_coef > 0:
-                        consistency_loss = consistency_loss + self.patch_consistency_loss(
-                            coarse_neighbor_vals[::10, :], dict_id=i)
+                    # if n == 0 and consistency_coef > 0:
+                    #     consistency_loss = consistency_loss + self.patch_consistency_loss(
+                    #         coarse_neighbor_vals[::10, :], dict_id=i)
                     weights = torch.prod(1. - fine_offsets[:, n, :], dim=-1, keepdim=True)  # [n_pts, 1]
                     data_interp = data_interp + weights * result
         else:

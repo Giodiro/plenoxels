@@ -90,8 +90,8 @@ def train_epoch(renderer,
                                 diff_losses["l1"] += l1_coef * torch.abs(scene_grid).mean()
                         if tv_coef > 0:
                             diff_losses["tv"] = tv_coef * renderer.tv_loss(dset_id)
-                        if consistency_coef > 0 and consistency_loss is not None:
-                            diff_losses["consistency"] = consistency_coef * consistency_loss
+                        if consistency_coef > 0:
+                            diff_losses["consistency"] = consistency_coef * renderer.closs_v2(dset_id, rays_d[:1])
                         loss = sum(diff_losses.values())
                         if train_fp16:
                             grad_scaler.scale(loss).backward()
@@ -101,7 +101,7 @@ def train_epoch(renderer,
                             loss.backward()
                             optim.step()
 
-                        make_weights_unit_norm(renderer, with_grad=False, scene_id=dset_id)
+                        # make_weights_unit_norm(renderer, with_grad=False, scene_id=dset_id)
                         # Clip all the weights to be nonnegative
                         # for grid in renderer.grids:
                         #     grid.data = torch.clamp(grid.data, min=0.0)
