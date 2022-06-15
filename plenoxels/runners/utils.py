@@ -145,11 +145,16 @@ def plot_ts(ts_dset, dset_id, renderer, log_dir, iteration, batch_size=10_000, i
             fig = torch.cat((torch.clamp(pred, 0, 1), rgb), dim=1)
             fig = (fig * 255).numpy().astype(np.uint8)
         elif plot_type == "matplotlib":
-            fig, ax = plt.subplots(ncols=2 if opt_depth is None else 3)
+            fig, ax = plt.subplots(ncols=2 if opt_depth is None else 3, figsize=(15, 11), dpi=60)
             ax[0].imshow(pred)
-            ax[1].imshow(((pred - rgb) ** 2).sum(-1), cmap="plasma")
+            ax[0].axis('off')
+            err = ((pred - rgb)**2).sum(-1)
+            err = (err - err.min()) / (err.max() - err.min())  # normalize in 0,1
+            ax[1].imshow(err, cmap="plasma")
+            ax[1].axis('off')
             if opt_depth is not None:
-                ax[2].imshow(opt_depth, cmap="plasma")
+                ax[2].imshow((opt_depth - opt_depth.min()) / (opt_depth.max() - opt_depth.min()), cmap="plasma")
+                ax[2].axis('off')
             ax[0].set_title(f"PSNR={psnr:.2f}")
         else:
             raise ValueError(f"plot-type {plot_type} invalid. "
