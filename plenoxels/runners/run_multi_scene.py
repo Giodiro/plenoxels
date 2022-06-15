@@ -159,20 +159,6 @@ def train_epoch(renderer,
         print(f"Plot test images & saved model to {log_dir} in {time.time() - time_s:.2f}s")
 
 
-def test_model(renderer, ts_dsets, log_dir, batch_size, num_test_imgs=1):
-    renderer.cuda()
-    renderer.eval()
-    for ts_dset_id, ts_dset in enumerate(ts_dsets):
-        psnrs = []
-        for image_id in tqdm(range(num_test_imgs), desc=f"test-dataset {ts_dset_id} evaluation"):
-            psnr = plot_ts(ts_dset, ts_dset_id, renderer, log_dir, iteration="test",
-                           batch_size=batch_size, image_id=image_id, verbose=False,
-                           plot_type="imageio", render_fn=default_render_fn(renderer, 0))
-            psnrs.append(psnr)
-        print(f"Average PSNR (over {num_test_imgs} poses) for "
-              f"dataset {ts_dset_id}: {np.mean(psnrs):.2f}")
-
-
 def init_model(cfg, tr_dsets, efficient_dict, checkpoint_data=None):
     sh_encoder = plenoxel_sh_encoder(cfg.sh.degree)
     radii = [dset[0].radius for dset in tr_dsets]
@@ -242,8 +228,10 @@ if __name__ == "__main__":
         model_ = init_model(cfg_, tr_dsets=tr_dsets_, efficient_dict=False, checkpoint_data=checkpoint_data)
         if chosen_opt == "test":
             print("Running tests only.")
-            test_model(renderer=model_, ts_dsets=ts_dsets_, log_dir=train_log_dir,
-                       batch_size=reload_cfg.optim.batch_size, num_test_imgs=len(ts_dsets_[0]))
+            for ts_dset_id, ts_dset in enumerate(ts_dsets_):
+                print(f"Testing dataset {ts_dset_id}.")
+                test_model(model_, ts_dset, train_log_dir, reload_cfg.optim.batch_size,
+                           render_fn=default_render_fn(model_, ts_dset_id), plot_type="imageio")
         else:
             print(f"Resuming training from epoch {checkpoint_data['epoch'] + 1}")
             optim_ = init_optim(cfg_, model_, checkpoint_data=checkpoint_data)

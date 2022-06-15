@@ -138,18 +138,6 @@ def train(renderer: TensorRf, tr_loader, ts_dset, optim, log_dir, cfg, batch_siz
     pb.close()
 
 
-def test_model(renderer, ts_dset, log_dir, batch_size, num_test_imgs=1):
-    renderer.cuda()
-    renderer.eval()
-    psnrs = []
-    for image_id in tqdm(range(num_test_imgs), desc="test-dataset evaluation"):
-        psnr = plot_ts(ts_dset, 0, renderer, log_dir, iteration="test",
-                       batch_size=batch_size, image_id=image_id, verbose=False,
-                       render_fn=render_wrap(renderer), plot_type="matplotlib")
-        psnrs.append(psnr)
-    print(f"Average PSNR over {num_test_imgs} poses: {np.mean(psnrs):.2f}")
-
-
 def init_model(cfg, tr_dset, checkpoint_data=None):
     sh_encoder = plenoxel_sh_encoder(cfg.sh.degree)
     renderer = TensorRf(radius=tr_dset.radius, resolution=cfg.model.reso_init,
@@ -209,8 +197,8 @@ if __name__ == "__main__":
         if chosen_opt == "test":
             print("Running tests only.")
             model_ = init_model(cfg_, tr_dset=tr_dset_, checkpoint_data=checkpoint_data_)
-            test_model(renderer=model_, ts_dset=ts_dset_, log_dir=train_log_dir,
-                       batch_size=reload_cfg.optim.batch_size, num_test_imgs=10)
+            test_model(model_, ts_dset_, train_log_dir, reload_cfg.optim.batch_size,
+                       render_fn=render_wrap(model_), plot_type="imageio")
             sys.exit(0)
         else:
             print(f"Resuming training from epoch {checkpoint_data_['epoch'] + 1}")
