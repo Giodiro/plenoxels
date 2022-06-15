@@ -35,10 +35,12 @@ class TensorRf(nn.Module):
             torch.nn.Parameter(0.1 * torch.randn((1, n_rgb_comp[0], self.resolution, 1))),
             torch.nn.Parameter(0.1 * torch.randn((1, n_rgb_comp[1], self.resolution, 1))),
             torch.nn.Parameter(0.1 * torch.randn((1, n_rgb_comp[2], self.resolution, 1)))])
-        self.basis_mat = torch.nn.Linear(self.n_rgb_comp * 3, self.data_dim, bias=False)
+        self.basis_mat = torch.nn.Linear(sum(self.n_rgb_comp), self.data_dim, bias=False)
         self.step_size = 0
         self.n_samples = 0
         self.update_stepsize()
+        print(f"Initialized model with resolution {self.resolution}, "
+              f"step-size: {self.step_size}, n_samples: {self.n_samples}")
 
     @torch.autograd.no_grad()
     def sample_proposal(self, rays_o, rays_d):
@@ -57,13 +59,14 @@ class TensorRf(nn.Module):
         t_min = torch.minimum(rate_a, rate_b).amax(-1)
 
         rng = torch.arange(self.n_samples)[None].float()
-        if self.is_training:
+        if self.training:
             rng = rng.repeat(rays_d.shape[-2], 1)
             rng += torch.rand_like(rng[:, [0]])
         step = stepsize * rng.to(rays_o.device)
         interpx = (t_min[..., None] + step)
+        interpx_trunc = interpx[:, :-1]
 
-        intrs_pts = rays_o[..., None, :] + rays_d[..., None, :] * interpx[..., None]
+        intrs_pts = rays_o[..., None, :] + rays_d[..., None, :] * interpx_trunc[..., None]
         # noinspection PyUnresolvedReferences
         mask = ((-self.radius <= intrs_pts) & (intrs_pts <= self.radius)).all(dim=-1)
         return intrs_pts, interpx, mask
@@ -85,14 +88,14 @@ class TensorRf(nn.Module):
         batch = intersections.shape[0]
         nintrs = intersections.shape[1] - 1
 
-        sigma = torch.zeros(intrs_pts.shape[:-1], device=intrs_pts.device)
-        rgb = torch.zeros((*intrs_pts.shape[:2], 3), device=intrs_pts.device)
+        sigma = torch.zeros(batch, nintrs, device=intrs_pts.device)
+        rgb = torch.zeros((batch, nintrs, 3), device=intrs_pts.device)
 
         if intrs_pts_mask.any():
             intrs_pts = self.normalize_coord(intrs_pts)
-            sigma = self.compute_density_feature(intrs_pts[intrs_pts_mask])
-            sigma = F.relu(sigma)
-            sigma[intrs_pts_mask] = sigma
+            sigma_valid = self.compute_density_feature(intrs_pts[intrs_pts_mask])
+            sigma_valid = F.relu(sigma_valid)
+            sigma[intrs_pts_mask] = sigma_valid
 
         alpha, weight = sigma2alpha(sigma, intersections, rays_d)
         rgb_mask = weight > self.abs_light_thresh
@@ -101,7 +104,7 @@ class TensorRf(nn.Module):
             rgb_features = self.compute_rgb_feature(intrs_pts[rgb_mask])
             # 3. Create SH coefficients and mask them
             sh_mult = self.sh_encoder(rays_d).unsqueeze(1).expand(batch, nintrs, -1)  # [batch, nintrs, ch/3]
-            sh_mult = sh_mult[intrs_pts_mask].unsqueeze(1)  # [mask_pts, 1, ch/3]
+            sh_mult = sh_mult[rgb_mask].unsqueeze(1)  # [mask_pts, 1, ch/3]
             # 4. Interpolate rgbdata, use SH coefficients to get to RGB
             sh_masked = rgb_features.view(-1, 3, sh_mult.shape[-1])  # [mask_pts, 3, ch/3]
             rgb_masked = torch.sum(sh_mult * sh_masked, dim=-1)   # [mask_pts, 3]

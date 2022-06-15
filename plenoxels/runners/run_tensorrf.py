@@ -12,7 +12,7 @@ import torch.utils.data
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from plenoxels.configs import parse_config, singlescene_config
+from plenoxels.configs import parse_config, tensorrf_config
 from plenoxels.ema import EMA
 from plenoxels.models.tensor_rf import TensorRf
 from plenoxels.runners.utils import *
@@ -29,7 +29,7 @@ Regularizers:
 
 update_Alphamask_list (default [2000,4000])
     call updateAlphaMask, and shrink bounding box (only at 2000).
-    
+
 upsamp_list ([2000,3000,4000,5500,7000])
     call upsample_volume_grid
     reset learning rate? (default true)
@@ -94,7 +94,10 @@ def train(renderer: TensorRf, tr_loader, ts_dset, optim, log_dir, cfg, batch_siz
         diff_losses["mse"] = diff_losses["mse"].detach().item()
         diff_losses["psnr"] = -10.0 * np.log(diff_losses["mse"]) / np.log(10.0)
         for loss_name, loss_val in diff_losses.items():
-            loss_val_ = loss_val.detach().item()
+            try:
+                loss_val_ = loss_val.detach().item()
+            except AttributeError:
+                loss_val_ = loss_val
             losses[loss_name].update(loss_val_)
             TB_WRITER.add_scalar(f"TensorRF/{loss_name}", loss_val_, tot_step)
             pb.set_postfix_str(losses_to_postfix(losses), refresh=False)
@@ -158,10 +161,11 @@ def init_model(cfg, tr_dset, checkpoint_data=None):
 
 
 def init_optim(cfg, model: TensorRf, checkpoint_data=None):
+    spatial_params = (list(model.density_plane.parameters()) + list(model.density_line.parameters()) +
+                       list(model.rgb_plane.parameters()) + list(model.rgb_line.parameters()))
     optim = torch.optim.Adam([
-        {'params': [model.density_plane, model.density_line, model.rgb_plane, model.rgb_line],
-         'lr': cfg.optim.lr_init_spatial},
-        {'params': model.basis_mat, 'lr': cfg.optim.lr_init_network}
+        {'params': spatial_params, 'lr': cfg.optim.lr_init_spatial},
+        {'params': model.basis_mat.parameters(), 'lr': cfg.optim.lr_init_network}
     ], betas=(0.9, 0.99))
     if checkpoint_data is not None and checkpoint_data.get("optimizer", None) is not None:
         optim.load_state_dict(checkpoint_data['optimizer'])
@@ -170,7 +174,7 @@ def init_optim(cfg, model: TensorRf, checkpoint_data=None):
 
 
 if __name__ == "__main__":
-    train_cfg, reload_cfg = parse_config(singlescene_config.get_cfg_defaults())
+    train_cfg, reload_cfg = parse_config(tensorrf_config.get_cfg_defaults())
     gpu = get_freer_gpu()
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
     print(f'gpu is {gpu}')

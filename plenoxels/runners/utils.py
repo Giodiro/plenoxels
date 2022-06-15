@@ -41,6 +41,8 @@ def init_data_single_dset(cfg):
         # also adjusting the downsampling.
         resolution = cfg.model.resolution
         downsample = max(1.0, 800 / (resolution * 2))
+    if downsample is None:
+        downsample = 1.0
     print(f"Loading dataset with resolution={resolution}, downsample={downsample}")
     train = SyntheticNerfDataset(cfg.data.datadir, split='train', downsample=downsample,
                                  resolution=resolution, max_frames=cfg.data.max_tr_frames)
