@@ -79,8 +79,7 @@ class DictPlenoxels(nn.Module):
             for reso, n_atoms in zip(self.fine_reso, self.num_atoms):
                 scene_grids.append(nn.Parameter(torch.empty(*get_reso(coarse_reso), n_atoms)))
             self.grids.append(scene_grids)
-        self.closs_conv3d = torch.nn.Conv3d(in_channels=4, out_channels=sum(self.num_atoms), kernel_size=3)
-
+        self.closs_mlp = nn.Sequential(nn.Linear(4 * (self.fine_reso[0] ** 3), 8), nn.ReLU(), nn.Linear(8, self.num_atoms[0]))
         self.init_params()
 
     def get_radius(self, dset_id: int) -> float:
@@ -218,10 +217,10 @@ class DictPlenoxels(nn.Module):
 
     def closs_v2(self, dict_id: int, single_ray_d: torch.Tensor):
         grid = self.grids[dict_id][0]  # Rc^3, S
-        grid = grid[torch.randperm(grid.shape[0])[:100], :]  # subsample Rc^3
+        grid = grid[torch.randperm(grid.shape[0])[:1000], :]  # subsample Rc^3
         atoms = self.atoms[0]
         rf3 = atoms.shape[0]
-        rf = int(rf3**(1/3))
+        rf = self.fine_reso[0]
         patches = grid @ atoms.transpose(0, 1).reshape(grid.shape[1], -1)
         patches = patches.reshape(-1, rf3, self.data_dim)  # Rc^3, Rf^3, D
         patches = patches.view(-1, self.data_dim)
@@ -230,13 +229,15 @@ class DictPlenoxels(nn.Module):
         sh_mult = self.sh_encoder(single_ray_d).expand(patches.shape[0], -1)  # [batch, ch/3]
         sh_masked = patches[:, :-1]
         sh_masked = sh_masked.view(-1, 3, sh_mult.shape[-1])  # [mask_pts, 3, ch/3]
-        rgba[:, :-1] = torch.sum(sh_mult * sh_masked, dim=-1)   # [mask_pts, 3]
+        rgba[:, :-1] = torch.sum(sh_mult.unsqueeze(1) * sh_masked, dim=-1)   # [mask_pts, 3]
 
         # rgba -> grid
-        rgba = rgba.view(-1, rf, rf, rf, 4).permute(0, 4, 1, 2, 3)
-        rgba = self.closs_conv3d(rgba)
-        rgba = F.adaptive_max_pool3d(rgba, 1).squeeze()
-        return F.mse_loss(grid, rgba)
+        #rgba = rgba.view(-1, rf, rf, rf, 4).permute(0, 4, 1, 2, 3)  # [n, 4, rf, rf, rf]
+        #rgba = self.closs_conv3d(rgba)
+        #rgba = F.adaptive_max_pool3d(rgvba, 1).squeeze()
+        rgba = rgba.view(-1, rf3, 4).view(-1, rf3*4)
+        pred_grid = self.closs_mlp(rgba)
+        return F.mse_loss(grid, pred_grid)
 
     def forward(self, rays_o, rays_d, grid_id, consistency_coef=0, level=None, run_fp16=False, verbose=False):
         if level is None:

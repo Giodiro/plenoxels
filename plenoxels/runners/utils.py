@@ -145,8 +145,8 @@ def plot_ts(ts_dset, dset_id, renderer, log_dir, iteration, batch_size=10_000, i
             fig = torch.cat((torch.clamp(pred, 0, 1), rgb), dim=1)
             fig = (fig * 255).numpy().astype(np.uint8)
         elif plot_type == "matplotlib":
-            fig, ax = plt.subplots(ncols=2 if opt_depth is None else 3, figsize=(15, 11), dpi=60)
-            ax[0].imshow(pred)
+            fig, ax = plt.subplots(ncols=2 if opt_depth is None else 3, figsize=(15, 11), dpi=90)
+            ax[0].imshow(torch.clamp(pred, 0, 1))
             ax[0].axis('off')
             err = ((pred - rgb)**2).sum(-1)
             err = (err - err.min()) / (err.max() - err.min())  # normalize in 0,1
