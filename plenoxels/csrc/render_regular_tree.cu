@@ -75,9 +75,10 @@ public:
                                                 const int32_t S,
                                                 const int32_t G,
                                                 const int32_t warp_lane,
+                                                const int32_t lane_colorgrp,    // the data-dimension group which this warp-lane belongs to. 0 <= l < G
                                                 const bool efficient_dict) const
     {
-        single_point_fwd_impl(Proxy<T>(), coarse_grid, atoms, point, out, cg_shmem, coarse_reso, D, S, G, warp_lane, efficient_dict);
+        single_point_fwd_impl(Proxy<T>(), coarse_grid, atoms, point, out, cg_shmem, coarse_reso, D, S, G, warp_lane, lane_colorgrp, efficient_dict);
     }
 
     template <typename T>
@@ -94,10 +95,11 @@ public:
                                                 const int32_t S,
                                                 const int32_t G,
                                                 const int32_t warp_lane,
+                                                const int32_t lane_colorgrp,    // the data-dimension group which this warp-lane belongs to. 0 <= l < G
                                                 const bool efficient_dict) const
     {
         single_point_bwd_impl(Proxy<T>(), coarse_grid, atoms, d_coarse_grid, d_atoms, grad_output, point, cg_shmem,
-            cub_storage, coarse_reso, D, S, G, warp_lane, efficient_dict);
+            cub_storage, coarse_reso, D, S, G, warp_lane, lane_colorgrp, efficient_dict);
     }
 
 private:
@@ -137,7 +139,7 @@ private:
         }
     }
 
-    template<typename T, int32_t BASIS_DIM>
+    template<typename T>
     __device__ __inline__ void single_point_fwd_impl(Proxy<T> p,
                                                      const T   * __restrict__ coarse_grid,  // Rc^3, G?, S
                                                      const T   * __restrict__ atoms,        // Rf^3, S, D
@@ -149,12 +151,10 @@ private:
                                                      const int32_t S,
                                                      const int32_t G,
                                                      const int32_t warp_lane,
+                                                     const int32_t lane_colorgrp,    // the data-dimension group which this warp-lane belongs to. 0 <= l < G
                                                      const bool efficient_dict) const
     {
         constexpr int32_t fine_reso = POW2_RF <= 0 ? 1 : 2 << (POW2_RF - 1);
-        // l : the data-dimension group which this warp-lane belongs to. 0 <= l < G
-        const int32_t lane_colorgrp = efficient_dict ? mymin(warp_lane / BASIS_DIM, 3) : 0;
-
         const float fp[3] = {
             point[0] * coarse_reso * fine_reso, point[1] * coarse_reso * fine_reso, point[2] * coarse_reso * fine_reso};
         T acc = 0.0f;
@@ -187,11 +187,10 @@ private:
                                                      const int32_t S,
                                                      const int32_t G,
                                                      const int32_t warp_lane,
+                                                     const int32_t lane_colorgrp,    // the data-dimension group which this warp-lane belongs to. 0 <= l < G
                                                      const bool efficient_dict) const
     {
         constexpr int32_t fine_reso = POW2_RF <= 0 ? 1 : 2 << (POW2_RF - 1);
-        // l : the data-dimension group which this warp-lane belongs to. 0 <= l < G
-        const int32_t lane_colorgrp = efficient_dict ? mymin(warp_lane / BASIS_DIM, 3) : 0;
 
         const float fp[3] = {
             point[0] * coarse_reso * fine_reso, point[1] * coarse_reso * fine_reso, point[2] * coarse_reso * fine_reso};
@@ -234,11 +233,10 @@ private:
                                                      const int32_t S,
                                                      const int32_t G,
                                                      const int32_t warp_lane,
+                                                     const int32_t lane_colorgrp,    // the data-dimension group which this warp-lane belongs to. 0 <= l < G
                                                      const bool efficient_dict) const
     {
         constexpr int32_t fine_reso = POW2_RF <= 0 ? 1 : 2 << (POW2_RF - 1);
-        // l : the data-dimension group which this warp-lane belongs to. 0 <= l < G
-        const int32_t lane_colorgrp = efficient_dict ? mymin(warp_lane / BASIS_DIM, 3) : 0;
         const float fp[3] = {
             point[0] * coarse_reso * fine_reso, point[1] * coarse_reso * fine_reso, point[2] * coarse_reso * fine_reso};
         int32_t cn_wcoo, fn_wcoo;
@@ -278,11 +276,10 @@ private:
                                                      const int32_t S,
                                                      const int32_t G,
                                                      const int32_t warp_lane,
+                                                     const int32_t lane_colorgrp,    // the data-dimension group which this warp-lane belongs to. 0 <= l < G
                                                      const bool efficient_dict) const
     {
         constexpr int32_t fine_reso = POW2_RF <= 0 ? 1 : 2 << (POW2_RF - 1);
-        // l : the data-dimension group which this warp-lane belongs to. 0 <= l < G
-        const int32_t lane_colorgrp = efficient_dict ? mymin(warp_lane / BASIS_DIM, 3) : 0;
         const float fp[3] = {
             point[0] * coarse_reso * fine_reso, point[1] * coarse_reso * fine_reso, point[2] * coarse_reso * fine_reso};
 
@@ -376,7 +373,8 @@ trace_ray(
 
         inner_renderer.template single_point_fwd<scalar_t>(
             coarse_grid, atoms, /*point=*/ray_spec[warp_offset].pos, /*out=*/&interp_val,
-            /*cg_shmem=*/cg_shmem + warp_offset * S * G, coarse_reso, D, S, G, warp_lane, efficient_dict);
+            /*cg_shmem=*/cg_shmem + warp_offset * S * G, coarse_reso, D, S, G, warp_lane,
+            /*lane_colorgrp=*/min(lane_colorgrp, 3), efficient_dict);
         sigma = interp_val;  // This has an effect only in last thread in active warp.
         // broadcast sigma (stored in last coordinate) to other threads in warp
         sigma = __shfl_sync(0xffffffff, sigma, /*srcLane=*/D - 1);
@@ -475,7 +473,8 @@ trace_ray_backward(
         inner_renderer.template single_point_fwd<scalar_t>(
             coarse_grid, atoms,
             /*point=*/ray_spec[warp_offset].pos, /*out=*/&interp_val,
-            /*cg_shmem=*/cg_shmem + warp_offset * S * G, coarse_reso, D, S, G, warp_lane, efficient_dict);
+            /*cg_shmem=*/cg_shmem + warp_offset * S * G, coarse_reso, D, S, G, warp_lane,
+            /*lane_colorgrp=*/min(lane_colorgrp, 3), efficient_dict);
         sigma = interp_val;  // This has an effect only in last thread in active warp.
         // broadcast sigma (stored in last coordinate) to other threads in warp
         sigma = __shfl_sync(0xffffffff, sigma, /*srcLane=*/D - 1);
@@ -508,7 +507,8 @@ trace_ray_backward(
                 coarse_grid, atoms, d_coarse_grid, d_atoms,
                 /*grad_output=*/warp_lane < D - 1 ? curr_grad_color : curr_grad_sigma,
                 /*point=*/ray_spec[warp_offset].pos, cg_shmem + warp_offset * S * G,
-                cub_storage_h2[warp_offset], coarse_reso, D, S, G, warp_lane, efficient_dict);
+                cub_storage_h2[warp_offset], coarse_reso, D, S, G, warp_lane,
+                /*lane_colorgrp=*/min(lane_colorgrp, 3), efficient_dict);
             if (myexp(log_light_intensity) < opt.stop_thresh) { break; }
         }
         t += opt.step_size;
@@ -892,4 +892,3 @@ Tensor dict_interpolate(const Tensor &coarse_grid, const Tensor &atoms, const Te
 static auto registry = torch::RegisterOperators()
                         .op("plenoxels::dict_tree_render", &dict_tree_render)
                         .op("plenoxels::dict_interpolate", &dict_interpolate);
-
