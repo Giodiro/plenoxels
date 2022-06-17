@@ -606,6 +606,12 @@ class DictTreeRender : public Function<DictTreeRender> {
             if (coarse_grid.size(0) != coarse_reso * coarse_reso * coarse_reso) {
                 throw std::invalid_argument("Coarse-grid has wrong first dimension");
             }
+            if (efficient_dict && coarse_grid.dim() != 3) {
+                throw std::invalid_argument("Coarse-grid must be a 3D tensor when efficient-dict option is True.");
+            }
+            if (coarse_grid.dim() == 3 && coarse_grid.size(1) != 4) {
+                throw std::invalid_argument("The 'group' dimension of coarse-grid must be 4.");
+            }
             if (coarse_grid.size(-1) != atoms.size(1)) {
                 throw std::invalid_argument("Coarse-grid and atoms have different dictionary sizes.");
             }
@@ -625,6 +631,7 @@ class DictTreeRender : public Function<DictTreeRender> {
             const int32_t N = rays_o.size(0);
             const int32_t D = atoms.size(2);
             const int32_t S = atoms.size(1);
+            const int32_t G = efficient_dict ? 4 : 1;
 
             auto out = torch::zeros({N, 3}, rays_o.options());
             auto scaling_t = torch::tensor({scaling, scaling, scaling}, rays_o.options());
@@ -632,7 +639,7 @@ class DictTreeRender : public Function<DictTreeRender> {
 
             const dim3 grid_size(div_round_up(N, CUDA_WARPS_PER_BLOCK));
             const dim3 block_size(CUDA_THREADS_PER_BLOCK);
-            const int32_t shared_mem = CUDA_WARPS_PER_BLOCK * S;
+            const int32_t shared_mem = CUDA_WARPS_PER_BLOCK * S * G;
 
             #define CALL_KERNEL(T, RF, BD)                                                                              \
                 trace_ray<T, RF, BD><<<grid_size, block_size, shared_mem * sizeof(T), stream.stream()>>>(               \
@@ -717,6 +724,7 @@ class DictTreeRender : public Function<DictTreeRender> {
             const int32_t N = rays_o.size(0);
             const int32_t D = atoms.size(2);
             const int32_t S = atoms.size(1);
+            const int32_t G = efficient_dict ? 4 : 1;
             const Tensor grad_output = grad_outputs[0];
             const at::cuda::CUDAGuard device_guard(coarse_grid.device());
             const auto stream = at::cuda::getCurrentCUDAStream();
@@ -728,7 +736,7 @@ class DictTreeRender : public Function<DictTreeRender> {
 
             const dim3 grid_size(div_round_up(N, CUDA_WARPS_PER_BLOCK));
             const dim3 block_size(CUDA_THREADS_PER_BLOCK);
-            const int32_t shared_mem = CUDA_WARPS_PER_BLOCK * S;
+            const int32_t shared_mem = CUDA_WARPS_PER_BLOCK * S * G;
 
             #define CALL_KERNEL(T, RF, BD)                                                                              \
                 trace_ray_backward<T, RF, BD><<<grid_size, block_size, shared_mem * sizeof(T), stream.stream()>>>(      \
