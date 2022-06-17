@@ -72,27 +72,32 @@ public:
                                                       T   * __restrict__ cg_shmem,     // V1_WARPS_PER_BLOCK * S / 2
                                                 const int32_t coarse_reso,
                                                 const int32_t D,
-                                                const int32_t S) const
+                                                const int32_t S,
+                                                const int32_t G,
+                                                const int32_t warp_lane,
+                                                const bool efficient_dict) const
     {
-        single_point_fwd_impl(Proxy<T>(), coarse_grid, atoms, point, out, cg_shmem, coarse_reso, D, S);
+        single_point_fwd_impl(Proxy<T>(), coarse_grid, atoms, point, out, cg_shmem, coarse_reso, D, S, G, warp_lane, efficient_dict);
     }
 
     template <typename T>
-    __device__ __inline__ void single_point_bwd(
-        const T * __restrict__ coarse_grid,     // Rc^3, S
-        const T * __restrict__ atoms,           // Rf^3, S, D
-              T * __restrict__ d_coarse_grid,   // Rc^3, S
-              T * __restrict__ d_atoms,         // Rf^3, S, D
-        const float            grad_output,     // 1
-        const float * __restrict__ point,           // 3
-              T * __restrict__ cg_shmem,        // S / 2
-        typename cub::WarpReduce<T>::TempStorage& __restrict__ cub_storage,
-        const int32_t coarse_reso,
-        const int32_t D,
-        const int32_t S) const
+    __device__ __inline__ void single_point_bwd(const T * __restrict__ coarse_grid,     // Rc^3, S
+                                                const T * __restrict__ atoms,           // Rf^3, S, D
+                                                      T * __restrict__ d_coarse_grid,   // Rc^3, S
+                                                      T * __restrict__ d_atoms,         // Rf^3, S, D
+                                                const float            grad_output,     // 1
+                                                const float * __restrict__ point,           // 3
+                                                      T * __restrict__ cg_shmem,        // S / 2
+                                                typename cub::WarpReduce<T>::TempStorage& __restrict__ cub_storage,
+                                                const int32_t coarse_reso,
+                                                const int32_t D,
+                                                const int32_t S,
+                                                const int32_t G,
+                                                const int32_t warp_lane,
+                                                const bool efficient_dict) const
     {
         single_point_bwd_impl(Proxy<T>(), coarse_grid, atoms, d_coarse_grid, d_atoms, grad_output, point, cg_shmem,
-            cub_storage, coarse_reso, D, S);
+            cub_storage, coarse_reso, D, S, G, warp_lane, efficient_dict);
     }
 
 private:
