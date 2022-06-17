@@ -587,7 +587,7 @@ __half * tensor2ptr<__half>(Tensor tensor) {
 class DictTreeRender : public Function<DictTreeRender> {
     public:
         static Tensor forward(AutogradContext *ctx,
-                              Tensor coarse_grid,   // Rc^3, S
+                              Tensor coarse_grid,   // Rc^3, G?, S
                               Tensor atoms,         // Rf^3, S, D
                               Tensor rays_o,        // N, 3
                               Tensor rays_d,        // N, 3
@@ -606,8 +606,8 @@ class DictTreeRender : public Function<DictTreeRender> {
             if (coarse_grid.size(0) != coarse_reso * coarse_reso * coarse_reso) {
                 throw std::invalid_argument("Coarse-grid has wrong first dimension");
             }
-            if (coarse_grid.size(1) != atoms.size(1)) {
-                throw std::invalid_argument("Coarse-grid and atoms dimension 1 doesn't match");
+            if (coarse_grid.size(-1) != atoms.size(1)) {
+                throw std::invalid_argument("Coarse-grid and atoms have different dictionary sizes.");
             }
             if (atoms.size(0) != fine_reso * fine_reso * fine_reso) {
                 throw std::invalid_argument("Atoms has wrong first dimension");
