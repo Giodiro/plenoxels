@@ -140,6 +140,22 @@ private:
     }
 
     template<typename T>
+    __device__ __inline__ void load_cg_block_edict(const T * __restrict__ cg,
+                                                         T * __restrict__ cg_out,
+                                                   const int32_t cn_wcoo,
+                                                   const int32_t warp_lane,
+                                                   const int32_t S,
+                                                   const int32_t G) const
+    {
+        // global: G, S -> shared: S, G
+        int g, s;
+        for (int sg = warp_lane; sg < S * G; sg += 32) {
+            g = sg / S; s = sg % S;
+            cg_out[s * G + g] = __ldg(cg + cn_wcoo * S * G + sg);
+        }
+    }
+
+    template<typename T>
     __device__ __inline__ void single_point_fwd_impl(Proxy<T> p,
                                                      const T   * __restrict__ coarse_grid,  // Rc^3, G?, S
                                                      const T   * __restrict__ atoms,        // Rf^3, S, D
@@ -162,12 +178,15 @@ private:
         int32_t cn_wcoo, fn_wcoo;
         for (int i = 0; i < 8; i++) {
             coo_iw(fp, nullptr, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
-            load_cg_block(coarse_grid, cg_shmem, cn_wcoo, warp_lane, S * G);
+            if (efficient_dict)
+                load_cg_block_edict(coarse_grid, cg_shmem, cn_wcoo, warp_lane, S, G);
+            else:
+                load_cg_block(coarse_grid, cg_shmem, cn_wcoo, warp_lane, S * G);
             __syncwarp();
             for (int s = 0; s < S; s++) {
                 T atom_weight = warp_lane < D ? atoms[fn_wcoo * S * D + s * D + warp_lane] : 0.0f;
                 // note: lane_colorgrp is 0 if efficient-dict is False, since G will be 1.
-                acc = myfma(cg_shmem[lane_colorgrp * S + s], atom_weight * static_cast<T>(iw), acc);
+                acc = myfma(cg_shmem[s * G + lane_colorgrp], atom_weight * static_cast<T>(iw), acc);
             }
             __syncwarp();
         }
