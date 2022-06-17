@@ -1,31 +1,30 @@
-expname: "c64_f2.64,4.64_train_all_levels"
+expname: "c64_f4.64_1dset_cons0.1"
+use_csrc: True 
 
 data:
   datadirs:
     - /data/DATASETS/SyntheticNerf/lego
-    - /data/DATASETS/SyntheticNerf/chair
-    - /data/DATASETS/SyntheticNerf/drums
-    - /data/DATASETS/SyntheticNerf/ficus
-  resolution: 256
+  resolution: 512
   max_tr_frames: None
   max_ts_frames: 10
 
 model:
-  num_atoms: [64, 64]
+  num_atoms: [64]
   coarse_reso: 64
-  fine_reso: [2, 4]
+  fine_reso: [4]
   noise_std: 0.0
 
 optim:
   batch_size: 4000
   batches_per_epoch: 400
   num_epochs: 100
-  lr: 1e-2
+  lr: 2e-2
   cosine: True
+  train_fp16: False
   regularization:
     l1_weight: 0.0
     tv_weight: 0.0
-    consistency_weight: 0.0
+    consistency_weight: 0.1
 
 sh:
   degree: 0
