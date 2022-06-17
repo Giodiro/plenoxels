@@ -178,15 +178,19 @@ private:
         int32_t cn_wcoo, fn_wcoo;
         for (int i = 0; i < 8; i++) {
             coo_iw(fp, nullptr, coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
-            if (efficient_dict)
+            if (efficient_dict) {
                 load_cg_block_edict(coarse_grid, cg_shmem, cn_wcoo, warp_lane, S, G);
-            else:
+            } else {
                 load_cg_block(coarse_grid, cg_shmem, cn_wcoo, warp_lane, S * G);
+            }
             __syncwarp();
             for (int s = 0; s < S; s++) {
-                T atom_weight = warp_lane < D ? atoms[fn_wcoo * S * D + s * D + warp_lane] : 0.0f;
+//                T atom_weight = warp_lane < D ? atoms[fn_wcoo * S * D + s * D + warp_lane] : 0.0f;
                 // note: lane_colorgrp is 0 if efficient-dict is False, since G will be 1.
-                acc = myfma(cg_shmem[s * G + lane_colorgrp], atom_weight * static_cast<T>(iw), acc);
+                acc = warp_lane >= D : 0.0f ?
+                    myfma(cg_shmem[s * G + lane_colorgrp],
+                          atoms[fn_wcoo * S * D + s * D + warp_lane] * static_cast<T>(iw),
+                          acc);
             }
             __syncwarp();
         }
