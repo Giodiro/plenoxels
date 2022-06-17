@@ -185,12 +185,9 @@ private:
             }
             __syncwarp();
             for (int s = 0; s < S; s++) {
-//                T atom_weight = warp_lane < D ? atoms[fn_wcoo * S * D + s * D + warp_lane] : 0.0f;
+                T atom_weight = warp_lane < D ? atoms[fn_wcoo * S * D + s * D + warp_lane] : 0.0f;
                 // note: lane_colorgrp is 0 if efficient-dict is False, since G will be 1.
-                acc = warp_lane >= D : 0.0f ?
-                    myfma(cg_shmem[s * G + lane_colorgrp],
-                          atoms[fn_wcoo * S * D + s * D + warp_lane] * static_cast<T>(iw),
-                          acc);
+                acc = myfma(cg_shmem[s * G + lane_colorgrp], atom_weight * static_cast<T>(iw), acc);
             }
             __syncwarp();
         }
