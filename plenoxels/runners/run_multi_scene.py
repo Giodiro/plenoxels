@@ -59,6 +59,7 @@ def train_epoch(renderer,
     renderer.cuda()
 
     grad_scaler = torch.cuda.amp.GradScaler()
+    closs_optim = torch.optim.Adam(renderer.closs_mlp.parameters(), lr=1e-2)
 
     tot_step = start_tot_step
     TB_WRITER.add_scalar("lr", optim.param_groups[0]["lr"], tot_step)
@@ -67,6 +68,7 @@ def train_epoch(renderer,
         pb = tqdm(total=batches_per_epoch * num_dsets, desc=f"Epoch {e + 1}")
         level = -1
         renderer.train()
+        rays_d = None
         for _ in range(0, batches_per_epoch, batches_per_dset):
             # Each epoch, rotate what resolution is being focused on
             for dset_id in range(num_dsets):
@@ -101,6 +103,12 @@ def train_epoch(renderer,
                             loss.backward()
                             optim.step()
 
+                        if False:
+                            closs = renderer.closs_v2(0, rays_d[:1])
+                            closs_optim.zero_grad()
+                            closs.backward()
+                            closs_optim.step()
+
                         # make_weights_unit_norm(renderer, with_grad=False, scene_id=dset_id)
                         # Clip all the weights to be nonnegative
                         # for grid in renderer.grids:
@@ -120,38 +128,49 @@ def train_epoch(renderer,
                 lr_sched.step()
                 TB_WRITER.add_scalar("lr", lr_sched.get_last_lr()[0], tot_step)  # one lr per parameter-group
         pb.close()
+        #for _ in range(100):
+        #    loss = renderer.closs_v2(0, rays_d[:1])
+        #    closs_optim.zero_grad()
+        #    loss.backward()
+        #    closs_optim.step()
         # Save and evaluate model
         time_s = time.time()
         renderer.eval()
-        for ts_dset_id, ts_dset in enumerate(ts_dsets):
-            psnr = plot_ts(
-                ts_dset, ts_dset_id, renderer, log_dir, render_fn=default_render_fn(renderer, ts_dset_id),
-                iteration=tot_step, batch_size=batch_size, image_id=0, verbose=True,
-                summary_writer=TB_WRITER, plot_type="matplotlib")
-            render_patches(renderer, patch_level=0, log_dir=log_dir, iteration=tot_step,
-                           summary_writer=TB_WRITER)
-            if len(renderer.atoms) > 1:
-                render_patches(renderer, patch_level=1, log_dir=log_dir, iteration=tot_step,
+        with torch.autograd.no_grad():
+            for ts_dset_id, ts_dset in enumerate(ts_dsets):
+                psnr = plot_ts(
+                    ts_dset, ts_dset_id, renderer, log_dir, render_fn=default_render_fn(renderer, ts_dset_id),
+                    iteration=tot_step, batch_size=batch_size, image_id=0, verbose=True,
+                    summary_writer=TB_WRITER, plot_type="matplotlib")
+                render_patches(renderer, patch_level=0, log_dir=log_dir, iteration=tot_step,
                                summary_writer=TB_WRITER)
-            TB_WRITER.add_scalar(f"TestPSNR/D{ts_dset_id}", psnr, tot_step)
-        torch.save({
-            'epoch': e,
-            'tot_step': tot_step,
-            'scheduler': lr_sched.state_dict() if lr_sched is not None else None,
-            'optimizer': optim.state_dict(),
-            'model': renderer.state_dict(),
-        }, os.path.join(log_dir, "model.pt"))
-        print(f"Plot test images & saved model to {log_dir} in {time.time() - time_s:.2f}s")
+                if len(renderer.atoms) > 1:
+                    render_patches(renderer, patch_level=1, log_dir=log_dir, iteration=tot_step,
+                                   summary_writer=TB_WRITER)
+                TB_WRITER.add_scalar(f"TestPSNR/D{ts_dset_id}", psnr, tot_step)
+            TB_WRITER.add_histogram(f"patches/sigma", renderer.atoms[0][:, :, -1].view(-1), tot_step)
+            TB_WRITER.add_histogram(f"patches/R", renderer.atoms[0][:, :, 0].view(-1), tot_step)
+            TB_WRITER.add_histogram(f"patches/G", renderer.atoms[0][:, :, 1].view(-1), tot_step)
+            TB_WRITER.add_histogram(f"patches/B", renderer.atoms[0][:, :, 2].view(-1), tot_step)
+            TB_WRITER.add_histogram(f"weights/white", renderer.grids[0][0].view(renderer.coarse_reso, renderer.coarse_reso, renderer.coarse_reso, -1)[:5, :5, :5].reshape(-1), tot_step)
+            torch.save({
+                'epoch': e,
+                'tot_step': tot_step,
+                'scheduler': lr_sched.state_dict() if lr_sched is not None else None,
+                'optimizer': optim.state_dict(),
+                'model': renderer.state_dict(),
+            }, os.path.join(log_dir, "model.pt"))
+            print(f"Plot test images & saved model to {log_dir} in {time.time() - time_s:.2f}s")
 
 
-def init_model(cfg, tr_dsets, efficient_dict, checkpoint_data=None):
+def init_model(cfg, tr_dsets, checkpoint_data=None):
     sh_encoder = plenoxel_sh_encoder(cfg.sh.degree)
     radii = [dset[0].radius for dset in tr_dsets]
     renderer = DictPlenoxels(
         sh_deg=cfg.sh.degree, sh_encoder=sh_encoder,
         radius=radii, num_atoms=cfg.model.num_atoms, num_scenes=len(tr_dsets),
         fine_reso=cfg.model.fine_reso, coarse_reso=cfg.model.coarse_reso,
-        efficient_dict=efficient_dict, noise_std=cfg.model.noise_std, use_csrc=cfg.use_csrc)
+        efficient_dict=cfg.model.efficient_dict, noise_std=cfg.model.noise_std, use_csrc=cfg.use_csrc)
     if checkpoint_data is not None:
         renderer.load_state_dict(checkpoint_data['model'])
         print("=> Loaded model state from checkpoint")
@@ -178,7 +197,9 @@ def init_optim(cfg, model, transfer_learning=False, checkpoint_data=None) -> tor
     if transfer_learning:
         optim = torch.optim.Adam(model.grids, lr=cfg.optim.lr)
     else:
-        optim = torch.optim.Adam(model.parameters(), lr=cfg.optim.lr)
+        optim = torch.optim.Adam([{'params': model.atoms.parameters(), 'lr': cfg.optim.lr},
+                                  {'params': model.grids.parameters(), 'lr': cfg.optim.lr}])
+        #optim = torch.optim.Adam(model.parameters(), lr=cfg.optim.lr)
     if checkpoint_data is not None:
         optim.load_state_dict(checkpoint_data['optimizer'])
         print("=> Loaded optimizer state from checkpoint")
@@ -210,7 +231,7 @@ if __name__ == "__main__":
         chosen_opt = user_ask_options(
             "Restart model training from checkpoint or evaluate model?", "train", "test")
         checkpoint_data = torch.load(os.path.join(train_log_dir, "model.pt"), map_location='cpu')
-        model_ = init_model(cfg_, tr_dsets=tr_dsets_, efficient_dict=False, checkpoint_data=checkpoint_data)
+        model_ = init_model(cfg_, tr_dsets=tr_dsets_, checkpoint_data=checkpoint_data)
         if chosen_opt == "test":
             print("Running tests only.")
             for ts_dset_id, ts_dset in enumerate(ts_dsets_):
@@ -238,10 +259,10 @@ if __name__ == "__main__":
 
         # Pretrained model
         pretrained_model = init_model(
-            reload_cfg, tr_dsets=tr_dsets_, efficient_dict=False, checkpoint_data=checkpoint_data)
+            reload_cfg, tr_dsets=tr_dsets_, checkpoint_data=checkpoint_data)
         # Initialize a new model, but use the trained patch dictionaries.
         fresh_model = init_model(
-            train_cfg, tr_dsets=tr_dsets_, efficient_dict=False, checkpoint_data=None)
+            train_cfg, tr_dsets=tr_dsets_, checkpoint_data=None)
         assert fresh_model.atoms.shape == pretrained_model.atoms.shape, "Can't transfer due to config mismatch."
         fresh_model.atoms = pretrained_model.atoms
         pretrained_model = fresh_model
@@ -260,7 +281,7 @@ if __name__ == "__main__":
         # Normal training.
         with open(os.path.join(train_log_dir, "config.yaml"), "w") as fh:
             fh.write(cfg_.dump())
-        model_ = init_model(cfg_, tr_dsets=tr_dsets_, efficient_dict=False)
+        model_ = init_model(cfg_, tr_dsets=tr_dsets_)
         optim_ = init_optim(cfg_, model_)
         sched_ = init_lr_scheduler(cfg_, optim_)
         train_epoch(
