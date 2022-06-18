@@ -46,6 +46,7 @@ class DictPlenoxels(nn.Module):
         self.fine_reso: List[int] = ensure_list(fine_reso)
         self.coarse_reso = coarse_reso
         self.num_atoms: List[int] = ensure_list(num_atoms)
+        self.num_atoms_small = self.num_atoms[0] // 4  # TODO: Un-hard-code
         self.data_dim = total_data_channels
         self.efficient_dict = efficient_dict
         self.noise_std = noise_std
@@ -82,7 +83,8 @@ class DictPlenoxels(nn.Module):
                 else:
                     scene_grids.append(nn.Parameter(torch.empty(*get_reso(coarse_reso), n_atoms)))
             self.grids.append(scene_grids)
-        self.closs_mlp = nn.Sequential(nn.Linear(3 * (self.fine_reso[0] ** 3), 16), nn.ReLU(), nn.Linear(16, 16), nn.ReLU(), nn.Linear(16, self.num_atoms[0]))
+        self.low_rank_mlp = nn.Linear(self.num_atoms_small, self.num_atoms[0], bias=False)
+        # self.closs_mlp = nn.Sequential(nn.Linear(3 * (self.fine_reso[0] ** 3), 16), nn.ReLU(), nn.Linear(16, 16), nn.ReLU(), nn.Linear(16, self.num_atoms[0]))
         self.init_params()
 
     def get_radius(self, dset_id: int) -> float:
@@ -255,6 +257,7 @@ class DictPlenoxels(nn.Module):
         if self.training:
             self.time += 1
 
+        """
         result = None
         for i, reso in enumerate(self.fine_reso[0: level + 1]):
             out = torch.ops.plenoxels.dict_tree_render(
@@ -266,6 +269,7 @@ class DictPlenoxels(nn.Module):
             else:
                 result = result + out
         return result, None, None, None
+        """
 
         intrs_pts, intersections, intrs_pts_mask = self.sample_proposal(rays_o, rays_d, grid_id)
         batch = intersections.shape[0]
@@ -285,8 +289,8 @@ class DictPlenoxels(nn.Module):
                 fine_neighbors = fine_neighbors % reso  # [n_pts, 8, 3]
                 for n in range(8):
                     coarse_neighbor_vals = scene_grids[i][
-                       coarse_neighbors[:,n,0], coarse_neighbors[:,n,1], coarse_neighbors[:,n,2], ...]  # [n_pts, n_atoms]
-                    n_atoms = coarse_neighbor_vals.shape[1]
+                       coarse_neighbors[:,n,0], coarse_neighbors[:,n,1], coarse_neighbors[:,n,2], ...]  # [n_pts, n_atoms_sm]
+                    # n_atoms = coarse_neighbor_vals.shape[1]
                     # coarse_neighbor_vals = coarse_neighbor_vals.view(-1, 4, n_atoms // 4)
                     # y_soft = F.softmax(coarse_neighbor_vals, dim=-1)
                     # index = y_soft.max(dim=-1, keepdim=True)[1]
@@ -305,6 +309,7 @@ class DictPlenoxels(nn.Module):
                     fine_neighbor_vals = self.atoms[i][
                         fine_neighbors[:,n,0], fine_neighbors[:,n,1], fine_neighbors[:,n,2], ...]  # [n_pts, n_atoms, data_dim]
                     # fine_neighbor_vals = fine_neighbor_vals.view(-1, 4, n_atoms // 4, fine_neighbors.shape[-1])  # [n_pts, 4, n_atoms/4, data_dim]
+                    coarse_neighbor_vals = self.low_rank_mlp(coarse_neighbor_vals)  # [n_pts, n_atoms]
                     result = torch.sum(coarse_neighbor_vals[..., None] * fine_neighbor_vals, dim=-2)  # [n_pts, data_dim]
                     result = result.view(result.shape[0], -1)
 
