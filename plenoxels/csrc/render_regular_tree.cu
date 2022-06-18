@@ -594,7 +594,7 @@ dict_interp_backward(const Acc32<float, 2> grad_output,             // N, D
         coarse_grid, atoms, d_coarse_grid, d_atoms,
         /*grad_output=*/c_grad_out, /*point=*/points + point_id * 3, cg_shmem + warp_offset * S,
         cub_storage[warp_offset], coarse_reso, D, S, /*G=*/1, warp_lane,
-        /*lane_colorgrp=*/0, /*efficient_dict=*/false);
+        /*lane_colorgrp=*/0, /*lane_colorgrp_id=*/0, /*efficient_dict=*/false);
 }
 
 
