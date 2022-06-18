@@ -145,7 +145,7 @@ def plot_ts(ts_dset, dset_id, renderer, log_dir, iteration, batch_size=10_000, i
             fig = torch.cat((torch.clamp(pred, 0, 1), rgb), dim=1)
             fig = (fig * 255).numpy().astype(np.uint8)
         elif plot_type == "matplotlib":
-            fig, ax = plt.subplots(ncols=2 if opt_depth is None else 3, figsize=(15, 11), dpi=90)
+            fig, ax = plt.subplots(ncols=2 if opt_depth is None else 3, figsize=(15, 8), dpi=90)
             ax[0].imshow(torch.clamp(pred, 0, 1))
             ax[0].axis('off')
             err = ((pred - rgb)**2).sum(-1)
@@ -235,13 +235,8 @@ def render_patches(renderer, patch_level, log_dir, iteration, summary_writer=Non
             atoms = atoms.view(reso, reso, reso, atoms.shape[1], atoms.shape[2])
         atoms = atoms.permute(3, 4, 0, 1, 2)  # n_atoms, data_dim, reso, reso, reso
 
-        if atoms.shape[0] >= 64:
-            n_atoms = 64
-        elif atoms.shape[0] < 64:
-            n_atoms = 32
-        elif atoms.shape[0] < 32:
-            n_atoms = 16
-        fig, ax = plt.subplots(nrows=int(math.sqrt(n_atoms)), ncols=int(math.sqrt(n_atoms)))
+        n_atoms_perside = min(8, int(math.sqrt(atoms.shape[0])))
+        fig, ax = plt.subplots(nrows=n_atoms_perside, ncols=n_atoms_perside)
         ax = ax.flatten()
         origin = np.array([0, 0, 4], dtype=np.float32)
 

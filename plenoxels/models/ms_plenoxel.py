@@ -40,7 +40,6 @@ class DictPlenoxels(nn.Module):
                  use_csrc: bool,
                  efficient_dict=True):
         super().__init__()
-        assert not efficient_dict
         sh_dim = (sh_deg + 1) ** 2
         total_data_channels = sh_dim * 3 + 1
         self.radius: List[float] = ensure_list(radius, expand_size=num_scenes)
@@ -54,6 +53,7 @@ class DictPlenoxels(nn.Module):
         self.use_csrc = use_csrc
         self.num_scenes = num_scenes
         self.num_dicts = len(self.num_atoms)
+        self.efficient_dict = efficient_dict
         self.time = 0
 
         assert len(self.num_atoms) == len(self.fine_reso), "Number of atoms != number of fine-reso items"
@@ -77,9 +77,12 @@ class DictPlenoxels(nn.Module):
         for scene in range(self.num_scenes):
             scene_grids = nn.ParameterList()
             for reso, n_atoms in zip(self.fine_reso, self.num_atoms):
-                scene_grids.append(nn.Parameter(torch.empty(*get_reso(coarse_reso), n_atoms)))
+                if self.efficient_dict:
+                    scene_grids.append(nn.Parameter(torch.empty(*get_reso(coarse_reso), 4, n_atoms)))
+                else:
+                    scene_grids.append(nn.Parameter(torch.empty(*get_reso(coarse_reso), n_atoms)))
             self.grids.append(scene_grids)
-        self.closs_mlp = nn.Sequential(nn.Linear(4 * (self.fine_reso[0] ** 3), 8), nn.ReLU(), nn.Linear(8, self.num_atoms[0]))
+        self.closs_mlp = nn.Sequential(nn.Linear(3 * (self.fine_reso[0] ** 3), 16), nn.ReLU(), nn.Linear(16, 16), nn.ReLU(), nn.Linear(16, self.num_atoms[0]))
         self.init_params()
 
     def get_radius(self, dset_id: int) -> float:
@@ -147,18 +150,21 @@ class DictPlenoxels(nn.Module):
         return intrs_pts, intersections, mask
 
     def tv_loss(self, grid_id):
-        grid = self.grids[grid_id]
-        grid = grid.view(self.coarse_reso, self.coarse_reso, self.coarse_reso, sum(self.num_atoms))
+        scene_grids = self.grids[grid_id]
+        loss = 0.0
+        for grid in scene_grids:
+            grid = grid.view(self.coarse_reso, self.coarse_reso, self.coarse_reso, *grid.shape[1:])
 
-        pixel_dif1 = grid[1:, :, :, ...] - grid[:-1, :, :, ...]
-        pixel_dif2 = grid[:, 1:, :, ...] - grid[:, :-1, :, ...]
-        pixel_dif3 = grid[:, :, 1:, ...] - grid[:, :, :-1, ...]
+            pixel_dif1 = grid[1:, :, :, ...] - grid[:-1, :, :, ...]
+            pixel_dif2 = grid[:, 1:, :, ...] - grid[:, :-1, :, ...]
+            pixel_dif3 = grid[:, :, 1:, ...] - grid[:, :, :-1, ...]
 
-        res1 = pixel_dif1.square().sum()
-        res2 = pixel_dif2.square().sum()
-        res3 = pixel_dif3.square().sum()
+            res1 = pixel_dif1.square().sum()
+            res2 = pixel_dif2.square().sum()
+            res3 = pixel_dif3.square().sum()
 
-        return (res1 + res2 + res3) / np.prod(grid.shape)
+            loss += (res1 + res2 + res3) / np.prod(grid.shape)
+        return loss
 
     def get_neighbors(self, pts, fine_reso):
         # pts should be in grid coordinates, ranging from 0 to coarse_reso * fine_reso
@@ -217,27 +223,29 @@ class DictPlenoxels(nn.Module):
 
     def closs_v2(self, dict_id: int, single_ray_d: torch.Tensor):
         grid = self.grids[dict_id][0]  # Rc^3, S
-        grid = grid[torch.randperm(grid.shape[0])[:1000], :]  # subsample Rc^3
-        atoms = self.atoms[0]
+        grid = grid[torch.randperm(grid.shape[0])[:10_000], :]  # subsample Rc^3
+        atoms = self.atoms[0].detach()
         rf3 = atoms.shape[0]
         rf = self.fine_reso[0]
         patches = grid @ atoms.transpose(0, 1).reshape(grid.shape[1], -1)
         patches = patches.reshape(-1, rf3, self.data_dim)  # Rc^3, Rf^3, D
         patches = patches.view(-1, self.data_dim)
-        rgba = torch.empty(patches.shape[0], 4, device=patches.device)
-        rgba[:, -1] = F.relu(patches[:, -1])
         sh_mult = self.sh_encoder(single_ray_d).expand(patches.shape[0], -1)  # [batch, ch/3]
         sh_masked = patches[:, :-1]
         sh_masked = sh_masked.view(-1, 3, sh_mult.shape[-1])  # [mask_pts, 3, ch/3]
-        rgba[:, :-1] = torch.sum(sh_mult.unsqueeze(1) * sh_masked, dim=-1)   # [mask_pts, 3]
+        rgb = torch.sum(sh_mult.unsqueeze(1) * sh_masked, dim=-1) * F.relu(patches[:, -1])[:, None]
+        #rgba = torch.cat((
+        #    torch.sum(sh_mult.unsqueeze(1) * sh_masked, dim=-1),
+        #    F.relu(patches[:, -1])[:, None]), dim=1)  # [mask_pts, 4]
 
         # rgba -> grid
         #rgba = rgba.view(-1, rf, rf, rf, 4).permute(0, 4, 1, 2, 3)  # [n, 4, rf, rf, rf]
         #rgba = self.closs_conv3d(rgba)
         #rgba = F.adaptive_max_pool3d(rgvba, 1).squeeze()
-        rgba = rgba.view(-1, rf3, 4).view(-1, rf3*4)
-        pred_grid = self.closs_mlp(rgba)
-        return F.mse_loss(grid, pred_grid)
+        rgb = rgb.view(-1, rf3, 3).view(-1, rf3*3)
+        pred_grid = self.closs_mlp(rgb)
+        loss = F.mse_loss(pred_grid, grid.detach())
+        return loss
 
     def forward(self, rays_o, rays_d, grid_id, consistency_coef=0, level=None, run_fp16=False, verbose=False):
         if level is None:
@@ -252,7 +260,7 @@ class DictPlenoxels(nn.Module):
             out = torch.ops.plenoxels.dict_tree_render(
                 scene_grids[i].to(dtype=dtype), self.atoms[i].to(dtype=dtype), rays_o, rays_d,
                 reso, self.coarse_reso, self.scalings[i], self.offsets[i], self.step_size,
-                1e-6, 1e-6)
+                1e-6, 1e-6, self.efficient_dict)
             if result is None:
                 result = out
             else:
