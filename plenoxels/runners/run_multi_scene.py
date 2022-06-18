@@ -59,7 +59,7 @@ def train_epoch(renderer,
     renderer.cuda()
 
     grad_scaler = torch.cuda.amp.GradScaler()
-    closs_optim = torch.optim.Adam(renderer.closs_mlp.parameters(), lr=1e-2)
+    # closs_optim = torch.optim.Adam(renderer.closs_mlp.parameters(), lr=1e-2)
 
     tot_step = start_tot_step
     TB_WRITER.add_scalar("lr", optim.param_groups[0]["lr"], tot_step)
@@ -197,9 +197,9 @@ def init_optim(cfg, model, transfer_learning=False, checkpoint_data=None) -> tor
     if transfer_learning:
         optim = torch.optim.Adam(model.grids, lr=cfg.optim.lr)
     else:
-        optim = torch.optim.Adam([{'params': model.atoms.parameters(), 'lr': cfg.optim.lr},
-                                  {'params': model.grids.parameters(), 'lr': cfg.optim.lr}])
-        #optim = torch.optim.Adam(model.parameters(), lr=cfg.optim.lr)
+        # optim = torch.optim.Adam([{'params': model.atoms.parameters(), 'lr': cfg.optim.lr},
+        #                           {'params': model.grids.parameters(), 'lr': cfg.optim.lr}])
+        optim = torch.optim.Adam(model.parameters(), lr=cfg.optim.lr)
     if checkpoint_data is not None:
         optim.load_state_dict(checkpoint_data['optimizer'])
         print("=> Loaded optimizer state from checkpoint")
