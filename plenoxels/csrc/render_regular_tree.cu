@@ -96,10 +96,11 @@ public:
                                                 const int32_t G,
                                                 const int32_t warp_lane,
                                                 const int32_t lane_colorgrp,    // the data-dimension group which this warp-lane belongs to. 0 <= l < G
+                                                const int32_t lane_colorgrp_id,
                                                 const bool efficient_dict) const
     {
         single_point_bwd_impl(Proxy<T>(), coarse_grid, atoms, d_coarse_grid, d_atoms, grad_output, point, cg_shmem,
-            cub_storage, coarse_reso, D, S, G, warp_lane, lane_colorgrp, efficient_dict);
+            cub_storage, coarse_reso, D, S, G, warp_lane, lane_colorgrp, lane_colorgrp_id, efficient_dict);
     }
 
 private:
@@ -247,6 +248,7 @@ private:
                                                      const int32_t G,
                                                      const int32_t warp_lane,
                                                      const int32_t lane_colorgrp,    // the data-dimension group which this warp-lane belongs to. 0 <= l < G
+                                                     const int32_t lane_colorgrp_id,
                                                      const bool efficient_dict) const
     {
         constexpr int32_t fine_reso = POW2_RF <= 0 ? 1 : 2 << (POW2_RF - 1);
@@ -267,9 +269,17 @@ private:
                 }
                 // Gradient wrt coarse-grid
                 T tmp = warp_lane < D ? atoms[fn_wcoo * S * D + s * D + warp_lane] : 0.0f;
-                tmp = cub::WarpReduce<T>(cub_storage).Sum(tmp * static_cast<T>(iw));
-                if (warp_lane == 0) {
-                    atomicAdd(d_coarse_grid + cn_wcoo * G * S + lane_colorgrp * S + s, tmp); // no need for special case here.
+                if (efficient_dict) {
+                    tmp = cub::WarpReduce<T>(cub_storage).HeadSegmentedSum(
+                        tmp * static_cast<T>(iw), lane_colorgrp_id == 0);
+                    if (lane_colorgrp_id == 0) {
+                        atomicAdd(d_coarse_grid + cn_wcoo * G * S + lane_colorgrp * S + s, tmp);  // TODO: This is not great for coalescing atomicAdds.
+                    }
+                } else {
+                    tmp = cub::WarpReduce<T>(cub_storage).Sum(tmp * static_cast<T>(iw));
+                    if (warp_lane == 0) {
+                        atomicAdd(d_coarse_grid + cn_wcoo * G * S + lane_colorgrp * S + s, tmp);
+                    }
                 }
             }
             __syncwarp();
@@ -290,6 +300,7 @@ private:
                                                      const int32_t G,
                                                      const int32_t warp_lane,
                                                      const int32_t lane_colorgrp,    // the data-dimension group which this warp-lane belongs to. 0 <= l < G
+                                                     const int32_t lane_colorgrp_id,
                                                      const bool efficient_dict) const
     {
         constexpr int32_t fine_reso = POW2_RF <= 0 ? 1 : 2 << (POW2_RF - 1);
@@ -521,7 +532,9 @@ trace_ray_backward(
                 /*grad_output=*/warp_lane < D - 1 ? curr_grad_color : curr_grad_sigma,
                 /*point=*/ray_spec[warp_offset].pos, cg_shmem + warp_offset * S * G,
                 cub_storage_h2[warp_offset], coarse_reso, D, S, G, warp_lane,
-                /*lane_colorgrp=*/efficient_dict ? min(lane_colorgrp, 3) : 0, efficient_dict);
+                /*lane_colorgrp=*/efficient_dict ? min(lane_colorgrp, 3) : 0,
+                /*lane_colorgrp_id=*/lane_colorgrp_id,
+                efficient_dict);
             if (myexp(log_light_intensity) < opt.stop_thresh) { break; }
         }
         t += opt.step_size;
