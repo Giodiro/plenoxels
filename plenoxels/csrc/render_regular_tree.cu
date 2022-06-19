@@ -595,8 +595,8 @@ dict_interp(const scalar_t * __restrict__ coarse_grid,  // Rc^3, S
         .S = S,
         .G = 1,
         .warp_lane = threadIdx.x & 0x1F,
-        .lane_colorgrp = min((threadIdx.x & 0x1F) / BASIS_DIM, 3),
-        .lane_colorgrp_id = (threadIdx.x & 0x1F) % BASIS_DIM
+        .lane_colorgrp = 0,
+        .lane_colorgrp_id = 0
     };
     if (point_id >= N) { return; }
     const DictRendererKernels<POW2_RF> inner_renderer = DictRendererKernels<POW2_RF>();
@@ -624,8 +624,8 @@ dict_interp_backward(const Acc32<float, 2> grad_output,             // N, D
         .S = S,
         .G = 1,
         .warp_lane = threadIdx.x & 0x1F,
-        .lane_colorgrp = min((threadIdx.x & 0x1F) / BASIS_DIM, 3),
-        .lane_colorgrp_id = (threadIdx.x & 0x1F) % BASIS_DIM
+        .lane_colorgrp = 0,
+        .lane_colorgrp_id = 0
     };
     typedef cub::WarpReduce<scalar_t> WarpReduce;
     if (point_id >= N) { return; }
