@@ -180,12 +180,6 @@ private:
                                                            float     * __restrict__ out,          // 1
                                                            T   * __restrict__ cg_shmem,     // V1_WARPS_PER_BLOCK * S / 2
                                                      const DimensionParams& __restrict__ dims,
-//                                                     const int32_t coarse_reso,
-//                                                     const int32_t D,
-//                                                     const int32_t S,
-//                                                     const int32_t G,
-//                                                     const int32_t warp_lane,
-//                                                     const int32_t lane_colorgrp,    // the data-dimension group which this warp-lane belongs to. 0 <= l < G.
                                                      const bool efficient_dict) const
     {
         constexpr int32_t fine_reso = POW2_RF <= 0 ? 1 : 2 << (POW2_RF - 1);
@@ -223,12 +217,6 @@ private:
                                                            float    * __restrict__ out,          // D
                                                            __half   * __restrict__ cg_shmem,     // V1_WARPS_PER_BLOCK * S / 2
                                                      const DimensionParams& __restrict__ dims,
-//                                                     const int32_t coarse_reso,
-//                                                     const int32_t D,
-//                                                     const int32_t S,
-//                                                     const int32_t G,
-//                                                     const int32_t warp_lane,
-//                                                     const int32_t lane_colorgrp,    // the data-dimension group which this warp-lane belongs to. 0 <= l < G
                                                      const bool efficient_dict) const
     {
         constexpr int32_t fine_reso = POW2_RF <= 0 ? 1 : 2 << (POW2_RF - 1);
@@ -266,13 +254,6 @@ private:
                                                            T * __restrict__ cg_shmem,        // S / 2
                                                      typename cub::WarpReduce<T>::TempStorage& __restrict__ cub_storage,
                                                      const DimensionParams& __restrict__ dims,
-//                                                     const int32_t coarse_reso,
-//                                                     const int32_t D,
-//                                                     const int32_t S,
-//                                                     const int32_t G,
-//                                                     const int32_t warp_lane,
-//                                                     const int32_t lane_colorgrp,    // the data-dimension group which this warp-lane belongs to. 0 <= l < G
-//                                                     const int32_t lane_colorgrp_id,
                                                      const bool efficient_dict) const
     {
         constexpr int32_t fine_reso = POW2_RF <= 0 ? 1 : 2 << (POW2_RF - 1);
@@ -601,9 +582,13 @@ dict_interp(const scalar_t * __restrict__ coarse_grid,  // Rc^3, S
     if (point_id >= N) { return; }
     const DictRendererKernels<POW2_RF> inner_renderer = DictRendererKernels<POW2_RF>();
     scalar_t * cg_shmem = shared_memory_proxy<scalar_t>(); // V1_WARPS_PER_BLOCK * S / 2;
+    scalar_t reg_out;
     inner_renderer.template single_point_fwd<scalar_t>(
-        coarse_grid, atoms, /*point=*/points + point_id * 3, /*out=*/out + point_id * dims.D,
+        coarse_grid, atoms, /*point=*/points + point_id * 3, /*out=*/&reg_out,
         /*cg_shmem=*/cg_shmem + warp_offset * dims.S, dims, /*efficient_dict=*/false);
+    if (dims.warp_lane < D) {
+        out[point_id * dims.D + dims.warp_lane] = reg_out;
+    }
 }
 
 template <typename scalar_t, int32_t POW2_RF>
