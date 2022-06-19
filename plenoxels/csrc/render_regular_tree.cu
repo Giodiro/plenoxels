@@ -60,10 +60,10 @@ struct DimensionParams {
     int32_t D;
     int32_t S;
     int32_t G;
-    int32_t warp_lane;
+    uint32_t warp_lane;
     // the data-dimension group which this warp-lane belongs to. 0 <= l < G
-    int32_t lane_colorgrp;
-    int32_t lane_colorgrp_id;
+    uint32_t lane_colorgrp;
+    uint32_t lane_colorgrp_id;
 };
 
 
@@ -199,9 +199,9 @@ private:
         for (int i = 0; i < 8; i++) {
             coo_iw(fp, nullptr, dims.coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
             if (efficient_dict) {
-                load_cg_block_edict(coarse_grid, cg_shmem, cn_wcoo, warp_lane, dims.S, dims.G);
+                load_cg_block_edict(coarse_grid, cg_shmem, cn_wcoo, dims.warp_lane, dims.S, dims.G);
             } else {
-                load_cg_block(coarse_grid, cg_shmem, cn_wcoo, warp_lane, dims.S);
+                load_cg_block(coarse_grid, cg_shmem, cn_wcoo, dims.warp_lane, dims.S);
             }
             __syncwarp();
             for (int s = 0; s < dims.S; s++) {
@@ -242,10 +242,10 @@ private:
         for (int i = 0; i < 8; i++) {
             coo_iw(fp, nullptr, dims.coarse_reso, i, &cn_wcoo, &fn_wcoo, &iw);
             iw_h2 = __float2half2_rn(iw);
-            load_cg_block(reinterpret_cast<const __half2*>(dims.coarse_grid), cg_shmem2, cn_wcoo, dims.warp_lane, (dims.S * dims.G) >> 1);
+            load_cg_block(reinterpret_cast<const __half2*>(coarse_grid), cg_shmem2, cn_wcoo, dims.warp_lane, (dims.S * dims.G) >> 1);
             __syncwarp();
             for (int s = 0; s < dims.S; s += 2) {
-                __half2 atom_weight = warp_lane >= dims.D ? __float2half2_rn(0.0f) :
+                __half2 atom_weight = dims.warp_lane >= dims.D ? __float2half2_rn(0.0f) :
                     __halves2half2(__ldg(atoms + fn_wcoo * dims.S * dims.D + s * dims.D + dims.warp_lane),
                                    __ldg(atoms + fn_wcoo * dims.S * dims.D + (s + 1) * dims.D + dims.warp_lane));
                 acc_h2 = __hfma2(cg_shmem2[s >> 1], __hmul2(iw_h2, atom_weight), acc_h2);
@@ -300,7 +300,7 @@ private:
                 // Gradient wrt coarse-grid
                 T tmp = dims.warp_lane < dims.D ? atoms[fn_wcoo * dims.S * dims.D + s * dims.D + dims.warp_lane] : 0.0f;
                 if (efficient_dict) {
-                    tmp = cub::WarpReduce<T>(cub_storage).HeadSegmentedSum(tmp * static_cast<T>(iw), lane_colorgrp_id == 0);
+                    tmp = cub::WarpReduce<T>(cub_storage).HeadSegmentedSum(tmp * static_cast<T>(iw), dims.lane_colorgrp_id == 0);
                     if (dims.lane_colorgrp_id == 0) {
                         atomicAdd(d_coarse_grid + cn_wcoo * dims.G * dims.S + dims.lane_colorgrp * dims.S + s, tmp);  // TODO: This is not great for coalescing atomicAdds.
                     }
@@ -346,7 +346,7 @@ private:
             iw_h2 = __float2half2_rn(iw);
             load_cg_block(reinterpret_cast<const __half2*>(coarse_grid), cg_shmem2, cn_wcoo, dims.warp_lane, (dims.S * dims.G) >> 1);
             __syncwarp();
-            for (int s = 0; s < (S >> 1); s++) {
+            for (int s = 0; s < (dims.S >> 1); s++) {
                 // Gradient wrt atoms
                 __half2 tmp2 = __hmul2(cg_shmem2[dims.lane_colorgrp * dims.S + s], iw_h2);
                 if (dims.warp_lane < dims.D) {
@@ -431,7 +431,7 @@ trace_ray(
 
         inner_renderer.template single_point_fwd<scalar_t>(
             coarse_grid, atoms, /*point=*/ray_spec[warp_offset].pos, /*out=*/&interp_val,
-            /*cg_shmem=*/cg_shmem + warp_offset * S * G, dims, efficient_dict);
+            /*cg_shmem=*/cg_shmem + warp_offset * dims.S * dims.G, dims, efficient_dict);
         sigma = interp_val;  // This has an effect only in last thread in active warp.
         // broadcast sigma (stored in last coordinate) to other threads in warp
         sigma = __shfl_sync(0xffffffff, sigma, /*srcLane=*/dims.D - 1);
