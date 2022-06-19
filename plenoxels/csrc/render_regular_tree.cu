@@ -582,7 +582,7 @@ dict_interp(const scalar_t * __restrict__ coarse_grid,  // Rc^3, S
     if (point_id >= N) { return; }
     const DictRendererKernels<POW2_RF> inner_renderer = DictRendererKernels<POW2_RF>();
     scalar_t * cg_shmem = shared_memory_proxy<scalar_t>(); // V1_WARPS_PER_BLOCK * S / 2;
-    scalar_t reg_out;
+    float reg_out;
     inner_renderer.template single_point_fwd<scalar_t>(
         coarse_grid, atoms, /*point=*/points + point_id * 3, /*out=*/&reg_out,
         /*cg_shmem=*/cg_shmem + warp_offset * dims.S, dims, /*efficient_dict=*/false);
