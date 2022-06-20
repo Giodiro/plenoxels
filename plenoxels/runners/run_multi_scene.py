@@ -101,6 +101,8 @@ def train_epoch(renderer,
                             grad_scaler.update()
                         else:
                             loss.backward()
+                            #print("atoms[0] grad: %f" % (renderer.atoms[0].grad.sum()))
+                            #print("grid[0] grad: %f" % (renderer.grids[0][0].grad.sum()))
                             optim.step()
 
                         if False:
@@ -148,10 +150,10 @@ def train_epoch(renderer,
                     render_patches(renderer, patch_level=1, log_dir=log_dir, iteration=tot_step,
                                    summary_writer=TB_WRITER)
                 TB_WRITER.add_scalar(f"TestPSNR/D{ts_dset_id}", psnr, tot_step)
-            TB_WRITER.add_histogram(f"patches/sigma", renderer.atoms[0][:, :, -1].view(-1), tot_step)
-            TB_WRITER.add_histogram(f"patches/R", renderer.atoms[0][:, :, 0].view(-1), tot_step)
-            TB_WRITER.add_histogram(f"patches/G", renderer.atoms[0][:, :, 1].view(-1), tot_step)
-            TB_WRITER.add_histogram(f"patches/B", renderer.atoms[0][:, :, 2].view(-1), tot_step)
+            TB_WRITER.add_histogram(f"patches/sigma", renderer.atoms[0][..., -1].view(-1), tot_step)
+            TB_WRITER.add_histogram(f"patches/R", renderer.atoms[0][..., 0].view(-1), tot_step)
+            TB_WRITER.add_histogram(f"patches/G", renderer.atoms[0][..., 1].view(-1), tot_step)
+            TB_WRITER.add_histogram(f"patches/B", renderer.atoms[0][..., 2].view(-1), tot_step)
             TB_WRITER.add_histogram(f"weights/white", renderer.grids[0][0].view(renderer.coarse_reso, renderer.coarse_reso, renderer.coarse_reso, -1)[:5, :5, :5].reshape(-1), tot_step)
             torch.save({
                 'epoch': e,

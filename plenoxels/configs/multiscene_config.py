@@ -35,6 +35,7 @@ _C.model.num_atoms = [128]
 _C.model.coarse_reso = 64
 _C.model.fine_reso = [3]
 _C.model.noise_std = 0.0
+_C.model.efficient_dict = False
 
 
 def get_cfg_defaults():

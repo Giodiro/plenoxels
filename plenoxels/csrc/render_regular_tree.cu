@@ -24,6 +24,7 @@ using Acc64 = torch::GenericPackedTensorAccessor<T, N, torch::RestrictPtrTraits,
 #define CUDA_WARPS_PER_BLOCK (CUDA_THREADS_PER_BLOCK >> 5)
 #define WARP_SIZE 32
 
+//#define DEBUG_SAMPLE_GEN
 
 
 inline at::ScalarType scalar_type(at::ScalarType s) {
@@ -407,8 +408,18 @@ trace_ray(
     float t = ray_spec[warp_offset].tmin;
     float outv = 0.0f, log_light_intensity = 0.0f;
     float sigma, interp_val;
+    #ifdef DEBUG_SAMPLE_GEN
+        if (dims.warp_lane == 0) {
+            printf("ray %d - tmin=%f tmax=%f\n", ray_id, ray_spec[warp_offset].tmin, ray_spec[warp_offset].tmax);
+        }
+    #endif
     while (t <= ray_spec[warp_offset].tmax) {
         ray_spec[warp_offset].update_pos(t);
+        #ifdef DEBUG_SAMPLE_GEN
+            if (dims.warp_lane == 0) {
+                printf("ray %d - tmin=%f tmax=%f pos=%f %f %f t=%f\n", ray_id, ray_spec[warp_offset].tmin, ray_spec[warp_offset].tmax, ray_spec[warp_offset].pos[0], ray_spec[warp_offset].pos[1], ray_spec[warp_offset].pos[2], t);
+            }
+        #endif
 
         inner_renderer.template single_point_fwd<scalar_t>(
             coarse_grid, atoms, /*point=*/ray_spec[warp_offset].pos, /*out=*/&interp_val,
@@ -426,7 +437,8 @@ trace_ray(
             // The value computed there is ignored.
             const float lane_color_total = WarpReduce(cub_storage[warp_offset]).HeadSegmentedSum(
                 interp_val, dims.lane_colorgrp_id == 0);
-            outv += weight * mymax(lane_color_total + 0.5f, 0.0f);  // clamp [+0, infty)
+            //outv += weight * mymax(lane_color_total + 0.5f, 0.0f);  // clamp [+0, infty)
+            outv += weight * sigmoid(lane_color_total);
             if (myexp(log_light_intensity) < opt.stop_thresh) {
                 log_light_intensity = -1e3f;
                 break;
@@ -494,10 +506,11 @@ trace_ray_backward(
     ray_find_bounds(ray_spec[warp_offset], scaling, offset, opt.step_size, opt.near_plane);
 
     const float c_grad_out[3] = {grad_output[ray_id][0], grad_output[ray_id][1], grad_output[ray_id][2]};
-    // const float norm_factor = 2.0f / (3 * N);
+    //const float norm_factor = 2.0f / (3 * N);
+    //float c_grad_out[3];
     //for (int i = 0; i < 3; ++i) {
         // TODO: Figure out what the commented-out normalization did (from svox).
-    //    c_grad_out[i] = grad_output[ray_id][i];//(color_cache[ray_id][i] - grad_output[ray_id][i]) * norm_factor;
+    //    c_grad_out[i] = (color_cache[ray_id][i] - grad_output[ray_id][i]) * norm_factor;
     //}
     float accum = fmaf(color_cache[ray_id][0], c_grad_out[0],
                       fmaf(color_cache[ray_id][1], c_grad_out[1],
@@ -527,10 +540,13 @@ trace_ray_backward(
             log_light_intensity -= pcnt;
 
             // Sum over all dimensions for the color of lane_colorgrp_id. Only valid in the head.
-            const float lane_color_total = WarpReducef(cub_storage[warp_offset]).HeadSegmentedSum(
-                weighted_lane_color, dims.lane_colorgrp_id == 0) + 0.5f;
-            float total_color = mymax(lane_color_total, 0.0f);  // Clamp to [+0, infty)
-            float color_in_01 = total_color == lane_color_total;
+            float lane_color_total = WarpReducef(cub_storage[warp_offset]).HeadSegmentedSum(
+                weighted_lane_color, dims.lane_colorgrp_id == 0);
+            //const float lane_color_total = WarpReducef(cub_storage[warp_offset]).HeadSegmentedSum(
+            //    weighted_lane_color, dims.lane_colorgrp_id == 0) + 0.5f;
+            float total_color = lane_color_total;
+            //float total_color = mymax(lane_color_total, 0.0f);  // Clamp to [+0, infty)
+            //float color_in_01 = total_color == lane_color_total;
             total_color *= gout;  // the multiplication zeroes out total_color for the lanes >= D - 1
 
             // For each 'leader' thread (first thread in a colorgroup), sum the values in the other leaders.
@@ -538,8 +554,10 @@ trace_ray_backward(
             total_color += __shfl_up_sync(leader_mask, total_color, /*delta=*/2 * BASIS_DIM);
 
             // for sigma thread (and all lanes >= D - 1) this will be something random
-            color_in_01 = __shfl_sync(0xffffffff, color_in_01, /*srcLane=*/dims.lane_colorgrp * BASIS_DIM);  // this will be 0 or 1.
-            const float curr_grad_color = sphfunc_val[warp_offset][dims.lane_colorgrp_id] * (weight * color_in_01 * gout);
+            //color_in_01 = __shfl_sync(0xffffffff, color_in_01, /*srcLane=*/dims.lane_colorgrp * BASIS_DIM);  // this will be 0 or 1.
+            lane_color_total = __shfl_sync(0xffffffff, lane_color_total, /*srcLane=*/dims.lane_colorgrp * BASIS_DIM); // broadcast the rgb gradient to all lanes from lane-heads
+            //const float curr_grad_color = sphfunc_val[warp_offset][dims.lane_colorgrp_id] * (weight * color_in_01 * gout);
+            const float curr_grad_color = sphfunc_val[warp_offset][dims.lane_colorgrp_id] * (sigmoid_bwd(lane_color_total) * weight * gout);
 
             accum -= weight * total_color;
             const float curr_grad_sigma = ray_spec[warp_offset].world_step * (total_color * myexp(log_light_intensity) - accum);

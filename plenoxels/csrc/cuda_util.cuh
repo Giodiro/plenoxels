@@ -68,6 +68,16 @@ __host__ __device__ constexpr T div_round_up(T val, T divisor) {
         return (val + divisor - 1) / divisor;
 }
 
+__device__ __inline__ float sigmoid(const float x)
+{
+    return 1.0f / (1.0f + __expf(-x));
+}
+__device__ __inline__ float sigmoid_bwd(const float x)
+{
+    const float fwd = sigmoid(x);
+    return fwd * (1.0f - fwd);
+}
+
 
 template <int pow2>
 __host__ __device__ __inline__ void fast_divmod_pow2(const int n, int& __restrict__ q, int& __restrict__ r) {
