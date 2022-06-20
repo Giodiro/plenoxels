@@ -424,9 +424,8 @@ trace_ray(
         inner_renderer.template single_point_fwd<scalar_t>(
             coarse_grid, atoms, /*point=*/ray_spec[warp_offset].pos, /*out=*/&interp_val,
             /*cg_shmem=*/cg_shmem + warp_offset * dims.S * dims.G, dims, efficient_dict);
-        sigma = interp_val;  // This has an effect only in last thread in active warp.
         // broadcast sigma (stored in last coordinate) to other threads in warp
-        sigma = __shfl_sync(0xffffffff, sigma, /*srcLane=*/dims.D - 1);
+        sigma = __shfl_sync(0xffffffff, interp_val, /*srcLane=*/dims.D - 1);
         if (sigma > opt.sigma_thresh) {
             interp_val *= sphfunc_val[warp_offset][dims.lane_colorgrp_id];
             const float pcnt = ray_spec[warp_offset].world_step * sigma;
@@ -544,7 +543,7 @@ trace_ray_backward(
                 weighted_lane_color, dims.lane_colorgrp_id == 0);
             //const float lane_color_total = WarpReducef(cub_storage[warp_offset]).HeadSegmentedSum(
             //    weighted_lane_color, dims.lane_colorgrp_id == 0) + 0.5f;
-            float total_color = lane_color_total;
+            float total_color = sigmoid(lane_color_total);
             //float total_color = mymax(lane_color_total, 0.0f);  // Clamp to [+0, infty)
             //float color_in_01 = total_color == lane_color_total;
             total_color *= gout;  // the multiplication zeroes out total_color for the lanes >= D - 1
