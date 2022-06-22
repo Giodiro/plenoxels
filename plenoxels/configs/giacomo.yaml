@@ -1,4 +1,4 @@
-expname: "c64_f4.64_csrc2_batch1k"
+expname: "c64_f4.32,8.32_nosh_weirdmlp_8_v2_batch1k"
 use_csrc: True
 
 data:
@@ -9,9 +9,9 @@ data:
   max_ts_frames: 10
 
 model:
-  num_atoms: [64]
+  num_atoms: [32, 32]
   coarse_reso: 64
-  fine_reso: [4]
+  fine_reso: [4, 8]
   noise_std: 0.0
   efficient_dict: False
 
@@ -24,8 +24,8 @@ optim:
   train_fp16: False
   regularization:
     l1_weight: 0.0
-    tv_weight: 0.0
+    tv_weight: 0.00
     consistency_weight: 0.0
 
 sh:
-  degree: 0
+  degree: 2

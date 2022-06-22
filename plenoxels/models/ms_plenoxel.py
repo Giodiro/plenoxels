@@ -27,6 +27,24 @@ def ensure_list(el, expand_size: Optional[int] = None) -> list:
         return [el]
 
 
+def positional_encoding(pts, dirs, num_freqs_p: int, num_freqs_d: Optional[int] = None):
+    """
+    pts : N, 3
+    dirs : N, 3
+    returns: N, 3 * 2 * (num_freqs_p + num_freqs_d)
+    """
+    if num_freqs_d is None:
+        num_freqs_d = num_freqs_p
+    freq_bands_d = 2 ** torch.arange(num_freqs_d, device=dirs.device)
+    freq_bands_p = 2 ** torch.arange(num_freqs_p, device=pts.device)
+    out_p = pts[..., None] * freq_bands_p * torch.pi
+    out_d = dirs[..., None] * freq_bands_d * torch.pi
+    out_p = out_p.view(-1, num_freqs_p * 3)
+    out_d = out_d.view(-1, num_freqs_d * 3)
+
+    return torch.cat((torch.sin(out_p), torch.cos(out_p), torch.sin(out_d), torch.cos(out_d)), dim=-1)
+
+
 class DictPlenoxels(nn.Module):
     def __init__(self,
                  sh_deg: int,
@@ -46,7 +64,7 @@ class DictPlenoxels(nn.Module):
         self.fine_reso: List[int] = ensure_list(fine_reso)
         self.coarse_reso = coarse_reso
         self.num_atoms: List[int] = ensure_list(num_atoms)
-        self.num_atoms_small = self.num_atoms[0] // 4  # TODO: Un-hard-code
+        #self.num_atoms_small = self.num_atoms[0] // 4  # TODO: Un-hard-code
         self.data_dim = total_data_channels
         self.efficient_dict = efficient_dict
         self.noise_std = noise_std
@@ -81,9 +99,15 @@ class DictPlenoxels(nn.Module):
                 if self.efficient_dict:
                     scene_grids.append(nn.Parameter(torch.empty(*get_reso(coarse_reso), 4, n_atoms)))
                 else:
-                    scene_grids.append(nn.Parameter(torch.empty(*get_reso(coarse_reso), n_atoms)))#self.num_atoms_small)))#n_atoms)))
+                    scene_grids.append(nn.Parameter(torch.empty(*get_reso(coarse_reso), n_atoms)))
             self.grids.append(scene_grids)
-        #self.low_rank_mlp = nn.Linear(self.num_atoms_small, self.num_atoms[0], bias=False)
+        self.low_rank_mlp = nn.Sequential(
+                nn.Linear(self.data_dim_init * len(self.fine_reso) + (self.num_freqs_p + self.num_freqs_d) * 6, 32),
+                nn.ReLU(),
+                nn.Linear(32, 32),
+                nn.ReLU(),
+                nn.Linear(32, 4))#self.data_dim))
+        #self.low_rank_mlp = nn.Linear(self.num_atoms_small + self.num_freqs * 6, self.num_atoms[0], bias=False)
         # self.closs_mlp = nn.Sequential(nn.Linear(3 * (self.fine_reso[0] ** 3), 16), nn.ReLU(), nn.Linear(16, 16), nn.ReLU(), nn.Linear(16, self.num_atoms[0]))
         self.init_params()
 
@@ -263,7 +287,7 @@ class DictPlenoxels(nn.Module):
             out = torch.ops.plenoxels.dict_tree_render(
                 scene_grids[i].to(dtype=dtype), self.atoms[i].to(dtype=dtype), rays_o, rays_d,
                 reso, self.coarse_reso, self.scalings[i], self.offsets[i], self.step_size * self.scalings[i],
-                1e-6, 1e-6, self.efficient_dict)
+                1e-4, 1e-4, self.efficient_dict)
             if result is None:
                 result = out
             else:
@@ -309,7 +333,8 @@ class DictPlenoxels(nn.Module):
                     fine_neighbor_vals = self.atoms[i][
                         fine_neighbors[:,n,0], fine_neighbors[:,n,1], fine_neighbors[:,n,2], ...]  # [n_pts, n_atoms, data_dim]
                     # fine_neighbor_vals = fine_neighbor_vals.view(-1, 4, n_atoms // 4, fine_neighbors.shape[-1])  # [n_pts, 4, n_atoms/4, data_dim]
-                    #coarse_neighbor_vals = self.low_rank_mlp(coarse_neighbor_vals)  # [n_pts, n_atoms]
+                    aug_cnv = torch.cat([coarse_neighbor_vals, positional_encoding(intrs_pts, self.num_freqs)], dim=1)
+                    coarse_neighbor_vals = self.low_rank_mlp(aug_cnv)  # [n_pts, n_atoms]
                     result = torch.sum(coarse_neighbor_vals[..., None] * fine_neighbor_vals, dim=-2)  # [n_pts, data_dim]
                     result = result.view(result.shape[0], -1)
 
@@ -322,16 +347,18 @@ class DictPlenoxels(nn.Module):
             # Normalize pts in [0, 1]
             intrs_pts = self.normalize01(intrs_pts, grid_id)
             # Only work with the fine dicts up to the given level
-            data_interp = None
-            for i, reso in enumerate(self.fine_reso[0:level+1]):
+            data_interp = []
+            for i, reso in enumerate(self.fine_reso):
                 out = torch.ops.plenoxels.dict_interpolate(
                     scene_grids[i], self.atoms[i], intrs_pts, reso, self.coarse_reso)
-                #print("out has %d NaNs - atoms sum %f" % (torch.isnan(out).sum(), self.atoms[i].sum()))
-                #print(out.shape, out)
-                if data_interp is None:
-                    data_interp = out
-                else:
-                    data_interp = data_interp + out
+                data_interp.append(out)
+                #if data_interp is None:
+                #    data_interp = out
+                #else:
+                #    data_interp = data_interp + out
+            data_interp.append(positional_encoding(intrs_pts, rays_d.unsqueeze(1).expand(batch, nintrs, 3)[intrs_pts_mask], self.num_freqs_p, self.num_freqs_d))
+            data_interp = torch.cat(data_interp, dim=1)
+            data_interp = self.low_rank_mlp(data_interp)
 
         # 1. Process density: Un-masked sigma (batch, n_intrs-1), and compute.
         sigma_masked = data_interp[:, -1]
@@ -341,13 +368,14 @@ class DictPlenoxels(nn.Module):
         alpha, abs_light = sigma2alpha(sigma, intersections, rays_d)  # both [batch, n_intrs-1]
 
         # 3. Create SH coefficients and mask them
-        sh_mult = self.sh_encoder(rays_d).unsqueeze(1).expand(batch, nintrs, -1)  # [batch, nintrs, ch/3]
-        sh_mult = sh_mult[intrs_pts_mask].unsqueeze(1)  # [mask_pts, 1, ch/3]
+        #sh_mult = self.sh_encoder(rays_d).unsqueeze(1).expand(batch, nintrs, -1)  # [batch, nintrs, ch/3]
+        #sh_mult = sh_mult[intrs_pts_mask].unsqueeze(1)  # [mask_pts, 1, ch/3]
 
         # 4. Interpolate rgbdata, use SH coefficients to get to RGB
-        sh_masked = data_interp[:, :-1]
-        sh_masked = sh_masked.view(-1, 3, sh_mult.shape[-1])  # [mask_pts, 3, ch/3]
-        rgb_masked = torch.sum(sh_mult * sh_masked, dim=-1)   # [mask_pts, 3]
+        #sh_masked = data_interp[:, :-1]
+        #sh_masked = sh_masked.view(-1, 3, sh_mult.shape[-1])  # [mask_pts, 3, ch/3]
+        #rgb_masked = torch.sum(sh_mult * sh_masked, dim=-1)   # [mask_pts, 3]
+        rgb_masked = data_interp[:, :-1]
 
         # 5. Post-process RGB
         rgb = torch.zeros(batch, nintrs, 3, dtype=rgb_masked.dtype, device=rgb_masked.device)
