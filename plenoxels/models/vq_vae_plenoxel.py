@@ -106,6 +106,8 @@ class VqVaePlenoxel(nn.Module):
         self.sh_encoder = sh_encoder
         self.fine_data_dim = ((sh_deg + 1) ** 2) * 3 + 1
         self.step_size, self.n_intersections = self.calc_step_size()
+        print("Ray-marching with step-size = %.4e  -  %d intersections" %
+              (self.step_size, self.n_intersections))
         self.fine_mlp_h_size = 32
 
         self.data = nn.Parameter(torch.empty(
@@ -129,8 +131,9 @@ class VqVaePlenoxel(nn.Module):
         torch.nn.init.zeros_(self.fine_mlp[-1].bias)
 
     def calc_step_size(self) -> Tuple[float, int]:
+        step_size_factor = 4
         units = (self.radius * 2) / (self.coarse_reso - 1)
-        step_size = units / 2
+        step_size = units / (2 * step_size_factor)
         grid_diag = math.sqrt(3) * self.radius * 2
         n_intersections = int(grid_diag / step_size) - 1
         return step_size, n_intersections
@@ -140,7 +143,7 @@ class VqVaePlenoxel(nn.Module):
         pts = (pts + 1) * self.coarse_reso / 2  # 0, coarse_reso
         pts = torch.floor(pts).clamp(0, self.coarse_reso - 1).long()
         coarse_data = self.data[:, pts[:, 0], pts[:, 1], pts[:, 2]]
-        return coarse_data
+        return coarse_data.T  # [n_pts, coarse_dim]
 
     def world2finecoo(self, pts: torch.Tensor) -> torch.Tensor:
         """Convert world coordinates to the relative coordinate of points within their coarse-grid cell.
@@ -194,12 +197,13 @@ class VqVaePlenoxel(nn.Module):
         return rgb, depth, alpha
 
     def forward(self, rays_o, rays_d, grid_id):
-        rays_d = rays_d / torch.linalg.norm(rays_d, dim=1)
+        rays_d = rays_d / torch.linalg.norm(rays_d, dim=1, keepdim=True)
         intrs_pts, intersections, intrs_pts_mask = get_intersections(
             rays_o, rays_d, self.radius, self.n_intersections, self.step_size)
+        intrs_pts = intrs_pts[intrs_pts_mask]
 
         """Get the coarse patches corresponding to the points"""
-        coarse_patches = self.fetch_coarse(intrs_pts[intrs_pts_mask])  # [n_pts, coarse_dim]
+        coarse_patches = self.fetch_coarse(intrs_pts)  # [n_pts, coarse_dim]
 
         """Quantize"""
         # quantized: n_pts, coarse_dim

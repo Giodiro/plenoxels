@@ -1,4 +1,4 @@
-expname: "tensorrf_1"
+expname: "tensorrf_fixintrs"
 
 data:
   datadir: /data/DATASETS/SyntheticNerf/lego

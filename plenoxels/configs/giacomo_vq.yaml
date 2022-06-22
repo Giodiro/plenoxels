@@ -2,14 +2,14 @@ expname: "plenoxel_lego_512"
 
 data:
   datadir: "/data/DATASETS/SyntheticNerf/lego"
-  resolution: None
+  resolution: 512
   max_tr_frames: None
-  max_ts_frames: None
+  max_ts_frames: 10
 
 model:
   resolution: 32
   coarse_dim: 64
-  num_embeddings: 1024
+  num_embeddings: 512
   num_freqs_pt: 6
   num_freqs_dir: 4
 
