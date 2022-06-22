@@ -6,23 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from plenoxels.nerf_rendering import shrgb2rgb, sigma2alpha
-
-
-def interp_regular(grid, pts, align_corners=True, padding_mode='border'):
-    """Interpolate data on a regular grid at the given points.
-
-    :param grid:
-        Tensor of size [1, ch, res, res, res].
-    :param pts:
-        Tensor of size [1, n, 1, 1, 3]. Points must be normalized between -1 and 1.
-    :return:
-        Tensor of size [ch, n] or [n] if the `ch` dimension is of size 1.
-    """
-    pts = pts.to(dtype=grid.dtype)
-    interp_data = F.grid_sample(
-        grid, pts, mode='bilinear', align_corners=align_corners, padding_mode=padding_mode)  # [1, ch, n, 1, 1]
-    interp_data = interp_data.squeeze()  # [ch, n] or [n] if ch is 1
-    return interp_data
+from plenoxels.models.utils import interp_regular, get_intersections
 
 
 class RegularGrid(nn.Module):
@@ -60,30 +44,12 @@ class RegularGrid(nn.Module):
         """Returns coordinates normalized between -1 and +1"""
         return intersections / self.radius
 
-    @torch.no_grad()
-    def sample_proposal(self, rays_o, rays_d):
-        dev, dt = rays_o.device, rays_o.dtype
-        offsets_pos = (self.radius - rays_o) / rays_d  # [batch, 3]
-        offsets_neg = (-self.radius - rays_o) / rays_d  # [batch, 3]
-        offsets_in = torch.minimum(offsets_pos, offsets_neg)  # [batch, 3]
-        start = torch.amax(offsets_in, dim=-1, keepdim=True)  # [batch, 1]
-
-        steps = torch.arange(self.n_intersections, dtype=dt, device=dev).unsqueeze(0)  # [1, n_intrs]
-        steps = steps.repeat(rays_d.shape[0], 1)   # [batch, n_intrs]
-        intersections = start + steps * self.step_size  # [batch, n_intrs]
-        return intersections
-
     def forward(self, rays_o, rays_d, use_fp16: bool = False):
-        with torch.autograd.no_grad():
-            intersections = self.sample_proposal(rays_o, rays_d)
-            intersections_trunc = intersections[:, :-1]  # [batch, n_intrs - 1]
-            batch, nintrs = intersections_trunc.shape
-            intrs_pts = rays_o.unsqueeze(1) + intersections_trunc.unsqueeze(2) * rays_d.unsqueeze(1)  # [batch, n_intrs - 1, 3]
-            # noinspection PyTypeChecker
-            intrs_pts_mask = torch.all((-self.radius < intrs_pts) & (intrs_pts < self.radius), dim=-1)  # [batch, n_intrs-1]
-
-            intrs_pts = intrs_pts[intrs_pts_mask]  # masked points
-            intrs_pts = self.normalize_coord(intrs_pts)
+        intrs_pts, intersections, intrs_pts_mask = get_intersections(
+            rays_o, rays_d, self.radius, self.n_intersections, self.step_size)
+        batch = intersections.shape[0]
+        nintrs = intersections.shape[1] - 1
+        intrs_pts = self.normalize_coord(intrs_pts)
 
         with torch.autocast(device_type="cuda", enabled=use_fp16):
             data_interp = interp_regular(

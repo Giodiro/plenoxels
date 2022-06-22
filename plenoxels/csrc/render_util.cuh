@@ -157,15 +157,15 @@ __device__ __inline__ void ray_find_bounds(
     ray_spec.world_step = _get_delta_scale(scaling, ray_spec.dir) * step_size;
 
     ray_spec.tmin = near_plane / ray_spec.world_step * step_size;
-    ray_spec.tmax = 2e3f;
+    ray_spec.tmax = T(2e3);
 
     #pragma unroll 3
     for (int i = 0; i < 3; ++i) {
-        const T invdir = 1.0f / ray_spec.dir[i];
+        const T invdir = T(1.0) / ray_spec.dir[i];
         // aabb intersection with [0, 1] cube
         const T t1 = (   - ray_spec.origin[i]) * invdir;
         const T t2 = (1  - ray_spec.origin[i]) * invdir;
-        if (ray_spec.dir[i] != 0.0f) {
+        if (ray_spec.dir[i] != T(0)) {
             ray_spec.tmin = max(ray_spec.tmin, min(t1, t2));
             ray_spec.tmax = min(ray_spec.tmax, max(t1, t2));
         }
