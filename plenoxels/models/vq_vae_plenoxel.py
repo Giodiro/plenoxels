@@ -204,7 +204,8 @@ class VqVaePlenoxel(nn.Module):
             commitment_cost=self.commitment_cost,
             decay=0.99)
         self.decoder = MLPDecoderWithPE(
-            embedding_dim=self.embedding_dim, coarse_reso=self.coarse_reso, radius=self.radius,
+            embedding_dim=self.embedding_dim, out_dim=self.fine_data_dim,
+            coarse_reso=self.coarse_reso, radius=self.radius,
             num_freqs_pt=self.num_freqs_pt, num_freqs_dir=self.num_freqs_dir)
         self.reset_params()
 
@@ -225,6 +226,12 @@ class VqVaePlenoxel(nn.Module):
         pts = torch.floor(pts).clamp(0, self.coarse_reso - 1).long()
         coarse_data = self.data[:, pts[:, 0], pts[:, 1], pts[:, 2]]
         return coarse_data.T  # [n_pts, coarse_dim]
+
+    def fetch_coarse_interp(self, pts):
+        pts = pts / self.radius
+        coarse_data = interp_regular(
+            self.data.unsqueeze(0), pts.view(1, -1, 1, 1, 3))
+        return coarse_data.T
 
     def render(self, sh_data, mask, rays_d, intersections):
         batch, nintrs = mask.shape
@@ -260,7 +267,7 @@ class VqVaePlenoxel(nn.Module):
         intrs_pts = intrs_pts[intrs_pts_mask]
 
         """Get the coarse patches corresponding to the points"""
-        coarse_patches = self.fetch_coarse(intrs_pts)  # [n_pts, coarse_dim]
+        coarse_patches = self.fetch_coarse_interp(intrs_pts)  # [n_pts, coarse_dim]
 
         """Quantize"""
         # quantized: n_pts, coarse_dim
