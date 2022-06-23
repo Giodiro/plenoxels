@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from plenoxels.models.utils import get_intersections, positional_encoding
+from plenoxels.models.utils import get_intersections, positional_encoding, interp_regular
 from plenoxels.nerf_rendering import sigma2alpha, shrgb2rgb, depth_map
 
 
@@ -77,18 +77,105 @@ class VectorQuantizerEMA(nn.Module):
         return loss, quantized, perplexity, encodings
 
 
-class Decoder(nn.Module):
-    def __init__(self, fine_reso, output_dim):
-        super(Decoder, self).__init__()
-        self.reso0 = fine_reso
-        self.output_dim = output_dim
+class MLPDecoderWithPE(nn.Module):
+    def __init__(self, embedding_dim: int, out_dim: int, coarse_reso: int, radius: int, num_freqs_pt: int, num_freqs_dir: int):
+        super(MLPDecoderWithPE, self).__init__()
+        self.coarse_reso = coarse_reso
+        self.radius = radius
+        self.num_freqs_pt = num_freqs_pt
+        self.num_freqs_dir = num_freqs_dir
+        self.fine_mlp_h_size = 32
+        self.embedding_dim = embedding_dim
+        self.out_dim = out_dim
 
-    def forward(self, inputs):
-        """
-        :param inputs: B, D
-        :return: B, R, R, R, Do
-        """
-        return inputs.view(inputs.shape[0], self.reso0, self.reso0, self.reso0, self.output_dim)
+        self.fine_mlp = nn.Sequential(
+            nn.Linear(self.embedding_dim + 6 * (self.num_freqs_dir + self.num_freqs_pt), self.fine_mlp_h_size),
+            nn.ReLU(),
+            nn.Linear(self.fine_mlp_h_size, self.fine_mlp_h_size),
+            nn.ReLU(),
+            nn.Linear(self.fine_mlp_h_size, self.out_dim)
+        )
+        self.reset_params()
+
+    def reset_params(self):
+        torch.nn.init.zeros_(self.fine_mlp[-1].bias)
+
+    def forward(self, patch_data, pts, rays_d, pts_mask):
+        """From the patch-quantized data + position within the patch to some SH or RGB data"""
+        # Convert world coordinates to the relative coordinate of points within their coarse-grid cell.
+        # Relative coordinates are normalized between -1, 1.
+        pts_coarse_coo = pts * (self.coarse_reso / (self.radius * 2)) + self.coarse_reso / 2
+        coarse_voxel_centers = torch.floor(pts_coarse_coo)
+        pts_fine_coo = (pts_coarse_coo - coarse_voxel_centers) * 2 - 1  # [-1, 1]
+
+        expanded_dirs = rays_d.unsqueeze(1).expand(pts_mask.shape[0], pts_mask.shape[1], 3)[pts_mask]
+        pts_fine_coo_pe = positional_encoding(pts_fine_coo, expanded_dirs, self.num_freqs_pt, self.num_freqs_dir)
+        fine_data = torch.cat((patch_data, pts_fine_coo_pe), dim=1)
+        return self.fine_mlp(fine_data)
+
+
+class ResBlock3d(nn.Module):
+    def __init__(self, in_channels, out_channels, num_groups=32):
+        super(ResBlock3d, self).__init__()
+        self.conv1 = torch.nn.Conv3d(in_channels, out_channels, kernel_size=(3, 3, 3), padding=1)
+        self.conv2 = torch.nn.Conv3d(out_channels, out_channels, kernel_size=(3, 3, 3), padding=1)
+        if in_channels == out_channels:
+            self.conv_id = torch.nn.Identity()
+        else:
+            self.conv_id = torch.nn.Conv3d(in_channels, out_channels, kernel_size=(1, 1, 1))
+        self.norm1 = torch.nn.GroupNorm(num_groups, in_channels)
+        self.norm2 = torch.nn.GroupNorm(num_groups, out_channels)
+
+    def forward(self, x0):
+        x = self.norm1(x0)
+        x = F.hardswish(x)
+        x = self.conv1(x)
+        x = self.norm2(x)
+        x = F.hardswish(x)
+        x = self.conv2(x)
+        x = x + self.conv_id(x0)
+        return x
+
+
+class UpsamplingPatchDecoder(nn.Module):
+    def __init__(self, embedding_dim: int, out_dim: int, coarse_reso: int, radius: int):
+        super(UpsamplingPatchDecoder, self).__init__()
+
+        self.embedding_dim = embedding_dim
+        self.coarse_reso = coarse_reso
+        self.radius = radius
+        self.out_dim = out_dim
+        self.fine_reso = 4
+        self.fine_reso_1 = 3
+        self.fine_reso_2 = (6, 6, 6)
+        self.fine_reso_3 = (12, 12, 12)
+        self.fine_reso_start = 3
+        self.ch_start = 32
+        self.upsmp_fc1 = nn.Linear(self.embedding_dim, (self.fine_reso_1 ** 3) * self.ch_start)
+        self.conv_blocks = nn.Sequential(
+            torch.nn.Conv3d(self.ch_start, self.ch_start * 2, kernel_size=(1, 1, 1)),   # size: fr1, ch: *2
+            torch.nn.Upsample(size=self.fine_reso_2, mode='nearest'),                   # size: fr2, ch: *2
+            ResBlock3d(self.ch_start * 2, self.ch_start * 4),                           # size: fr2, ch: *4
+            torch.nn.Upsample(size=self.fine_reso_3, mode='nearest'),                   # size: fr3, ch: *4
+            ResBlock3d(self.ch_start * 4, self.ch_start * 4),                           # size: fr3, ch: *4
+            torch.nn.GroupNorm(32, self.ch_start * 4),
+            torch.nn.Hardswish(),
+            torch.nn.Conv3d(self.ch_start * 4, self.out_dim, kernel_size=(3, 3, 3), padding=1)
+        )
+
+    def forward(self, patch_data, pts, rays_d, pts_mask):
+        """Upsample patch_data until it's of some reasonable fine-reso size, then fetch the
+        right pt interpolating"""
+        pts_coarse_coo = pts * (self.coarse_reso / (self.radius * 2)) + self.coarse_reso / 2
+        coarse_voxel_centers = torch.floor(pts_coarse_coo)
+        pts_fine_coo = (pts_coarse_coo - coarse_voxel_centers) * 2 - 1  # [-1, 1]
+
+        patch_data = self.upsmp_fc1(patch_data)
+        patch_data = patch_data.reshape(
+            patch_data.shape[0], self.ch_start, self.fine_reso_start, self.fine_reso_start, self.fine_reso_start)
+        patch_data = self.conv_blocks(patch_data)  # B, Od, D, W, H
+        point_in_patch = interp_regular(grid=patch_data, pts=pts_fine_coo.view(pts_fine_coo.shape[0], 1, 1, 1, 3))
+        return point_in_patch
 
 
 class VqVaePlenoxel(nn.Module):
@@ -108,7 +195,6 @@ class VqVaePlenoxel(nn.Module):
         self.step_size, self.n_intersections = self.calc_step_size()
         print("Ray-marching with step-size = %.4e  -  %d intersections" %
               (self.step_size, self.n_intersections))
-        self.fine_mlp_h_size = 32
 
         self.data = nn.Parameter(torch.empty(
             self.embedding_dim, coarse_reso, coarse_reso, coarse_reso))
@@ -117,18 +203,13 @@ class VqVaePlenoxel(nn.Module):
             embedding_dim=self.embedding_dim,
             commitment_cost=self.commitment_cost,
             decay=0.99)
-        self.fine_mlp = nn.Sequential(
-            nn.Linear(self.embedding_dim + 6 * (self.num_freqs_dir + self.num_freqs_pt), self.fine_mlp_h_size),
-            nn.ReLU(),
-            nn.Linear(self.fine_mlp_h_size, self.fine_mlp_h_size),
-            nn.ReLU(),
-            nn.Linear(self.fine_mlp_h_size, self.fine_data_dim)
-        )
+        self.decoder = MLPDecoderWithPE(
+            embedding_dim=self.embedding_dim, coarse_reso=self.coarse_reso, radius=self.radius,
+            num_freqs_pt=self.num_freqs_pt, num_freqs_dir=self.num_freqs_dir)
         self.reset_params()
 
     def reset_params(self):
-        torch.nn.init.normal_(self.data, mean=0, std=0.5)
-        torch.nn.init.zeros_(self.fine_mlp[-1].bias)
+        torch.nn.init.normal_(self.data)
 
     def calc_step_size(self) -> Tuple[float, int]:
         step_size_factor = 4
@@ -144,30 +225,6 @@ class VqVaePlenoxel(nn.Module):
         pts = torch.floor(pts).clamp(0, self.coarse_reso - 1).long()
         coarse_data = self.data[:, pts[:, 0], pts[:, 1], pts[:, 2]]
         return coarse_data.T  # [n_pts, coarse_dim]
-
-    def world2finecoo(self, pts: torch.Tensor) -> torch.Tensor:
-        """Convert world coordinates to the relative coordinate of points within their coarse-grid cell.
-        Relative coordinates are normalized between -1, 1.
-        """
-        # from [-radius, +radius] to [0, coarse_reso]
-        pts_coarse_coo = pts * (self.coarse_reso / (self.radius * 2)) + self.coarse_reso / 2
-        coarse_voxel_centers = torch.floor(pts_coarse_coo)
-        pts_fine_coo = pts_coarse_coo - coarse_voxel_centers
-        return pts_fine_coo * 2 - 1
-
-    def positional_encoding(self, pts, dirs, pts_mask):
-        """
-        :param pts:   [n_mask, 3]
-        :param dirs:    [batch, 3]
-        :param pts_mask:    [batch, n_intrs]
-        :return:  [n_mask, 6 * (self.num_freqs_pt + self.num_freqs_dir)]
-        """
-        expanded_dirs = dirs.unsqueeze(1).expand(pts_mask.shape[0], pts_mask.shape[1], 3)[pts_mask]
-        return positional_encoding(pts, expanded_dirs, self.num_freqs_pt, self.num_freqs_dir)
-
-    def encode_fine(self, patch_data, coo_data):
-        fine_data = torch.cat((patch_data, coo_data), dim=1)
-        return self.fine_mlp(fine_data)
 
     def render(self, sh_data, mask, rays_d, intersections):
         batch, nintrs = mask.shape
@@ -210,9 +267,7 @@ class VqVaePlenoxel(nn.Module):
         commitment_loss, quantized, perplexity, _ = self.vq_vae(coarse_patches)
 
         """From the patch-quantized data + position within the patch to some SH or RGB data"""
-        pts_fine_coo = self.world2finecoo(intrs_pts)
-        pts_fine_coo_pe = self.positional_encoding(pts_fine_coo, rays_d, intrs_pts_mask)
-        interp_data = self.encode_fine(quantized, pts_fine_coo_pe)
+        interp_data = self.decoder(quantized, intrs_pts, rays_d, intrs_pts_mask)
 
         """Rendering"""
         rgb, depth, alpha = self.render(interp_data, intrs_pts_mask, rays_d, intersections)
