@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from plenoxels.models.utils import get_intersections, positional_encoding
+from plenoxels.models.utils import get_intersections, positional_encoding, interp_regular
 from plenoxels.nerf_rendering import sigma2alpha, shrgb2rgb, depth_map
 
 
@@ -127,7 +127,7 @@ class VqVaePlenoxel(nn.Module):
         self.reset_params()
 
     def reset_params(self):
-        torch.nn.init.normal_(self.data, mean=0, std=0.5)
+        torch.nn.init.normal_(self.data, std=0.1)
         torch.nn.init.zeros_(self.fine_mlp[-1].bias)
 
     def calc_step_size(self) -> Tuple[float, int]:
@@ -144,6 +144,12 @@ class VqVaePlenoxel(nn.Module):
         pts = torch.floor(pts).clamp(0, self.coarse_reso - 1).long()
         coarse_data = self.data[:, pts[:, 0], pts[:, 1], pts[:, 2]]
         return coarse_data.T  # [n_pts, coarse_dim]
+
+    def fetch_coarse_interp(self, pts):
+        pts = pts / self.radius
+        coarse_data = interp_regular(
+            self.data.unsqueeze(0), pts.view(1, -1, 1, 1, 3))
+        return coarse_data.T
 
     def world2finecoo(self, pts: torch.Tensor) -> torch.Tensor:
         """Convert world coordinates to the relative coordinate of points within their coarse-grid cell.
@@ -203,7 +209,7 @@ class VqVaePlenoxel(nn.Module):
         intrs_pts = intrs_pts[intrs_pts_mask]
 
         """Get the coarse patches corresponding to the points"""
-        coarse_patches = self.fetch_coarse(intrs_pts)  # [n_pts, coarse_dim]
+        coarse_patches = self.fetch_coarse_interp(intrs_pts)  # [n_pts, coarse_dim]
 
         """Quantize"""
         # quantized: n_pts, coarse_dim
