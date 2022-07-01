@@ -125,7 +125,7 @@ class SingleResoDictPlenoxels(nn.Module):
             sh_interp = interp_regular(grid, pts).T
 
         dict_interp = torch.ops.plenoxels.dict_interpolate(
-            self.cgrid[grid_id], self.atoms, intrs_pts, self.fine_reso, self.coarse_reso)
+            self.cgrids[grid_id], self.atoms, intrs_pts, self.fine_reso, self.coarse_reso)
 
         # 1. Process density: Un-masked sigma (batch, n_intrs-1), and compute.
         sigma_masked = dict_interp[:, -1]
