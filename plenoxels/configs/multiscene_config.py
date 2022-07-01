@@ -31,6 +31,7 @@ _C.data.max_tr_frames = None
 _C.data.max_ts_frames = None
 
 _C.model = CN()
+_C.model.type = "single_reso"
 _C.model.num_atoms = [128]
 _C.model.coarse_reso = 64
 _C.model.fine_reso = [3]

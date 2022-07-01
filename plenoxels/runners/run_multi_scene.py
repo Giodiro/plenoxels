@@ -12,6 +12,7 @@ from tqdm import tqdm
 from plenoxels.configs import multiscene_config, parse_config
 from plenoxels.ema import EMA
 from plenoxels.models import DictPlenoxels, make_weights_unit_norm
+from plenoxels.models.single_res_multi_scene import SingleResoDictPlenoxels
 from plenoxels.tc_harmonics import plenoxel_sh_encoder
 
 from plenoxels.runners.utils import *
@@ -135,18 +136,18 @@ def train_epoch(renderer,
                 psnr = plot_ts(
                     ts_dset, ts_dset_id, renderer, log_dir, render_fn=default_render_fn(renderer, ts_dset_id),
                     iteration=tot_step, batch_size=batch_size, image_id=0, verbose=True,
-                    summary_writer=TB_WRITER, plot_type="matplotlib")
-                render_patches(renderer, patch_level=0, log_dir=log_dir, iteration=tot_step,
-                               summary_writer=TB_WRITER)
-                if len(renderer.atoms) > 1:
-                    render_patches(renderer, patch_level=1, log_dir=log_dir, iteration=tot_step,
-                                   summary_writer=TB_WRITER)
+                    summary_writer=TB_WRITER, plot_type="imageio")
+                # render_patches(renderer, patch_level=0, log_dir=log_dir, iteration=tot_step,
+                #                summary_writer=TB_WRITER)
+                # if len(renderer.atoms) > 1:
+                #     render_patches(renderer, patch_level=1, log_dir=log_dir, iteration=tot_step,
+                #                    summary_writer=TB_WRITER)
                 TB_WRITER.add_scalar(f"TestPSNR/D{ts_dset_id}", psnr, tot_step)
-            TB_WRITER.add_histogram(f"patches/sigma", renderer.atoms[0][..., -1].view(-1), tot_step)
-            TB_WRITER.add_histogram(f"patches/R", renderer.atoms[0][..., 0].view(-1), tot_step)
-            TB_WRITER.add_histogram(f"patches/G", renderer.atoms[0][..., 1].view(-1), tot_step)
-            TB_WRITER.add_histogram(f"patches/B", renderer.atoms[0][..., 2].view(-1), tot_step)
-            TB_WRITER.add_histogram(f"weights/white", renderer.grids[0][0].view(renderer.coarse_reso, renderer.coarse_reso, renderer.coarse_reso, -1)[:5, :5, :5].reshape(-1), tot_step)
+            # TB_WRITER.add_histogram(f"patches/sigma", renderer.atoms[0][..., -1].view(-1), tot_step)
+            # TB_WRITER.add_histogram(f"patches/R", renderer.atoms[0][..., 0].view(-1), tot_step)
+            # TB_WRITER.add_histogram(f"patches/G", renderer.atoms[0][..., 1].view(-1), tot_step)
+            # TB_WRITER.add_histogram(f"patches/B", renderer.atoms[0][..., 2].view(-1), tot_step)
+            # TB_WRITER.add_histogram(f"weights/white", renderer.grids[0][0].view(renderer.coarse_reso, renderer.coarse_reso, renderer.coarse_reso, -1)[:5, :5, :5].reshape(-1), tot_step)
             torch.save({
                 'epoch': e,
                 'tot_step': tot_step,
@@ -160,11 +161,20 @@ def train_epoch(renderer,
 def init_model(cfg, tr_dsets, checkpoint_data=None):
     sh_encoder = plenoxel_sh_encoder(cfg.sh.degree)
     radii = [dset[0].radius for dset in tr_dsets]
-    renderer = DictPlenoxels(
-        sh_deg=cfg.sh.degree, sh_encoder=sh_encoder,
-        radius=radii, num_atoms=cfg.model.num_atoms, num_scenes=len(tr_dsets),
-        fine_reso=cfg.model.fine_reso, coarse_reso=cfg.model.coarse_reso,
-        efficient_dict=cfg.model.efficient_dict, noise_std=cfg.model.noise_std, use_csrc=cfg.use_csrc)
+    if cfg.model.type == "multi_reso":
+        renderer = DictPlenoxels(
+            sh_deg=cfg.sh.degree, sh_encoder=sh_encoder,
+            radius=radii, num_atoms=cfg.model.num_atoms, num_scenes=len(tr_dsets),
+            fine_reso=cfg.model.fine_reso, coarse_reso=cfg.model.coarse_reso,
+            efficient_dict=cfg.model.efficient_dict, noise_std=cfg.model.noise_std, use_csrc=cfg.use_csrc)
+    elif cfg.model.type == "single_reso":
+        renderer = SingleResoDictPlenoxels(
+            sh_deg=cfg.sh.degree, sh_encoder=sh_encoder, radius=radii,
+            num_atoms=cfg.model.num_atoms[0], num_scenes=len(tr_dsets),
+            fine_reso=cfg.model.fine_reso[0], coarse_reso=cfg.model.coarse_reso,
+            dict_only_sigma=True)
+    else:
+        raise ValueError(f"Model type {cfg.model.type} invalid")
     if checkpoint_data is not None:
         renderer.load_state_dict(checkpoint_data['model'])
         print("=> Loaded model state from checkpoint")
@@ -191,8 +201,6 @@ def init_optim(cfg, model, transfer_learning=False, checkpoint_data=None) -> tor
     if transfer_learning:
         optim = torch.optim.Adam(model.grids, lr=cfg.optim.lr)
     else:
-        # optim = torch.optim.Adam([{'params': model.atoms.parameters(), 'lr': cfg.optim.lr},
-        #                           {'params': model.grids.parameters(), 'lr': cfg.optim.lr}])
         optim = torch.optim.Adam(model.parameters(), lr=cfg.optim.lr)
     if checkpoint_data is not None:
         optim.load_state_dict(checkpoint_data['optimizer'])

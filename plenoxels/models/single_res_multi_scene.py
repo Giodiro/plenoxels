@@ -26,7 +26,6 @@ class SingleResoDictPlenoxels(nn.Module):
                  radius: Union[float, List[float]],
                  num_atoms: int,
                  num_scenes: int,
-                 use_csrc: bool,
                  dict_only_sigma: bool):
         super().__init__()
         sh_dim = (sh_deg + 1) ** 2
@@ -37,7 +36,6 @@ class SingleResoDictPlenoxels(nn.Module):
         self.num_atoms = num_atoms
         self.data_dim = total_data_channels
         self.sh_encoder = sh_encoder
-        self.use_csrc = use_csrc
         self.num_scenes = num_scenes
         self.dict_only_sigma = dict_only_sigma
 
@@ -49,10 +47,7 @@ class SingleResoDictPlenoxels(nn.Module):
               (self.step_size, self.n_intersections))
 
         def get_reso(_in_reso: int) -> Tuple[int, ...]:
-            if self.use_csrc:
-                return (_in_reso * _in_reso * _in_reso, )
-            else:
-                return (_in_reso, _in_reso, _in_reso)
+            return (_in_reso * _in_reso * _in_reso, )
 
         if self.dict_only_sigma:
             self.dict_data_dim = 1
