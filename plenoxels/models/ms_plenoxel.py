@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from plenoxels.nerf_rendering import shrgb2rgb, depth_map, sigma2alpha
-from plenoxels.models.utils import ensure_list, positional_encoding, sample_proposal
+from plenoxels.models.utils import ensure_list, positional_encoding, get_intersections
 
 try:
     spec = PathFinder().find_spec("c_ext", [str(Path(__file__).resolve().parents[1])])
@@ -268,7 +268,7 @@ class DictPlenoxels(nn.Module):
         return result, None, None, None
         """
 
-        intrs_pts, intersections, intrs_pts_mask = sample_proposal(
+        intrs_pts, intersections, intrs_pts_mask = get_intersections(
             rays_o, rays_d, self.radius[grid_id], self.n_intersections, self.step_size)
         batch = intersections.shape[0]
         nintrs = intersections.shape[1] - 1

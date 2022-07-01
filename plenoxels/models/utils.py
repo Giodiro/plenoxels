@@ -67,22 +67,3 @@ def ensure_list(el, expand_size: Optional[int] = None) -> list:
         if expand_size:
             return [el] * expand_size
         return [el]
-
-
-@torch.no_grad()
-def sample_proposal(rays_o, rays_d, radius, n_intersections, step_size) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    dev, dt = rays_o.device, rays_o.dtype
-    rays_d_nodiv0 = torch.where(rays_d == 0, torch.full_like(rays_d, 1e-6), rays_d)
-    offsets_pos = (radius - rays_o) / rays_d_nodiv0  # [batch, 3]
-    offsets_neg = (-radius - rays_o) / rays_d_nodiv0  # [batch, 3]
-    offsets_in = torch.minimum(offsets_pos, offsets_neg)  # [batch, 3]
-    start = torch.amax(offsets_in, dim=-1, keepdim=True)  # [batch, 1]
-
-    steps = torch.arange(n_intersections, dtype=dt, device=dev).unsqueeze(0)  # [1, n_intrs]
-    steps = steps.repeat(rays_d.shape[0], 1)   # [batch, n_intrs]
-    intersections = start + steps * step_size  # [batch, n_intrs]
-    intersections_trunc = intersections[:, :-1]
-    intrs_pts = rays_o[..., None, :] + rays_d[..., None, :] * intersections_trunc[..., None]
-    # noinspection PyUnresolvedReferences
-    mask = ((-self.radius[dset_id] <= intrs_pts) & (intrs_pts <= self.radius[dset_id])).all(dim=-1)
-    return intrs_pts, intersections, mask

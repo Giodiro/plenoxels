@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from plenoxels.models.utils import interp_regular, ensure_list, sample_proposal
+from plenoxels.models.utils import interp_regular, ensure_list, get_intersections
 from plenoxels.nerf_rendering import shrgb2rgb, depth_map, sigma2alpha
 
 try:
@@ -110,7 +110,7 @@ class SingleResoDictPlenoxels(nn.Module):
         return (pts + radius) / (radius * 2)
 
     def forward(self, rays_o, rays_d, grid_id, consistency_coef=0, level=None, run_fp16=False, verbose=False):
-        intrs_pts, intersections, intrs_pts_mask = sample_proposal(
+        intrs_pts, intersections, intrs_pts_mask = get_intersections(
             rays_o, rays_d, self.radius[grid_id], self.n_intersections, self.step_size)
         batch = intersections.shape[0]
         nintrs = intersections.shape[1] - 1
