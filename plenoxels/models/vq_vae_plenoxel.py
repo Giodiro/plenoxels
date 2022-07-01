@@ -74,7 +74,7 @@ class VectorQuantizerEMA(nn.Module):
         avg_probs = torch.mean(encodings, dim=0)
         perplexity = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-10)))
 
-        return loss, quantized, perplexity, encodings
+        return loss, quantized, perplexity, encodings, encoding_indices
 
 
 class MLPDecoderWithPE(nn.Module):
@@ -84,16 +84,18 @@ class MLPDecoderWithPE(nn.Module):
         self.radius = radius
         self.num_freqs_pt = num_freqs_pt
         self.num_freqs_dir = num_freqs_dir
-        self.fine_mlp_h_size = 32
+        self.fine_mlp_h_size = 64
         self.embedding_dim = embedding_dim
         self.out_dim = out_dim
 
         self.fine_mlp = nn.Sequential(
             nn.Linear(self.embedding_dim + 6 * (self.num_freqs_dir + self.num_freqs_pt), self.fine_mlp_h_size),
+            nn.BatchNorm1d(self.fine_mlp_h_size),
             nn.ReLU(),
-            nn.Linear(self.fine_mlp_h_size, self.fine_mlp_h_size),
+            nn.Linear(self.fine_mlp_h_size, self.fine_mlp_h_size // 4),
+            nn.BatchNorm1d(self.fine_mlp_h_size // 4),
             nn.ReLU(),
-            nn.Linear(self.fine_mlp_h_size, self.out_dim)
+            nn.Linear(self.fine_mlp_h_size // 4, self.out_dim)
         )
         self.reset_params()
 
@@ -145,22 +147,29 @@ class UpsamplingPatchDecoder(nn.Module):
         self.coarse_reso = coarse_reso
         self.radius = radius
         self.out_dim = out_dim
-        self.fine_reso = 4
-        self.fine_reso_1 = 3
+        self.fine_reso_1 = 2
         self.fine_reso_2 = (6, 6, 6)
         self.fine_reso_3 = (12, 12, 12)
-        self.fine_reso_start = 3
-        self.ch_start = 32
+        self.ch_start = 16
+        self.gs = 16
         self.upsmp_fc1 = nn.Linear(self.embedding_dim, (self.fine_reso_1 ** 3) * self.ch_start)
         self.conv_blocks = nn.Sequential(
-            torch.nn.Conv3d(self.ch_start, self.ch_start * 2, kernel_size=(1, 1, 1)),   # size: fr1, ch: *2
-            torch.nn.Upsample(size=self.fine_reso_2, mode='nearest'),                   # size: fr2, ch: *2
-            ResBlock3d(self.ch_start * 2, self.ch_start * 4),                           # size: fr2, ch: *4
-            torch.nn.Upsample(size=self.fine_reso_3, mode='nearest'),                   # size: fr3, ch: *4
-            ResBlock3d(self.ch_start * 4, self.ch_start * 4),                           # size: fr3, ch: *4
-            torch.nn.GroupNorm(32, self.ch_start * 4),
+            torch.nn.Upsample(size=self.fine_reso_2, mode='nearest'),
+            torch.nn.InstanceNorm3d(self.ch_start),
             torch.nn.Hardswish(),
-            torch.nn.Conv3d(self.ch_start * 4, self.out_dim, kernel_size=(3, 3, 3), padding=1)
+            torch.nn.Conv3d(self.ch_start, self.ch_start, kernel_size=(3, 3, 3), padding=1),
+            torch.nn.InstanceNorm3d(self.ch_start),
+            torch.nn.Hardswish(),
+            torch.nn.Conv3d(self.ch_start, self.out_dim, kernel_size=(3, 3, 3), padding=1)
+
+            #torch.nn.Conv3d(self.ch_start, self.ch_start * 2, kernel_size=(1, 1, 1)),   # size: fr1, ch: *2
+            #torch.nn.Upsample(size=self.fine_reso_2, mode='nearest'),                   # size: fr2, ch: *2
+            #ResBlock3d(self.ch_start * 2, self.ch_start * 2, self.gs),                   # size: fr2, ch: *4
+            #torch.nn.Upsample(size=self.fine_reso_3, mode='nearest'),                   # size: fr3, ch: *4
+            #ResBlock3d(self.ch_start * 4, self.ch_start * 4),                           # size: fr3, ch: *4
+            #torch.nn.GroupNorm(self.gs, self.ch_start * 2),
+            #torch.nn.Hardswish(),
+            #torch.nn.Conv3d(self.ch_start * 2, self.out_dim, kernel_size=(3, 3, 3), padding=1)
         )
 
     def forward(self, patch_data, pts, rays_d, pts_mask):
@@ -169,13 +178,15 @@ class UpsamplingPatchDecoder(nn.Module):
         pts_coarse_coo = pts * (self.coarse_reso / (self.radius * 2)) + self.coarse_reso / 2
         coarse_voxel_centers = torch.floor(pts_coarse_coo)
         pts_fine_coo = (pts_coarse_coo - coarse_voxel_centers) * 2 - 1  # [-1, 1]
-
-        patch_data = self.upsmp_fc1(patch_data)
-        patch_data = patch_data.reshape(
-            patch_data.shape[0], self.ch_start, self.fine_reso_start, self.fine_reso_start, self.fine_reso_start)
-        patch_data = self.conv_blocks(patch_data)  # B, Od, D, W, H
+        patch_data = self.upsample_embeddings(patch_data)
         point_in_patch = interp_regular(grid=patch_data, pts=pts_fine_coo.view(pts_fine_coo.shape[0], 1, 1, 1, 3))
         return point_in_patch
+
+    def upsample_embeddings(self, embeddings):
+        embeddings = self.upsmp_fc1(embeddings)
+        embeddings = embeddings.reshape(embeddings.shape[0], self.ch_start, self.fine_reso_1, self.fine_reso_1, self.fine_reso_1)
+        embeddings = self.conv_blocks(embeddings)
+        return embeddings
 
 
 class VqVaePlenoxel(nn.Module):
@@ -193,7 +204,7 @@ class VqVaePlenoxel(nn.Module):
         self.sh_encoder = sh_encoder
         self.fine_data_dim = ((sh_deg + 1) ** 2) * 3 + 1
         self.step_size, self.n_intersections = self.calc_step_size()
-        self.decoder_type = "cnn"
+        self.decoder_type = "mlp"
         print("Ray-marching with step-size = %.4e  -  %d intersections" %
               (self.step_size, self.n_intersections))
 
@@ -218,7 +229,7 @@ class VqVaePlenoxel(nn.Module):
         self.reset_params()
 
     def reset_params(self):
-        torch.nn.init.normal_(self.data)
+        torch.nn.init.normal_(self.data, std=0.1)
 
     def calc_step_size(self) -> Tuple[float, int]:
         step_size_factor = 4
@@ -275,13 +286,22 @@ class VqVaePlenoxel(nn.Module):
         intrs_pts = intrs_pts[intrs_pts_mask]
 
         """Get the coarse patches corresponding to the points"""
-        coarse_patches = self.fetch_coarse_interp(intrs_pts)  # [n_pts, coarse_dim]
+        coarse_patches = self.fetch_coarse(intrs_pts)  # [n_pts, coarse_dim]
 
         """Quantize"""
         # quantized: n_pts, coarse_dim
-        commitment_loss, quantized, perplexity, _ = self.vq_vae(coarse_patches)
+        commitment_loss, quantized, perplexity, _, enc_ids = self.vq_vae(coarse_patches)
 
         """From the patch-quantized data + position within the patch to some SH or RGB data"""
+        #uniq_ids, inv_ids = torch.unique(enc_ids, return_inverse=True)
+        #uniq_quantized = quantized[uniq_ids]
+        #uniq_quantized_ups = self.decoder.upsample_embeddings(uniq_quantized)
+        #ups_shape = uniq_quantized_ups.shape
+        #uniq_quantized_ups = uniq_quantized_ups.view(ups_shape[0], -1)
+        #quantized_ups = torch.gather(
+        #    input=uniq_quantized_ups, dim=0,
+        #    index=inv_ids.expand(inv_ids.shape[0], uniq_quantized_ups.shape[1]))
+        #interp_data = self.decoder(quantized_ups.view(-1, *ups_shape[1:]), intrs_pts, rays_d, intrs_pts_mask)
         interp_data = self.decoder(quantized, intrs_pts, rays_d, intrs_pts_mask)
 
         """Rendering"""
