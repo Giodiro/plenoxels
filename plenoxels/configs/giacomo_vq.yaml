@@ -1,20 +1,21 @@
-expname: "plenoxel_lego_512"
+expname: "vqvae_std0.1_f11_cc0.1_coarsenointerp_fine-mlp_s4"
 
 data:
   datadir: "/data/DATASETS/SyntheticNerf/lego"
-  resolution: 512
+  resolution: 128
   max_tr_frames: None
   max_ts_frames: 10
+  downsample: 4
 
 model:
-  resolution: 32
-  coarse_dim: 64
+  resolution: 64
+  coarse_dim: 32
   num_embeddings: 512
-  num_freqs_pt: 6
-  num_freqs_dir: 4
+  num_freqs_pt: 1
+  num_freqs_dir: 1
 
 optim:
-  batch_size: 4000
+  batch_size: 2000
   num_epochs: 10
   lr: 1e-2
   cosine: True

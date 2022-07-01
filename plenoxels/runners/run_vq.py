@@ -40,7 +40,7 @@ def train_epoch(renderer, tr_loader, ts_dset, optim, lr_sched, max_epochs, log_d
         losses = defaultdict(lambda: EMA(ema_weight))
         renderer.train()
         pb = tqdm(total=len(tr_loader), desc=f"Epoch {e + 1}")
-        for batch in tr_loader:
+        for bi, batch in enumerate(tr_loader):
             rays_o, rays_d, imgs = batch
             imgs = imgs.cuda()
             rays_o = rays_o.cuda()
@@ -70,10 +70,12 @@ def train_epoch(renderer, tr_loader, ts_dset, optim, lr_sched, max_epochs, log_d
         pb.close()
         # Save and evaluate model
         time_s = time.time()
-        psnr = plot_ts(
-            ts_dset, 0, renderer, log_dir,
-            iteration=tot_step, batch_size=batch_size, image_id=0, verbose=True,
-            summary_writer=TB_WRITER, render_fn=default_render_fn(renderer), plot_type="imageio")
+        with torch.autograd.no_grad():
+            renderer.eval()
+            psnr = plot_ts(
+                ts_dset, 0, renderer, log_dir,
+                iteration=tot_step, batch_size=batch_size, image_id=0, verbose=True,
+                summary_writer=TB_WRITER, render_fn=default_render_fn(renderer), plot_type="imageio")
         TB_WRITER.add_scalar(f"TestPSNR", psnr, tot_step)
         torch.save({
             'epoch': e,
