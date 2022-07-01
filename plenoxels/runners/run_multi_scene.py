@@ -68,7 +68,6 @@ def train_epoch(renderer,
         pb = tqdm(total=batches_per_epoch * num_dsets, desc=f"Epoch {e + 1}")
         level = -1
         renderer.train()
-        rays_d = None
         for _ in range(0, batches_per_epoch, batches_per_dset):
             # Each epoch, rotate what resolution is being focused on
             for dset_id in range(num_dsets):
@@ -101,8 +100,6 @@ def train_epoch(renderer,
                             grad_scaler.update()
                         else:
                             loss.backward()
-                            #print("atoms[0] grad: %f" % (renderer.atoms[0].grad.sum()))
-                            #print("grid[0] grad: %f" % (renderer.grids[0][0].grad.sum()))
                             optim.step()
 
                         if False:
@@ -130,11 +127,6 @@ def train_epoch(renderer,
                 lr_sched.step()
                 TB_WRITER.add_scalar("lr", lr_sched.get_last_lr()[0], tot_step)  # one lr per parameter-group
         pb.close()
-        #for _ in range(100):
-        #    loss = renderer.closs_v2(0, rays_d[:1])
-        #    closs_optim.zero_grad()
-        #    loss.backward()
-        #    closs_optim.step()
         # Save and evaluate model
         time_s = time.time()
         renderer.eval()

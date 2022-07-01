@@ -1,4 +1,4 @@
-from typing import Union, List, Optional, Tuple
+from typing import Union, List, Tuple
 from importlib.machinery import PathFinder
 from pathlib import Path
 import math
@@ -8,41 +8,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from plenoxels.nerf_rendering import shrgb2rgb, depth_map, sigma2alpha
+from plenoxels.models.utils import ensure_list, positional_encoding, sample_proposal
 
 try:
     spec = PathFinder().find_spec("c_ext", [str(Path(__file__).resolve().parents[1])])
     torch.ops.load_library(spec.origin)
 except:
     print("Failed to load C-extension necessary for DictPlenoxels model")
-
-
-def ensure_list(el, expand_size: Optional[int] = None) -> list:
-    if isinstance(el, list):
-        return el
-    elif isinstance(el, tuple):
-        return list(el)
-    else:
-        if expand_size:
-            return [el] * expand_size
-        return [el]
-
-
-def positional_encoding(pts, dirs, num_freqs_p: int, num_freqs_d: Optional[int] = None):
-    """
-    pts : N, 3
-    dirs : N, 3
-    returns: N, 3 * 2 * (num_freqs_p + num_freqs_d)
-    """
-    if num_freqs_d is None:
-        num_freqs_d = num_freqs_p
-    freq_bands_d = 2 ** torch.arange(num_freqs_d, device=dirs.device)
-    freq_bands_p = 2 ** torch.arange(num_freqs_p, device=pts.device)
-    out_p = pts[..., None] * freq_bands_p * torch.pi
-    out_d = dirs[..., None] * freq_bands_d * torch.pi
-    out_p = out_p.view(-1, num_freqs_p * 3)
-    out_d = out_d.view(-1, num_freqs_d * 3)
-
-    return torch.cat((torch.sin(out_p), torch.cos(out_p), torch.sin(out_d), torch.cos(out_d)), dim=-1)
 
 
 class DictPlenoxels(nn.Module):
@@ -73,6 +45,7 @@ class DictPlenoxels(nn.Module):
         self.num_scenes = num_scenes
         self.num_dicts = len(self.num_atoms)
         self.efficient_dict = efficient_dict
+        self.dict_only_sigma = True
         self.time = 0
 
         assert len(self.num_atoms) == len(self.fine_reso), "Number of atoms != number of fine-reso items"
@@ -295,7 +268,8 @@ class DictPlenoxels(nn.Module):
         return result, None, None, None
         """
 
-        intrs_pts, intersections, intrs_pts_mask = self.sample_proposal(rays_o, rays_d, grid_id)
+        intrs_pts, intersections, intrs_pts_mask = sample_proposal(
+            rays_o, rays_d, self.radius[grid_id], self.n_intersections, self.step_size)
         batch = intersections.shape[0]
         nintrs = intersections.shape[1] - 1
         intrs_pts = intrs_pts[intrs_pts_mask]
