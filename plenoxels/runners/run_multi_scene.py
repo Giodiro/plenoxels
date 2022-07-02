@@ -42,6 +42,7 @@ def train_epoch(renderer,
                 optim,
                 lr_sched: Optional[torch.optim.lr_scheduler._LRScheduler],
                 l1_coef,
+                l2_coef,
                 tv_coef,
                 consistency_coef,
                 batches_per_epoch,
@@ -87,6 +88,8 @@ def train_epoch(renderer,
 
                         # Compute and re-weight all the losses
                         diff_losses = dict(mse=F.mse_loss(rgb_preds, imgs))
+                        if l2_coef > 0:
+                            diff_losses["l2"] += l2_coef * (renderer.cgrids[dset_id].square().sum(-1) - 1).mean()
                         if l1_coef > 0:
                             diff_losses["l1"] = 0
                             for scene_grid in renderer.grids[dset_id]:
@@ -110,7 +113,7 @@ def train_epoch(renderer,
                             closs.backward()
                             closs_optim.step()
 
-                        single_res_multi_scene.make_weights_unit_norm(renderer, with_grad=False, scene_id=dset_id)
+                        # single_res_multi_scene.make_weights_unit_norm(renderer, with_grad=False, scene_id=dset_id)
                         # make_weights_unit_norm(renderer, with_grad=False, scene_id=dset_id)
                         # Clip all the weights to be nonnegative
                         # for grid in renderer.grids:
@@ -253,7 +256,7 @@ if __name__ == "__main__":
                 l1_coef=cfg_.optim.regularization.l1_weight, tv_coef=cfg_.optim.regularization.tv_weight,
                 consistency_coef=cfg_.optim.regularization.consistency_weight, lr_sched=sched_,
                 start_epoch=checkpoint_data['epoch'] + 1, start_tot_step=checkpoint_data['tot_step'] + 1,
-                train_fp16=cfg_.optim.train_fp16)
+                train_fp16=cfg_.optim.train_fp16, l2_coef=cfg_.optim.regularization.l2_weight)
     elif reload_cfg is not None:
         # We're doing a transfer learning experiment. Loading a pretrained model, and fine-tuning on
         # new data.
@@ -280,7 +283,8 @@ if __name__ == "__main__":
                     l1_coef=train_cfg.optim.regularization.l1_weight,
                     tv_coef=train_cfg.optim.regularization.tv_weight,
                     consistency_coef=train_cfg.optim.regularization.consistency_weight,
-                    lr_sched=sched_, train_fp16=train_cfg.optim.train_fp16)
+                    lr_sched=sched_, train_fp16=train_cfg.optim.train_fp16,
+                    l2_coef=cfg_.optim.regularization.l2_weight)
     else:
         # Normal training.
         with open(os.path.join(train_log_dir, "config.yaml"), "w") as fh:
@@ -294,4 +298,4 @@ if __name__ == "__main__":
             log_dir=train_log_dir, batch_size=cfg_.optim.batch_size,
             l1_coef=cfg_.optim.regularization.l1_weight, tv_coef=cfg_.optim.regularization.tv_weight,
             consistency_coef=cfg_.optim.regularization.consistency_weight, lr_sched=sched_,
-            train_fp16=cfg_.optim.train_fp16)
+            train_fp16=cfg_.optim.train_fp16, l2_coef=cfg_.optim.regularization.l2_weight)

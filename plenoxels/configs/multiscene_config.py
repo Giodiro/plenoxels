@@ -19,8 +19,9 @@ _C.optim.cosine = False
 _C.optim.train_fp16 = False
 
 _C.optim.regularization = CN()
-_C.optim.regularization.l1_weight = 0.1
-_C.optim.regularization.tv_weight = 0.01
+_C.optim.regularization.l1_weight = 0.0
+_C.optim.regularization.tv_weight = 0.00
+_C.optim.regularization.l2_weight = 0.00
 _C.optim.regularization.consistency_weight = 0.0
 
 _C.data = CN()
