@@ -14,6 +14,7 @@ from plenoxels.ema import EMA
 from plenoxels.models import DictPlenoxels, make_weights_unit_norm
 from plenoxels.models.single_res_multi_scene import SingleResoDictPlenoxels
 from plenoxels.tc_harmonics import plenoxel_sh_encoder
+from plenoxels.models import single_res_multi_scene
 
 from plenoxels.runners.utils import *
 
@@ -109,6 +110,7 @@ def train_epoch(renderer,
                             closs.backward()
                             closs_optim.step()
 
+                        single_res_multi_scene.make_weights_unit_norm(renderer, with_grad=False, scene_id=dset_id)
                         # make_weights_unit_norm(renderer, with_grad=False, scene_id=dset_id)
                         # Clip all the weights to be nonnegative
                         # for grid in renderer.grids:

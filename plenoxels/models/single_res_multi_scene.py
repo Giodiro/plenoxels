@@ -160,3 +160,10 @@ class SingleResoDictPlenoxels(nn.Module):
         return (f"SingleResoDictPlenoxels(grids={self.grids}, num_atoms={self.num_atoms}, "
                 f"data_dim={self.data_dim}, fine_reso={self.fine_reso}, "
                 f"coarse_reso={self.coarse_reso})")
+
+
+def make_weights_unit_norm(model: SingleResoDictPlenoxels, scene_id: int, with_grad: bool = False):
+    with torch.autograd.set_grad_enabled(with_grad):
+        grid = model.cgrids[scene_id]
+        norms = torch.linalg.norm(grid, ord=2, dim=-1, keepdim=True).clamp_(min=1e-5)  # reso^3, 1
+        grid.data.div_(norms)
