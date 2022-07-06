@@ -12,8 +12,8 @@ def parse_config(defaults):
     args = parser.parse_args()
     # Allow up to two configs, one for reloading and one for training
     reload_cfg = None
-    train_cfg = None
-    assert args.logdir is not None or args.config is not None, "Must specify at least one config"
+    train_cfg = defaults
+    # assert args.logdir is not None or args.config is not None, "Must specify at least one config"
     # Passing both a logdir and a config means train new scenes using pretrained dicts
     if args.logdir is not None:
         logged_config_file = os.path.join(args.logdir, "config.yaml")

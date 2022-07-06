@@ -74,12 +74,12 @@ class DictPlenoxels(nn.Module):
                 else:
                     scene_grids.append(nn.Parameter(torch.empty(*get_reso(coarse_reso), n_atoms)))
             self.grids.append(scene_grids)
-        self.low_rank_mlp = nn.Sequential(
-                nn.Linear(self.data_dim_init * len(self.fine_reso) + (self.num_freqs_p + self.num_freqs_d) * 6, 32),
-                nn.ReLU(),
-                nn.Linear(32, 32),
-                nn.ReLU(),
-                nn.Linear(32, 4))#self.data_dim))
+        # self.low_rank_mlp = nn.Sequential(
+        #         nn.Linear(self.data_dim_init * len(self.fine_reso) + (self.num_freqs_p + self.num_freqs_d) * 6, 32),
+        #         nn.ReLU(),
+        #         nn.Linear(32, 32),
+        #         nn.ReLU(),
+        #         nn.Linear(32, 4))#self.data_dim))
         #self.low_rank_mlp = nn.Linear(self.num_atoms_small + self.num_freqs * 6, self.num_atoms[0], bias=False)
         # self.closs_mlp = nn.Sequential(nn.Linear(3 * (self.fine_reso[0] ** 3), 16), nn.ReLU(), nn.Linear(16, 16), nn.ReLU(), nn.Linear(16, self.num_atoms[0]))
         self.init_params()
@@ -307,8 +307,8 @@ class DictPlenoxels(nn.Module):
                     fine_neighbor_vals = self.atoms[i][
                         fine_neighbors[:,n,0], fine_neighbors[:,n,1], fine_neighbors[:,n,2], ...]  # [n_pts, n_atoms, data_dim]
                     # fine_neighbor_vals = fine_neighbor_vals.view(-1, 4, n_atoms // 4, fine_neighbors.shape[-1])  # [n_pts, 4, n_atoms/4, data_dim]
-                    aug_cnv = torch.cat([coarse_neighbor_vals, positional_encoding(intrs_pts, self.num_freqs)], dim=1)
-                    coarse_neighbor_vals = self.low_rank_mlp(aug_cnv)  # [n_pts, n_atoms]
+                    # aug_cnv = torch.cat([coarse_neighbor_vals, positional_encoding(intrs_pts, self.num_freqs)], dim=1)
+                    # coarse_neighbor_vals = self.low_rank_mlp(aug_cnv)  # [n_pts, n_atoms]
                     result = torch.sum(coarse_neighbor_vals[..., None] * fine_neighbor_vals, dim=-2)  # [n_pts, data_dim]
                     result = result.view(result.shape[0], -1)
 
@@ -321,18 +321,18 @@ class DictPlenoxels(nn.Module):
             # Normalize pts in [0, 1]
             intrs_pts = self.normalize01(intrs_pts, grid_id)
             # Only work with the fine dicts up to the given level
-            data_interp = []
+            data_interp = None
             for i, reso in enumerate(self.fine_reso):
                 out = torch.ops.plenoxels.dict_interpolate(
                     scene_grids[i], self.atoms[i], intrs_pts, reso, self.coarse_reso)
-                data_interp.append(out)
-                #if data_interp is None:
-                #    data_interp = out
-                #else:
-                #    data_interp = data_interp + out
-            data_interp.append(positional_encoding(intrs_pts, rays_d.unsqueeze(1).expand(batch, nintrs, 3)[intrs_pts_mask], self.num_freqs_p, self.num_freqs_d))
-            data_interp = torch.cat(data_interp, dim=1)
-            data_interp = self.low_rank_mlp(data_interp)
+                # data_interp.append(out)
+                if data_interp is None:
+                   data_interp = out
+                else:
+                   data_interp = data_interp + out
+            # data_interp.append(positional_encoding(intrs_pts, rays_d.unsqueeze(1).expand(batch, nintrs, 3)[intrs_pts_mask], self.num_freqs_p, self.num_freqs_d))
+            # data_interp = torch.cat(data_interp, dim=1)
+            # data_interp = self.low_rank_mlp(data_interp)
 
         # 1. Process density: Un-masked sigma (batch, n_intrs-1), and compute.
         sigma_masked = data_interp[:, -1]
