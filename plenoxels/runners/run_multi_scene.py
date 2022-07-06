@@ -13,6 +13,7 @@ from plenoxels.configs import multiscene_config, parse_config
 from plenoxels.ema import EMA
 from plenoxels.models import DictPlenoxels, make_weights_unit_norm
 from plenoxels.models.single_res_multi_scene import SingleResoDictPlenoxels
+from plenoxels.models.superres import SuperResoPlenoxel
 from plenoxels.tc_harmonics import plenoxel_sh_encoder
 from plenoxels.models import single_res_multi_scene
 
@@ -178,6 +179,10 @@ def init_model(cfg, tr_dsets, checkpoint_data=None):
             num_atoms=cfg.model.num_atoms[0], num_scenes=len(tr_dsets),
             fine_reso=cfg.model.fine_reso[0], coarse_reso=cfg.model.coarse_reso,
             dict_only_sigma=False)
+    elif cfg.model_type == "super_reso":
+        renderer = SuperResoPlenoxel(
+            coarse_reso=cfg.model.coarse_reso, reso_multiplier=4, param_dim=4,
+            radius=radii, num_scenes=len(tr_dsets), sh_deg=cfg.sh.degree, sh_encoder=sh_encoder)
     else:
         raise ValueError(f"Model type {cfg.model.type} invalid")
     if checkpoint_data is not None:
