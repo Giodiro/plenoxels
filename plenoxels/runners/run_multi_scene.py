@@ -89,7 +89,7 @@ def train_epoch(renderer,
                         # Compute and re-weight all the losses
                         diff_losses = dict(mse=F.mse_loss(rgb_preds, imgs))
                         if l2_coef > 0:
-                            diff_losses["l2"] += l2_coef * (renderer.cgrids[dset_id].square().sum(-1) - 1).mean()
+                            diff_losses["l2"] = l2_coef * (renderer.cgrids[dset_id].square().sum(-1) - 1).square().mean()
                         if l1_coef > 0:
                             diff_losses["l1"] = 0
                             for scene_grid in renderer.grids[dset_id]:
@@ -177,7 +177,7 @@ def init_model(cfg, tr_dsets, checkpoint_data=None):
             sh_deg=cfg.sh.degree, sh_encoder=sh_encoder, radius=radii,
             num_atoms=cfg.model.num_atoms[0], num_scenes=len(tr_dsets),
             fine_reso=cfg.model.fine_reso[0], coarse_reso=cfg.model.coarse_reso,
-            dict_only_sigma=True)
+            dict_only_sigma=False)
     else:
         raise ValueError(f"Model type {cfg.model.type} invalid")
     if checkpoint_data is not None:

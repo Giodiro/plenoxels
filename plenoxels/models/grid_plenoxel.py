@@ -49,12 +49,13 @@ class RegularGrid(nn.Module):
             rays_o, rays_d, self.radius, self.n_intersections, self.step_size)
         batch = intersections.shape[0]
         nintrs = intersections.shape[1] - 1
+        intrs_pts = intrs_pts[intrs_pts_mask]
         intrs_pts = self.normalize_coord(intrs_pts)
 
         with torch.autocast(device_type="cuda", enabled=False):
             data_interp = interp_regular(
                 self.data, intrs_pts.view(1, -1, 1, 1, 3))  # [ch, mask_pts]
-            
+
             if data_interp.dim() == 1:  # happens if mask_pts == 1
                 data_interp = data_interp.unsqueeze(1)
             data_interp = data_interp.T  # [mask_pts, ch]
