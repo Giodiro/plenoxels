@@ -77,8 +77,7 @@ class SingleResoDictPlenoxels(nn.Module):
         if self.grids is not None:
             for grid in self.grids:
                 nn.init.constant_(grid, 0.1)
-        nn.init.constant_(self.atoms[..., :-1], 0.1)
-        nn.init.constant_(self.atoms[..., -1], 0.01)
+        nn.init.uniform_(self.atoms, 0.01, 0.2)
 
     def get_radius(self, dset_id: int) -> float:
         return self.radius[dset_id]

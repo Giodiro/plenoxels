@@ -122,11 +122,11 @@ def train_epoch(renderer,
                     ts_dset, ts_dset_id, renderer, log_dir, render_fn=default_render_fn(renderer, ts_dset_id),
                     iteration=tot_step, batch_size=batch_size, image_id=0, verbose=True,
                     summary_writer=TB_WRITER, plot_type="imageio")
-                # render_patches(renderer, patch_level=0, log_dir=log_dir, iteration=tot_step,
-                #                summary_writer=TB_WRITER)
-                # if len(renderer.atoms) > 1:
-                #     render_patches(renderer, patch_level=1, log_dir=log_dir, iteration=tot_step,
-                #                    summary_writer=TB_WRITER)
+                render_patches(renderer, patch_level=0, log_dir=log_dir, iteration=tot_step,
+                               summary_writer=TB_WRITER)
+                if len(renderer.atoms) > 1:
+                    render_patches(renderer, patch_level=1, log_dir=log_dir, iteration=tot_step,
+                                   summary_writer=TB_WRITER)
                 TB_WRITER.add_scalar(f"TestPSNR/D{ts_dset_id}", psnr, tot_step)
             # TB_WRITER.add_histogram(f"patches/sigma", renderer.atoms[0][..., -1].view(-1), tot_step)
             # TB_WRITER.add_histogram(f"patches/R", renderer.atoms[0][..., 0].view(-1), tot_step)

@@ -169,7 +169,7 @@ def test_model(renderer, ts_dset, log_dir, batch_size, render_fn, plot_type="ima
     if num_test_imgs is None:
         num_test_imgs = len(ts_dset)
     psnrs = []
-    plot_every = num_test_imgs // 5
+    plot_every = max(1, num_test_imgs // 5)
     for image_id in tqdm(range(num_test_imgs), desc=f"test-dataset evaluation"):
         c_log_dir = log_dir if image_id % plot_every == plot_every - 1 else None
         psnr = plot_ts(ts_dset, 0, renderer, c_log_dir, iteration="test",
