@@ -107,11 +107,11 @@ class LearnableHash(nn.Module):
         intersection_pts, intersections, mask = get_intersections(rays_o, rays_d, self.radius, self.n_intersections, self.step_size)
         intersection_pts = intersection_pts[mask]
         # Normalization
-        intersection_pts = (intersection_pts / self.radius + 1) * self.resolution  # between [0, reso]
+        intersection_pts = (intersection_pts / self.radius + 1) * self.resolution / 2  # between [0, reso]
         rays_d = rays_d / torch.linalg.norm(rays_d, dim=-1, keepdim=True)
         pointwise_rays_d = rays_d[:, None, :].expand(-1, mask.shape[1], -1)  # batch, n_intersections, 3
         pointwise_rays_d = pointwise_rays_d[mask]   # n_pts, 3
-        sigma_masked, color_masked = self.eval_pts(intersection_pts, pointwise_rays_d)  # The seg fault is happening inside here
+        sigma_masked, color_masked = self.eval_pts(intersection_pts, pointwise_rays_d)  
         # Rendering
         batch, nintrs = intersections.shape[0], intersections.shape[1] - 1
         sigma = torch.zeros(batch, nintrs, dtype=sigma_masked.dtype, device=sigma_masked.device)
