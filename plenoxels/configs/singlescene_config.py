@@ -27,7 +27,9 @@ _C.data.max_ts_frames = None
 
 _C.model = CN()
 _C.model.resolution = 128
-
+_C.model.learnable_hash = False
+_C.model.num_features = 100000
+_C.model.feature_dim = 32
 
 def get_cfg_defaults():
     """Get a yacs CfgNode object with default values for my_project."""

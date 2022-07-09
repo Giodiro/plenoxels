@@ -1,8 +1,10 @@
 import os
 import sys
 import time
+import math
 from collections import defaultdict
 from typing import Optional
+import numpy as np
 
 import torch
 import torch.nn.functional as F
@@ -15,6 +17,7 @@ from plenoxels.ema import EMA
 from plenoxels.models.grid_plenoxel import RegularGrid
 from plenoxels.runners.utils import *
 from plenoxels.tc_harmonics import plenoxel_sh_encoder
+from plenoxels.models.learnable_hash import LearnableHash
 
 TB_WRITER = None
 
@@ -29,7 +32,7 @@ def train_epoch(renderer, tr_loader, ts_dset, optim, lr_sched, max_epochs, log_d
                 train_fp16=False, start_epoch=0, start_step=0):
     ema_weight = 0.3
 
-    grad_scaler = torch.cuda.amp.GradScaler()
+    grad_scaler = torch.cuda.amp.GradScaler(enabled=train_fp16)
     renderer.cuda()
     tot_step = start_step
     TB_WRITER.add_scalar("lr", optim.param_groups[0]["lr"], tot_step)
@@ -44,20 +47,17 @@ def train_epoch(renderer, tr_loader, ts_dset, optim, lr_sched, max_epochs, log_d
             rays_d = rays_d.cuda()
             optim.zero_grad()
 
-            rgb_preds = renderer(rays_o, rays_d, use_fp16=train_fp16)
-            loss = F.mse_loss(rgb_preds, imgs)
-            if train_fp16:
-                grad_scaler.scale(loss).backward()
-                grad_scaler.step(optim)
-                grad_scaler.update()
-            else:
-                loss.backward()
-                optim.step()
+            with torch.cuda.amp.autocast(enabled=train_fp16):
+                rgb_preds = renderer(rays_o, rays_d)
+                loss = F.mse_loss(rgb_preds, imgs)
+            grad_scaler.scale(loss).backward()
+            grad_scaler.step(optim)
+            grad_scaler.update()
 
             loss_val = loss.item()
             losses["mse"].update(loss_val)
             TB_WRITER.add_scalar(f"mse", loss_val, tot_step)
-            pb.set_postfix_str(f"mse={loss_val:.4f}", refresh=False)
+            pb.set_postfix_str(f"mse={loss_val:.4f} - psnr={-10 * math.log10(loss_val)}", refresh=False)
             pb.update(1)
             tot_step += 1
             if lr_sched is not None:
@@ -82,9 +82,15 @@ def train_epoch(renderer, tr_loader, ts_dset, optim, lr_sched, max_epochs, log_d
 
 
 def init_model(cfg, tr_dset, checkpoint_data=None):
-    sh_encoder = plenoxel_sh_encoder(cfg.sh.degree)
-    renderer = RegularGrid(resolution=cfg.model.resolution, radius=tr_dset.radius,
-                           sh_deg=cfg.sh.degree, sh_encoder=sh_encoder)
+    if cfg.model.learnable_hash: # Option to use learnable hash function
+        voxel_size = (tr_dset.radius * 2) / cfg.model.resolution
+        step_size = voxel_size / 2
+        n_intersections = np.sqrt(3.) * 2 * cfg.model.resolution
+        renderer = LearnableHash(cfg.model.resolution, cfg.model.num_features, cfg.model.feature_dim, tr_dset.radius, n_intersections, step_size)
+    else:
+        sh_encoder = plenoxel_sh_encoder(cfg.sh.degree)
+        renderer = RegularGrid(resolution=cfg.model.resolution, radius=tr_dset.radius,
+                            sh_deg=cfg.sh.degree, sh_encoder=sh_encoder)
     if checkpoint_data is not None and checkpoint_data.get('model', None) is not None:
         renderer.load_state_dict(checkpoint_data['model'])
         print("=> Loaded model state from checkpoint")
@@ -106,7 +112,7 @@ def init_lr_scheduler(cfg, optim, num_batches_per_dset: int, checkpoint_data=Non
 
 def init_optim(cfg, model, checkpoint_data=None):
     # optim = torch.optim.Adam(model.parameters(), lr=cfg.optim.lr)
-    optim = torch.optim.RMSprop(model.parameters(), lr=cfg.optim.lr)
+    optim = torch.optim.Adam(model.get_params(lr=cfg.optim.lr))
     if checkpoint_data is not None and checkpoint_data.get("optimizer", None) is not None:
         optim.load_state_dict(checkpoint_data['optimizer'])
         print("=> Loaded optimizer state from checkpoint")
