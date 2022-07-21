@@ -70,6 +70,18 @@ def train_epoch(renderer, tr_loader, ts_dset, optim, lr_sched, max_epochs, log_d
             ts_dset, 0, renderer, log_dir,
             iteration=tot_step, batch_size=batch_size, image_id=0, verbose=True,
             summary_writer=TB_WRITER, render_fn=default_render_fn(renderer), plot_type="imageio")
+        psnr = plot_ts(
+            ts_dset, 0, renderer, log_dir,
+            iteration=tot_step, batch_size=batch_size, image_id=3, verbose=True,
+            summary_writer=TB_WRITER, render_fn=default_render_fn(renderer), plot_type="imageio")
+        psnr = plot_ts(
+            ts_dset, 0, renderer, log_dir,
+            iteration=tot_step, batch_size=batch_size, image_id=6, verbose=True,
+            summary_writer=TB_WRITER, render_fn=default_render_fn(renderer), plot_type="imageio")
+        psnr = plot_ts(
+            ts_dset, 0, renderer, log_dir,
+            iteration=tot_step, batch_size=batch_size, image_id=9, verbose=True,
+            summary_writer=TB_WRITER, render_fn=default_render_fn(renderer), plot_type="imageio")
         TB_WRITER.add_scalar(f"TestPSNR", psnr, tot_step)
         torch.save({
             'epoch': e,

@@ -159,7 +159,7 @@ def plot_ts(ts_dset, dset_id, renderer, log_dir, iteration, batch_size=10_000, i
         else:
             raise ValueError(f"plot-type {plot_type} invalid. "
                              f"Accepted values are 'imageio' and 'matplotlib'.")
-        save_image(fig, log_dir, f"dset-{dset_id}-ts-0", iteration, summary_writer)
+        save_image(fig, log_dir, f"dset-{dset_id}-ts-{image_id}", iteration, summary_writer)
     return psnr.item()
 
 

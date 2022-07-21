@@ -17,7 +17,7 @@ def get_intersections(rays_o, rays_d, radius: float, n_intersections: int, step_
     steps = steps.repeat(rays_d.shape[0], 1)   # [batch, n_intrs]
     intersections = start + steps * step_size  # [batch, n_intrs]
     intersections_trunc = intersections[:, :-1]
-    intrs_pts = rays_o[..., None, :] + rays_d[..., None, :] * intersections_trunc[..., None]
+    intrs_pts = rays_o[..., None, :] + rays_d[..., None, :] * intersections_trunc[..., None]  # [batch, n_intrs, 3]
     # noinspection PyUnresolvedReferences
     mask = ((-radius <= intrs_pts) & (intrs_pts <= radius)).all(dim=-1)
     return intrs_pts, intersections, mask

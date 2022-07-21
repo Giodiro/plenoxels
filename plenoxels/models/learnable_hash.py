@@ -6,7 +6,7 @@ import tinycudann as tcnn
 from plenoxels.models.utils import get_intersections
 from plenoxels.nerf_rendering import shrgb2rgb, sigma2alpha
 
-
+# Some pieces modified from https://github.com/ashawkey/torch-ngp/blob/6313de18bd8ec02622eb104c163295399f81278f/nerf/network_tcnn.py
 class LearnableHash(nn.Module):
     def __init__(self, resolution, num_features, feature_dim, radius: float, n_intersections: int, step_size: float):
         super().__init__()
@@ -84,18 +84,19 @@ class LearnableHash(nn.Module):
 
     def eval_pts(self, pts, rds):
         # pts should be between 0 and resolution
-        # rds should be between -1 and 1
+        # rds should be between -1 and 1 (unit norm ray direction vector)
         # pts [n, 3]
         # rds [n, 3]
         offsets, neighbors = self.get_neighbors(pts)
         Gneighborvals = self.G[neighbors[:,:,0], neighbors[:,:,1], neighbors[:,:,2], 0]  # [n, 8]
         weights = trilinear_interpolation_weight(offsets)  # [n, 8]
-        Fneighborindices = ((Gneighborvals.clamp(-1, 1) + 1) * self.num_features / 2).floor().long()  # [n, 8]
-        Fneighborvals = self.F[Fneighborindices.view(-1)].view(-1, 8, self.feature_dim)
+        Fneighborindices = ((Gneighborvals.clamp(-1, 1) + 1) * self.num_features / 2).floor().long()  # [n, 8] between 0 and num_features
+        Fneighborvals = self.F[Fneighborindices.view(-1)].view(-1, 8, self.feature_dim)  # [n, 8, feature_dim]
         Fvals = torch.sum(weights[..., None] * Fneighborvals, dim=1)  # [n, feature_dim]
         Fvals = self.sigma_net(Fvals)  # [n, 16]
         sigmas = Fvals[:, 0]
-        encoded_rd = self.direction_encoder((rds + 1) / 2)
+        # colors = torch.zeros(len(Fvals), 3).cuda()
+        encoded_rd = self.direction_encoder((rds + 1) / 2) # tcnn SH encoding requires inputs to be in [0, 1]
         colors = self.color_net(torch.cat([encoded_rd, Fvals[:,1:]], dim=-1))  # [n, 3] 
         return sigmas, colors
 
@@ -105,12 +106,13 @@ class LearnableHash(nn.Module):
         rays_d : [batch, 3]
         """
         intersection_pts, intersections, mask = get_intersections(rays_o, rays_d, self.radius, self.n_intersections, self.step_size)
-        intersection_pts = intersection_pts[mask]
+        # mask has shape [batch, n_intrs]
+        intersection_pts = intersection_pts[mask]  # [n_valid_intrs, 3] puts together the valid intrs from all rays
         # Normalization
         intersection_pts = (intersection_pts / self.radius + 1) * self.resolution / 2  # between [0, reso]
         rays_d = rays_d / torch.linalg.norm(rays_d, dim=-1, keepdim=True)
-        pointwise_rays_d = rays_d[:, None, :].expand(-1, mask.shape[1], -1)  # batch, n_intersections, 3
-        pointwise_rays_d = pointwise_rays_d[mask]   # n_pts, 3
+        pointwise_rays_d = rays_d[:, None, :].expand(-1, mask.shape[1], -1)  # [batch, n_intersections, 3]
+        pointwise_rays_d = pointwise_rays_d[mask]   # [n_valid_intrs, 3]
         sigma_masked, color_masked = self.eval_pts(intersection_pts, pointwise_rays_d)  
         # Rendering
         batch, nintrs = intersections.shape[0], intersections.shape[1] - 1
@@ -125,10 +127,10 @@ class LearnableHash(nn.Module):
 
     def get_params(self, lr):
         return [
-            {"params": self.G, "lr": lr},
+            # {"params": self.G, "lr": lr},  # Try making G fixed, like in INGP
             {"params": self.F, "lr": lr},
             {"params": self.direction_encoder.parameters(), "lr": lr},
-            {"params": self.sigma_net.parameters(), "lr": lr / 10},
+            {"params": self.sigma_net.parameters(), "lr": lr},
             {"params": self.color_net.parameters(), "lr": lr / 10},
         ]
 
