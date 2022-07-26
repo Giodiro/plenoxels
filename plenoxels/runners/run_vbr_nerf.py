@@ -20,7 +20,7 @@ TB_WRITER = None
 
 def default_render_fn(renderer, level=None):
     def render_fn(ro, rd):
-        return renderer(ro, rd, level=level or len(renderer.reso_list) - 1)
+        return renderer(ro, rd, level=level or len(renderer.reso_list) - 1)[0]
     return render_fn
 
 
@@ -42,13 +42,15 @@ def train_epoch(renderer, tr_loader, ts_dset, optim, lr_sched, max_epochs, log_d
             rays_d = rays_d.cuda()
             optim.zero_grad()
 
-            rgb_preds = renderer(rays_o, rays_d, None)
+            rgb_preds, _ = renderer(rays_o, rays_d, None)
             loss = F.mse_loss(rgb_preds, imgs)
+            loss.backward()
+            optim.step()
 
             loss_val = loss.item()
             losses["mse"].update(loss_val)
             TB_WRITER.add_scalar(f"mse", loss_val, tot_step)
-            pb.set_postfix_str(f"mse={loss_val:.4f} - psnr={-10 * math.log10(loss_val)}", refresh=False)
+            pb.set_postfix_str(f"mse={loss_val:.4f} - psnr={-10 * math.log10(loss_val):.4f}", refresh=False)
             pb.update(1)
             tot_step += 1
             if lr_sched is not None:
@@ -88,8 +90,8 @@ def init_lr_scheduler(cfg, optim, num_batches_per_dset: int, checkpoint_data=Non
 def init_optim(cfg, model, checkpoint_data=None):
     optim = torch.optim.Adam([
         {'params': [vbr_layer.grid for vbr_layer in model.grids], 'lr': 0.1},
-        {'params': model.renderer.parameters()},
-        {'params': [vbr_layer.codebook for vbr_layer in model.grids]},
+        {'params': model.renderer.parameters(), 'lr': 0.001},
+        {'params': [vbr_layer.codebook for vbr_layer in model.grids], 'lr': 0.001},
     ], lr=0.001)
     if checkpoint_data is not None and checkpoint_data.get("optimizer", None) is not None:
         optim.load_state_dict(checkpoint_data['optimizer'])
@@ -99,7 +101,6 @@ def init_optim(cfg, model, checkpoint_data=None):
 
 if __name__ == "__main__":
     num_epochs_ = 600
-    batch_size_ = 4096
     cfg_ = vbr_config.get_cfg_defaults()
 
     torch.manual_seed(cfg_.seed)
@@ -119,6 +120,6 @@ if __name__ == "__main__":
     train_epoch(
         renderer=model_, tr_loader=tr_loader_, ts_dset=ts_dset_, optim=optim_,
         max_epochs=num_epochs_, log_dir=train_log_dir,
-        batch_size=batch_size_, lr_sched=sched_,
+        batch_size=cfg_.optim.batch_size, lr_sched=sched_,
         start_epoch=checkpoint_data_['epoch'] + 1,
         start_step=checkpoint_data_['tot_step'] + 1)

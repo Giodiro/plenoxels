@@ -32,10 +32,11 @@ class VBrNerfLayer(nn.Module):
         self.num_codebook_bits = num_codebook_bits
         self.num_feat = 2 ** self.num_codebook_bits
         self.data_dim = data_dim
-        self.use_morton = not self.resolution & self.resolution - 1
+        self.use_morton = False#not self.resolution & self.resolution - 1
 
         self.grid = nn.Parameter(torch.empty(self.resolution ** 3, self.num_feat))
         self.codebook = nn.Parameter(torch.empty(self.num_feat, self.data_dim))
+        self.register_buffer('nbr_offsets', torch.tensor([[0, 0, 0], [0, 0, 1], [0, 1, 0], [0, 1, 1], [1, 0, 0], [1, 0, 1], [1, 1, 0], [1, 1, 1]], dtype=torch.long))
         self.init_params()
 
     def init_params(self):
@@ -45,7 +46,7 @@ class VBrNerfLayer(nn.Module):
     def forward(self, ray_p):
         tl_coo = torch.floor(ray_p)
         tl_offset = ray_p - tl_coo
-        nbr_coo = tl_coo[:, None, :].long() + self.nbr_offsets[None, :, :]
+        nbr_coo = torch.clamp(tl_coo[:, None, :].long() + self.nbr_offsets[None, :, :], 0, self.resolution - 1)
         nbr_coo = nbr_coo.view(-1, 3)
         if self.use_morton:
             nbr_idx = morton3d(nbr_coo[:, 0], nbr_coo[:, 1], nbr_coo[:, 2])
@@ -54,18 +55,20 @@ class VBrNerfLayer(nn.Module):
         feat_soft = self.grid[nbr_idx]
         feat_idx = feat_soft.max(dim=-1, keepdim=True)[1]
         feat_hard = torch.zeros_like(feat_soft).scatter_(-1, feat_idx, 1.0)
+        feat_hard = feat_hard - feat_soft.detach() + feat_soft
 
         data = feat_hard @ self.codebook
-        data_interp = TrilinearInterpolate.apply(data, tl_offset)
+        data_interp = TrilinearInterpolate.apply(data.view(-1, 8, data.shape[-1]), tl_offset)
         return data_interp
 
 
 class VBrRenderer(nn.Module):
-    def __init__(self, mlp_width=128, num_freqs=9):
+    def __init__(self, data_dim, mlp_width=128, num_freqs=9):
         super().__init__()
 
         self.viewdir_pe_freqs = num_freqs
         self.viewdir_pe_dim = self.viewdir_pe_freqs * 3 * 2
+        self.data_dim = data_dim
         self.mlp = nn.Sequential(
             nn.Linear(self.data_dim + self.viewdir_pe_dim, mlp_width),
             nn.ReLU(),
@@ -105,7 +108,7 @@ class VBrNerf(nn.Module):
             VBrNerfLayer(reso, num_codebook_bits=cb_bits, data_dim=16)
             for reso in reso_list
         ])
-        self.renderer = VBrRenderer(mlp_width=128, num_freqs=4)
+        self.renderer = VBrRenderer(data_dim=16, mlp_width=128, num_freqs=4)
         self.reso_list = reso_list
         self.scene_radius = scene_radius
         self.sampling_weights = 2 ** torch.arange(len(reso_list), dtype=torch.float)
@@ -121,6 +124,7 @@ class VBrNerf(nn.Module):
         n_intersections = int(1.732 * self.scene_radius * 2 / step_size)
         intrs_pts, intrs, intrs_mask = get_intersections(
             rays_o, rays_d, self.scene_radius, n_intersections, step_size)
+        intrs_pts = intrs_pts[intrs_mask]
         intrs_pts = (intrs_pts / self.scene_radius + 1) * (self.reso_list[level] / 2)
 
         feats = self.grids[level](intrs_pts)
@@ -141,7 +145,7 @@ High level design
     + so the feature size which needs to be stored in the grid at training-time is 2^b
  - Have a codebook which can be given 8 indices and an offset, and return an interpolated feature
     + the codebook needs to be able to support direct indexing as well as computing a 'soft' linear combination.
- 
+
  - This must be performed at multiple grid resolutions:
     + in training choose a single LOD per batch. It's unclear if they are in any way influencing each other.
     + resolutions used: 32, 64, 128, 256

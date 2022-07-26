@@ -60,9 +60,10 @@ class TrilinearInterpolate(torch.autograd.Function):
         # out:           [batch, channels]
         offsets = offsets.to(dtype=neighbor_data.dtype)  # [batch, 3]
         nbr_axis = 1 if neighbor_data.shape[1] == 8 else 2  # TODO: This won't work if channels==8
+        other_axis = 2 if nbr_axis == 1 else 1
 
         weights = get_interp_weights(xs=offsets[:, 0], ys=offsets[:, 1], zs=offsets[:, 2])
-        weights = weights.unsqueeze(nbr_axis)  # [batch, 1, 8] or [batch, 8, 1]
+        weights = weights.unsqueeze(other_axis)  # [batch, 1, 8] or [batch, 8, 1]
 
         out = neighbor_data.mul_(weights).sum(nbr_axis)  # [batch, ch]
 
