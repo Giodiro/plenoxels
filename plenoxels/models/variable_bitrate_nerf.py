@@ -32,7 +32,7 @@ class VBrNerfLayer(nn.Module):
         self.num_codebook_bits = num_codebook_bits
         self.num_feat = 2 ** self.num_codebook_bits
         self.data_dim = data_dim
-        self.use_morton = False#not self.resolution & self.resolution - 1
+        self.use_morton = not self.resolution & self.resolution - 1
 
         self.grid = nn.Parameter(torch.empty(self.resolution ** 3, self.num_feat))
         self.codebook = nn.Parameter(torch.empty(self.num_feat, self.data_dim))
@@ -52,7 +52,7 @@ class VBrNerfLayer(nn.Module):
             nbr_idx = morton3d(nbr_coo[:, 0], nbr_coo[:, 1], nbr_coo[:, 2])
         else:
             nbr_idx = nbr_coo[:, 0] ** 3 + nbr_coo[:, 1] ** 2 + nbr_coo[:, 2]
-        feat_soft = self.grid[nbr_idx]
+        feat_soft = F.softmax(self.grid[nbr_idx], dim=-1)
         feat_idx = feat_soft.max(dim=-1, keepdim=True)[1]
         feat_hard = torch.zeros_like(feat_soft).scatter_(-1, feat_idx, 1.0)
         feat_hard = feat_hard - feat_soft.detach() + feat_soft
@@ -130,24 +130,3 @@ class VBrNerf(nn.Module):
         feats = self.grids[level](intrs_pts)
         color, alpha = self.renderer(rays_d, intrs, intrs_mask, feats)
         return color, alpha
-
-
-
-
-"""
-High level design
-
-    quantized = inputs + (quantized - inputs).detach()
-
- - Have a grid-like (or Multilevel sparse volume, or whatever) which supports the following operations:
-    + given point x, get codebook indices at 8 neighbors
-    + the indices actually correspond to a vector which can be argmaxed to obtain the index.
-    + so the feature size which needs to be stored in the grid at training-time is 2^b
- - Have a codebook which can be given 8 indices and an offset, and return an interpolated feature
-    + the codebook needs to be able to support direct indexing as well as computing a 'soft' linear combination.
-
- - This must be performed at multiple grid resolutions:
-    + in training choose a single LOD per batch. It's unclear if they are in any way influencing each other.
-    + resolutions used: 32, 64, 128, 256
-
-"""
