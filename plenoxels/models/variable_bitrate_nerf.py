@@ -41,7 +41,7 @@ class VBrNerfLayer(nn.Module):
 
     def init_params(self):
         nn.init.normal_(self.grid, 0, 0.01)
-        nn.init.normal_(self.codebook, 0, 0.1)  # TODO: no mention in paper of initialization for codebook
+        nn.init.normal_(self.codebook, 0, 0.01)  # TODO: no mention in paper of initialization for codebook
 
     def forward(self, ray_p):
         tl_coo = torch.floor(ray_p)
@@ -53,8 +53,9 @@ class VBrNerfLayer(nn.Module):
         else:
             nbr_idx = nbr_coo[:, 0] ** 3 + nbr_coo[:, 1] ** 2 + nbr_coo[:, 2]
         feat_soft = F.softmax(self.grid[nbr_idx], dim=-1)
-        feat_idx = feat_soft.max(dim=-1, keepdim=True)[1]
-        feat_hard = torch.zeros_like(feat_soft).scatter_(-1, feat_idx, 1.0)
+        with torch.autograd.no_grad():
+            feat_idx = feat_soft.max(dim=-1, keepdim=True)[1]
+            feat_hard = torch.zeros_like(feat_soft).scatter_(-1, feat_idx, 1.0)
         feat_hard = feat_hard - feat_soft.detach() + feat_soft
 
         data = feat_hard @ self.codebook
