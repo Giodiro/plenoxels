@@ -32,3 +32,56 @@ def trilinear_upsampling_weights():
          [1, -1, -1], [1, -1, 1], [1, 1, -1], [1, 1, 1]])  # [8, 3]
     return split_weights(child_idx[:, 0], child_idx[:, 1], child_idx[:, 2])  # [8, 27]
 
+
+@torch.jit.script
+def get_interp_weights(xs, ys, zs):
+    # xs: n_pts, 1
+    # ys: n_pts, 1
+    # zs: n_pts, 1
+    # out: n_pts, 8
+    weights = torch.empty(xs.shape[0], 8, dtype=xs.dtype, device=xs.device)
+    weights[:, 0] = (1 - xs) * (1 - ys) * (1 - zs)  # [n_pts]
+    weights[:, 1] = (1 - xs) * (1 - ys) * zs  # [n_pts]
+    weights[:, 2] = (1 - xs) * ys * (1 - zs)  # [n_pts]
+    weights[:, 3] = (1 - xs) * ys * zs  # [n_pts]
+    weights[:, 4] = xs * (1 - ys) * (1 - zs)  # [n_pts]
+    weights[:, 5] = xs * (1 - ys) * zs  # [n_pts]
+    weights[:, 6] = xs * ys * (1 - zs)  # [n_pts]
+    weights[:, 7] = xs * ys * zs  # [n_pts]
+    return weights
+
+
+# noinspection PyAbstractClass,PyMethodOverriding
+class TrilinearInterpolate(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, neighbor_data: torch.Tensor, offsets: torch.Tensor):
+        # neighbor_data: [batch, channels, 8] or [batch, 8, channels]
+        # offsets:       [batch, 3]
+        # out:           [batch, channels]
+        offsets = offsets.to(dtype=neighbor_data.dtype)  # [batch, 3]
+        nbr_axis = 1 if neighbor_data.shape[1] == 8 else 2  # TODO: This won't work if channels==8
+        other_axis = 2 if nbr_axis == 1 else 1
+
+        weights = get_interp_weights(xs=offsets[:, 0], ys=offsets[:, 1], zs=offsets[:, 2])
+        weights = weights.unsqueeze(other_axis)  # [batch, 1, 8] or [batch, 8, 1]
+
+        out = neighbor_data.mul_(weights).sum(nbr_axis)  # [batch, ch]
+
+        ctx.weights = weights
+        ctx.nbr_axis = nbr_axis
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        # weights:      [batch, 1, 8]
+        # grad_output:  [batch, n_channels]
+        # out:          [batch, n_channels, 8]
+        return grad_output.unsqueeze(ctx.nbr_axis) * ctx.weights, None, None
+
+    @staticmethod
+    def test_autograd():
+        data = torch.randn(5, 6, 8).to(dtype=torch.float64).requires_grad_()
+        weights = torch.randn(5, 3).to(dtype=torch.float64)
+
+        torch.autograd.gradcheck(lambda d: TrilinearInterpolate.apply(d, weights),
+                                 inputs=data)

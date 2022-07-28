@@ -18,10 +18,18 @@ class LearnableHash(nn.Module):
         self.step_size = step_size
 
         # Volume representation
+<<<<<<< HEAD
         # Option 1: High-resolution grid that stores numbers that are treated as indices into the feature table (which is interpolated)
         # Option 2: Store small features at multiple resolution grids, then concatenate these features and feed them through an MLP to predict numbers that get rounded into indices into the feature table
+=======
+        # Option 1: High-resolution grid that stores numbers that get rounded into indices
+        #           into the feature table
+        # Option 2: Store small features at multiple resolution grids, then concatenate these
+        #           features and feed them through an MLP to predict numbers that get rounded into
+        #           indices into the feature table
+>>>>>>> debuglhf
         # Starting with option 1 for simplicity
-        self.G = nn.Parameter(torch.empty(resolution, resolution, resolution, 1))
+        self.G = nn.Parameter(torch.empty(resolution, resolution, resolution, 16))
 
         # Feature table
         self.F = nn.Parameter(torch.empty(num_features, feature_dim))
@@ -60,6 +68,8 @@ class LearnableHash(nn.Module):
                 "n_hidden_layers": 2,
             },
         )
+        self.register_buffer('nbr_offsets_01', torch.tensor([[0, 0, 0], [0, 0, 1], [0, 1, 0], [0, 1, 1], [1, 0, 0], [1, 0, 1], [1, 1, 0], [1, 1, 1]], dtype=torch.long))
+        self.register_buffer('nbr_offsets_m11', torch.tensor([[-1, -1, -1], [-1, -1, 1], [-1, 1, -1], [-1, 1, 1], [1, -1, -1], [1, -1, 1], [1, 1, -1], [1, 1, 1]], dtype=torch.float))
 
         self.init_params()
 
@@ -69,40 +79,43 @@ class LearnableHash(nn.Module):
 
     def get_neighbors(self, pts):
         # pts should be in grid coordinates, ranging from 0 to resolution
-        offsets_3d = torch.tensor(
-            [[-1, -1, -1],
-             [-1, -1, 1],
-             [-1, 1, -1],
-             [-1, 1, 1],
-             [1, -1, -1],
-             [1, -1, 1],
-             [1, 1, -1],
-             [1, 1, 1]], dtype=pts.dtype, device=pts.device)
-        pre_floor = pts[:, None, :] + offsets_3d[None, ...] / 2.
+        pre_floor = pts[:, None, :] + self.nbr_offsets_m11[None, ...] / 2.
         post_floor = torch.clamp(torch.floor(pre_floor), min=0., max=self.resolution - 1)  # [n, 8, 3]
-        return pts - post_floor[:,0,:], post_floor.long() 
+        return pts - post_floor[:, 0, :], post_floor.long()
+
+    def get_neighbors2(self, pts):
+        tl_coo = torch.floor(pts)
+        tl_offset = pts - tl_coo
+        nbr_coo = tl_coo[:, None, :].long() + self.nbr_offsets_01[None, :, :]
+        nbr_coo = torch.clamp(nbr_coo, 0, self.resolution - 1)  # [n, 8, 3]
+        return tl_offset, nbr_coo
 
     def eval_pts(self, pts, rds):
         # pts should be between 0 and resolution
         # rds should be between -1 and 1 (unit norm ray direction vector)
         # pts [n, 3]
         # rds [n, 3]
-        offsets, neighbors = self.get_neighbors(pts)
+        offsets, neighbors = self.get_neighbors2(pts)
         Gneighborvals = self.G[neighbors[:,:,0], neighbors[:,:,1], neighbors[:,:,2], 0]  # [n, 8]
         weights = trilinear_interpolation_weight(offsets)  # [n, 8]
-        # Fneighborindices = ((Gneighborvals.clamp(-1, 1) + 1) * self.num_features / 2).floor().long()  # [n, 8] between 0 and num_features
-        # Fneighborvals = self.F[Fneighborindices.view(-1)].view(-1, 8, self.feature_dim)  # [n, 8, feature_dim]
-        # Interpolate the F vals using the G indices
-        Fneighborindices = ((Gneighborvals.clamp(-1, 1) + 1) * self.num_features / 2).view(-1) # [n, 8] between 0 and num_features
-        Fneighborindices_floor = Fneighborindices.floor().clamp(0, self.num_features - 1)
-        Fneighborindices_ceil = Fneighborindices.ceil().clamp(0,self.num_features - 1)
-        Fneighborvals = self.F[Fneighborindices_floor.long()].view(-1,8,self.feature_dim) * (Fneighborindices_ceil - Fneighborindices).view(-1,8,1) + self.F[Fneighborindices_ceil.long()].view(-1,8,self.feature_dim) * (Fneighborindices - Fneighborindices_floor).view(-1,8,1)
+
+        # normalize Gneighborvals between -1, +1
+        #gnv_min, gnv_max = torch.min(Gneighborvals), torch.max(Gneighborvals)
+        #Gneighborvals = (Gneighborvals - gnv_min) / (gnv_max - gnv_min) * 2 - 1
+        # interpolate into F using G.
+        grid = Gneighborvals.view(-1)[None, :, None, None]
+        grid = torch.cat((torch.zeros_like(grid), grid), dim=-1)
+        Fneighborvals = F.grid_sample(
+            self.F.T[None, :, :, None],
+            grid, mode='bilinear'
+        ).squeeze().T.contiguous()  # n*8, feature_dim
+        Fneighborvals = Fneighborvals.view(Gneighborvals.shape[0], 8, self.feature_dim)  # [n, 8, feature_dim]
+
         Fvals = torch.sum(weights[..., None] * Fneighborvals, dim=1)  # [n, feature_dim]
         Fvals = self.sigma_net(Fvals)  # [n, 16]
         sigmas = Fvals[:, 0]
-        # colors = torch.zeros(len(Fvals), 3).cuda()
         encoded_rd = self.direction_encoder((rds + 1) / 2) # tcnn SH encoding requires inputs to be in [0, 1]
-        colors = self.color_net(torch.cat([encoded_rd, Fvals[:,1:]], dim=-1))  # [n, 3] 
+        colors = self.color_net(torch.cat([encoded_rd, Fvals[:,1:]], dim=-1))  # [n, 3]
         return sigmas, colors
 
     def forward(self, rays_o, rays_d):
@@ -116,28 +129,31 @@ class LearnableHash(nn.Module):
         # Normalization
         intersection_pts = (intersection_pts / self.radius + 1) * self.resolution / 2  # between [0, reso]
         rays_d = rays_d / torch.linalg.norm(rays_d, dim=-1, keepdim=True)
-        pointwise_rays_d = rays_d[:, None, :].expand(-1, mask.shape[1], -1)  # [batch, n_intersections, 3]
-        pointwise_rays_d = pointwise_rays_d[mask]   # [n_valid_intrs, 3]
-        sigma_masked, color_masked = self.eval_pts(intersection_pts, pointwise_rays_d)  
+
+        pointwise_rays_d = torch.repeat_interleave(rays_d, mask.sum(1), dim=0)  # [n_valid_intrs, 3]
+        sigma_masked, color_masked = self.eval_pts(intersection_pts, pointwise_rays_d)
         # Rendering
         batch, nintrs = intersections.shape[0], intersections.shape[1] - 1
+
         sigma = torch.zeros(batch, nintrs, dtype=sigma_masked.dtype, device=sigma_masked.device)
-        color = torch.zeros(batch, nintrs, 3, dtype=color_masked.dtype, device=color_masked.device)
-        sigma = F.relu(sigma)
         sigma.masked_scatter_(mask, sigma_masked)
+        sigma = F.relu(sigma)
         alpha, abs_light = sigma2alpha(sigma, intersections, rays_d)  # both [batch, n_intrs-1]
+
+        color = torch.zeros(batch, nintrs, 3, dtype=color_masked.dtype, device=color_masked.device)
         color.masked_scatter_(mask.unsqueeze(-1), color_masked)
         color = shrgb2rgb(color, abs_light, True)
         return color
 
     def get_params(self, lr):
         return [
-            # {"params": self.G, "lr": lr},  # Try making G fixed, like in INGP
-            {"params": self.F, "lr": lr},
+            {"params": self.G, "lr": lr * 1},  # Try making G fixed, like in INGP
+            {"params": self.F, "lr": lr * 10},
             {"params": self.direction_encoder.parameters(), "lr": lr},
-            {"params": self.sigma_net.parameters(), "lr": lr},
-            {"params": self.color_net.parameters(), "lr": lr / 10},
+            {"params": self.sigma_net.parameters(), "lr": lr * 10},
+            {"params": self.color_net.parameters(), "lr": lr},
         ]
+
 
 def trilinear_interpolation_weight(xyzs):
     # xyzs should have shape [n_pts, 3] and denote the offset (as a fraction of voxel_len) from the 000 interpolation point

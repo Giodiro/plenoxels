@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 import torch.nn.functional as F
@@ -6,6 +6,15 @@ import torch.nn.functional as F
 
 @torch.no_grad()
 def get_intersections(rays_o, rays_d, radius: float, n_intersections: int, step_size: float):
+    """
+    Produces ray-grid intersections in world-coordinates (between -radius, +radius)
+    :param rays_o:
+    :param rays_d:
+    :param radius:
+    :param n_intersections:
+    :param step_size:
+    :return:
+    """
     dev, dt = rays_o.device, rays_o.dtype
     rays_d_nodiv0 = torch.where(rays_d == 0, torch.full_like(rays_d, 1e-6), rays_d)
     offsets_pos = (radius - rays_o) / rays_d_nodiv0  # [batch, 3]
@@ -56,6 +65,14 @@ def positional_encoding(pts, dirs, num_freqs_p: int, num_freqs_d: Optional[int] 
     out_d = out_d.view(-1, num_freqs_d * 3)
 
     return torch.cat((torch.sin(out_p), torch.cos(out_p), torch.sin(out_d), torch.cos(out_d)), dim=-1)
+
+
+def pos_encode(x: torch.Tensor, num_freqs: int) -> torch.Tensor:
+    bands = 2 ** torch.arange(num_freqs, device=x.device)
+    out = x[..., None] * bands * torch.pi
+    out = out.view(-1, num_freqs * 3)
+
+    return torch.cat((torch.sin(out), torch.cos(out)), dim=-1)
 
 
 def ensure_list(el, expand_size: Optional[int] = None) -> list:
