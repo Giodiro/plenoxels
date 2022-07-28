@@ -18,7 +18,7 @@ class LearnableHash(nn.Module):
         self.step_size = step_size
 
         # Volume representation
-        # Option 1: High-resolution grid that stores numbers that get rounded into indices into the feature table
+        # Option 1: High-resolution grid that stores numbers that are treated as indices into the feature table (which is interpolated)
         # Option 2: Store small features at multiple resolution grids, then concatenate these features and feed them through an MLP to predict numbers that get rounded into indices into the feature table
         # Starting with option 1 for simplicity
         self.G = nn.Parameter(torch.empty(resolution, resolution, resolution, 1))
@@ -90,8 +90,13 @@ class LearnableHash(nn.Module):
         offsets, neighbors = self.get_neighbors(pts)
         Gneighborvals = self.G[neighbors[:,:,0], neighbors[:,:,1], neighbors[:,:,2], 0]  # [n, 8]
         weights = trilinear_interpolation_weight(offsets)  # [n, 8]
-        Fneighborindices = ((Gneighborvals.clamp(-1, 1) + 1) * self.num_features / 2).floor().long()  # [n, 8] between 0 and num_features
-        Fneighborvals = self.F[Fneighborindices.view(-1)].view(-1, 8, self.feature_dim)  # [n, 8, feature_dim]
+        # Fneighborindices = ((Gneighborvals.clamp(-1, 1) + 1) * self.num_features / 2).floor().long()  # [n, 8] between 0 and num_features
+        # Fneighborvals = self.F[Fneighborindices.view(-1)].view(-1, 8, self.feature_dim)  # [n, 8, feature_dim]
+        # Interpolate the F vals using the G indices
+        Fneighborindices = ((Gneighborvals.clamp(-1, 1) + 1) * self.num_features / 2).view(-1) # [n, 8] between 0 and num_features
+        Fneighborindices_floor = Fneighborindices.floor().clamp(0, self.num_features - 1)
+        Fneighborindices_ceil = Fneighborindices.ceil().clamp(0,self.num_features - 1)
+        Fneighborvals = self.F[Fneighborindices_floor.long()].view(-1,8,self.feature_dim) * (Fneighborindices_ceil - Fneighborindices).view(-1,8,1) + self.F[Fneighborindices_ceil.long()].view(-1,8,self.feature_dim) * (Fneighborindices - Fneighborindices_floor).view(-1,8,1)
         Fvals = torch.sum(weights[..., None] * Fneighborvals, dim=1)  # [n, feature_dim]
         Fvals = self.sigma_net(Fvals)  # [n, 16]
         sigmas = Fvals[:, 0]
