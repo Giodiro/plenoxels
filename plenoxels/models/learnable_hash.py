@@ -11,28 +11,23 @@ class LearnableHash(nn.Module):
     def __init__(self, resolution, num_features, feature_dim, radius: float, n_intersections: int, step_size: float):
         super().__init__()
         self.resolution = resolution
-        self.num_features = num_features
+        self.num_features_per_dim = int(np.floor(np.sqrt(num_features)))
         self.feature_dim = feature_dim
         self.radius = radius
         self.n_intersections = n_intersections
         self.step_size = step_size
 
         # Volume representation
-<<<<<<< HEAD
-        # Option 1: High-resolution grid that stores numbers that are treated as indices into the feature table (which is interpolated)
-        # Option 2: Store small features at multiple resolution grids, then concatenate these features and feed them through an MLP to predict numbers that get rounded into indices into the feature table
-=======
-        # Option 1: High-resolution grid that stores numbers that get rounded into indices
-        #           into the feature table
+        # Option 1: High-resolution grid that stores numbers that get rounded (update: used for 
+        #           interpolation) into indices into the feature table
         # Option 2: Store small features at multiple resolution grids, then concatenate these
         #           features and feed them through an MLP to predict numbers that get rounded into
         #           indices into the feature table
->>>>>>> debuglhf
         # Starting with option 1 for simplicity
-        self.G = nn.Parameter(torch.empty(resolution, resolution, resolution, 16))
+        self.G = nn.Parameter(torch.empty(resolution, resolution, resolution, 2))
 
         # Feature table
-        self.F = nn.Parameter(torch.empty(num_features, feature_dim))
+        self.F = nn.Parameter(torch.empty(self.num_features_per_dim, self.num_features_per_dim, feature_dim))
 
         # Feature decoder (modified from Instant-NGP)
         self.sigma_net = tcnn.Network(
@@ -96,20 +91,14 @@ class LearnableHash(nn.Module):
         # pts [n, 3]
         # rds [n, 3]
         offsets, neighbors = self.get_neighbors2(pts)
-        Gneighborvals = self.G[neighbors[:,:,0], neighbors[:,:,1], neighbors[:,:,2], 0]  # [n, 8]
+        Gneighborvals = self.G[neighbors[:,:,0], neighbors[:,:,1], neighbors[:,:,2], :]  # [n, 8, 2]
         weights = trilinear_interpolation_weight(offsets)  # [n, 8]
-
-        # normalize Gneighborvals between -1, +1
-        #gnv_min, gnv_max = torch.min(Gneighborvals), torch.max(Gneighborvals)
-        #Gneighborvals = (Gneighborvals - gnv_min) / (gnv_max - gnv_min) * 2 - 1
         # interpolate into F using G.
-        grid = Gneighborvals.view(-1)[None, :, None, None]
-        grid = torch.cat((torch.zeros_like(grid), grid), dim=-1)
+        grid = Gneighborvals[None,:,:,:] # [1, n, 8, 2]
         Fneighborvals = F.grid_sample(
-            self.F.T[None, :, :, None],
+            self.F[None,...].permute(0,3,1,2),
             grid, mode='bilinear'
-        ).squeeze().T.contiguous()  # n*8, feature_dim
-        Fneighborvals = Fneighborvals.view(Gneighborvals.shape[0], 8, self.feature_dim)  # [n, 8, feature_dim]
+        ).squeeze().permute(1,2,0) # [n, 8, feature_dim]
 
         Fvals = torch.sum(weights[..., None] * Fneighborvals, dim=1)  # [n, feature_dim]
         Fvals = self.sigma_net(Fvals)  # [n, 16]
