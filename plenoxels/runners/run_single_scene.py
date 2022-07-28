@@ -51,7 +51,6 @@ def train_epoch(renderer, tr_loader, ts_dset, optim, lr_sched, max_epochs, log_d
                 rgb_preds = renderer(rays_o, rays_d)
                 loss = F.mse_loss(rgb_preds, imgs)
             grad_scaler.scale(loss).backward()
-            print("G-grad", renderer.G.grad[:3, :3, :3])
             grad_scaler.step(optim)
             grad_scaler.update()
 

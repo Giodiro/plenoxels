@@ -9,13 +9,13 @@ data:
 model:
   resolution: 128
   learnable_hash: True
-  num_features: 10000
+  num_features: 5000
   feature_dim: 32
 
 optim:
   batch_size: 4000
   num_epochs: 100
-  lr: 2e-3
+  lr: 1e-4
   cosine: False
   train_f16: False
 

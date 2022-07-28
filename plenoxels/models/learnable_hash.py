@@ -24,7 +24,7 @@ class LearnableHash(nn.Module):
         #           features and feed them through an MLP to predict numbers that get rounded into
         #           indices into the feature table
         # Starting with option 1 for simplicity
-        self.G = nn.Parameter(torch.empty(resolution, resolution, resolution, 1))
+        self.G = nn.Parameter(torch.empty(resolution, resolution, resolution, 16))
 
         # Feature table
         self.F = nn.Parameter(torch.empty(num_features, feature_dim))
@@ -95,11 +95,12 @@ class LearnableHash(nn.Module):
         weights = trilinear_interpolation_weight(offsets)  # [n, 8]
 
         # normalize Gneighborvals between -1, +1
-        gnv_min, gnv_max = torch.min(Gneighborvals), torch.max(Gneighborvals)
-        Gneighborvals = (Gneighborvals - gnv_min) / (gnv_max - gnv_min) * 2 - 1
+        #gnv_min, gnv_max = torch.min(Gneighborvals), torch.max(Gneighborvals)
+        #Gneighborvals = (Gneighborvals - gnv_min) / (gnv_max - gnv_min) * 2 - 1
 
         grid = Gneighborvals.view(-1)[None, :, None, None]
-        grid = torch.cat((grid, torch.zeros_like(grid)), dim=-1)
+        #grid = torch.cat((grid, torch.zeros_like(grid)), dim=-1)
+        grid = torch.cat((torch.zeros_like(grid), grid), dim=-1)
         Fneighborvals = F.grid_sample(
             self.F.T[None, :, :, None],
             grid, mode='bilinear'
@@ -112,9 +113,8 @@ class LearnableHash(nn.Module):
         Fvals = torch.sum(weights[..., None] * Fneighborvals, dim=1)  # [n, feature_dim]
         Fvals = self.sigma_net(Fvals)  # [n, 16]
         sigmas = Fvals[:, 0]
-        # colors = torch.zeros(len(Fvals), 3).cuda()
         encoded_rd = self.direction_encoder((rds + 1) / 2) # tcnn SH encoding requires inputs to be in [0, 1]
-        colors = self.color_net(torch.cat([encoded_rd, Fvals[:,1:]], dim=-1))  # [n, 3] 
+        colors = self.color_net(torch.cat([encoded_rd, Fvals[:,1:]], dim=-1))  # [n, 3]
         return sigmas, colors
 
     def forward(self, rays_o, rays_d):
@@ -129,26 +129,28 @@ class LearnableHash(nn.Module):
         intersection_pts = (intersection_pts / self.radius + 1) * self.resolution / 2  # between [0, reso]
         rays_d = rays_d / torch.linalg.norm(rays_d, dim=-1, keepdim=True)
 
-        pointwise_rays_d = torch.repeat_interleave(rays_d, mask.sum(1), dim=0),  # [n_valid_intrs, 3]
-        sigma_masked, color_masked = self.eval_pts(intersection_pts, pointwise_rays_d)  
+        pointwise_rays_d = torch.repeat_interleave(rays_d, mask.sum(1), dim=0)  # [n_valid_intrs, 3]
+        sigma_masked, color_masked = self.eval_pts(intersection_pts, pointwise_rays_d)
         # Rendering
         batch, nintrs = intersections.shape[0], intersections.shape[1] - 1
+
         sigma = torch.zeros(batch, nintrs, dtype=sigma_masked.dtype, device=sigma_masked.device)
-        color = torch.zeros(batch, nintrs, 3, dtype=color_masked.dtype, device=color_masked.device)
-        sigma = F.relu(sigma)
         sigma.masked_scatter_(mask, sigma_masked)
+        sigma = F.relu(sigma)
         alpha, abs_light = sigma2alpha(sigma, intersections, rays_d)  # both [batch, n_intrs-1]
+
+        color = torch.zeros(batch, nintrs, 3, dtype=color_masked.dtype, device=color_masked.device)
         color.masked_scatter_(mask.unsqueeze(-1), color_masked)
         color = shrgb2rgb(color, abs_light, True)
         return color
 
     def get_params(self, lr):
         return [
-            # {"params": self.G, "lr": lr},  # Try making G fixed, like in INGP
-            {"params": self.F, "lr": lr},
+            {"params": self.G, "lr": lr * 1},  # Try making G fixed, like in INGP
+            {"params": self.F, "lr": lr * 10},
             {"params": self.direction_encoder.parameters(), "lr": lr},
-            {"params": self.sigma_net.parameters(), "lr": lr},
-            {"params": self.color_net.parameters(), "lr": lr / 10},
+            {"params": self.sigma_net.parameters(), "lr": lr * 10},
+            {"params": self.color_net.parameters(), "lr": lr},
         ]
 
 
