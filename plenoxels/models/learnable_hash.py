@@ -11,7 +11,7 @@ class LearnableHash(nn.Module):
     def __init__(self, resolution, num_features, feature_dim, radius: float, n_intersections: int, step_size: float):
         super().__init__()
         self.resolution = resolution
-        self.num_features_per_dim = int(np.floor(np.sqrt(num_features)))
+        self.num_features_per_dim = int(np.floor(num_features**(1./3)))
         self.feature_dim = feature_dim
         self.radius = radius
         self.n_intersections = n_intersections
@@ -24,10 +24,10 @@ class LearnableHash(nn.Module):
         #           features and feed them through an MLP to predict numbers that get rounded into
         #           indices into the feature table
         # Starting with option 1 for simplicity
-        self.G = nn.Parameter(torch.empty(resolution, resolution, resolution, 2))
+        self.G = nn.Parameter(torch.empty(resolution, resolution, resolution, 3))
 
         # Feature table
-        self.F = nn.Parameter(torch.empty(self.num_features_per_dim, self.num_features_per_dim, feature_dim))
+        self.F = nn.Parameter(torch.empty(self.num_features_per_dim, self.num_features_per_dim, self.num_features_per_dim, feature_dim))
 
         # Feature decoder (modified from Instant-NGP)
         self.sigma_net = tcnn.Network(
@@ -94,9 +94,9 @@ class LearnableHash(nn.Module):
         Gneighborvals = self.G[neighbors[:,:,0], neighbors[:,:,1], neighbors[:,:,2], :]  # [n, 8, 2]
         weights = trilinear_interpolation_weight(offsets)  # [n, 8]
         # interpolate into F using G.
-        grid = Gneighborvals[None,:,:,:] # [1, n, 8, 2]
+        grid = Gneighborvals[None,None,:,:,:] # [1, 1, n, 8, 3]
         Fneighborvals = F.grid_sample(
-            self.F[None,...].permute(0,3,1,2),
+            self.F[None,...].permute(0,4,1,2,3), # [1,feature_dim, n_feature, n_feature, n_feature]
             grid, mode='bilinear'
         ).squeeze().permute(1,2,0) # [n, 8, feature_dim]
 
