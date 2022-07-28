@@ -93,8 +93,22 @@ class LearnableHash(nn.Module):
         offsets, neighbors = self.get_neighbors2(pts)
         Gneighborvals = self.G[neighbors[:,:,0], neighbors[:,:,1], neighbors[:,:,2], 0]  # [n, 8]
         weights = trilinear_interpolation_weight(offsets)  # [n, 8]
-        Fneighborindices = ((Gneighborvals.clamp(-1, 1) + 1) * self.num_features / 2).floor().long()  # [n, 8] between 0 and num_features
-        Fneighborvals = self.F[Fneighborindices.view(-1)].view(-1, 8, self.feature_dim)  # [n, 8, feature_dim]
+
+        # normalize Gneighborvals between -1, +1
+        gnv_min, gnv_max = torch.min(Gneighborvals), torch.max(Gneighborvals)
+        Gneighborvals = (Gneighborvals - gnv_min) / (gnv_max - gnv_min) * 2 - 1
+
+        grid = Gneighborvals.view(-1)[None, :, None, None]
+        grid = torch.cat((grid, torch.zeros_like(grid)), dim=-1)
+        Fneighborvals = F.grid_sample(
+            self.F.T[None, :, :, None],
+            grid, mode='bilinear'
+        ).squeeze().T.contiguous()  # n*8, feature_dim
+        Fneighborvals = Fneighborvals.view(Gneighborvals.shape[0], 8, self.feature_dim)  # [n, 8, feature_dim]
+
+        # Fneighborindices = ((Gneighborvals.clamp(-1, 1) + 1) * self.num_features / 2).floor().long()  # [n, 8] between 0 and num_features
+        # Fneighborvals = self.F[Fneighborindices.view(-1)].view(-1, 8, self.feature_dim)  # [n, 8, feature_dim]
+
         Fvals = torch.sum(weights[..., None] * Fneighborvals, dim=1)  # [n, feature_dim]
         Fvals = self.sigma_net(Fvals)  # [n, 16]
         sigmas = Fvals[:, 0]
