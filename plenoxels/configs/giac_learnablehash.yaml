@@ -1,23 +1,23 @@
-expname: "learnablehash_lego_128_staticGnocolor"
+expname: "learnablehash_lego_128_staticGnocolor_lininterp_stdgunif"
 
 data:
   datadir: "/data/DATASETS/SyntheticNerf/lego"
   resolution: None
-  max_tr_frames: 25
+  max_tr_frames: 100
   max_ts_frames: 10
 
 model:
-  resolution: 128
+  resolution: 256
   learnable_hash: True
-  num_features: 5000
+  num_features: 65
   feature_dim: 32
 
 optim:
   batch_size: 4000
-  num_epochs: 100
-  lr: 1e-4
+  num_epochs: 10
+  lr: 2e-3
   cosine: False
-  train_f16: False
+  train_f16: True
 
 sh:
   degree: 0

@@ -12,13 +12,14 @@ class LearnableHash(nn.Module):
         super().__init__()
         self.resolution = resolution
         self.num_features_per_dim = int(np.floor(num_features**(1./3)))
+        print("num_features_per_dim = %d" % (self.num_features_per_dim, ))
         self.feature_dim = feature_dim
         self.radius = radius
         self.n_intersections = n_intersections
         self.step_size = step_size
 
         # Volume representation
-        # Option 1: High-resolution grid that stores numbers that get rounded (update: used for 
+        # Option 1: High-resolution grid that stores numbers that get rounded (update: used for
         #           interpolation) into indices into the feature table
         # Option 2: Store small features at multiple resolution grids, then concatenate these
         #           features and feed them through an MLP to predict numbers that get rounded into
@@ -69,8 +70,8 @@ class LearnableHash(nn.Module):
         self.init_params()
 
     def init_params(self):
-        nn.init.uniform_(self.G, -1, 1)
-        nn.init.normal_(self.F, 0.1)
+        nn.init.normal_(self.G, std=0.01)
+        nn.init.normal_(self.F, std=0.1)
 
     def get_neighbors(self, pts):
         # pts should be in grid coordinates, ranging from 0 to resolution
@@ -90,17 +91,31 @@ class LearnableHash(nn.Module):
         # rds should be between -1 and 1 (unit norm ray direction vector)
         # pts [n, 3]
         # rds [n, 3]
-        offsets, neighbors = self.get_neighbors2(pts)
-        Gneighborvals = self.G[neighbors[:,:,0], neighbors[:,:,1], neighbors[:,:,2], :]  # [n, 8, 2]
-        weights = trilinear_interpolation_weight(offsets)  # [n, 8]
-        # interpolate into F using G.
-        grid = Gneighborvals[None,None,:,:,:] # [1, 1, n, 8, 3]
-        Fneighborvals = F.grid_sample(
-            self.F[None,...].permute(0,4,1,2,3), # [1,feature_dim, n_feature, n_feature, n_feature]
-            grid, mode='bilinear'
-        ).squeeze().permute(1,2,0) # [n, 8, feature_dim]
+        pts = (pts * 2 / self.resolution) - 1
 
-        Fvals = torch.sum(weights[..., None] * Fneighborvals, dim=1)  # [n, feature_dim]
+        Gneighborvals = F.grid_sample(
+            self.G[None, ...].permute(0, 4, 1, 2, 3),  # [1, 3, reso, reso, reso]
+            pts[None, None, None, ...],
+            align_corners=True,
+            mode='bilinear', padding_mode='border').squeeze().permute(1, 0)  # [n, 3]
+        Fneighborvals = F.grid_sample(
+            self.F[None, ...].permute(0, 4, 1, 2, 3),
+            Gneighborvals[None, None, None, ...],
+            align_corners=True,
+            mode='bilinear', padding_mode='border').squeeze().permute(1, 0)  # [n, 3]
+
+        #offsets, neighbors = self.get_neighbors2(pts)
+        #Gneighborvals = self.G[neighbors[:,:,0], neighbors[:,:,1], neighbors[:,:,2], :]  # [n, 8, 2]
+        #weights = trilinear_interpolation_weight(offsets)  # [n, 8]
+        # interpolate into F using G.
+        #grid = Gneighborvals[None,None,:,:,:] # [1, 1, n, 8, 3]
+        #Fneighborvals = F.grid_sample(
+        #    self.F[None,...].permute(0,4,1,2,3), # [1,feature_dim, n_feature, n_feature, n_feature]
+        #    grid, mode='bilinear'
+        #).squeeze().permute(1,2,0) # [n, 8, feature_dim]
+
+        #Fvals = torch.sum(weights[..., None] * Fneighborvals, dim=1)  # [n, feature_dim]
+        Fvals = Fneighborvals
         Fvals = self.sigma_net(Fvals)  # [n, 16]
         sigmas = Fvals[:, 0]
         encoded_rd = self.direction_encoder((rds + 1) / 2) # tcnn SH encoding requires inputs to be in [0, 1]
@@ -137,9 +152,9 @@ class LearnableHash(nn.Module):
     def get_params(self, lr):
         return [
             {"params": self.G, "lr": lr * 1},  # Try making G fixed, like in INGP
-            {"params": self.F, "lr": lr * 10},
+            {"params": self.F, "lr": lr * 1},
             {"params": self.direction_encoder.parameters(), "lr": lr},
-            {"params": self.sigma_net.parameters(), "lr": lr * 10},
+            {"params": self.sigma_net.parameters(), "lr": lr},
             {"params": self.color_net.parameters(), "lr": lr},
         ]
 
