@@ -5,6 +5,7 @@ import numpy as np
 import tinycudann as tcnn
 from plenoxels.models.utils import get_intersections
 from plenoxels.nerf_rendering import shrgb2rgb, sigma2alpha
+import time
 
 # Some pieces modified from https://github.com/ashawkey/torch-ngp/blob/6313de18bd8ec02622eb104c163295399f81278f/nerf/network_tcnn.py
 class LearnableHash(nn.Module):
@@ -24,7 +25,8 @@ class LearnableHash(nn.Module):
         #           features and feed them through an MLP to predict numbers that get rounded into
         #           indices into the feature table
         # Starting with option 1 for simplicity
-        self.G = nn.Parameter(torch.empty(resolution, resolution, resolution, 3))
+        self.G1 = nn.Parameter(torch.empty(resolution, resolution, resolution, 3))
+        # self.G2 = nn.Parameter(torch.empty(resolution//2, resolution//2, resolution//2, 3))
 
         # Feature table
         self.F = nn.Parameter(torch.empty(self.num_features_per_dim, self.num_features_per_dim, self.num_features_per_dim, feature_dim))
@@ -69,7 +71,8 @@ class LearnableHash(nn.Module):
         self.init_params()
 
     def init_params(self):
-        nn.init.uniform_(self.G, -1, 1)
+        nn.init.uniform_(self.G1, -1, 1)
+        # nn.init.uniform_(self.G2, -1, 1)
         nn.init.normal_(self.F, 0.1)
 
     def get_neighbors(self, pts):
@@ -78,11 +81,13 @@ class LearnableHash(nn.Module):
         post_floor = torch.clamp(torch.floor(pre_floor), min=0., max=self.resolution - 1)  # [n, 8, 3]
         return pts - post_floor[:, 0, :], post_floor.long()
 
-    def get_neighbors2(self, pts):
+    def get_neighbors2(self, pts, resolution=None):
+        if resolution == None:
+            resolution = self.resolution
         tl_coo = torch.floor(pts)
         tl_offset = pts - tl_coo
         nbr_coo = tl_coo[:, None, :].long() + self.nbr_offsets_01[None, :, :]
-        nbr_coo = torch.clamp(nbr_coo, 0, self.resolution - 1)  # [n, 8, 3]
+        nbr_coo = torch.clamp(nbr_coo, 0, resolution - 1)  # [n, 8, 3]
         return tl_offset, nbr_coo
 
     def eval_pts(self, pts, rds):
@@ -91,7 +96,7 @@ class LearnableHash(nn.Module):
         # pts [n, 3]
         # rds [n, 3]
         offsets, neighbors = self.get_neighbors2(pts)
-        Gneighborvals = self.G[neighbors[:,:,0], neighbors[:,:,1], neighbors[:,:,2], :]  # [n, 8, 2]
+        Gneighborvals = self.G1[neighbors[:,:,0], neighbors[:,:,1], neighbors[:,:,2], :]  # [n, 8, 2]
         weights = trilinear_interpolation_weight(offsets)  # [n, 8]
         # interpolate into F using G.
         grid = Gneighborvals[None,None,:,:,:] # [1, 1, n, 8, 3]
@@ -106,6 +111,77 @@ class LearnableHash(nn.Module):
         encoded_rd = self.direction_encoder((rds + 1) / 2) # tcnn SH encoding requires inputs to be in [0, 1]
         colors = self.color_net(torch.cat([encoded_rd, Fvals[:,1:]], dim=-1))  # [n, 3]
         return sigmas, colors
+
+        # Sequential interpolation by hand (slow)
+        # Interpolate into G1 using pts
+        # offsets, neighbors = self.get_neighbors2(pts)
+        # G1neighborvals = self.G1[neighbors[:,:,0], neighbors[:,:,1], neighbors[:,:,2], :]  # [n, 8, 3]
+        # weights = trilinear_interpolation_weight(offsets)  # [n, 8]
+        # G1vals = torch.sum(weights[...,None] * G1neighborvals, dim=1)  # [n, 3]
+        # # Interpolate into G2 using G1
+        # offsets, neighbors = self.get_neighbors2(G1vals)
+        # G2neighborvals = self.G2[neighbors[:,:,0], neighbors[:,:,1], neighbors[:,:,2], :]  # [n, 8, 3]
+        # weights = trilinear_interpolation_weight(offsets)  # [n, 8]
+        # G2vals = torch.sum(weights[...,None] * G2neighborvals, dim=1)  # [n, 3]
+        # # Interpolate into F using G2
+        # offsets, neighbors = self.get_neighbors2(G2vals)
+        # Fneighborvals = self.F[neighbors[:,:,0], neighbors[:,:,1], neighbors[:,:,2], :]  # [n, 8, feature_dim]
+        # weights = trilinear_interpolation_weight(offsets)  # [n, 8]
+        # Fvals = torch.sum(weights[...,None] * Fneighborvals, dim=1)  # [n, feature_dim]
+
+        # # Sequential interpolation by grid_sample
+        # # move pts to be in [-1, 1]
+        # pts = (pts * 2 / self.resolution) - 1
+        # # Interpolate into G1 using pts
+        # G1vals = F.grid_sample(
+        #     self.G1[None,...].permute(0,4,1,2,3),  # [1, 3, reso, reso, reso]
+        #     pts[None,None,None,:,:],  # [1, 1, 1, n, 3]
+        #     mode='bilinear', padding_mode='border').squeeze().permute(1,0)  # [n, 3]
+        # # Interpolate into G2 using G1
+        # G2vals = F.grid_sample(
+        #     self.G2[None,...].permute(0,4,1,2,3),  # [1, 3, reso, reso, reso]
+        #     G1vals[None,None,None,:,:],  # [1, 1, 1, n, 3]
+        #     mode='bilinear', padding_mode='border').squeeze().permute(1,0)  # [n, 3]
+        # # Interpolate into F using G2
+        # Fvals = F.grid_sample(
+        #     self.F[None,...].permute(0,4,1,2,3),  # [1, feature_dim, reso, reso, reso]
+        #     G2vals[None,None,None,:,:],  # [1, 1, 1, n, 3]
+        #     mode='bilinear', padding_mode='border').squeeze().permute(1,0)  # [n, feature_dim]
+
+        # Nested interpolation (each nesting is just one level, not both at once)
+        # offsets, neighbors = self.get_neighbors2(pts)
+        # G1neighborvals = self.G1[neighbors[:,:,0], neighbors[:,:,1], neighbors[:,:,2], :]  # [n, 8, 3]
+        # weights = trilinear_interpolation_weight(offsets)  # [n, 8]
+        # G2neighborvals = F.grid_sample(
+        #     self.G2[None,...].permute(0,4,1,2,3),  # [1, 3, reso, reso, reso]
+        #     G1neighborvals[None,None,:,:,:],  # [1, 1, n, 8, 3]
+        #     mode='bilinear'
+        # ).squeeze().permute(1,2,0) # [n, 8, 3]
+        # G2vals = torch.sum(weights[..., None] * G2neighborvals, dim=1)  # [n, 3], treat as indices into F
+        
+        # interpolate into F using G2
+        # G2vals = (G2vals + 1) * (self.resolution // 2) / 2 # map G2vals to be in [0, reso] instead of [-1, 1]
+        # offsets, neighbors = self.get_neighbors2(G2vals, resolution=self.resolution//2)
+        # G2neighborvals = self.G2[neighbors[:,:,0], neighbors[:,:,1], neighbors[:,:,2], :]  # [n, 8, 3]
+        # weights = trilinear_interpolation_weight(offsets)  # [n, 8]
+        # Fneighborvals = F.grid_sample(
+        #     self.F[None,...].permute(0,4,1,2,3), # [1,feature_dim, n_feature, n_feature, n_feature]
+        #     G2neighborvals[None,None,:,:,:],  # [1, 1, n, 8, 3] 
+        #     mode='bilinear'
+        # ).squeeze().permute(1,2,0) # [n, 8, feature_dim]
+        # Fvals = torch.sum(weights[..., None] * Fneighborvals, dim=1)  # [n, feature_dim]
+        # Fvals = F.grid_sample(
+        #     self.F[None,...].permute(0,4,1,2,3),  # [1, feature_dim, reso, reso, reso]
+        #     G2vals[None,None,None,:,:],  # [1, 1, 1, n, 3]
+        #     mode='bilinear', padding_mode='border').squeeze().permute(1,0)  # [n, feature_dim]
+
+
+        # Extract color and density from features
+        # Fvals = self.sigma_net(Fvals)  # [n, 16]
+        # sigmas = Fvals[:, 0]
+        # encoded_rd = self.direction_encoder((rds + 1) / 2) # tcnn SH encoding requires inputs to be in [0, 1]
+        # colors = self.color_net(torch.cat([encoded_rd, Fvals[:,1:]], dim=-1))  # [n, 3]
+        # return sigmas, colors
 
     def forward(self, rays_o, rays_d):
         """
@@ -136,7 +212,8 @@ class LearnableHash(nn.Module):
 
     def get_params(self, lr):
         return [
-            {"params": self.G, "lr": lr * 1},  # Try making G fixed, like in INGP
+            {"params": self.G1, "lr": lr * 1}, 
+            # {"params": self.G2, "lr": lr * 1}, 
             {"params": self.F, "lr": lr * 10},
             {"params": self.direction_encoder.parameters(), "lr": lr},
             {"params": self.sigma_net.parameters(), "lr": lr * 10},
