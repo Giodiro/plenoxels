@@ -5,9 +5,14 @@ import subprocess
 # Wrap the function such that fun(hyper) returns the loss we want to minimize, and silences any output produced by the wrapped function
 # The launch command is PYTHONPATH='.' python plenoxels/runners/run_pretrained_dict.py --config plenoxels/configs/reuse_dict.yaml
 hyper_name = 'optim.lr'
-hyper_guess = 1e-1
+hyper_guess = 2e-3
+second_G = 'False'
+expname = f'tuning_secondG{second_G}'
 def fun(hyper):
-    process = subprocess.run(['python', 'plenoxels/runners/run_pretrained_dict.py', '--config', 'plenoxels/configs/reuse_dict.yaml', '--config-updates', 'expname', 'tuning', 'optim.num_epochs', '1', hyper_name, str(hyper)],
+    # process = subprocess.run(['python', 'plenoxels/runners/run_pretrained_dict.py', '--config', 'plenoxels/configs/reuse_dict.yaml', '--config-updates', 'expname', 'tuning', 'optim.num_epochs', '1', hyper_name, str(hyper)],
+    #                         stdout=subprocess.PIPE,
+    #                         universal_newlines=True)
+    process = subprocess.run(['python', 'plenoxels/runners/run_single_scene.py', '--config', 'plenoxels/configs/sara_singlescene.yaml', '--config-updates', 'expname', expname, 'optim.num_epochs', '1', 'model.second_G', second_G, hyper_name, str(hyper)],
                             stdout=subprocess.PIPE,
                             universal_newlines=True)
     output = process.stdout

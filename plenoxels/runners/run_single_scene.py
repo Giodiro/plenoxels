@@ -54,6 +54,9 @@ def train_epoch(renderer, tr_loader, ts_dset, optim, lr_sched, max_epochs, log_d
             grad_scaler.step(optim)
             grad_scaler.update()
 
+            # print(f'sigma_net grad is {torch.norm(renderer.F.grad)}')
+            # assert False
+
             loss_val = loss.item()
             losses["mse"].update(loss_val)
             TB_WRITER.add_scalar(f"mse", loss_val, tot_step)
@@ -96,9 +99,9 @@ def train_epoch(renderer, tr_loader, ts_dset, optim, lr_sched, max_epochs, log_d
 def init_model(cfg, tr_dset, checkpoint_data=None):
     if cfg.model.learnable_hash: # Option to use learnable hash function
         voxel_size = (tr_dset.radius * 2) / cfg.model.resolution
-        step_size = voxel_size / 2
-        n_intersections = np.sqrt(3.) * 2 * cfg.model.resolution
-        renderer = LearnableHash(cfg.model.resolution, cfg.model.num_features, cfg.model.feature_dim, tr_dset.radius, n_intersections, step_size)
+        step_size = voxel_size / 4
+        n_intersections = np.sqrt(3.) * 4 * cfg.model.resolution
+        renderer = LearnableHash(cfg.model.resolution, cfg.model.num_features, cfg.model.feature_dim, tr_dset.radius, n_intersections, step_size, cfg.model.second_G)
     else:
         sh_encoder = plenoxel_sh_encoder(cfg.sh.degree)
         renderer = RegularGrid(resolution=cfg.model.resolution, radius=tr_dset.radius,

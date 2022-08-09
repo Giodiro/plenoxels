@@ -1,4 +1,4 @@
-expname: "learnablehash_lego_256"
+expname: "learnablehash_lego_256_sample4"
 
 data:
   datadir: "/data/datasets/nerf/data/nerf_synthetic/lego"
@@ -11,10 +11,11 @@ model:
   learnable_hash: True
   num_features: 65
   feature_dim: 32
+  second_G: False
 
 optim:
   batch_size: 2000
-  num_epochs: 10
+  num_epochs: 1
   lr: 2e-3
   cosine: True
   train_f16: True
