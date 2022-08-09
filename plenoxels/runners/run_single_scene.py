@@ -69,23 +69,23 @@ def train_epoch(renderer, tr_loader, ts_dset, optim, lr_sched, max_epochs, log_d
         pb.close()
         # Save and evaluate model
         time_s = time.time()
-        psnr = plot_ts(
+        psnr0 = plot_ts(
             ts_dset, 0, renderer, log_dir,
             iteration=tot_step, batch_size=batch_size, image_id=0, verbose=True,
             summary_writer=TB_WRITER, render_fn=default_render_fn(renderer), plot_type="imageio")
-        psnr = plot_ts(
+        psnr3 = plot_ts(
             ts_dset, 0, renderer, log_dir,
             iteration=tot_step, batch_size=batch_size, image_id=3, verbose=True,
             summary_writer=TB_WRITER, render_fn=default_render_fn(renderer), plot_type="imageio")
-        psnr = plot_ts(
+        psnr6 = plot_ts(
             ts_dset, 0, renderer, log_dir,
             iteration=tot_step, batch_size=batch_size, image_id=6, verbose=True,
             summary_writer=TB_WRITER, render_fn=default_render_fn(renderer), plot_type="imageio")
-        psnr = plot_ts(
+        psnr9 = plot_ts(
             ts_dset, 0, renderer, log_dir,
             iteration=tot_step, batch_size=batch_size, image_id=9, verbose=True,
             summary_writer=TB_WRITER, render_fn=default_render_fn(renderer), plot_type="imageio")
-        TB_WRITER.add_scalar(f"TestPSNR", psnr, tot_step)
+        TB_WRITER.add_scalar(f"TestPSNR", psnr0, tot_step)
         torch.save({
             'epoch': e,
             'tot_step': tot_step,
@@ -97,15 +97,19 @@ def train_epoch(renderer, tr_loader, ts_dset, optim, lr_sched, max_epochs, log_d
 
 
 def init_model(cfg, tr_dset, checkpoint_data=None):
-    if cfg.model.learnable_hash: # Option to use learnable hash function
+    if cfg.model.learnable_hash:  # Option to use learnable hash function
         voxel_size = (tr_dset.radius * 2) / cfg.model.resolution
+        # step-size and n-intersections are scaled to artificially increment resolution of model
         step_size = voxel_size / 4
         n_intersections = np.sqrt(3.) * 4 * cfg.model.resolution
-        renderer = LearnableHash(cfg.model.resolution, cfg.model.num_features, cfg.model.feature_dim, tr_dset.radius, n_intersections, step_size, cfg.model.second_G)
+        renderer = LearnableHash(
+            resolution=cfg.model.resolution, num_features=cfg.model.num_features,
+            feature_dim=cfg.model.feature_dim, radius=tr_dset.radius,
+            n_intersections=n_intersections, step_size=step_size, second_G=cfg.model.second_G)
     else:
         sh_encoder = plenoxel_sh_encoder(cfg.sh.degree)
         renderer = RegularGrid(resolution=cfg.model.resolution, radius=tr_dset.radius,
-                            sh_deg=cfg.sh.degree, sh_encoder=sh_encoder)
+                               sh_deg=cfg.sh.degree, sh_encoder=sh_encoder)
     if checkpoint_data is not None and checkpoint_data.get('model', None) is not None:
         renderer.load_state_dict(checkpoint_data['model'])
         print("=> Loaded model state from checkpoint")
@@ -158,7 +162,7 @@ if __name__ == "__main__":
         'tot_step': -1,
     }
     if reload_cfg is not None:
-        assert train_cfg is None, "run_regula_grid.py does not support setting train_cfg and reload_cfg"
+        assert train_cfg is None, "run_single_scene.py does not support setting train_cfg and reload_cfg"
         chosen_opt = user_ask_options(
             "Restart model training from checkpoint or evaluate model?", "train", "test")
         checkpoint_data_ = torch.load(os.path.join(train_log_dir, "model.pt"), map_location='cpu')
