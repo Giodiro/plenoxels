@@ -52,7 +52,9 @@ def train_epoch(renderer, tr_loader, ts_dset, optim, lr_sched, max_epochs, log_d
                 loss = F.mse_loss(rgb_preds, imgs)
             grad_scaler.scale(loss).backward()
             grad_scaler.step(optim)
+            scale = grad_scaler.get_scale()
             grad_scaler.update()
+            skip_lr_sched = scale > grad_scaler.get_scale()
 
             # print(f'sigma_net grad is {torch.norm(renderer.F.grad)}')
             # assert False
@@ -63,7 +65,7 @@ def train_epoch(renderer, tr_loader, ts_dset, optim, lr_sched, max_epochs, log_d
             pb.set_postfix_str(f"mse={loss_val:.4f} - psnr={-10 * math.log10(loss_val)}", refresh=False)
             pb.update(1)
             tot_step += 1
-            if lr_sched is not None:
+            if lr_sched is not None and not skip_lr_sched:
                 lr_sched.step()
                 TB_WRITER.add_scalar("lr", lr_sched.get_last_lr()[0], tot_step)  # one lr per parameter-group
         pb.close()
