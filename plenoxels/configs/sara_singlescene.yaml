@@ -9,15 +9,15 @@ data:
 model:
   resolution: 256
   learnable_hash: True
-  num_features: 5000
+  num_features: 65
   feature_dim: 32
 
 optim:
-  batch_size: 4000
+  batch_size: 2000
   num_epochs: 10
   lr: 2e-3
   cosine: True
-  train_f16: False
+  train_f16: True
   
 sh:
   degree: 0
