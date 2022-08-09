@@ -78,7 +78,7 @@ class LearnableHash(nn.Module):
         nn.init.normal_(self.G1, std=0.01)
         if self.second_G:
             nn.init.normal_(self.G2, std=0.01)
-        nn.init.normal_(self.F, std=0.1)
+        nn.init.normal_(self.F, std=0.05)
 
     def eval_pts(self, pts, rds):
         # pts should be between 0 and resolution
