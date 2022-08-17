@@ -14,6 +14,7 @@ class LearnableHash(nn.Module):
         super().__init__()
         self.resolution = resolution
         self.num_features_per_dim = int(np.floor(num_features**(1./3)))
+        # self.num_features_per_dim = int(np.round(num_features**(1./4)))
         print("num_features_per_dim = %d" % (self.num_features_per_dim, ))
         self.feature_dim = feature_dim
         self.radius = radius
@@ -29,11 +30,13 @@ class LearnableHash(nn.Module):
         #           indices into the feature table
         # Starting with option 1 for simplicity
         self.G1 = nn.Parameter(torch.empty(resolution, resolution, resolution, 3))
+        # self.G1 = nn.Parameter(torch.empty(resolution, resolution, resolution, 4))
         if self.second_G:
             self.G2 = nn.Parameter(torch.empty(resolution // 4, resolution // 4, resolution // 4, 3))
 
         # Feature table
         self.F = nn.Parameter(torch.empty(self.num_features_per_dim, self.num_features_per_dim, self.num_features_per_dim, feature_dim))
+        # self.F = nn.Parameter(torch.empty(self.num_features_per_dim, self.num_features_per_dim, self.num_features_per_dim, self.num_features_per_dim, feature_dim))
 
         # Feature decoder (modified from Instant-NGP)
         self.sigma_net = tcnn.Network(
@@ -43,8 +46,8 @@ class LearnableHash(nn.Module):
                 "otype": "FullyFusedMLP",
                 "activation": "ReLU",
                 "output_activation": "None",
-                "n_neurons": 64,
-                "n_hidden_layers": 1,
+                "n_neurons": 128,
+                "n_hidden_layers": 2,
             },
         )
 
@@ -109,6 +112,7 @@ class LearnableHash(nn.Module):
             G2vals[None, None, None, ...],  # [1, 1, 1, n, 3]
             align_corners=True,
             mode='bilinear', padding_mode='border').squeeze().permute(1, 0)  # [n, feature_dim]
+        # Fvals = quad_interp(self.F, G2vals)
 
         # Extract color and density from features
         Fvals = self.sigma_net(Fvals)  # [n, 16]
@@ -155,3 +159,73 @@ class LearnableHash(nn.Module):
         if self.second_G:
             params.append({"params": self.G2, "lr": lr * 1})
         return params
+
+def quad_interp(grid, pts):
+    # grid should be (n, n, n, n, feature_dim)
+    # pts should be (n_pts, 4) with values between -1 and 1
+    # Transform pts to be between 0 and n
+    pts = (pts + 1) * len(grid) / 2.
+    neighbors = get_quad_neighbors(grid, pts)  # [n_pts, feature_dim, 16]
+    weights = quadrilinear_interpolation_weight(pts - torch.floor(pts))  # [n_pts, 16]
+    return torch.sum(neighbors * weights[:,None,:], dim=-1)  # [n_pts, feature_dim]
+
+def get_quad_neighbors(grid, pts):
+    # grid should be (n, n, n, n, feature_dim)
+    # pts should be (n_pts, 4) with values between 0 and n
+    lox = torch.clamp(torch.floor(pts[:, 0]), min=0, max=len(grid)-1).long()  # [n_pts]
+    loy = torch.clamp(torch.floor(pts[:, 1]), min=0, max=len(grid)-1).long()
+    loz = torch.clamp(torch.floor(pts[:, 2]), min=0, max=len(grid)-1).long()
+    low = torch.clamp(torch.floor(pts[:, 3]), min=0, max=len(grid)-1).long()
+    hix = torch.clamp(torch.ceil(pts[:, 0]), min=0, max=len(grid)-1).long()
+    hiy = torch.clamp(torch.ceil(pts[:, 1]), min=0, max=len(grid)-1).long()
+    hiz = torch.clamp(torch.ceil(pts[:, 2]), min=0, max=len(grid)-1).long()
+    hiw = torch.clamp(torch.ceil(pts[:, 3]), min=0, max=len(grid)-1).long()
+    neighbor0000 = grid[lox, loy, loz, low]  # [n_pts, feature_dim]
+    neighbor0001 = grid[lox, loy, loz, hiw]
+    neighbor0010 = grid[lox, loy, hiz, low]
+    neighbor0011 = grid[lox, loy, hiz, hiw]
+    neighbor0100 = grid[lox, hiy, loz, low]
+    neighbor0101 = grid[lox, hiy, loz, hiw]
+    neighbor0110 = grid[lox, hiy, hiz, low]
+    neighbor0111 = grid[lox, hiy, hiz, hiw]
+    neighbor1000 = grid[hix, loy, loz, low]
+    neighbor1001 = grid[hix, loy, loz, hiw]
+    neighbor1010 = grid[hix, loy, hiz, low]
+    neighbor1011 = grid[hix, loy, hiz, hiw]
+    neighbor1100 = grid[hix, hiy, loz, low]  
+    neighbor1101 = grid[hix, hiy, loz, hiw]
+    neighbor1110 = grid[hix, hiy, hiz, low]
+    neighbor1111 = grid[hix, hiy, hiz, hiw]
+    neighbors = torch.stack(
+        [neighbor0000, neighbor0001, neighbor0010, neighbor0011, neighbor0100, neighbor0101, neighbor0110, neighbor0111,
+        neighbor1000, neighbor1001, neighbor1010, neighbor1011, neighbor1100, neighbor1101, neighbor1110, neighbor1111], 
+        dim=-1)  # [n_pts, feature_dim, 16]
+    return neighbors
+
+def quadrilinear_interpolation_weight(xyzws):
+    # xyzws should have shape [n_pts, 4] and denote the offset (as a fraction of voxel_len) from the 0000 interpolation point
+    xs = xyzws[:, 0]
+    ys = xyzws[:, 1]
+    zs = xyzws[:, 2]
+    ws = xyzws[:, 3]
+    weight0000 = (1 - xs) * (1 - ys) * (1 - zs) * (1 - ws)  # [n_pts]
+    weight0001 = (1 - xs) * (1 - ys) * (1 - zs) * ws  # [n_pts]
+    weight0010 = (1 - xs) * (1 - ys) * zs * (1 - ws)  # [n_pts]
+    weight0011 = (1 - xs) * (1 - ys) * zs * ws  # [n_pts]
+    weight0100 = (1 - xs) * ys * (1 - zs) * (1 - ws ) # [n_pts]
+    weight0101 = (1 - xs) * ys * (1 - zs) * ws  # [n_pts]
+    weight0110 = (1 - xs) * ys * zs * (1 - ws)  # [n_pts]
+    weight0111 = (1 - xs) * ys * zs * ws  # [n_pts]
+    weight1000 = xs * (1 - ys) * (1 - zs) * (1 - ws)  # [n_pts]
+    weight1001 = xs * (1 - ys) * (1 - zs) * ws  # [n_pts]
+    weight1010 = xs * (1 - ys) * zs * (1 - ws)  # [n_pts]
+    weight1011 = xs * (1 - ys) * zs * ws  # [n_pts]
+    weight1100 = xs * ys * (1 - zs) * (1 - ws)  # [n_pts]
+    weight1101 = xs * ys * (1 - zs) * ws  # [n_pts]
+    weight1110 = xs * ys * zs * (1 - ws)  # [n_pts]
+    weight1111 = xs * ys * zs * ws  # [n_pts]
+    weights = torch.stack(
+        [weight0000, weight0001, weight0010, weight0011, weight0100, weight0101, weight0110, weight0111, 
+        weight1000, weight1001, weight1010, weight1011, weight1100, weight1101, weight1110, weight1111],
+        dim=-1)  # [n_pts, 16]
+    return weights
