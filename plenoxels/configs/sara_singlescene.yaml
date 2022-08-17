@@ -1,24 +1,26 @@
-expname: "learnablehash_lego_256_sample4"
+expname: "learnablehash_bignetbigFfullreso128sample6x_3e-3"
 
 data:
   datadir: "/data/datasets/nerf/data/nerf_synthetic/lego"
-  resolution: None
+  resolution: 800
+  downsample: 1
   max_tr_frames: 100
   max_ts_frames: 10
 
 model:
-  resolution: 256
+  resolution: 128
   learnable_hash: True
-  num_features: 65
-  feature_dim: 32
+  num_features: 513
+  feature_dim: 64
   second_G: False
 
 optim:
   batch_size: 2000
-  num_epochs: 1
+  num_epochs: 10
   lr: 2e-3
-  cosine: True
+  cosine: False
   train_f16: True
+  samples_per_voxel: 6
   
 sh:
   degree: 0

@@ -15,6 +15,7 @@ _C.optim.num_epochs = 10
 _C.optim.lr = 1e-2
 _C.optim.cosine = True
 _C.optim.train_f16 = False
+_C.optim.samples_per_voxel = 2
 
 _C.optim.regularization = CN()
 

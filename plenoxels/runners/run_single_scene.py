@@ -102,8 +102,8 @@ def init_model(cfg, tr_dset, checkpoint_data=None):
     if cfg.model.learnable_hash:  # Option to use learnable hash function
         voxel_size = (tr_dset.radius * 2) / cfg.model.resolution
         # step-size and n-intersections are scaled to artificially increment resolution of model
-        step_size = voxel_size / 4
-        n_intersections = np.sqrt(3.) * 4 * cfg.model.resolution
+        step_size = voxel_size / cfg.optim.samples_per_voxel
+        n_intersections = np.sqrt(3.) * cfg.optim.samples_per_voxel * cfg.model.resolution
         renderer = LearnableHash(
             resolution=cfg.model.resolution, num_features=cfg.model.num_features,
             feature_dim=cfg.model.feature_dim, radius=tr_dset.radius,
