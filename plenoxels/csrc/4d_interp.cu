@@ -1,8 +1,9 @@
 #include <torch/torch.h>
 #include <torch/extension.h>
 #include <ATen/native/cuda/GridSampler.cuh>
+#include <ATen/native/cuda/KernelUtils.cuh>
 
-//#include <ATen/native/GridSamplerUtils.h>
+#include <ATen/native/GridSamplerUtils.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/detail/TensorInfo.cuh>
 #include <ATen/cuda/detail/IndexUtils.cuh>
@@ -38,7 +39,7 @@ namespace {
                    const index_t NC_offset,
                    const index_t memory_span) {
     if (within_bounds_4d(l, d, h, w, L, D, H, W)) {
-      fastAtomicAdd(data,
+      at::native::fastAtomicAdd(data,
                     NC_offset + l * sL + d * sD + h * sH + w * sW,
                     memory_span,
                     delta,
@@ -382,7 +383,7 @@ namespace {
       ix = at::native::grid_sampler_compute_source_index_set_grad(ix, inp_W, padding_mode, align_corners, &gix_mult);
       iy = at::native::grid_sampler_compute_source_index_set_grad(iy, inp_H, padding_mode, align_corners, &giy_mult);
       iz = at::native::grid_sampler_compute_source_index_set_grad(iz, inp_D, padding_mode, align_corners, &giz_mult);
-      iq = at::native::grid_sampler_compute_source_index_set_grad(iq, inp_L, padding_mode, align_corners, &gil_mult);
+      iq = at::native::grid_sampler_compute_source_index_set_grad(iq, inp_L, padding_mode, align_corners, &giq_mult);
 
       if (interpolation_mode == GridSamplerInterpolation::Bilinear) {
         // get corner pixel values from (x, y, z, q)
@@ -692,7 +693,7 @@ void launch_grid_sampler_4d_forward_kernel(
     int64_t interpolation_mode, int64_t padding_mode, bool align_corners) {
   // See NOTE [ grid_sampler Native Functions ].
   // Add checks here in case this is called instead of grid_sampler.
-  check_grid_sampler_common(input, grid);
+  at::native::check_grid_sampler_common(input, grid);
   check_grid_sampler_4d(input, grid, interpolation_mode);
 
   auto N = input.size(0);
@@ -739,12 +740,12 @@ void launch_grid_sampler_4d_backward_kernel(
 {
   // See NOTE [ grid_sampler Native Functions ].
   // Add checks here in case this is called instead of grid_sampler.
-  check_grid_sampler_common(input, grid);
+  at::native::check_grid_sampler_common(input, grid);
   check_grid_sampler_4d(input, grid, interpolation_mode);
 
   // See Note [Writing Nondeterministic Operations]
   // Nondeterministic because of atomicAdd usage
-  globalContext().alertNotDeterministic("grid_sampler_4d_backward_cuda");
+  //globalContext().alertNotDeterministic("grid_sampler_4d_backward_cuda");
   auto N = input.size(0);
   auto L = grid.size(1);
   auto D = grid.size(2);
@@ -840,6 +841,11 @@ class GridSample4d : public Function<GridSample4d> {
       launch_grid_sampler_4d_forward_kernel(
         output, input, grid, interpolation_mode, padding_mode, align_corners);
       ctx->save_for_backward({input, grid});
+      ctx->saved_data["interpolation_mode"] = interpolation_mode;
+      ctx->saved_data["padding_mode"] = padding_mode;
+      ctx->saved_data["align_corners"] = align_corners;
+      ctx->saved_data["input_needs_grad"] = input.requires_grad();
+      ctx->saved_data["grid_needs_grad"] = grid.requires_grad();
       return output;
     }
 
@@ -850,7 +856,8 @@ class GridSample4d : public Function<GridSample4d> {
       const Tensor input = saved[0];
       const Tensor grid = saved[1];
 
-      auto input_requires_grad = ctx->needs_input_grad[0];
+
+      auto input_requires_grad = ctx->saved_data["input_needs_grad"].toBool();
       Tensor grad_input = ([&]() {
         if (input_requires_grad) {
           return at::zeros_like(input, LEGACY_CONTIGUOUS_MEMORY_FORMAT);
@@ -860,8 +867,9 @@ class GridSample4d : public Function<GridSample4d> {
       })();
       auto grad_grid = at::empty_like(grid, LEGACY_CONTIGUOUS_MEMORY_FORMAT);
       launch_grid_sampler_4d_backward_kernel(
-          grad_input, grad_grid, grad_output, input,
-          grid, interpolation_mode, padding_mode, align_corners, output_mask);
+          grad_input, grad_grid, grad_outputs[0], input,
+          grid, ctx->saved_data["interpolation_mode"].toInt(), ctx->saved_data["padding_mode"].toInt(), 
+          ctx->saved_data["align_corners"].toBool(), {input_requires_grad, ctx->saved_data["grid_needs_grad"].toBool()});
 
       return {grad_input, grad_grid, Tensor(), Tensor(), Tensor()};
     }

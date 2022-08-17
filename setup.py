@@ -17,8 +17,8 @@ if cub_home is None:
     print("CUB Not Detected")
 
 include_dirs = ['plenoxels/csrc']
-if cub_home is not None:
-    include_dirs.append(osp.realpath(cub_home).replace('\\ ', ' '))
+#if cub_home is not None:
+#    include_dirs.append(osp.realpath(cub_home).replace('\\ ', ' '))
 
 ext_modules = [
     CUDAExtension('plenoxels.c_ext',
