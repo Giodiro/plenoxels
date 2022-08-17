@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+# import torch.jit as jit
 import numpy as np
 import tinycudann as tcnn
 from plenoxels.models.utils import get_intersections
@@ -10,11 +11,12 @@ from plenoxels.nerf_rendering import shrgb2rgb, sigma2alpha
 # Some pieces modified from https://github.com/ashawkey/torch-ngp/blob/6313de18bd8ec02622eb104c163295399f81278f/nerf/network_tcnn.py
 class LearnableHash(nn.Module):
     def __init__(self, resolution, num_features, feature_dim, radius: float, n_intersections: int,
-                 step_size: float, second_G=False,):
+                 step_size: float, second_G=False):
         super().__init__()
         self.resolution = resolution
-        self.num_features_per_dim = int(np.floor(num_features**(1./3)))
+        self.num_features_per_dim = int(np.round(num_features**(1./3)))
         # self.num_features_per_dim = int(np.round(num_features**(1./4)))
+        # self.quadinterp = QuadInterp()  # was relevant for jit, but doesn't seem to help
         print("num_features_per_dim = %d" % (self.num_features_per_dim, ))
         self.feature_dim = feature_dim
         self.radius = radius
@@ -160,18 +162,18 @@ class LearnableHash(nn.Module):
             params.append({"params": self.G2, "lr": lr * 1})
         return params
 
+# jit scripting makes it slower?
+# class QuadInterp(jit.ScriptModule):
+#     def __init__(self):
+#         super().__init__()
+
+#     @jit.script_method
+    # def forward(self, grid, pts):
 def quad_interp(grid, pts):
     # grid should be (n, n, n, n, feature_dim)
     # pts should be (n_pts, 4) with values between -1 and 1
     # Transform pts to be between 0 and n
     pts = (pts + 1) * len(grid) / 2.
-    neighbors = get_quad_neighbors(grid, pts)  # [n_pts, feature_dim, 16]
-    weights = quadrilinear_interpolation_weight(pts - torch.floor(pts))  # [n_pts, 16]
-    return torch.sum(neighbors * weights[:,None,:], dim=-1)  # [n_pts, feature_dim]
-
-def get_quad_neighbors(grid, pts):
-    # grid should be (n, n, n, n, feature_dim)
-    # pts should be (n_pts, 4) with values between 0 and n
     lox = torch.clamp(torch.floor(pts[:, 0]), min=0, max=len(grid)-1).long()  # [n_pts]
     loy = torch.clamp(torch.floor(pts[:, 1]), min=0, max=len(grid)-1).long()
     loz = torch.clamp(torch.floor(pts[:, 2]), min=0, max=len(grid)-1).long()
@@ -180,52 +182,30 @@ def get_quad_neighbors(grid, pts):
     hiy = torch.clamp(torch.ceil(pts[:, 1]), min=0, max=len(grid)-1).long()
     hiz = torch.clamp(torch.ceil(pts[:, 2]), min=0, max=len(grid)-1).long()
     hiw = torch.clamp(torch.ceil(pts[:, 3]), min=0, max=len(grid)-1).long()
-    neighbor0000 = grid[lox, loy, loz, low]  # [n_pts, feature_dim]
-    neighbor0001 = grid[lox, loy, loz, hiw]
-    neighbor0010 = grid[lox, loy, hiz, low]
-    neighbor0011 = grid[lox, loy, hiz, hiw]
-    neighbor0100 = grid[lox, hiy, loz, low]
-    neighbor0101 = grid[lox, hiy, loz, hiw]
-    neighbor0110 = grid[lox, hiy, hiz, low]
-    neighbor0111 = grid[lox, hiy, hiz, hiw]
-    neighbor1000 = grid[hix, loy, loz, low]
-    neighbor1001 = grid[hix, loy, loz, hiw]
-    neighbor1010 = grid[hix, loy, hiz, low]
-    neighbor1011 = grid[hix, loy, hiz, hiw]
-    neighbor1100 = grid[hix, hiy, loz, low]  
-    neighbor1101 = grid[hix, hiy, loz, hiw]
-    neighbor1110 = grid[hix, hiy, hiz, low]
-    neighbor1111 = grid[hix, hiy, hiz, hiw]
-    neighbors = torch.stack(
-        [neighbor0000, neighbor0001, neighbor0010, neighbor0011, neighbor0100, neighbor0101, neighbor0110, neighbor0111,
-        neighbor1000, neighbor1001, neighbor1010, neighbor1011, neighbor1100, neighbor1101, neighbor1110, neighbor1111], 
-        dim=-1)  # [n_pts, feature_dim, 16]
-    return neighbors
+    xyzws = pts - torch.floor(pts)
+    xs = xyzws[:, 0][:, None]
+    ys = xyzws[:, 1][:, None]
+    zs = xyzws[:, 2][:, None]
+    ws = xyzws[:, 3][:, None]
+    values = torch.zeros(len(pts), grid.shape[-1]).to(grid.device)
+    values = values + (1 - xs) * (1 - ys) * (1 - zs) * (1 - ws) * grid[lox, loy, loz, low]  # 0000
+    values = values + (1 - xs) * (1 - ys) * (1 - zs) * ws * grid[lox, loy, loz, hiw]  # 0001
+    values = values + (1 - xs) * (1 - ys) * zs * (1 - ws) * grid[lox, loy, hiz, low]  # 0010
+    values = values + (1 - xs) * (1 - ys) * zs * ws * grid[lox, loy, hiz, hiw]  # 0011
+    values = values + (1 - xs) * ys * (1 - zs) * (1 - ws) * grid[lox, hiy, loz, low]  # 0100
+    values = values + (1 - xs) * ys * (1 - zs) * ws * grid[lox, hiy, loz, hiw]  # 0101
+    values = values + (1 - xs) * ys * zs * (1 - ws) * grid[lox, hiy, hiz, low]  # 0110
+    values = values + (1 - xs) * ys * zs * ws * grid[lox, hiy, hiz, hiw]  # 0111
+    values = values + xs * (1 - ys) * (1 - zs) * (1 - ws) * grid[hix, loy, loz, low]  # 1000
+    values = values + xs * (1 - ys) * (1 - zs) * ws * grid[hix, loy, loz, hiw]  # 1001
+    values = values + xs * (1 - ys) * zs * (1 - ws) * grid[hix, loy, hiz, low]  # 1010
+    values = values + xs * (1 - ys) * zs * ws * grid[hix, loy, hiz, hiw]  # 1011
+    values = values + xs * ys * (1 - zs) * (1 - ws) * grid[hix, hiy, loz, low]  # 1100
+    values = values + xs * ys * (1 - zs) * ws * grid[hix, hiy, loz, hiw]  # 1101
+    values = values + xs * ys * zs * (1 - ws) * grid[hix, hiy, hiz, low]  # 1110
+    values = values + xs * ys * zs * ws * grid[hix, hiy, hiz, hiw]  # 1111
+    # neighbors = get_quad_neighbors(grid, pts)  # [n_pts, feature_dim, 16]
+    # weights = quadrilinear_interpolation_weight(pts - torch.floor(pts))  # [n_pts, 16]
+    # return torch.sum(neighbors * weights[:,None,:], dim=-1)  # [n_pts, feature_dim]
+    return values
 
-def quadrilinear_interpolation_weight(xyzws):
-    # xyzws should have shape [n_pts, 4] and denote the offset (as a fraction of voxel_len) from the 0000 interpolation point
-    xs = xyzws[:, 0]
-    ys = xyzws[:, 1]
-    zs = xyzws[:, 2]
-    ws = xyzws[:, 3]
-    weight0000 = (1 - xs) * (1 - ys) * (1 - zs) * (1 - ws)  # [n_pts]
-    weight0001 = (1 - xs) * (1 - ys) * (1 - zs) * ws  # [n_pts]
-    weight0010 = (1 - xs) * (1 - ys) * zs * (1 - ws)  # [n_pts]
-    weight0011 = (1 - xs) * (1 - ys) * zs * ws  # [n_pts]
-    weight0100 = (1 - xs) * ys * (1 - zs) * (1 - ws ) # [n_pts]
-    weight0101 = (1 - xs) * ys * (1 - zs) * ws  # [n_pts]
-    weight0110 = (1 - xs) * ys * zs * (1 - ws)  # [n_pts]
-    weight0111 = (1 - xs) * ys * zs * ws  # [n_pts]
-    weight1000 = xs * (1 - ys) * (1 - zs) * (1 - ws)  # [n_pts]
-    weight1001 = xs * (1 - ys) * (1 - zs) * ws  # [n_pts]
-    weight1010 = xs * (1 - ys) * zs * (1 - ws)  # [n_pts]
-    weight1011 = xs * (1 - ys) * zs * ws  # [n_pts]
-    weight1100 = xs * ys * (1 - zs) * (1 - ws)  # [n_pts]
-    weight1101 = xs * ys * (1 - zs) * ws  # [n_pts]
-    weight1110 = xs * ys * zs * (1 - ws)  # [n_pts]
-    weight1111 = xs * ys * zs * ws  # [n_pts]
-    weights = torch.stack(
-        [weight0000, weight0001, weight0010, weight0011, weight0100, weight0101, weight0110, weight0111, 
-        weight1000, weight1001, weight1010, weight1011, weight1100, weight1101, weight1110, weight1111],
-        dim=-1)  # [n_pts, 16]
-    return weights
