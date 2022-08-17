@@ -1,7 +1,8 @@
 #include <torch/torch.h>
 #include <torch/extension.h>
 #include <ATen/native/cuda/GridSampler.cuh>
-#include <ATen/native/GridSamplerUtils.h>
+
+//#include <ATen/native/GridSamplerUtils.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/detail/TensorInfo.cuh>
 #include <ATen/cuda/detail/IndexUtils.cuh>
@@ -20,6 +21,7 @@ using torch::autograd::Function;
 using torch::autograd::AutogradContext;
 using torch::autograd::Variable;
 using torch::Tensor;
+using at::TensorBase;
 
 
 namespace {
@@ -96,7 +98,7 @@ namespace {
     index_t grid_sCoor = grid.strides[5];
     index_t out_sN = output.strides[0];
     index_t out_sC = output.strides[1];
-    index_t out_sL = output.strides[2]
+    index_t out_sL = output.strides[2];
     index_t out_sD = output.strides[3];
     index_t out_sH = output.strides[4];
     index_t out_sW = output.strides[5];
@@ -115,10 +117,10 @@ namespace {
       scalar_t iz = grid.data[grid_offset + 2 * grid_sCoor];
       scalar_t iq = grid.data[grid_offset + 3 * grid_sCoor];
 
-      ix = grid_sampler_compute_source_index(ix, inp_W, padding_mode, align_corners);
-      iy = grid_sampler_compute_source_index(iy, inp_H, padding_mode, align_corners);
-      iz = grid_sampler_compute_source_index(iz, inp_D, padding_mode, align_corners);
-      iq = grid_sampler_compute_source_index(iq, inp_L, padding_mode, align_corners);
+      ix = at::native::grid_sampler_compute_source_index(ix, inp_W, padding_mode, align_corners);
+      iy = at::native::grid_sampler_compute_source_index(iy, inp_H, padding_mode, align_corners);
+      iz = at::native::grid_sampler_compute_source_index(iz, inp_D, padding_mode, align_corners);
+      iq = at::native::grid_sampler_compute_source_index(iq, inp_L, padding_mode, align_corners);
 
       if (interpolation_mode == GridSamplerInterpolation::Bilinear) {
         // get corner pixel values from (x, y, z, q)
@@ -377,10 +379,10 @@ namespace {
 
       // multipliers for gradients on ix, iy, iz and iq
       scalar_t gix_mult, giy_mult, giz_mult, giq_mult;
-      ix = grid_sampler_compute_source_index_set_grad(ix, inp_W, padding_mode, align_corners, &gix_mult);
-      iy = grid_sampler_compute_source_index_set_grad(iy, inp_H, padding_mode, align_corners, &giy_mult);
-      iz = grid_sampler_compute_source_index_set_grad(iz, inp_D, padding_mode, align_corners, &giz_mult);
-      iq = grid_sampler_compute_source_index_set_grad(iq, inp_L, padding_mode, align_corners, &gil_mult);
+      ix = at::native::grid_sampler_compute_source_index_set_grad(ix, inp_W, padding_mode, align_corners, &gix_mult);
+      iy = at::native::grid_sampler_compute_source_index_set_grad(iy, inp_H, padding_mode, align_corners, &giy_mult);
+      iz = at::native::grid_sampler_compute_source_index_set_grad(iz, inp_D, padding_mode, align_corners, &giz_mult);
+      iq = at::native::grid_sampler_compute_source_index_set_grad(iq, inp_L, padding_mode, align_corners, &gil_mult);
 
       if (interpolation_mode == GridSamplerInterpolation::Bilinear) {
         // get corner pixel values from (x, y, z, q)
