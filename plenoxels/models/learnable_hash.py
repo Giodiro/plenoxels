@@ -1,10 +1,19 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from importlib.machinery import PathFinder
+from pathlib import Path
 import numpy as np
 import tinycudann as tcnn
-from plenoxels.models.utils import get_intersections
+from plenoxels.models.utils import get_intersections, pos_encode
 from plenoxels.nerf_rendering import shrgb2rgb, sigma2alpha
+import plenoxels
+
+try:
+    spec = PathFinder().find_spec("c_ext", [str(Path(__file__).resolve().parents[1])])
+    torch.ops.load_library(spec.origin)
+except:
+    print("Failed to load C-extension necessary for DictPlenoxels model")
 
 
 # Some pieces modified from https://github.com/ashawkey/torch-ngp/blob/6313de18bd8ec02622eb104c163295399f81278f/nerf/network_tcnn.py
@@ -13,9 +22,11 @@ class LearnableHash(nn.Module):
                  step_size: float, second_G=False,):
         super().__init__()
         self.resolution = resolution
-        self.num_features_per_dim = int(np.floor(num_features**(1./3)))
+        self.grid_dim = 4
+        self.num_features_per_dim = int(round(num_features**(1/self.grid_dim)))
         print("num_features_per_dim = %d" % (self.num_features_per_dim, ))
         self.feature_dim = feature_dim
+        self.offset_pe_dim = 4 * 6
         self.radius = radius
         self.n_intersections = n_intersections
         self.step_size = step_size
@@ -28,12 +39,19 @@ class LearnableHash(nn.Module):
         #           features and feed them through an MLP to predict numbers that get rounded into
         #           indices into the feature table
         # Starting with option 1 for simplicity
-        self.G1 = nn.Parameter(torch.empty(resolution, resolution, resolution, 3))
+        self.G1 = nn.Parameter(torch.empty(self.grid_dim, resolution, resolution, resolution))
         if self.second_G:
-            self.G2 = nn.Parameter(torch.empty(resolution // 4, resolution // 4, resolution // 4, 3))
+            self.G2 = nn.Parameter(torch.empty(3, 16, 16, 16))
 
         # Feature table
-        self.F = nn.Parameter(torch.empty(self.num_features_per_dim, self.num_features_per_dim, self.num_features_per_dim, feature_dim))
+        if self.grid_dim == 2:
+            self.F = nn.Parameter(torch.empty(feature_dim, self.num_features_per_dim, self.num_features_per_dim))
+        elif self.grid_dim == 3:
+            self.F = nn.Parameter(torch.empty(feature_dim, self.num_features_per_dim, self.num_features_per_dim, self.num_features_per_dim))
+        elif self.grid_dim == 4:
+            self.F = nn.Parameter(torch.empty(feature_dim, self.num_features_per_dim, self.num_features_per_dim, self.num_features_per_dim, self.num_features_per_dim))
+        else:
+            raise ValueError("grid_dim can be 2 or 3 or 4")
 
         # Feature decoder (modified from Instant-NGP)
         self.sigma_net = tcnn.Network(
@@ -52,7 +70,7 @@ class LearnableHash(nn.Module):
             n_input_dims=3,
             encoding_config={
                 "otype": "SphericalHarmonics",
-                "degree": 4,
+                "degree": 4,  # TODO: Try changing
             },
         )
 
@@ -77,7 +95,7 @@ class LearnableHash(nn.Module):
     def init_params(self):
         nn.init.normal_(self.G1, std=0.01)
         if self.second_G:
-            nn.init.normal_(self.G2, std=0.01)
+            nn.init.normal_(self.G2, std=0.05)
         nn.init.normal_(self.F, std=0.05)
 
     def eval_pts(self, pts, rds):
@@ -91,24 +109,39 @@ class LearnableHash(nn.Module):
         pts = (pts * 2 / self.resolution) - 1
         # Interpolate into G1 using pts
         G1vals = F.grid_sample(
-            self.G1[None, ...].permute(0, 4, 1, 2, 3),  # [1, 3, reso, reso, reso]
+            self.G1[None, ...],  # [1, grid_dim, reso, reso, reso]
             pts[None, None, None, ...],  # [1, 1, 1, n, 3]
             align_corners=True,
-            mode='bilinear', padding_mode='border').squeeze().permute(1, 0)  # [n, 3]
+            mode='bilinear', padding_mode='border').squeeze().permute(1, 0)  # [n, grid_dim]
         # Interpolate into G2 using G1
         G2vals = G1vals
         if self.second_G:
             G2vals = F.grid_sample(
-                self.G2[None, ...].permute(0, 4, 1, 2, 3),  # [1, 3, reso, reso, reso]
+                self.G2[None, ...],  # [1, 3, reso, reso, reso]
                 G1vals[None, None, None, ...],  # [1, 1, 1, n, 3]
                 align_corners=True,
                 mode='bilinear', padding_mode='border').squeeze().permute(1, 0)  # [n, 3]
         # Interpolate into F using G2
-        Fvals = F.grid_sample(
-            self.F[None, ...].permute(0, 4, 1, 2, 3),  # [1, feature_dim, reso, reso, reso]
-            G2vals[None, None, None, ...],  # [1, 1, 1, n, 3]
-            align_corners=True,
-            mode='bilinear', padding_mode='border').squeeze().permute(1, 0)  # [n, feature_dim]
+        if self.grid_dim == 2:
+            Fvals = F.grid_sample(
+                self.F[None, ...],  # [1, feature_dim, reso, reso]
+                G2vals[None, None, ...],  # [1, 1, n, 2]
+                align_corners=True,
+                mode='bilinear', padding_mode='border').squeeze().permute(1, 0)  # [n, feature_dim]
+        elif self.grid_dim == 3:
+            Fvals = F.grid_sample(
+                self.F[None, ...],  # [1, feature_dim, reso, reso, reso]
+                G2vals[None, None, None, ...],  # [1, 1, 1, n, 3]
+                align_corners=True,
+                mode='bilinear', padding_mode='border').squeeze().permute(1, 0)  # [n, feature_dim]
+        elif self.grid_dim == 4:
+            Fvals = torch.ops.plenoxels.grid_sample_4d(
+                self.F[None, ...],  # [1, feature_dim, reso, reso, reso, reso]
+                G2vals[None, None, None, None, ...],  # [1, 1, 1, n, 4]
+                0,  # interpolation_mode
+                1,  # padding_mode
+                True,  # align_corners
+                ).squeeze().permute(1, 0)  # [n, feature_dim]
 
         # Extract color and density from features
         Fvals = self.sigma_net(Fvals)  # [n, 16]
@@ -147,6 +180,7 @@ class LearnableHash(nn.Module):
     def get_params(self, lr):
         params = [
             {"params": self.G1, "lr": lr * 1},
+            #{"params": self.pos_net.parameters(), "lr": lr},
             {"params": self.F, "lr": lr * 1},
             {"params": self.direction_encoder.parameters(), "lr": lr},
             {"params": self.sigma_net.parameters(), "lr": lr},

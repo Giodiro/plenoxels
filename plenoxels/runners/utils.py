@@ -48,7 +48,7 @@ def init_data_single_dset(cfg):
     train = SyntheticNerfDataset(cfg.data.datadir, split='train', downsample=downsample,
                                  resolution=resolution, max_frames=cfg.data.max_tr_frames)
     train_load = torch.utils.data.DataLoader(train, batch_size=cfg.optim.batch_size, shuffle=True,
-                                             num_workers=3, prefetch_factor=1, pin_memory=True)
+                                             num_workers=4, prefetch_factor=2, pin_memory=True)
     test = SyntheticNerfDataset(cfg.data.datadir, split='test', downsample=1, resolution=800,
                                 max_frames=cfg.data.max_ts_frames)
     return train, train_load, test

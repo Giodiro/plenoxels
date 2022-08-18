@@ -1,21 +1,24 @@
-expname: "learnablehash_lego_256_lininterp"
+expname: "learnablehash_lego_128_cosine_x4rays_rg1=8_rg2=4_f32"
+seed: 1299
 
 data:
   datadir: "/data/DATASETS/SyntheticNerf/lego"
-  resolution: None
+  resolution: 256
+  downsample: 1.5625
   max_tr_frames: 100
   max_ts_frames: 10
 
 model:
-  resolution: 256
+  resolution: 128
   learnable_hash: True
-  num_features: 65
+  num_features: 4096
   feature_dim: 32
+  second_G: False
 
 optim:
   batch_size: 4000
-  num_epochs: 30
-  lr: 2e-3
+  num_epochs: 10
+  lr: 2e-4
   cosine: False
   train_f16: True
 
