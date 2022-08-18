@@ -19,7 +19,7 @@ model:
 optim:
   batch_size: 4000
   num_epochs: 10
-  lr: 2e-4
+  lr: 2e-3
   cosine: False
   train_f16: True
 

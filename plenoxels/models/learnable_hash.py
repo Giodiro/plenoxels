@@ -14,6 +14,9 @@ class LearnableHash(nn.Module):
                  step_size: float, grid_dim: int, second_G=False,):
         super().__init__()
         self.resolution = resolution
+        if grid_dim not in {2, 3, 4}:
+            raise ValueError("grid_dim must be 2, 3, or 4.")
+        self.grid_dim = grid_dim
         self.num_features_per_dim = int(round(num_features**(1/self.grid_dim)))
         print("num_features_per_dim = %d" % (self.num_features_per_dim, ))
         self.feature_dim = feature_dim
@@ -22,9 +25,6 @@ class LearnableHash(nn.Module):
         self.n_intersections = n_intersections
         self.step_size = step_size
         self.second_G = second_G
-        if grid_dim not in {2, 3, 4}:
-            raise ValueError("grid_dim must be 2, 3, or 4.")
-        self.grid_dim = grid_dim
 
         # Volume representation
         # Option 1: High-resolution grid that stores numbers that get rounded (update: used for
@@ -80,13 +80,13 @@ class LearnableHash(nn.Module):
         self.init_params()
 
     def init_params(self):
-        nn.init.normal_(self.G1, std=0.01)
+        nn.init.normal_(self.G1, std=0.02)
         if self.second_G:
             nn.init.normal_(self.G2, std=0.05)
         nn.init.normal_(self.F, std=0.05)
 
     def grid_sample_wrapper(self, grid: torch.Tensor, coords: torch.Tensor) -> torch.Tensor:
-        grid_dim = grid.shape[0]
+        grid_dim = coords.shape[-1]
         if grid_dim == 2:
             interp = F.grid_sample(
                 grid[None, ...],  # [1, feature_dim, reso, reso]
