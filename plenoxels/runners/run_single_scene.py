@@ -108,7 +108,8 @@ def init_model(cfg, tr_dset, checkpoint_data=None):
         renderer = LearnableHash(
             resolution=cfg.model.resolution, num_features=cfg.model.num_features,
             feature_dim=cfg.model.feature_dim, radius=tr_dset.radius,
-            n_intersections=n_intersections, step_size=step_size, second_G=cfg.model.second_G)
+            n_intersections=n_intersections, step_size=step_size, second_G=cfg.model.second_G,
+            grid_dim=cfg.model.grid_dim)
     else:
         sh_encoder = plenoxel_sh_encoder(cfg.sh.degree)
         renderer = RegularGrid(resolution=cfg.model.resolution, radius=tr_dset.radius,

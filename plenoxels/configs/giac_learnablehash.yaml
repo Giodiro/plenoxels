@@ -14,6 +14,7 @@ model:
   num_features: 4096
   feature_dim: 32
   second_G: False
+  grid_dim: 4
 
 optim:
   batch_size: 4000

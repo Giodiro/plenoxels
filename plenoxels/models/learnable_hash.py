@@ -3,26 +3,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 from importlib.machinery import PathFinder
 from pathlib import Path
-import numpy as np
 import tinycudann as tcnn
 from plenoxels.models.utils import get_intersections, pos_encode
 from plenoxels.nerf_rendering import shrgb2rgb, sigma2alpha
-import plenoxels
-
-try:
-    spec = PathFinder().find_spec("c_ext", [str(Path(__file__).resolve().parents[1])])
-    torch.ops.load_library(spec.origin)
-except:
-    print("Failed to load C-extension necessary for DictPlenoxels model")
 
 
 # Some pieces modified from https://github.com/ashawkey/torch-ngp/blob/6313de18bd8ec02622eb104c163295399f81278f/nerf/network_tcnn.py
 class LearnableHash(nn.Module):
     def __init__(self, resolution, num_features, feature_dim, radius: float, n_intersections: int,
-                 step_size: float, second_G=False,):
+                 step_size: float, grid_dim: int, second_G=False,):
         super().__init__()
         self.resolution = resolution
-        self.grid_dim = 4
         self.num_features_per_dim = int(round(num_features**(1/self.grid_dim)))
         print("num_features_per_dim = %d" % (self.num_features_per_dim, ))
         self.feature_dim = feature_dim
@@ -31,6 +22,9 @@ class LearnableHash(nn.Module):
         self.n_intersections = n_intersections
         self.step_size = step_size
         self.second_G = second_G
+        if grid_dim not in {2, 3, 4}:
+            raise ValueError("grid_dim must be 2, 3, or 4.")
+        self.grid_dim = grid_dim
 
         # Volume representation
         # Option 1: High-resolution grid that stores numbers that get rounded (update: used for
@@ -41,17 +35,10 @@ class LearnableHash(nn.Module):
         # Starting with option 1 for simplicity
         self.G1 = nn.Parameter(torch.empty(self.grid_dim, resolution, resolution, resolution))
         if self.second_G:
-            self.G2 = nn.Parameter(torch.empty(3, 16, 16, 16))
+            self.G2 = nn.Parameter(torch.empty([self.grid_dim] + [16] * self.grid_dim))
 
         # Feature table
-        if self.grid_dim == 2:
-            self.F = nn.Parameter(torch.empty(feature_dim, self.num_features_per_dim, self.num_features_per_dim))
-        elif self.grid_dim == 3:
-            self.F = nn.Parameter(torch.empty(feature_dim, self.num_features_per_dim, self.num_features_per_dim, self.num_features_per_dim))
-        elif self.grid_dim == 4:
-            self.F = nn.Parameter(torch.empty(feature_dim, self.num_features_per_dim, self.num_features_per_dim, self.num_features_per_dim, self.num_features_per_dim))
-        else:
-            raise ValueError("grid_dim can be 2 or 3 or 4")
+        self.F = nn.Parameter(torch.empty([feature_dim] + [self.num_features_per_dim] * self.grid_dim))
 
         # Feature decoder (modified from Instant-NGP)
         self.sigma_net = tcnn.Network(
@@ -98,6 +85,35 @@ class LearnableHash(nn.Module):
             nn.init.normal_(self.G2, std=0.05)
         nn.init.normal_(self.F, std=0.05)
 
+    def grid_sample_wrapper(self, grid: torch.Tensor, coords: torch.Tensor) -> torch.Tensor:
+        grid_dim = grid.shape[0]
+        if grid_dim == 2:
+            interp = F.grid_sample(
+                grid[None, ...],  # [1, feature_dim, reso, reso]
+                coords[None, None, ...],  # [1, 1, n, 2]
+                align_corners=True,
+                mode='bilinear', padding_mode='border').squeeze().permute(1, 0)  # [n, feature_dim]
+        elif grid_dim == 3:
+            interp = F.grid_sample(
+                grid[None, ...],  # [1, feature_dim, reso, reso, reso]
+                coords[None, None, None, ...],  # [1, 1, 1, n, 3]
+                align_corners=True,
+                mode='bilinear', padding_mode='border').squeeze().permute(1, 0)  # [n, feature_dim]
+        elif grid_dim == 4:
+            if not hasattr(torch.ops, 'plenoxels'):
+                spec = PathFinder().find_spec("c_ext", [str(Path(__file__).resolve().parents[1])])
+                torch.ops.load_library(spec.origin)
+            interp = torch.ops.plenoxels.grid_sample_4d(
+                grid[None, ...],  # [1, feature_dim, reso, reso, reso, reso]
+                coords[None, None, None, None, ...],  # [1, 1, 1, n, 4]
+                0,  # interpolation_mode
+                1,  # padding_mode
+                True,  # align_corners
+            ).squeeze().permute(1, 0)  # [n, feature_dim]
+        else:
+            raise ValueError("grid_dim can be 2, 3 or 4.")
+        return interp
+
     def eval_pts(self, pts, rds):
         # pts should be between 0 and resolution
         # rds should be between -1 and 1 (unit norm ray direction vector)
@@ -108,46 +124,18 @@ class LearnableHash(nn.Module):
         # move pts to be in [-1, 1]
         pts = (pts * 2 / self.resolution) - 1
         # Interpolate into G1 using pts
-        G1vals = F.grid_sample(
-            self.G1[None, ...],  # [1, grid_dim, reso, reso, reso]
-            pts[None, None, None, ...],  # [1, 1, 1, n, 3]
-            align_corners=True,
-            mode='bilinear', padding_mode='border').squeeze().permute(1, 0)  # [n, grid_dim]
+        G1vals = self.grid_sample_wrapper(self.G1, pts)  # [n, grid_dim]
         # Interpolate into G2 using G1
         G2vals = G1vals
         if self.second_G:
-            G2vals = F.grid_sample(
-                self.G2[None, ...],  # [1, 3, reso, reso, reso]
-                G1vals[None, None, None, ...],  # [1, 1, 1, n, 3]
-                align_corners=True,
-                mode='bilinear', padding_mode='border').squeeze().permute(1, 0)  # [n, 3]
-        # Interpolate into F using G2
-        if self.grid_dim == 2:
-            Fvals = F.grid_sample(
-                self.F[None, ...],  # [1, feature_dim, reso, reso]
-                G2vals[None, None, ...],  # [1, 1, n, 2]
-                align_corners=True,
-                mode='bilinear', padding_mode='border').squeeze().permute(1, 0)  # [n, feature_dim]
-        elif self.grid_dim == 3:
-            Fvals = F.grid_sample(
-                self.F[None, ...],  # [1, feature_dim, reso, reso, reso]
-                G2vals[None, None, None, ...],  # [1, 1, 1, n, 3]
-                align_corners=True,
-                mode='bilinear', padding_mode='border').squeeze().permute(1, 0)  # [n, feature_dim]
-        elif self.grid_dim == 4:
-            Fvals = torch.ops.plenoxels.grid_sample_4d(
-                self.F[None, ...],  # [1, feature_dim, reso, reso, reso, reso]
-                G2vals[None, None, None, None, ...],  # [1, 1, 1, n, 4]
-                0,  # interpolation_mode
-                1,  # padding_mode
-                True,  # align_corners
-                ).squeeze().permute(1, 0)  # [n, feature_dim]
+            G2vals = self.grid_sample_wrapper(self.G2, G1vals)  # [n, grid_dim]
+        Fvals = self.grid_sample_wrapper(self.F, G2vals)  # [n, feature_dim]
 
         # Extract color and density from features
         Fvals = self.sigma_net(Fvals)  # [n, 16]
         sigmas = Fvals[:, 0]
         encoded_rd = self.direction_encoder((rds + 1) / 2) # tcnn SH encoding requires inputs to be in [0, 1]
-        colors = self.color_net(torch.cat([encoded_rd, Fvals[:,1:]], dim=-1))  # [n, 3]
+        colors = self.color_net(torch.cat([encoded_rd, Fvals[:, 1:]], dim=-1))  # [n, 3]
         return sigmas, colors
 
     def forward(self, rays_o, rays_d):
@@ -180,7 +168,6 @@ class LearnableHash(nn.Module):
     def get_params(self, lr):
         params = [
             {"params": self.G1, "lr": lr * 1},
-            #{"params": self.pos_net.parameters(), "lr": lr},
             {"params": self.F, "lr": lr * 1},
             {"params": self.direction_encoder.parameters(), "lr": lr},
             {"params": self.sigma_net.parameters(), "lr": lr},
