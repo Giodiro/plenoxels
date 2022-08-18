@@ -1,4 +1,6 @@
 from typing import Optional
+from importlib.machinery import PathFinder
+from pathlib import Path
 
 import torch
 import torch.nn.functional as F
@@ -84,3 +86,33 @@ def ensure_list(el, expand_size: Optional[int] = None) -> list:
         if expand_size:
             return [el] * expand_size
         return [el]
+
+
+def grid_sample_wrapper(grid: torch.Tensor, coords: torch.Tensor) -> torch.Tensor:
+    grid_dim = coords.shape[-1]
+    if grid_dim == 2:
+        interp = F.grid_sample(
+            grid[None, ...],  # [1, feature_dim, reso, reso]
+            coords[None, None, ...],  # [1, 1, n, 2]
+            align_corners=True,
+            mode='bilinear', padding_mode='border').squeeze().permute(1, 0)  # [n, feature_dim]
+    elif grid_dim == 3:
+        interp = F.grid_sample(
+            grid[None, ...],  # [1, feature_dim, reso, reso, reso]
+            coords[None, None, None, ...],  # [1, 1, 1, n, 3]
+            align_corners=True,
+            mode='bilinear', padding_mode='border').squeeze().permute(1, 0)  # [n, feature_dim]
+    elif grid_dim == 4:
+        if not hasattr(torch.ops, 'plenoxels'):
+            spec = PathFinder().find_spec("c_ext", [str(Path(__file__).resolve().parents[1])])
+            torch.ops.load_library(spec.origin)
+        interp = torch.ops.plenoxels.grid_sample_4d(
+            grid[None, ...],  # [1, feature_dim, reso, reso, reso, reso]
+            coords[None, None, None, None, ...],  # [1, 1, 1, n, 4]
+            0,  # interpolation_mode
+            1,  # padding_mode
+            True,  # align_corners
+        ).squeeze().permute(1, 0)  # [n, feature_dim]
+    else:
+        raise ValueError("grid_dim can be 2, 3 or 4.")
+    return interp

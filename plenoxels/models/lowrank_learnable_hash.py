@@ -1,19 +1,21 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
 import tinycudann as tcnn
-from plenoxels.models.utils import get_intersections
+from plenoxels.models.utils import get_intersections, grid_sample_wrapper
 from plenoxels.nerf_rendering import shrgb2rgb, sigma2alpha
 
 
 # Some pieces modified from https://github.com/ashawkey/torch-ngp/blob/6313de18bd8ec02622eb104c163295399f81278f/nerf/network_tcnn.py
 class LowrankLearnableHash(nn.Module):
     def __init__(self, resolution, num_features, feature_dim, radius: float, n_intersections: int,
-                 step_size: float, rank: int):
+                 step_size: float, grid_dim: int, rank: int):
         super().__init__()
         self.resolution = resolution
-        self.num_features_per_dim = int(np.round(num_features**(1./3)))
+        if grid_dim not in {2, 3, 4}:
+            raise ValueError("grid_dim must be 2, 3, or 4.")
+        self.grid_dim = grid_dim
+        self.num_features_per_dim = int(round(num_features**(1/self.grid_dim)))
         print("num_features_per_dim = %d" % (self.num_features_per_dim, ))
         self.feature_dim = feature_dim
         self.radius = radius
@@ -22,14 +24,13 @@ class LowrankLearnableHash(nn.Module):
         self.rank = rank
 
         # Volume representation
-        # self.G = nn.Parameter(torch.empty(resolution, resolution, resolution, 3))
-        self.Gxy = nn.Parameter(torch.empty(resolution, resolution, 1, 3, rank))
-        self.Gxz = nn.Parameter(torch.empty(resolution, 1, resolution, 3, rank))
-        self.Gyz = nn.Parameter(torch.empty(1, resolution, resolution, 3, rank))
+        self.Gxy = nn.Parameter(torch.empty(self.grid_dim, resolution, resolution, 1, rank))
+        self.Gxz = nn.Parameter(torch.empty(self.grid_dim, resolution, 1, resolution, rank))
+        self.Gyz = nn.Parameter(torch.empty(self.grid_dim, 1, resolution, resolution, rank))
         # total memory requirement is reso*reso*rank*3*3 compared to reso*reso*reso*3
         
         # Feature table
-        self.F = nn.Parameter(torch.empty(self.num_features_per_dim, self.num_features_per_dim, self.num_features_per_dim, feature_dim))
+        self.F = nn.Parameter(torch.empty([feature_dim] + [self.num_features_per_dim] * self.grid_dim))
 
         # Feature decoder (modified from Instant-NGP)
         self.sigma_net = tcnn.Network(
@@ -43,7 +44,6 @@ class LowrankLearnableHash(nn.Module):
                 "n_hidden_layers": 2,
             },
         )
-
         self.direction_encoder = tcnn.Encoding(
             n_input_dims=3,
             encoding_config={
@@ -51,9 +51,7 @@ class LowrankLearnableHash(nn.Module):
                 "degree": 4,
             },
         )
-
         self.in_dim_color = self.direction_encoder.n_output_dims + 15
-
         self.color_net = tcnn.Network(
             n_input_dims=self.in_dim_color,
             n_output_dims=3,
@@ -86,19 +84,11 @@ class LowrankLearnableHash(nn.Module):
         # move pts to be in [-1, 1]
         pts = (pts * 2 / self.resolution) - 1
         # Interpolate into G using pts
-        grid = self.Gxy * self.Gxz * self.Gyz  # [reso, reso, reso, 3, rank]
-        grid = torch.sum(grid, dim=-1)  # [reso, reso, reso, 3]
-        Gvals = F.grid_sample(
-            grid[None, ...].permute(0, 4, 1, 2, 3),  # [1, 3, reso, reso, reso]
-            pts[None, None, None, ...],  # [1, 1, 1, n, 3]
-            align_corners=True,
-            mode='bilinear', padding_mode='border').squeeze().permute(1, 0)  # [n, 3]
+        grid = self.Gxy * self.Gxz * self.Gyz  # [grid_dim, reso, reso, reso, rank]
+        grid = torch.sum(grid, dim=-1)  # [grid_dim, reso, reso, reso]
+        Gvals = grid_sample_wrapper(grid, pts)  # [n, grid_dim]
         # Interpolate into F using G
-        Fvals = F.grid_sample(
-            self.F[None, ...].permute(0, 4, 1, 2, 3),  # [1, feature_dim, reso, reso, reso]
-            Gvals[None, None, None, ...],  # [1, 1, 1, n, 3]
-            align_corners=True,
-            mode='bilinear', padding_mode='border').squeeze().permute(1, 0)  # [n, feature_dim]
+        Fvals = grid_sample_wrapper(self.F, Gvals)  # [n, feature_dim]
 
         # Extract color and density from features
         Fvals = self.sigma_net(Fvals)  # [n, 16]

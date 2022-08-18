@@ -72,22 +72,23 @@ def train_epoch(renderer, tr_loader, ts_dset, optim, lr_sched, max_epochs, log_d
         pb.close()
         # Save and evaluate model
         time_s = time.time()
-        psnr0 = plot_ts(
-            ts_dset, 0, renderer, log_dir,
-            iteration=tot_step, batch_size=batch_size, image_id=0, verbose=True,
-            summary_writer=TB_WRITER, render_fn=default_render_fn(renderer), plot_type="imageio")
-        psnr3 = plot_ts(
-            ts_dset, 0, renderer, log_dir,
-            iteration=tot_step, batch_size=batch_size, image_id=3, verbose=True,
-            summary_writer=TB_WRITER, render_fn=default_render_fn(renderer), plot_type="imageio")
-        psnr6 = plot_ts(
-            ts_dset, 0, renderer, log_dir,
-            iteration=tot_step, batch_size=batch_size, image_id=6, verbose=True,
-            summary_writer=TB_WRITER, render_fn=default_render_fn(renderer), plot_type="imageio")
-        psnr9 = plot_ts(
-            ts_dset, 0, renderer, log_dir,
-            iteration=tot_step, batch_size=batch_size, image_id=9, verbose=True,
-            summary_writer=TB_WRITER, render_fn=default_render_fn(renderer), plot_type="imageio")
+        with torch.cuda.amp.autocast(enabled=train_fp16):
+            psnr0 = plot_ts(
+                ts_dset, 0, renderer, log_dir,
+                iteration=tot_step, batch_size=batch_size, image_id=0, verbose=True,
+                summary_writer=TB_WRITER, render_fn=default_render_fn(renderer), plot_type="imageio")
+            psnr3 = plot_ts(
+                ts_dset, 0, renderer, log_dir,
+                iteration=tot_step, batch_size=batch_size, image_id=3, verbose=True,
+                summary_writer=TB_WRITER, render_fn=default_render_fn(renderer), plot_type="imageio")
+            psnr6 = plot_ts(
+                ts_dset, 0, renderer, log_dir,
+                iteration=tot_step, batch_size=batch_size, image_id=6, verbose=True,
+                summary_writer=TB_WRITER, render_fn=default_render_fn(renderer), plot_type="imageio")
+            psnr9 = plot_ts(
+                ts_dset, 0, renderer, log_dir,
+                iteration=tot_step, batch_size=batch_size, image_id=9, verbose=True,
+                summary_writer=TB_WRITER, render_fn=default_render_fn(renderer), plot_type="imageio")
         TB_WRITER.add_scalar(f"TestPSNR", psnr0, tot_step)
         torch.save({
             'epoch': e,
@@ -108,7 +109,8 @@ def init_model(cfg, tr_dset, checkpoint_data=None):
         renderer = LearnableHash(
             resolution=cfg.model.resolution, num_features=cfg.model.num_features,
             feature_dim=cfg.model.feature_dim, radius=tr_dset.radius,
-            n_intersections=n_intersections, step_size=step_size, second_G=cfg.model.second_G)
+            n_intersections=n_intersections, step_size=step_size, second_G=cfg.model.second_G,
+            grid_dim=cfg.model.grid_dim)
     elif cfg.model.lowrank_learnable_hash:  # Option to use lowrank learnable hash function
         voxel_size = (tr_dset.radius * 2) / cfg.model.resolution
         # step-size and n-intersections are scaled to artificially increment resolution of model
