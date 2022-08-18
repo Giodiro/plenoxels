@@ -593,58 +593,58 @@ namespace {
           }
           if (within_bounds_4d(iq_rtnw, iz_rtnw, iy_rtnw, ix_rtnw, inp_L, inp_D, inp_H, inp_W)) {
             scalar_t rtnw_val = inp_ptr_NC[iq_rtnw * inp_sL + iz_rtnw * inp_sD + iy_rtnw * inp_sH + ix_rtnw * inp_sW];
-            gix -= rtnw_val * (iy_lbse - iy) * (iz_lbse - iz) * (iq_lbse - iq) * gOut;
-            giy -= rtnw_val * (ix_lbse - ix) * (iz_lbse - iz) * (iq_lbse - iq) * gOut;
-            giz -= rtnw_val * (ix_lbse - ix) * (iy_lbse - iy) * (iq_lbse - iq) * gOut;
+            gix -= rtnw_val * (iy_lbse - iy) * (iz_lbse - iz) * (iq - iq_lbse) * gOut;
+            giy -= rtnw_val * (ix_lbse - ix) * (iz_lbse - iz) * (iq - iq_lbse) * gOut;
+            giz -= rtnw_val * (ix_lbse - ix) * (iy_lbse - iy) * (iq - iq_lbse) * gOut;
             giq += rtnw_val * (ix_lbse - ix) * (iy_lbse - iy) * (iz_lbse - iz) * gOut;
           }
           if (within_bounds_4d(iq_rtne, iz_rtne, iy_rtne, ix_rtne, inp_L, inp_D, inp_H, inp_W)) {
             scalar_t rtne_val = inp_ptr_NC[iq_rtne * inp_sL + iz_rtne * inp_sD + iy_rtne * inp_sH + ix_rtne * inp_sW];
-            gix += rtne_val * (iy_lbsw - iy) * (iz_lbsw - iz) * (iq_lbsw - iq) * gOut;
-            giy -= rtne_val * (ix - ix_lbsw) * (iz_lbsw - iz) * (iq_lbsw - iq) * gOut;
-            giz -= rtne_val * (ix - ix_lbsw) * (iy_lbsw - iy) * (iq_lbsw - iq) * gOut;
+            gix += rtne_val * (iy_lbsw - iy) * (iz_lbsw - iz) * (iq - iq_lbsw) * gOut;
+            giy -= rtne_val * (ix - ix_lbsw) * (iz_lbsw - iz) * (iq - iq_lbsw) * gOut;
+            giz -= rtne_val * (ix - ix_lbsw) * (iy_lbsw - iy) * (iq - iq_lbsw) * gOut;
             giq += rtne_val * (ix - ix_lbsw) * (iy_lbsw - iy) * (iz_lbsw - iz) * gOut;
           }
           if (within_bounds_4d(iq_rtsw, iz_rtsw, iy_rtsw, ix_rtsw, inp_L, inp_D, inp_H, inp_W)) {
             scalar_t rtsw_val = inp_ptr_NC[iq_rtsw * inp_sL + iz_rtsw * inp_sD + iy_rtsw * inp_sH + ix_rtsw * inp_sW];
-            gix -= rtsw_val * (iy - iy_lbne) * (iz_lbne - iz) * (iq_lbne - iq) * gOut;
-            giy += rtsw_val * (ix_lbne - ix) * (iz_lbne - iz) * (iq_lbne - iq) * gOut;
-            giz -= rtsw_val * (ix_lbne - ix) * (iy - iy_lbne) * (iq_lbne - iq) * gOut;
+            gix -= rtsw_val * (iy - iy_lbne) * (iz_lbne - iz) * (iq - iq_lbne) * gOut;
+            giy += rtsw_val * (ix_lbne - ix) * (iz_lbne - iz) * (iq - iq_lbne) * gOut;
+            giz -= rtsw_val * (ix_lbne - ix) * (iy - iy_lbne) * (iq - iq_lbne) * gOut;
             giq += rtsw_val * (ix_lbne - ix) * (iy - iy_lbne) * (iz_lbne - iz) * gOut;
           }
           if (within_bounds_4d(iq_rtse, iz_rtse, iy_rtse, ix_rtse, inp_L, inp_D, inp_H, inp_W)) {
             scalar_t rtse_val = inp_ptr_NC[iq_rtse * inp_sL + iz_rtse * inp_sD + iy_rtse * inp_sH + ix_rtse * inp_sW];
-            gix += rtse_val * (iy - iy_lbnw) * (iz_lbnw - iz) * (iq_lbnw - iq) * gOut;
-            giy += rtse_val * (ix - ix_lbnw) * (iz_lbnw - iz) * (iq_lbnw - iq) * gOut;
-            giz -= rtse_val * (ix - ix_lbnw) * (iy - iy_lbnw) * (iq_lbnw - iq) * gOut;
+            gix += rtse_val * (iy - iy_lbnw) * (iz_lbnw - iz) * (iq - iq_lbnw) * gOut;
+            giy += rtse_val * (ix - ix_lbnw) * (iz_lbnw - iz) * (iq - iq_lbnw) * gOut;
+            giz -= rtse_val * (ix - ix_lbnw) * (iy - iy_lbnw) * (iq - iq_lbnw) * gOut;
             giq += rtse_val * (ix - ix_lbnw) * (iy - iy_lbnw) * (iz_lbnw - iz) * gOut;
           }
           if (within_bounds_4d(iq_rbnw, iz_rbnw, iy_rbnw, ix_rbnw, inp_L, inp_D, inp_H, inp_W)) {
             scalar_t rbnw_val = inp_ptr_NC[iq_rbnw * inp_sL + iz_rbnw * inp_sD + iy_rbnw * inp_sH + ix_rbnw * inp_sW];
-            gix -= rbnw_val * (iy_ltse - iy) * (iz - iz_ltse) * (iq_ltse - iq) * gOut;
-            giy -= rbnw_val * (ix_ltse - ix) * (iz - iz_ltse) * (iq_ltse - iq) * gOut;
-            giz += rbnw_val * (ix_ltse - ix) * (iy_ltse - iy) * (iq_ltse - iq) * gOut;
+            gix -= rbnw_val * (iy_ltse - iy) * (iz - iz_ltse) * (iq - iq_ltse) * gOut;
+            giy -= rbnw_val * (ix_ltse - ix) * (iz - iz_ltse) * (iq - iq_ltse) * gOut;
+            giz += rbnw_val * (ix_ltse - ix) * (iy_ltse - iy) * (iq - iq_ltse) * gOut;
             giq += rbnw_val * (ix_ltse - ix) * (iy_ltse - iy) * (iz - iz_ltse) * gOut;
           }
           if (within_bounds_4d(iq_rbne, iz_rbne, iy_rbne, ix_rbne, inp_L, inp_D, inp_H, inp_W)) {
             scalar_t rbne_val = inp_ptr_NC[iq_rbne * inp_sL + iz_rbne * inp_sD + iy_rbne * inp_sH + ix_rbne * inp_sW];
-            gix += rbne_val * (iy_ltsw - iy) * (iz - iz_ltsw) * (iq_ltsw - iq) * gOut;
-            giy -= rbne_val * (ix - ix_ltsw) * (iz - iz_ltsw) * (iq_ltsw - iq) * gOut;
-            giz += rbne_val * (ix - ix_ltsw) * (iy_ltsw - iy) * (iq_ltsw - iq) * gOut;
+            gix += rbne_val * (iy_ltsw - iy) * (iz - iz_ltsw) * (iq - iq_ltsw) * gOut;
+            giy -= rbne_val * (ix - ix_ltsw) * (iz - iz_ltsw) * (iq - iq_ltsw) * gOut;
+            giz += rbne_val * (ix - ix_ltsw) * (iy_ltsw - iy) * (iq - iq_ltsw) * gOut;
             giq += rbne_val * (ix - ix_ltsw) * (iy_ltsw - iy) * (iz - iz_ltsw) * gOut;
           }
           if (within_bounds_4d(iq_rbsw, iz_rbsw, iy_rbsw, ix_rbsw, inp_L, inp_D, inp_H, inp_W)) {
             scalar_t rbsw_val = inp_ptr_NC[iq_rbsw * inp_sL + iz_rbsw * inp_sD + iy_rbsw * inp_sH + ix_rbsw * inp_sW];
-            gix -= rbsw_val * (iy - iy_ltne) * (iz - iz_ltne) * (iq_ltne - iq) * gOut;
-            giy += rbsw_val * (ix_ltne - ix) * (iz - iz_ltne) * (iq_ltne - iq) * gOut;
-            giz += rbsw_val * (ix_ltne - ix) * (iy - iy_ltne) * (iq_ltne - iq) * gOut;
+            gix -= rbsw_val * (iy - iy_ltne) * (iz - iz_ltne) * (iq - iq_ltne) * gOut;
+            giy += rbsw_val * (ix_ltne - ix) * (iz - iz_ltne) * (iq - iq_ltne) * gOut;
+            giz += rbsw_val * (ix_ltne - ix) * (iy - iy_ltne) * (iq - iq_ltne) * gOut;
             giq += rbsw_val * (ix_ltne - ix) * (iy - iy_ltne) * (iz - iz_ltne) * gOut;
           }
           if (within_bounds_4d(iq_rbse, iz_rbse, iy_rbse, ix_rbse, inp_L, inp_D, inp_H, inp_W)) {
             scalar_t rbse_val = inp_ptr_NC[iq_rbse * inp_sL + iz_rbse * inp_sD + iy_rbse * inp_sH + ix_rbse * inp_sW];
-            gix += rbse_val * (iy - iy_ltnw) * (iz - iz_ltnw) * (iq_ltnw - iq) * gOut;
-            giy += rbse_val * (ix - ix_ltnw) * (iz - iz_ltnw) * (iq_ltnw - iq) * gOut;
-            giz += rbse_val * (ix - ix_ltnw) * (iy - iy_ltnw) * (iq_ltnw - iq) * gOut;
+            gix += rbse_val * (iy - iy_ltnw) * (iz - iz_ltnw) * (iq - iq_ltnw) * gOut;
+            giy += rbse_val * (ix - ix_ltnw) * (iz - iz_ltnw) * (iq - iq_ltnw) * gOut;
+            giz += rbse_val * (ix - ix_ltnw) * (iy - iy_ltnw) * (iq - iq_ltnw) * gOut;
             giq += rbse_val * (ix - ix_ltnw) * (iy - iy_ltnw) * (iz - iz_ltnw) * gOut;
           }
         }
