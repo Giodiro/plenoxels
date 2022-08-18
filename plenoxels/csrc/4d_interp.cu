@@ -108,8 +108,8 @@ namespace {
       const index_t w = index % out_W;
       const index_t h = (index / out_W) % out_H;
       const index_t d = (index / (out_H * out_W)) % out_D;
-      const index_t l = (index / (out_H * out_W * out_D)) % out_L;
-      const index_t n = index / (out_D * out_H * out_W * out_L);
+      const index_t l = (index / (out_D * out_H * out_W)) % out_L;
+      const index_t n = index / (out_L * out_D * out_H * out_W);
       const auto grid_offset = n * grid_sN + l * grid_sL + d * grid_sD + h * grid_sH + w * grid_sW;
 
       // get the corresponding input x, y, z, q coordinates from grid
@@ -217,10 +217,10 @@ namespace {
         scalar_t lbne = (ix - ix_rtsw) * (iy_rtsw - iy) * (iz - iz_rtsw) * (iq_rtsw - iq);
         scalar_t lbsw = (ix_rtne - ix) * (iy - iy_rtne) * (iz - iz_rtne) * (iq_rtne - iq);
         scalar_t lbse = (ix - ix_rtnw) * (iy - iy_rtnw) * (iz - iz_rtnw) * (iq_rtnw - iq);
-        scalar_t rtnw = (ix_lbse - ix) * (iy_lbse - iy) * (iq_lbse - iz) * (iq - iq_lbse);
-        scalar_t rtne = (ix - ix_lbsw) * (iy_lbsw - iy) * (iq_lbsw - iz) * (iq - iq_lbsw);
-        scalar_t rtsw = (ix_lbne - ix) * (iy - iy_lbne) * (iq_lbne - iz) * (iq - iq_lbne);
-        scalar_t rtse = (ix - ix_lbnw) * (iy - iy_lbnw) * (iq_lbnw - iz) * (iq - iq_lbnw);
+        scalar_t rtnw = (ix_lbse - ix) * (iy_lbse - iy) * (iz_lbse - iz) * (iq - iq_lbse);
+        scalar_t rtne = (ix - ix_lbsw) * (iy_lbsw - iy) * (iz_lbsw - iz) * (iq - iq_lbsw);
+        scalar_t rtsw = (ix_lbne - ix) * (iy - iy_lbne) * (iz_lbne - iz) * (iq - iq_lbne);
+        scalar_t rtse = (ix - ix_lbnw) * (iy - iy_lbnw) * (iz_lbnw - iz) * (iq - iq_lbnw);
         scalar_t rbnw = (ix_ltse - ix) * (iy_ltse - iy) * (iz - iz_ltse) * (iq - iq_ltse);
         scalar_t rbne = (ix - ix_ltsw) * (iy_ltsw - iy) * (iz - iz_ltsw) * (iq - iq_ltsw);
         scalar_t rbsw = (ix_ltne - ix) * (iy - iy_ltne) * (iz - iz_ltne) * (iq - iq_ltne);
@@ -368,8 +368,8 @@ namespace {
       const index_t w = index % out_W;
       const index_t h = (index / out_W) % out_H;
       const index_t d = (index / (out_H * out_W)) % out_D;
-      const index_t l = (index / (out_H * out_W * out_D)) % out_L;
-      const index_t n = index / (out_D * out_H * out_W * out_L);
+      const index_t l = (index / (out_D * out_H * out_W)) % out_L;
+      const index_t n = index / (out_L * out_D * out_H * out_W);
       const auto grid_offset = n * grid_sN + l * grid_sL + d * grid_sD + h * grid_sH + w * grid_sW;
 
       // get the corresponding input x, y, z, q coordinates from grid
@@ -479,10 +479,10 @@ namespace {
         scalar_t lbne = (ix - ix_rtsw) * (iy_rtsw - iy) * (iz - iz_rtsw) * (iq_rtsw - iq);
         scalar_t lbsw = (ix_rtne - ix) * (iy - iy_rtne) * (iz - iz_rtne) * (iq_rtne - iq);
         scalar_t lbse = (ix - ix_rtnw) * (iy - iy_rtnw) * (iz - iz_rtnw) * (iq_rtnw - iq);
-        scalar_t rtnw = (ix_lbse - ix) * (iy_lbse - iy) * (iq_lbse - iz) * (iq - iq_lbse);
-        scalar_t rtne = (ix - ix_lbsw) * (iy_lbsw - iy) * (iq_lbsw - iz) * (iq - iq_lbsw);
-        scalar_t rtsw = (ix_lbne - ix) * (iy - iy_lbne) * (iq_lbne - iz) * (iq - iq_lbne);
-        scalar_t rtse = (ix - ix_lbnw) * (iy - iy_lbnw) * (iq_lbnw - iz) * (iq - iq_lbnw);
+        scalar_t rtnw = (ix_lbse - ix) * (iy_lbse - iy) * (iz_lbse - iz) * (iq - iq_lbse);
+        scalar_t rtne = (ix - ix_lbsw) * (iy_lbsw - iy) * (iz_lbsw - iz) * (iq - iq_lbsw);
+        scalar_t rtsw = (ix_lbne - ix) * (iy - iy_lbne) * (iz_lbne - iz) * (iq - iq_lbne);
+        scalar_t rtse = (ix - ix_lbnw) * (iy - iy_lbnw) * (iz_lbnw - iz) * (iq - iq_lbnw);
         scalar_t rbnw = (ix_ltse - ix) * (iy_ltse - iy) * (iz - iz_ltse) * (iq - iq_ltse);
         scalar_t rbne = (ix - ix_ltsw) * (iy_ltsw - iy) * (iz - iz_ltsw) * (iq - iq_ltsw);
         scalar_t rbsw = (ix_ltne - ix) * (iy - iy_ltne) * (iz - iz_ltne) * (iq - iq_ltne);
