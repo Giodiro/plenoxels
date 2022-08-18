@@ -18,6 +18,7 @@ from plenoxels.models.grid_plenoxel import RegularGrid
 from plenoxels.runners.utils import *
 from plenoxels.tc_harmonics import plenoxel_sh_encoder
 from plenoxels.models.learnable_hash import LearnableHash
+from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash
 
 TB_WRITER = None
 
@@ -108,6 +109,15 @@ def init_model(cfg, tr_dset, checkpoint_data=None):
             resolution=cfg.model.resolution, num_features=cfg.model.num_features,
             feature_dim=cfg.model.feature_dim, radius=tr_dset.radius,
             n_intersections=n_intersections, step_size=step_size, second_G=cfg.model.second_G)
+    elif cfg.model.lowrank_learnable_hash:  # Option to use lowrank learnable hash function
+        voxel_size = (tr_dset.radius * 2) / cfg.model.resolution
+        # step-size and n-intersections are scaled to artificially increment resolution of model
+        step_size = voxel_size / cfg.optim.samples_per_voxel
+        n_intersections = np.sqrt(3.) * cfg.optim.samples_per_voxel * cfg.model.resolution
+        renderer = LowrankLearnableHash(
+            resolution=cfg.model.resolution, num_features=cfg.model.num_features,
+            feature_dim=cfg.model.feature_dim, radius=tr_dset.radius,
+            n_intersections=n_intersections, step_size=step_size, rank=cfg.model.rank)
     else:
         sh_encoder = plenoxel_sh_encoder(cfg.sh.degree)
         renderer = RegularGrid(resolution=cfg.model.resolution, radius=tr_dset.radius,

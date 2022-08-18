@@ -7,7 +7,7 @@ import subprocess
 hyper_name = 'optim.lr'
 hyper_guess = 2e-3
 second_G = 'False'
-expname = f'tuning_secondG{second_G}'
+expname = f'tuning_bignetsmallFfullreso128sample6x'
 def fun(hyper):
     # process = subprocess.run(['python', 'plenoxels/runners/run_pretrained_dict.py', '--config', 'plenoxels/configs/reuse_dict.yaml', '--config-updates', 'expname', 'tuning', 'optim.num_epochs', '1', hyper_name, str(hyper)],
     #                         stdout=subprocess.PIPE,
@@ -21,6 +21,7 @@ def fun(hyper):
     for line in lines:
         if not ('Test PSNR' in line):
             continue
+        print(line)
         psnr = float(line.split('Test PSNR=')[-1])
         if psnr > best_psnr:
             best_psnr = psnr
@@ -30,9 +31,11 @@ def fun(hyper):
 # Based on https://github.com/modestyachts/AELS/blob/main/utils.py
 def tune_approx_exact(fun, hyper_guess, beta=2/(1+5**0.5)):
     # First, evaluate the function with hyperparameter = 0 to get a baseline
-    print(f'evaluating with hyperparameter 1e-10 as a baseline')
-    curval = fun(1e-10)
-    print(f'with hyperparameter 1e-10, loss is {curval}')
+    # print(f'evaluating with hyperparameter 1e-10 as a baseline')
+    # curval = fun(1e-10)
+    # print(f'with hyperparameter 1e-10, loss is {curval}')
+    curval = -8
+    print(f'using psnr=8 as a baseline of no learning')
     t = hyper_guess
     t_old = 1e-10
     f_old = curval
