@@ -76,7 +76,7 @@ class LearnableHash(nn.Module):
         self.init_params()
 
     def init_params(self):
-        nn.init.normal_(self.G1, std=0.02)
+        nn.init.normal_(self.G1, std=0.01)
         if self.second_G:
             nn.init.normal_(self.G2, std=0.05)
         nn.init.normal_(self.F, std=0.05)
