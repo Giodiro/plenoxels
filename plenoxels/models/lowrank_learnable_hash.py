@@ -24,10 +24,14 @@ class LowrankLearnableHash(nn.Module):
         self.rank = rank
 
         # Volume representation
-        self.Gxy = nn.Parameter(torch.empty(self.grid_dim, resolution, resolution, 1, rank))
-        self.Gxz = nn.Parameter(torch.empty(self.grid_dim, resolution, 1, resolution, rank))
-        self.Gyz = nn.Parameter(torch.empty(self.grid_dim, 1, resolution, resolution, rank))
+        # self.Gxy = nn.Parameter(torch.empty(self.grid_dim, resolution, resolution, 1, rank))
+        self.Gxy = nn.Parameter(torch.empty(rank, resolution, resolution))
+        # self.Gxz = nn.Parameter(torch.empty(self.grid_dim, resolution, 1, resolution, rank))
+        self.Gxz = nn.Parameter(torch.empty(rank, resolution, resolution))
+        # self.Gyz = nn.Parameter(torch.empty(self.grid_dim, 1, resolution, resolution, rank))
+        self.Gyz = nn.Parameter(torch.empty(rank, resolution, resolution))
         # total memory requirement is reso*reso*rank*3*3 compared to reso*reso*reso*3
+        self.basis_mat = torch.nn.Linear(3 * rank, self.grid_dim, bias=False)
         
         # Feature table
         self.F = nn.Parameter(torch.empty([feature_dim] + [self.num_features_per_dim] * self.grid_dim))
@@ -74,6 +78,12 @@ class LowrankLearnableHash(nn.Module):
         nn.init.normal_(self.Gyz, std=0.1)
         nn.init.normal_(self.F, std=0.05)
 
+    def get_coordinate_plane(self, intrs_pts):
+        """intrs_pts: B*N, 3"""
+        # coordinate_plane: 3, B, N, 2 -> 3, B*N, 1, 2
+        coordinate_plane = torch.stack((intrs_pts[..., [0, 1]], intrs_pts[..., [0, 2]], intrs_pts[..., [1, 2]])).detach().view(3, -1, 1, 2)
+        return coordinate_plane
+
     def eval_pts(self, pts, rds):
         # pts should be between 0 and resolution
         # rds should be between -1 and 1 (unit norm ray direction vector)
@@ -84,9 +94,16 @@ class LowrankLearnableHash(nn.Module):
         # move pts to be in [-1, 1]
         pts = (pts * 2 / self.resolution) - 1
         # Interpolate into G using pts
-        grid = self.Gxy * self.Gxz * self.Gyz  # [grid_dim, reso, reso, reso, rank]
-        grid = torch.sum(grid, dim=-1)  # [grid_dim, reso, reso, reso]
-        Gvals = grid_sample_wrapper(grid, pts)  # [n, grid_dim]
+        # Like tensor-RF
+        xy_coef = grid_sample_wrapper(self.Gxy, pts[..., [0, 1]])  # [n, rank]
+        xz_coef = grid_sample_wrapper(self.Gxz, pts[..., [0, 2]])  # [n, rank]
+        yz_coef = grid_sample_wrapper(self.Gyz, pts[..., [1, 2]])  # [n, rank]
+        Gvals = self.basis_mat(torch.cat((xy_coef, xz_coef, yz_coef), dim=1))  # [n, grid_dim]
+        # Alternative impl (with 3d sampling)
+        # grid = self.Gxy * self.Gxz * self.Gyz  # [grid_dim, reso, reso, reso, rank]
+        # grid = torch.sum(grid, dim=-1)  # [grid_dim, reso, reso, reso]
+        # Gvals = grid_sample_wrapper(grid, pts)  # [n, grid_dim]
+
         # Interpolate into F using G
         Fvals = grid_sample_wrapper(self.F, Gvals)  # [n, feature_dim]
 
