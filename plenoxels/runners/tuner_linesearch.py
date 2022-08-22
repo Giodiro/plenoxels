@@ -4,10 +4,10 @@ import subprocess
 
 # Wrap the function such that fun(hyper) returns the loss we want to minimize, and silences any output produced by the wrapped function
 # The launch command is PYTHONPATH='.' python plenoxels/runners/run_pretrained_dict.py --config plenoxels/configs/reuse_dict.yaml
-hyper_name = 'optim.lr'
-hyper_guess = 2e-3
+hyper_name = 'model.G_init_std'
+hyper_guess = 0.16
 second_G = 'False'
-expname = f'tuning_bignetsmallFfullreso128sample6x'
+expname = f'tuningGinit_lowranklearnablehash_128rank20'
 def fun(hyper):
     # process = subprocess.run(['python', 'plenoxels/runners/run_pretrained_dict.py', '--config', 'plenoxels/configs/reuse_dict.yaml', '--config-updates', 'expname', 'tuning', 'optim.num_epochs', '1', hyper_name, str(hyper)],
     #                         stdout=subprocess.PIPE,
@@ -29,7 +29,7 @@ def fun(hyper):
 
 
 # Based on https://github.com/modestyachts/AELS/blob/main/utils.py
-def tune_approx_exact(fun, hyper_guess, beta=2/(1+5**0.5)):
+def tune_approx_exact(fun, hyper_guess, beta=0.9):
     # First, evaluate the function with hyperparameter = 0 to get a baseline
     # print(f'evaluating with hyperparameter 1e-10 as a baseline')
     # curval = fun(1e-10)

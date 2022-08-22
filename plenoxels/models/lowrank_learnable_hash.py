@@ -9,7 +9,7 @@ from plenoxels.nerf_rendering import shrgb2rgb, sigma2alpha
 # Some pieces modified from https://github.com/ashawkey/torch-ngp/blob/6313de18bd8ec02622eb104c163295399f81278f/nerf/network_tcnn.py
 class LowrankLearnableHash(nn.Module):
     def __init__(self, resolution, num_features, feature_dim, radius: float, n_intersections: int,
-                 step_size: float, grid_dim: int, rank: int):
+                 step_size: float, grid_dim: int, rank: int, G_init_std: float):
         super().__init__()
         self.resolution = resolution
         if grid_dim not in {2, 3, 4}:
@@ -22,6 +22,7 @@ class LowrankLearnableHash(nn.Module):
         self.n_intersections = n_intersections
         self.step_size = step_size
         self.rank = rank
+        self.G_init_std = G_init_std
 
         # Volume representation
         self.Gxy = nn.Parameter(torch.empty(self.grid_dim, resolution, resolution, 1, rank))
@@ -69,9 +70,9 @@ class LowrankLearnableHash(nn.Module):
         self.init_params()
 
     def init_params(self):
-        nn.init.normal_(self.Gxy, std=0.1) 
-        nn.init.normal_(self.Gxz, std=0.1) 
-        nn.init.normal_(self.Gyz, std=0.1)
+        nn.init.normal_(self.Gxy, std=self.G_init_std) 
+        nn.init.normal_(self.Gxz, std=self.G_init_std) 
+        nn.init.normal_(self.Gyz, std=self.G_init_std)
         nn.init.normal_(self.F, std=0.05)
 
     def eval_pts(self, pts, rds):

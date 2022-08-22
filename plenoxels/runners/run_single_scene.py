@@ -120,7 +120,7 @@ def init_model(cfg, tr_dset, checkpoint_data=None):
             resolution=cfg.model.resolution, num_features=cfg.model.num_features,
             feature_dim=cfg.model.feature_dim, radius=tr_dset.radius,
             n_intersections=n_intersections, step_size=step_size, grid_dim=cfg.model.grid_dim, 
-            rank=cfg.model.rank)
+            rank=cfg.model.rank, G_init_std=cfg.model.G_init_std)
     else:
         sh_encoder = plenoxel_sh_encoder(cfg.sh.degree)
         renderer = RegularGrid(resolution=cfg.model.resolution, radius=tr_dset.radius,

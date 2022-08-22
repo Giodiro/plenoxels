@@ -1,4 +1,4 @@
-expname: "lowranklearnablehash"
+expname: "lowranklearnablehash_128rank20grid4_64f"
 
 data:
   datadir: "/data/datasets/nerf/data/nerf_synthetic/lego"
@@ -11,16 +11,18 @@ model:
   resolution: 128
   learnable_hash: False
   lowrank_learnable_hash: True
-  num_features: 513
-  feature_dim: 32
+  num_features: 4096
+  feature_dim: 64
   second_G: False
   rank: 20
+  grid_dim: 4
+  G_init_std: 0.1
 
 optim:
-  batch_size: 4000
+  batch_size: 2000
   num_epochs: 10
   lr: 2e-3
-  cosine: False
+  cosine: True
   train_f16: True
   samples_per_voxel: 6
   
