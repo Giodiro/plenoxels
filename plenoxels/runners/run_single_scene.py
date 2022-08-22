@@ -63,7 +63,7 @@ def train_epoch(renderer, tr_loader, ts_dset, optim, lr_sched, max_epochs, log_d
             loss_val = loss.item()
             losses["mse"].update(loss_val)
             TB_WRITER.add_scalar(f"mse", loss_val, tot_step)
-            pb.set_postfix_str(f"mse={loss_val:.4f} - psnr={-10 * math.log10(loss_val)}", refresh=False)
+            pb.set_postfix_str(f"mse={loss_val:.4f} - psnr={-10 * math.log10(loss_val):.2f}", refresh=False)
             pb.update(1)
             tot_step += 1
             if lr_sched is not None and not skip_lr_sched:
@@ -119,7 +119,8 @@ def init_model(cfg, tr_dset, checkpoint_data=None):
         renderer = LowrankLearnableHash(
             resolution=cfg.model.resolution, num_features=cfg.model.num_features,
             feature_dim=cfg.model.feature_dim, radius=tr_dset.radius,
-            n_intersections=n_intersections, step_size=step_size, rank=cfg.model.rank)
+            n_intersections=n_intersections, step_size=step_size, rank=cfg.model.rank,
+            grid_dim=cfg.model.grid_dim)
     else:
         sh_encoder = plenoxel_sh_encoder(cfg.sh.degree)
         renderer = RegularGrid(resolution=cfg.model.resolution, radius=tr_dset.radius,

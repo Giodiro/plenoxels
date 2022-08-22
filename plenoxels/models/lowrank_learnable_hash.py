@@ -8,6 +8,7 @@ from plenoxels.nerf_rendering import shrgb2rgb, sigma2alpha
 
 class SHRender(nn.Module):
     def __init__(self, sh_degree: int):
+        self.sh_degree = sh_degree
         self.direction_encoder = tcnn.Encoding(
             n_input_dims=3,
             encoding_config={
@@ -43,11 +44,17 @@ class SHRender(nn.Module):
 
         return rgb
 
+    def __repr__(self):
+        return f"SHRender(sh_degree={self.sh_degree})"
+
 
 class NNRender(nn.Module):
     def __init__(self, feature_dim, sigma_net_width=64, sigma_net_layers=1):
         super().__init__()
 
+        self.feature_dim = feature_dim
+        self.sigma_net_width = sigma_net_width
+        self.sigma_net_layers = sigma_net_layers
         # Feature decoder (modified from Instant-NGP)
         self.sigma_net = tcnn.Network(
             n_input_dims=feature_dim,
@@ -88,19 +95,20 @@ class NNRender(nn.Module):
         :return:
         """
         dim_batch, dim_nintrs = mask.shape
-        sigma = torch.zeros(dim_batch, dim_nintrs, device=density_features.device, dtype=density_features.dtype)
-        color = torch.zeros((dim_batch, dim_nintrs, 3), device=density_features.device, dtype=density_features.dtype)
 
         density_and_color = self.sigma_net(density_features)  # [n, 16]
         sigma_valid = density_and_color[:, 0]
         sigma_valid = F.relu(sigma_valid)
+        sigma = torch.zeros(dim_batch, dim_nintrs, device=sigma_valid.device, dtype=sigma_valid.dtype)
         sigma.masked_scatter_(mask, sigma_valid)
 
         # rays_d from [batch, 3] to [n_valid_intrs, n_dir_dims]
         rays_d = self.direction_encoder((rays_d + 1) / 2)  # tcnn SH encoding requires inputs to be in [0, 1]
         pwise_rays_d = torch.repeat_interleave(rays_d, mask.sum(1), dim=0)
         colors_valid = self.color_net(torch.cat((pwise_rays_d, density_and_color[:, 1:]), dim=-1))  # [n, 3]
-        color.masked_scatter_(mask, colors_valid)
+        color = torch.zeros((dim_batch, dim_nintrs, 3), device=colors_valid.device, dtype=colors_valid.dtype)
+        color.masked_scatter_(mask.unsqueeze(-1), colors_valid)
+        #color[mask] = colors_valid
         self.color = color
 
         return sigma
@@ -109,6 +117,9 @@ class NNRender(nn.Module):
         color = self.color
         del self.color
         return color
+
+    def __repr__(self):
+        return f"NNRender(feature_dim={self.feature_dim}, sigma_net_width={self.sigma_net_width}, sigma_net_layers={self.sigma_net_layers})"
 
 
 # Some pieces modified from https://github.com/ashawkey/torch-ngp/blob/6313de18bd8ec02622eb104c163295399f81278f/nerf/network_tcnn.py
@@ -121,32 +132,40 @@ class LowrankLearnableHash(nn.Module):
             raise ValueError("grid_dim must be 2, 3, or 4.")
         self.grid_dim = grid_dim
         self.num_features_per_dim = int(round(num_features ** (1 / self.grid_dim)))
-        print("num_features_per_dim = %d" % (self.num_features_per_dim, ))
         self.radius = radius
         self.n_intersections = n_intersections
         self.step_size = step_size
         self.rank = rank
-        self.renderer = NNRender(feature_dim=feature_dim)
+        self.renderer = NNRender(feature_dim=feature_dim, sigma_net_width=64, sigma_net_layers=1)
 
         # Volume representation
-        # self.Gxy = nn.Parameter(torch.empty(self.grid_dim, resolution, resolution, 1, rank))
-        # self.Gxz = nn.Parameter(torch.empty(self.grid_dim, resolution, 1, resolution, rank))
-        # self.Gyz = nn.Parameter(torch.empty(self.grid_dim, 1, resolution, resolution, rank))
+        #self.Gxy = nn.Parameter(torch.empty(self.grid_dim, resolution, resolution, 1, rank))
+        #self.Gxz = nn.Parameter(torch.empty(self.grid_dim, resolution, 1, resolution, rank))
+        #self.Gyz = nn.Parameter(torch.empty(self.grid_dim, 1, resolution, resolution, rank))
         self.Gxy = nn.Parameter(torch.empty(rank, resolution, resolution))
         self.Gxz = nn.Parameter(torch.empty(rank, resolution, resolution))
         self.Gyz = nn.Parameter(torch.empty(rank, resolution, resolution))
         # total memory requirement is reso*reso*rank*3*3 compared to reso*reso*reso*3
-        self.basis_mat = nn.Linear(3 * rank, self.grid_dim, bias=False)
+        self.basis_mat = nn.Linear(rank, self.grid_dim, bias=False)
 
         # Feature table
         self.F = nn.Parameter(torch.empty([feature_dim] + [self.num_features_per_dim] * self.grid_dim))
 
         self.init_params()
 
+        print("Initialized LowrankLearnableHash model")
+        print("num_features_per_dim = %d" % (self.num_features_per_dim, ))
+        print("renderer = %s" % (self.renderer))
+        print("rank = %d" % (self.rank))
+        print("grid_dim = %d" % (self.grid_dim))
+
     def init_params(self):
-        nn.init.normal_(self.Gxy, std=0.1)
-        nn.init.normal_(self.Gxz, std=0.1)
-        nn.init.normal_(self.Gyz, std=0.1)
+        gxy_std = 0.1
+        nn.init.normal_(self.Gxy, std=gxy_std)
+        nn.init.normal_(self.Gxz, std=gxy_std)
+        nn.init.normal_(self.Gyz, std=gxy_std)
+        if hasattr(self, "basis_mat"):
+            nn.init.normal_(self.basis_mat.weight, std=0.1)
         nn.init.normal_(self.F, std=0.05)
 
     def get_coordinate_plane(self, intrs_pts):
@@ -162,20 +181,19 @@ class LowrankLearnableHash(nn.Module):
         # rds [n, 3]
 
         # Sequential interpolation by grid_sample
-        # move pts to be in [-1, 1]
-        pts = (pts * 2 / self.resolution) - 1
         # Interpolate into G using pts
         # Like tensor-RF
         coo_plane = self.get_coordinate_plane(pts)
         xy_coef = grid_sample_wrapper(self.Gxy, coo_plane[0])  # [n, rank]
         xz_coef = grid_sample_wrapper(self.Gxz, coo_plane[1])  # [n, rank]
         yz_coef = grid_sample_wrapper(self.Gyz, coo_plane[2])  # [n, rank]
-        Gvals = self.basis_mat(torch.cat((xy_coef, xz_coef, yz_coef), dim=1))  # [n, grid_dim]
-        # Gvals = torch.cat((xy_coef.sum(-1), xz_coef.sum(-1), yz_coef.sum(-1)), dim=1)  # [n, 3]
+        Gvals = self.basis_mat(xy_coef * xz_coef * yz_coef)
+        #Gvals = self.basis_mat(torch.cat((xy_coef, xz_coef, yz_coef), dim=1))  # [n, grid_dim]
+        #Gvals = torch.cat((xy_coef.sum(-1), xz_coef.sum(-1), yz_coef.sum(-1)), dim=1)  # [n, 3]
         # Alternative impl (with 3d sampling)
-        # grid = self.Gxy * self.Gxz * self.Gyz  # [grid_dim, reso, reso, reso, rank]
-        # grid = torch.sum(grid, dim=-1)  # [grid_dim, reso, reso, reso]
-        # Gvals = grid_sample_wrapper(grid, pts)  # [n, grid_dim]
+        #grid = self.Gxy * self.Gxz * self.Gyz  # [grid_dim, reso, reso, reso, rank]
+        #grid = torch.sum(grid, dim=-1)  # [grid_dim, reso, reso, reso]
+        #Gvals = grid_sample_wrapper(grid, pts)  # [n, grid_dim]
 
         # Interpolate into F using G
         Fvals = grid_sample_wrapper(self.F, Gvals)  # [n, feature_dim]
@@ -198,8 +216,9 @@ class LowrankLearnableHash(nn.Module):
 
         sigma = self.renderer.compute_density(features, mask, rays_d)
         alpha, abs_light = sigma2alpha(sigma, intersections, rays_d)
-        rgb_mask = abs_light > self.abs_light_thresh
-        rgb = self.renderer.compute_density(features, rgb_mask, rays_d)
+
+        rgb_mask = mask#abs_light > self.abs_light_thresh
+        rgb = self.renderer.compute_color(features, rgb_mask, rays_d)
         rgb = shrgb2rgb(rgb, abs_light, True)
         return rgb
 

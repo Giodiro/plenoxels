@@ -1,22 +1,22 @@
-expname: "learnablehash_lego_256_lowrank"
+expname: "learnablehash_lego_128_lowrank"
 seed: 1299
 
 data:
   datadir: "/data/DATASETS/SyntheticNerf/lego"
-  resolution: 512
-  downsample: 1
+  resolution: 256
+  downsample: 1.562
   max_tr_frames: 100
   max_ts_frames: 10
 
 model:
-  resolution: 256
-  learnable_hash: True
+  resolution: 128
   num_features: 512
   feature_dim: 32
   second_G: False
   grid_dim: 3
+  learnable_hash: False
   lowrank_learnable_hash: True
-  rank: 10
+  rank: 20
 
 optim:
   batch_size: 4000
@@ -24,7 +24,7 @@ optim:
   lr: 2e-3
   cosine: False
   train_f16: True
-  samples_per_voxel: 2
+  samples_per_voxel: 4
 
 sh:
   degree: 0
