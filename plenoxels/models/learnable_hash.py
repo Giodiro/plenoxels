@@ -1,9 +1,8 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import tinycudann as tcnn
 from plenoxels.models.utils import get_intersections, pos_encode, grid_sample_wrapper
 from plenoxels.nerf_rendering import shrgb2rgb, sigma2alpha
+from .renderers import NNRender, SHRender
 
 
 # Some pieces modified from https://github.com/ashawkey/torch-ngp/blob/6313de18bd8ec02622eb104c163295399f81278f/nerf/network_tcnn.py
@@ -23,6 +22,7 @@ class LearnableHash(nn.Module):
         self.n_intersections = n_intersections
         self.step_size = step_size
         self.second_G = second_G
+        self.renderer = NNRender(feature_dim=feature_dim, sigma_net_width=64, sigma_net_layers=1)
 
         # Volume representation
         # Option 1: High-resolution grid that stores numbers that get rounded (update: used for
@@ -36,42 +36,6 @@ class LearnableHash(nn.Module):
             self.G2 = nn.Parameter(torch.empty([self.grid_dim] + [16] * self.grid_dim))
         # Feature table
         self.F = nn.Parameter(torch.empty([feature_dim] + [self.num_features_per_dim] * self.grid_dim))
-        # Feature decoder (modified from Instant-NGP)
-        self.sigma_net = tcnn.Network(
-            n_input_dims=feature_dim,
-            n_output_dims=16,
-            network_config={
-                "otype": "FullyFusedMLP",
-                "activation": "ReLU",
-                "output_activation": "None",
-                "n_neurons": 128,
-                "n_hidden_layers": 2,
-            },
-        )
-
-        self.direction_encoder = tcnn.Encoding(
-            n_input_dims=3,
-            encoding_config={
-                "otype": "SphericalHarmonics",
-                "degree": 4,  # TODO: Try changing
-            },
-        )
-
-        self.in_dim_color = self.direction_encoder.n_output_dims + 15
-
-        self.color_net = tcnn.Network(
-            n_input_dims=self.in_dim_color,
-            n_output_dims=3,
-            network_config={
-                "otype": "FullyFusedMLP",
-                "activation": "ReLU",
-                "output_activation": "None",
-                "n_neurons": 64,
-                "n_hidden_layers": 2,
-            },
-        )
-        self.register_buffer('nbr_offsets_01', torch.tensor([[0, 0, 0], [0, 0, 1], [0, 1, 0], [0, 1, 1], [1, 0, 0], [1, 0, 1], [1, 1, 0], [1, 1, 1]], dtype=torch.long))
-        self.register_buffer('nbr_offsets_m11', torch.tensor([[-1, -1, -1], [-1, -1, 1], [-1, 1, -1], [-1, 1, 1], [1, -1, -1], [1, -1, 1], [1, 1, -1], [1, 1, 1]], dtype=torch.float))
 
         self.init_params()
 
@@ -81,29 +45,20 @@ class LearnableHash(nn.Module):
             nn.init.normal_(self.G2, std=0.05)
         nn.init.normal_(self.F, std=0.05)
 
-    def eval_pts(self, pts, rds):
+    def compute_features(self, pts):
         # pts should be between 0 and resolution
         # rds should be between -1 and 1 (unit norm ray direction vector)
         # pts [n, 3]
         # rds [n, 3]
 
         # Sequential interpolation by grid_sample
-        # move pts to be in [-1, 1]
-        pts = (pts * 2 / self.resolution) - 1
-        # Interpolate into G1 using pts
         G1vals = grid_sample_wrapper(self.G1, pts)  # [n, grid_dim]
         # Interpolate into G2 using G1
         G2vals = G1vals
         if self.second_G:
             G2vals = grid_sample_wrapper(self.G2, G1vals)  # [n, grid_dim]
         Fvals = grid_sample_wrapper(self.F, G2vals)  # [n, feature_dim]
-
-        # Extract color and density from features
-        Fvals = self.sigma_net(Fvals)  # [n, 16]
-        sigmas = Fvals[:, 0]
-        encoded_rd = self.direction_encoder((rds + 1) / 2) # tcnn SH encoding requires inputs to be in [0, 1]
-        colors = self.color_net(torch.cat([encoded_rd, Fvals[:, 1:]], dim=-1))  # [n, 3]
-        return sigmas, colors
+        return Fvals
 
     def forward(self, rays_o, rays_d):
         """
@@ -114,31 +69,25 @@ class LearnableHash(nn.Module):
         # mask has shape [batch, n_intrs]
         intersection_pts = intersection_pts[mask]  # [n_valid_intrs, 3] puts together the valid intrs from all rays
         # Normalization
-        intersection_pts = (intersection_pts / self.radius + 1) * self.resolution / 2  # between [0, reso]
+        intersection_pts = intersection_pts / self.radius  # between [-1, +1]
         rays_d = rays_d / torch.linalg.norm(rays_d, dim=-1, keepdim=True)
 
-        pointwise_rays_d = torch.repeat_interleave(rays_d, mask.sum(1), dim=0)  # [n_valid_intrs, 3]
-        sigma_masked, color_masked = self.eval_pts(intersection_pts, pointwise_rays_d)
-        # Rendering
-        batch, nintrs = intersections.shape[0], intersections.shape[1] - 1
+        # compute features and render
+        features = self.compute_features(intersection_pts)
 
-        sigma = torch.zeros(batch, nintrs, dtype=sigma_masked.dtype, device=sigma_masked.device)
-        sigma.masked_scatter_(mask, sigma_masked)
-        sigma = F.relu(sigma)
-        alpha, abs_light = sigma2alpha(sigma, intersections, rays_d)  # both [batch, n_intrs-1]
+        sigma = self.renderer.compute_density(features, mask, rays_d)
+        alpha, abs_light = sigma2alpha(sigma, intersections, rays_d)
 
-        color = torch.zeros(batch, nintrs, 3, dtype=color_masked.dtype, device=color_masked.device)
-        color.masked_scatter_(mask.unsqueeze(-1), color_masked)
-        color = shrgb2rgb(color, abs_light, True)
-        return color
+        rgb_mask = mask#abs_light > self.abs_light_thresh
+        rgb = self.renderer.compute_color(features, rgb_mask, rays_d)
+        rgb = shrgb2rgb(rgb, abs_light, True)
+        return rgb
 
     def get_params(self, lr):
         params = [
             {"params": self.G1, "lr": lr * 1},
             {"params": self.F, "lr": lr * 1},
-            {"params": self.direction_encoder.parameters(), "lr": lr},
-            {"params": self.sigma_net.parameters(), "lr": lr},
-            {"params": self.color_net.parameters(), "lr": lr},
+            {"params": self.renderer.parameters(), "lr": lr},
         ]
         if self.second_G:
             params.append({"params": self.G2, "lr": lr * 1})
