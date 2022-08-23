@@ -41,8 +41,8 @@ class LowrankLearnableHash(nn.Module):
                 "otype": "FullyFusedMLP",
                 "activation": "ReLU",
                 "output_activation": "None",
-                "n_neurons": 128,
-                "n_hidden_layers": 2,
+                "n_neurons": 64,
+                "n_hidden_layers": 1,
             },
         )
         self.direction_encoder = tcnn.Encoding(
@@ -82,12 +82,28 @@ class LowrankLearnableHash(nn.Module):
         # rds [n, 3]
 
         # Sequential interpolation by grid_sample
+        # Compute grid cell offsets to use in interpolation (seems worse than doing an unweighted average)
+        # offsets = pts - pts%1  # [n, 3]
+        # normalization = 3 - offsets[:,0] - offsets[:,1] - offsets[:,2]
+        # weightsx = (1 - offsets[:,0]) / normalization
+        # weightsy = (1 - offsets[:,1]) / normalization
+        # weightsz = (1 - offsets[:,2]) / normalization
         # move pts to be in [-1, 1]
         pts = (pts * 2 / self.resolution) - 1
         # Interpolate into G using pts
-        grid = self.Gxy * self.Gxz * self.Gyz  # [grid_dim, reso, reso, reso, rank]
-        grid = torch.sum(grid, dim=-1)  # [grid_dim, reso, reso, reso]
-        Gvals = grid_sample_wrapper(grid, pts)  # [n, grid_dim]
+        interp_xy = grid_sample_wrapper(torch.permute(self.Gxy, (0,4,1,2,3)).reshape(self.grid_dim * self.rank, self.resolution, self.resolution), pts[:,[0,1]]).view(-1, self.grid_dim, self.rank) / 3.  # [n, grid_dim, rank]
+        interp_xz = grid_sample_wrapper(torch.permute(self.Gxz, (0,4,1,2,3)).reshape(self.grid_dim * self.rank, self.resolution, self.resolution), pts[:,[0,2]]).view(-1, self.grid_dim, self.rank) / 3.  # [n, grid_dim, rank]
+        interp_yz = grid_sample_wrapper(torch.permute(self.Gyz, (0,4,1,2,3)).reshape(self.grid_dim * self.rank, self.resolution, self.resolution), pts[:,[1,2]]).view(-1, self.grid_dim, self.rank) / 3.  # [n, grid_dim, rank]
+        # Attempting to do weighted averaging closer to trilinear interpolation seems worse than doing an unweighted average
+        # interp_xy = weightsz[:,None,None] * grid_sample_wrapper(torch.permute(self.Gxy, (0,4,1,2,3)).reshape(self.grid_dim * self.rank, self.resolution, self.resolution), pts[:,[0,1]]).view(-1, self.grid_dim, self.rank)  # [n, grid_dim, rank]
+        # interp_xz = weightsy[:,None,None] * grid_sample_wrapper(torch.permute(self.Gxz, (0,4,1,2,3)).reshape(self.grid_dim * self.rank, self.resolution, self.resolution), pts[:,[0,2]]).view(-1, self.grid_dim, self.rank)  # [n, grid_dim, rank]
+        # interp_yz = weightsx[:,None,None] * grid_sample_wrapper(torch.permute(self.Gyz, (0,4,1,2,3)).reshape(self.grid_dim * self.rank, self.resolution, self.resolution), pts[:,[1,2]]).view(-1, self.grid_dim, self.rank)  # [n, grid_dim, rank]
+        # Just averaging over rank seems to work better than doing a weighted average
+        Gvals = torch.sum(interp_xy + interp_xz + interp_yz, dim=-1)  # [n, grid_dim]
+        # This version works well but is high-memory because it instantiates a grid of size [grid_dim, reso, reso, reso, rank]
+        # grid = self.Gxy * self.Gxz * self.Gyz  # [grid_dim, reso, reso, reso, rank]
+        # grid = torch.sum(grid, dim=-1)  # [grid_dim, reso, reso, reso]
+        # Gvals = grid_sample_wrapper(grid, pts)  # [n, grid_dim]
         # Interpolate into F using G
         Fvals = grid_sample_wrapper(self.F, Gvals)  # [n, feature_dim]
 
