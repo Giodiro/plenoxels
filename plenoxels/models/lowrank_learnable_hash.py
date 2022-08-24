@@ -25,11 +25,11 @@ class LowrankLearnableHash(nn.Module):
         self.G_init_std = G_init_std
 
         # Volume representation
-        self.Gxy = nn.Parameter(torch.empty(self.grid_dim, resolution, resolution, 1, rank))
-        self.Gxz = nn.Parameter(torch.empty(self.grid_dim, resolution, 1, resolution, rank))
-        self.Gyz = nn.Parameter(torch.empty(self.grid_dim, 1, resolution, resolution, rank))
+        self.Gxy = nn.Parameter(torch.empty(self.grid_dim, rank, resolution, resolution, 1))
+        self.Gxz = nn.Parameter(torch.empty(self.grid_dim, rank, resolution, 1, resolution))
+        self.Gyz = nn.Parameter(torch.empty(self.grid_dim, rank, 1, resolution, resolution))
         # total memory requirement is reso*reso*rank*3*3 compared to reso*reso*reso*3
-        
+
         # Feature table
         self.F = nn.Parameter(torch.empty([feature_dim] + [self.num_features_per_dim] * self.grid_dim))
 
@@ -70,8 +70,8 @@ class LowrankLearnableHash(nn.Module):
         self.init_params()
 
     def init_params(self):
-        nn.init.normal_(self.Gxy, std=self.G_init_std) 
-        nn.init.normal_(self.Gxz, std=self.G_init_std) 
+        nn.init.normal_(self.Gxy, std=self.G_init_std)
+        nn.init.normal_(self.Gxz, std=self.G_init_std)
         nn.init.normal_(self.Gyz, std=self.G_init_std)
         nn.init.normal_(self.F, std=0.05)
 
@@ -85,9 +85,9 @@ class LowrankLearnableHash(nn.Module):
         # move pts to be in [-1, 1]
         pts = (pts * 2 / self.resolution) - 1
         # Interpolate into G using pts
-        interp_xy = grid_sample_wrapper(torch.permute(self.Gxy, (0,4,1,2,3)).reshape(self.grid_dim * self.rank, self.resolution, self.resolution), pts[:,[0,1]]).view(-1, self.grid_dim, self.rank)  # [n, grid_dim, rank]
-        interp_xz = grid_sample_wrapper(torch.permute(self.Gxz, (0,4,1,2,3)).reshape(self.grid_dim * self.rank, self.resolution, self.resolution), pts[:,[0,2]]).view(-1, self.grid_dim, self.rank)  # [n, grid_dim, rank]
-        interp_yz = grid_sample_wrapper(torch.permute(self.Gyz, (0,4,1,2,3)).reshape(self.grid_dim * self.rank, self.resolution, self.resolution), pts[:,[1,2]]).view(-1, self.grid_dim, self.rank)  # [n, grid_dim, rank]
+        interp_xy = grid_sample_wrapper(self.Gxy.view(self.grid_dim * self.rank, self.resolution, self.resolution), pts[:, [0, 1]]).view(-1, self.grid_dim, self.rank)  # [n, grid_dim, rank]
+        interp_xz = grid_sample_wrapper(self.Gxz.view(self.grid_dim * self.rank, self.resolution, self.resolution), pts[:, [0, 2]]).view(-1, self.grid_dim, self.rank)  # [n, grid_dim, rank]
+        interp_yz = grid_sample_wrapper(self.Gyz.view(self.grid_dim * self.rank, self.resolution, self.resolution), pts[:, [1, 2]]).view(-1, self.grid_dim, self.rank)  # [n, grid_dim, rank]
         Gvals = torch.sum(interp_xy * interp_xz * interp_yz, dim=-1)  # [n, grid_dim]
         # This version works well but is high-memory because it instantiates a grid of size [grid_dim, reso, reso, reso, rank]
         # grid = self.Gxy * self.Gxz * self.Gyz  # [grid_dim, reso, reso, reso, rank]
