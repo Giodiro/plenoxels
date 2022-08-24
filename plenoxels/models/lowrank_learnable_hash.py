@@ -22,12 +22,11 @@ class LowrankLearnableHash(nn.Module):
         self.n_intersections = n_intersections
         self.step_size = step_size
         self.rank = rank
+        print(f"rank: {self.rank}")
         self.G_init_std = G_init_std
 
         # Volume representation
-        self.Gxy = nn.Parameter(torch.empty(self.grid_dim, rank, resolution, resolution, 1))
-        self.Gxz = nn.Parameter(torch.empty(self.grid_dim, rank, resolution, 1, resolution))
-        self.Gyz = nn.Parameter(torch.empty(self.grid_dim, rank, 1, resolution, resolution))
+        self.G = nn.Parameter(torch.empty(3, self.grid_dim * rank, resolution, resolution))
         # total memory requirement is reso*reso*rank*3*3 compared to reso*reso*reso*3
 
         # Feature table
@@ -64,15 +63,11 @@ class LowrankLearnableHash(nn.Module):
                 "n_hidden_layers": 2,
             },
         )
-        self.register_buffer('nbr_offsets_01', torch.tensor([[0, 0, 0], [0, 0, 1], [0, 1, 0], [0, 1, 1], [1, 0, 0], [1, 0, 1], [1, 1, 0], [1, 1, 1]], dtype=torch.long))
-        self.register_buffer('nbr_offsets_m11', torch.tensor([[-1, -1, -1], [-1, -1, 1], [-1, 1, -1], [-1, 1, 1], [1, -1, -1], [1, -1, 1], [1, 1, -1], [1, 1, 1]], dtype=torch.float))
 
         self.init_params()
 
     def init_params(self):
-        nn.init.normal_(self.Gxy, std=self.G_init_std)
-        nn.init.normal_(self.Gxz, std=self.G_init_std)
-        nn.init.normal_(self.Gyz, std=self.G_init_std)
+        nn.init.normal_(self.G, std=self.G_init_std)
         nn.init.normal_(self.F, std=0.05)
 
     def eval_pts(self, pts, rds):
@@ -85,10 +80,10 @@ class LowrankLearnableHash(nn.Module):
         # move pts to be in [-1, 1]
         pts = (pts * 2 / self.resolution) - 1
         # Interpolate into G using pts
-        interp_xy = grid_sample_wrapper(self.Gxy.view(self.grid_dim * self.rank, self.resolution, self.resolution), pts[:, [0, 1]]).view(-1, self.grid_dim, self.rank)  # [n, grid_dim, rank]
-        interp_xz = grid_sample_wrapper(self.Gxz.view(self.grid_dim * self.rank, self.resolution, self.resolution), pts[:, [0, 2]]).view(-1, self.grid_dim, self.rank)  # [n, grid_dim, rank]
-        interp_yz = grid_sample_wrapper(self.Gyz.view(self.grid_dim * self.rank, self.resolution, self.resolution), pts[:, [1, 2]]).view(-1, self.grid_dim, self.rank)  # [n, grid_dim, rank]
-        Gvals = torch.sum(interp_xy * interp_xz * interp_yz, dim=-1)  # [n, grid_dim]
+        coo_plane = torch.stack((pts[..., [0, 1]], pts[..., [0, 2]], pts[..., [1, 2]]))  # [3, n, 2]
+        interp = grid_sample_wrapper(self.G, coo_plane).view(3, -1, self.grid_dim, self.rank)
+        Gvals = interp.prod(dim=0).sum(dim=-1)  # [n, grid_dim]
+        #Gvals = torch.sum(interp_xy * interp_xz * interp_yz, dim=-1)  # [n, grid_dim]
         # This version works well but is high-memory because it instantiates a grid of size [grid_dim, reso, reso, reso, rank]
         # grid = self.Gxy * self.Gxz * self.Gyz  # [grid_dim, reso, reso, reso, rank]
         # grid = torch.sum(grid, dim=-1)  # [grid_dim, reso, reso, reso]
@@ -132,9 +127,7 @@ class LowrankLearnableHash(nn.Module):
 
     def get_params(self, lr):
         params = [
-            {"params": self.Gxy, "lr": lr * 1},
-            {"params": self.Gxz, "lr": lr * 1},
-            {"params": self.Gyz, "lr": lr * 1},
+            {"params": self.G, "lr": lr * 1},
             {"params": self.F, "lr": lr * 1},
             {"params": self.direction_encoder.parameters(), "lr": lr},
             {"params": self.sigma_net.parameters(), "lr": lr},
