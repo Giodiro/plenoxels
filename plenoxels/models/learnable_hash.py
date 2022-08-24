@@ -9,7 +9,7 @@ from plenoxels.nerf_rendering import shrgb2rgb, sigma2alpha
 # Some pieces modified from https://github.com/ashawkey/torch-ngp/blob/6313de18bd8ec02622eb104c163295399f81278f/nerf/network_tcnn.py
 class LearnableHash(nn.Module):
     def __init__(self, resolution, num_features, feature_dim, radius: float, n_intersections: int,
-                 step_size: float, grid_dim: int, second_G=False,):
+                 step_size: float, grid_dim: int, second_G=False, G_init_std: float = 0.01):
         super().__init__()
         self.resolution = resolution
         if grid_dim not in {2, 3, 4}:
@@ -23,6 +23,7 @@ class LearnableHash(nn.Module):
         self.n_intersections = n_intersections
         self.step_size = step_size
         self.second_G = second_G
+        self.G_init_std = G_init_std
 
         # Volume representation
         # Option 1: High-resolution grid that stores numbers that get rounded (update: used for
@@ -76,9 +77,9 @@ class LearnableHash(nn.Module):
         self.init_params()
 
     def init_params(self):
-        nn.init.normal_(self.G1, std=0.01)
+        nn.init.normal_(self.G1, std=self.G_init_std)
         if self.second_G:
-            nn.init.normal_(self.G2, std=0.05)
+            nn.init.normal_(self.G2, std=self.G_init_std)
         nn.init.normal_(self.F, std=0.05)
 
     def eval_pts(self, pts, rds):

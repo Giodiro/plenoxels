@@ -110,7 +110,7 @@ def init_model(cfg, tr_dset, checkpoint_data=None):
             resolution=cfg.model.resolution, num_features=cfg.model.num_features,
             feature_dim=cfg.model.feature_dim, radius=tr_dset.radius,
             n_intersections=n_intersections, step_size=step_size, second_G=cfg.model.second_G,
-            grid_dim=cfg.model.grid_dim)
+            grid_dim=cfg.model.grid_dim, G_init_std=cfg.model.G_init_std)
     elif cfg.model.lowrank_learnable_hash:  # Option to use lowrank learnable hash function
         voxel_size = (tr_dset.radius * 2) / cfg.model.resolution
         # step-size and n-intersections are scaled to artificially increment resolution of model
@@ -119,7 +119,7 @@ def init_model(cfg, tr_dset, checkpoint_data=None):
         renderer = LowrankLearnableHash(
             resolution=cfg.model.resolution, num_features=cfg.model.num_features,
             feature_dim=cfg.model.feature_dim, radius=tr_dset.radius,
-            n_intersections=n_intersections, step_size=step_size, grid_dim=cfg.model.grid_dim, 
+            n_intersections=n_intersections, step_size=step_size, grid_dim=cfg.model.grid_dim,
             rank=cfg.model.rank, G_init_std=cfg.model.G_init_std)
     else:
         sh_encoder = plenoxel_sh_encoder(cfg.sh.degree)
