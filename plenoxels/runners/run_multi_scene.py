@@ -1,3 +1,4 @@
+import math
 from typing import Dict, List, Optional
 import os
 from collections import defaultdict
@@ -12,6 +13,8 @@ from tqdm import tqdm
 from plenoxels.configs import multiscene_config, parse_config
 from plenoxels.ema import EMA
 from plenoxels.models import DictPlenoxels, make_weights_unit_norm
+from plenoxels.models.learnable_hash import LearnableHash
+from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash
 from plenoxels.models.single_res_multi_scene import SingleResoDictPlenoxels
 from plenoxels.models.superres import SuperResoPlenoxel
 from plenoxels.tc_harmonics import plenoxel_sh_encoder
@@ -31,7 +34,7 @@ def default_render_fn(renderer, dset_id):
 def losses_to_postfix(losses: List[Dict[str, EMA]]) -> str:
     pfix_list = []
     for dset_id, loss_dict in enumerate(losses):
-        pfix_inner = ", ".join(f"{lname}={lval}" for lname, lval in loss_dict.items())
+        pfix_inner = ", ".join(f"{lname}={lval:.2e}" for lname, lval in loss_dict.items())
         pfix_list.append(f"D{dset_id}({pfix_inner})")
     return '  '.join(pfix_list)
 
@@ -42,10 +45,6 @@ def train_epoch(renderer,
                 ts_dsets,
                 optim,
                 lr_sched: Optional[torch.optim.lr_scheduler._LRScheduler],
-                l1_coef,
-                l2_coef,
-                tv_coef,
-                consistency_coef,
                 batches_per_epoch,
                 epochs,
                 log_dir,
@@ -58,73 +57,41 @@ def train_epoch(renderer,
     ema_weight = 0.3  # this is only for printing of loss to screen.
     num_dsets = len(tr_loaders)
 
-    tr_iterators = [[iter(dl) for dl in tr_loader] for tr_loader in tr_loaders]
-    n_loader_levels = len(tr_loaders[0]) - 1
+    tr_iterators = [iter(tr_loader) for tr_loader in tr_loaders]
+
+    grad_scaler = torch.cuda.amp.GradScaler(enabled=train_fp16)
     renderer.cuda()
-
-    grad_scaler = torch.cuda.amp.GradScaler()
-    # closs_optim = torch.optim.Adam(renderer.closs_mlp.parameters(), lr=1e-2)
-
     tot_step = start_tot_step
     TB_WRITER.add_scalar("lr", optim.param_groups[0]["lr"], tot_step)
     for e in range(start_epoch, epochs):
         losses = [defaultdict(lambda: EMA(ema_weight)) for _ in range(num_dsets)]
         pb = tqdm(total=batches_per_epoch * num_dsets, desc=f"Epoch {e + 1}")
-        level = -1
         renderer.train()
         for _ in range(0, batches_per_epoch, batches_per_dset):
             # Each epoch, rotate what resolution is being focused on
             for dset_id in range(num_dsets):
                 for i in range(batches_per_dset):
-                    level = (level + 1) % len(renderer.atoms)
                     try:
-                        rays_o, rays_d, imgs = next(tr_iterators[dset_id][min(level, n_loader_levels)])
+                        rays_o, rays_d, imgs = next(tr_iterators[dset_id])
                         imgs = imgs.cuda()
                         rays_o = rays_o.cuda()
                         rays_d = rays_d.cuda()
                         optim.zero_grad()
-                        rgb_preds, alpha, depth, consistency_loss = renderer(
-                            rays_o, rays_d, grid_id=dset_id, consistency_coef=consistency_coef,
-                            level=level, run_fp16=train_fp16)
 
-                        # Compute and re-weight all the losses
-                        diff_losses = dict(mse=F.mse_loss(rgb_preds, imgs))
-                        if l2_coef > 0:
-                            diff_losses["l2"] = l2_coef * (renderer.cgrids[dset_id].square().sum(-1) - 1).square().mean()
-                        if l1_coef > 0:
-                            diff_losses["l1"] = 0
-                            for scene_grid in renderer.grids[dset_id]:
-                                diff_losses["l1"] += l1_coef * torch.abs(scene_grid).mean()
-                        if tv_coef > 0:
-                            diff_losses["tv"] = tv_coef * renderer.tv_loss(dset_id)
-                        if consistency_coef > 0:
-                            diff_losses["consistency"] = consistency_coef * renderer.closs_v2(dset_id, rays_d[:1])
-                        loss = sum(diff_losses.values())
-                        if train_fp16:
-                            grad_scaler.scale(loss).backward()
-                            grad_scaler.step(optim)
-                            grad_scaler.update()
-                        else:
-                            loss.backward()
-                            optim.step()
+                        with torch.cuda.amp.autocast(enabled=train_fp16):
+                            rgb_preds = renderer(rays_o, rays_d, grid_id=dset_id)
+                            loss = F.mse_loss(rgb_preds, imgs)
 
-                        if False:
-                            closs = renderer.closs_v2(0, rays_d[:1])
-                            closs_optim.zero_grad()
-                            closs.backward()
-                            closs_optim.step()
+                        grad_scaler.scale(loss).backward()
+                        grad_scaler.step(optim)
+                        grad_scaler.update()
 
-                        # single_res_multi_scene.make_weights_unit_norm(renderer, with_grad=False, scene_id=dset_id)
-                        # make_weights_unit_norm(renderer, with_grad=False, scene_id=dset_id)
-                        # Clip all the weights to be nonnegative
-                        # for grid in renderer.grids:
-                        #     grid.data = torch.clamp(grid.data, min=0.0)
-
-                        for loss_name, loss_val in diff_losses.items():
-                            losses[dset_id][loss_name].update(loss_val.item())
-                            TB_WRITER.add_scalar(
-                                f"{loss_name}/D{dset_id}", loss_val.item(), tot_step)
-                            pb.set_postfix_str(losses_to_postfix(losses), refresh=False)
+                        loss_val = loss.item()
+                        losses[dset_id]["mse"].update(loss_val)
+                        losses[dset_id]["psnr"].update(math.log10(loss_val))
+                        TB_WRITER.add_scalar(
+                            f"mse/D{dset_id}", loss_val, tot_step)
+                        pb.set_postfix_str(losses_to_postfix(losses), refresh=False)
                         pb.update(1)
                         tot_step += 1
                     except StopIteration:
@@ -139,21 +106,12 @@ def train_epoch(renderer,
         renderer.eval()
         with torch.autograd.no_grad():
             for ts_dset_id, ts_dset in enumerate(ts_dsets):
-                psnr = plot_ts(
-                    ts_dset, ts_dset_id, renderer, log_dir, render_fn=default_render_fn(renderer, ts_dset_id),
-                    iteration=tot_step, batch_size=batch_size, image_id=0, verbose=True,
-                    summary_writer=TB_WRITER, plot_type="imageio")
-                render_patches(renderer, patch_level=0, log_dir=log_dir, iteration=tot_step,
-                               summary_writer=TB_WRITER)
-                if len(renderer.atoms) > 1:
-                    render_patches(renderer, patch_level=1, log_dir=log_dir, iteration=tot_step,
-                                   summary_writer=TB_WRITER)
+                for image_id in [0, 3, 6, 9]:
+                    psnr = plot_ts(
+                        ts_dset, ts_dset_id, renderer, log_dir, render_fn=default_render_fn(renderer, ts_dset_id),
+                        iteration=tot_step, batch_size=batch_size, image_id=image_id, verbose=True,
+                        summary_writer=TB_WRITER, plot_type="imageio")
                 TB_WRITER.add_scalar(f"TestPSNR/D{ts_dset_id}", psnr, tot_step)
-            # TB_WRITER.add_histogram(f"patches/sigma", renderer.atoms[0][..., -1].view(-1), tot_step)
-            # TB_WRITER.add_histogram(f"patches/R", renderer.atoms[0][..., 0].view(-1), tot_step)
-            # TB_WRITER.add_histogram(f"patches/G", renderer.atoms[0][..., 1].view(-1), tot_step)
-            # TB_WRITER.add_histogram(f"patches/B", renderer.atoms[0][..., 2].view(-1), tot_step)
-            # TB_WRITER.add_histogram(f"weights/white", renderer.grids[0][0].view(renderer.coarse_reso, renderer.coarse_reso, renderer.coarse_reso, -1)[:5, :5, :5].reshape(-1), tot_step)
             torch.save({
                 'epoch': e,
                 'tot_step': tot_step,
@@ -166,8 +124,28 @@ def train_epoch(renderer,
 
 def init_model(cfg, tr_dsets, checkpoint_data=None):
     sh_encoder = plenoxel_sh_encoder(cfg.sh.degree)
-    radii = [dset[0].radius for dset in tr_dsets]
-    if cfg.model.type == "multi_reso":
+    radii = [dset.radius for dset in tr_dsets]
+    if cfg.model.type == "lowrank_learnable_hash":
+        voxel_size = (tr_dsets[0].radius * 2) / cfg.model.resolution
+        # step-size and n-intersections are scaled to artificially increment resolution of model
+        step_size = voxel_size / cfg.optim.samples_per_voxel
+        n_intersections = math.sqrt(3.) * cfg.optim.samples_per_voxel * cfg.model.resolution
+        renderer = LowrankLearnableHash(
+            resolution=cfg.model.resolution, num_features=cfg.model.num_features,
+            feature_dim=cfg.model.feature_dim, radius=tr_dsets[0].radius,
+            n_intersections=n_intersections, step_size=step_size, rank=cfg.model.rank,
+            grid_dim=cfg.model.grid_dim)
+    elif cfg.model.type == "learnable_hash":
+        voxel_size = (tr_dsets[0].radius * 2) / cfg.model.resolution
+        # step-size and n-intersections are scaled to artificially increment resolution of model
+        step_size = voxel_size / cfg.optim.samples_per_voxel
+        n_intersections = math.sqrt(3.) * cfg.optim.samples_per_voxel * cfg.model.resolution
+        renderer = LearnableHash(
+            resolution=cfg.model.resolution, num_features=cfg.model.num_features,
+            feature_dim=cfg.model.feature_dim, radius=tr_dsets[0].radius,
+            n_intersections=n_intersections, step_size=step_size, second_G=cfg.model.second_G,
+            grid_dim=cfg.model.grid_dim)
+    elif cfg.model.type == "multi_reso":
         renderer = DictPlenoxels(
             sh_deg=cfg.sh.degree, sh_encoder=sh_encoder,
             radius=radii, num_atoms=cfg.model.num_atoms, num_scenes=len(tr_dsets),
@@ -241,7 +219,7 @@ if __name__ == "__main__":
         # We're reloading an existing model for either training or testing.
         # Here cfg_ is reload_cfg.
         chosen_opt = user_ask_options(
-            "Restart model training from checkpoint or evaluate model?", "train", "test")
+            "Restart model training from checkpoint or evaluate model? ", "train", "test")
         checkpoint_data = torch.load(os.path.join(train_log_dir, "model.pt"), map_location='cpu')
         model_ = init_model(cfg_, tr_dsets=tr_dsets_, checkpoint_data=checkpoint_data)
         if chosen_opt == "test":
@@ -257,11 +235,9 @@ if __name__ == "__main__":
             train_epoch(
                 renderer=model_, tr_loaders=tr_loaders_, ts_dsets=ts_dsets_, optim=optim_,
                 batches_per_epoch=cfg_.optim.batches_per_epoch, epochs=cfg_.optim.num_epochs,
-                log_dir=train_log_dir, batch_size=cfg_.optim.batch_size,
-                l1_coef=cfg_.optim.regularization.l1_weight, tv_coef=cfg_.optim.regularization.tv_weight,
-                consistency_coef=cfg_.optim.regularization.consistency_weight, lr_sched=sched_,
+                log_dir=train_log_dir, batch_size=cfg_.optim.batch_size, lr_sched=sched_,
                 start_epoch=checkpoint_data['epoch'] + 1, start_tot_step=checkpoint_data['tot_step'] + 1,
-                train_fp16=cfg_.optim.train_fp16, l2_coef=cfg_.optim.regularization.l2_weight)
+                train_fp16=cfg_.optim.train_fp16)
     elif reload_cfg is not None:
         # We're doing a transfer learning experiment. Loading a pretrained model, and fine-tuning on
         # new data.
@@ -285,11 +261,7 @@ if __name__ == "__main__":
                     batches_per_epoch=train_cfg.optim.batches_per_epoch,
                     epochs=train_cfg.optim.num_epochs,
                     log_dir=train_log_dir, batch_size=train_cfg.optim.batch_size,
-                    l1_coef=train_cfg.optim.regularization.l1_weight,
-                    tv_coef=train_cfg.optim.regularization.tv_weight,
-                    consistency_coef=train_cfg.optim.regularization.consistency_weight,
-                    lr_sched=sched_, train_fp16=train_cfg.optim.train_fp16,
-                    l2_coef=cfg_.optim.regularization.l2_weight)
+                    lr_sched=sched_, train_fp16=train_cfg.optim.train_fp16)
     else:
         # Normal training.
         with open(os.path.join(train_log_dir, "config.yaml"), "w") as fh:
@@ -300,7 +272,5 @@ if __name__ == "__main__":
         train_epoch(
             renderer=model_, tr_loaders=tr_loaders_, ts_dsets=ts_dsets_, optim=optim_,
             batches_per_epoch=cfg_.optim.batches_per_epoch, epochs=cfg_.optim.num_epochs,
-            log_dir=train_log_dir, batch_size=cfg_.optim.batch_size,
-            l1_coef=cfg_.optim.regularization.l1_weight, tv_coef=cfg_.optim.regularization.tv_weight,
-            consistency_coef=cfg_.optim.regularization.consistency_weight, lr_sched=sched_,
-            train_fp16=cfg_.optim.train_fp16, l2_coef=cfg_.optim.regularization.l2_weight)
+            log_dir=train_log_dir, batch_size=cfg_.optim.batch_size, lr_sched=sched_,
+            train_fp16=cfg_.optim.train_fp16)

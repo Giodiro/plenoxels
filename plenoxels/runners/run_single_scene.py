@@ -57,9 +57,6 @@ def train_epoch(renderer, tr_loader, ts_dset, optim, lr_sched, max_epochs, log_d
             grad_scaler.update()
             skip_lr_sched = scale > grad_scaler.get_scale()
 
-            # print(f'sigma_net grad is {torch.norm(renderer.F.grad)}')
-            # assert False
-
             loss_val = loss.item()
             losses["mse"].update(loss_val)
             TB_WRITER.add_scalar(f"mse", loss_val, tot_step)
@@ -73,23 +70,12 @@ def train_epoch(renderer, tr_loader, ts_dset, optim, lr_sched, max_epochs, log_d
         # Save and evaluate model
         time_s = time.time()
         with torch.cuda.amp.autocast(enabled=train_fp16):
-            psnr0 = plot_ts(
-                ts_dset, 0, renderer, log_dir,
-                iteration=tot_step, batch_size=batch_size, image_id=0, verbose=True,
-                summary_writer=TB_WRITER, render_fn=default_render_fn(renderer), plot_type="imageio")
-            psnr3 = plot_ts(
-                ts_dset, 0, renderer, log_dir,
-                iteration=tot_step, batch_size=batch_size, image_id=3, verbose=True,
-                summary_writer=TB_WRITER, render_fn=default_render_fn(renderer), plot_type="imageio")
-            psnr6 = plot_ts(
-                ts_dset, 0, renderer, log_dir,
-                iteration=tot_step, batch_size=batch_size, image_id=6, verbose=True,
-                summary_writer=TB_WRITER, render_fn=default_render_fn(renderer), plot_type="imageio")
-            psnr9 = plot_ts(
-                ts_dset, 0, renderer, log_dir,
-                iteration=tot_step, batch_size=batch_size, image_id=9, verbose=True,
-                summary_writer=TB_WRITER, render_fn=default_render_fn(renderer), plot_type="imageio")
-        TB_WRITER.add_scalar(f"TestPSNR", psnr0, tot_step)
+            for image_id in [0, 3, 6, 9]:
+                psnr = plot_ts(
+                    ts_dset, 0, renderer, log_dir,
+                    iteration=tot_step, batch_size=batch_size, image_id=image_id, verbose=True,
+                    summary_writer=TB_WRITER, render_fn=default_render_fn(renderer), plot_type="imageio")
+        TB_WRITER.add_scalar(f"TestPSNR", psnr, tot_step)
         torch.save({
             'epoch': e,
             'tot_step': tot_step,
@@ -101,7 +87,7 @@ def train_epoch(renderer, tr_loader, ts_dset, optim, lr_sched, max_epochs, log_d
 
 
 def init_model(cfg, tr_dset, checkpoint_data=None):
-    if cfg.model.learnable_hash:  # Option to use learnable hash function
+    if cfg.model.type == "learnable_hash":  # Option to use learnable hash function
         voxel_size = (tr_dset.radius * 2) / cfg.model.resolution
         # step-size and n-intersections are scaled to artificially increment resolution of model
         step_size = voxel_size / cfg.optim.samples_per_voxel
@@ -111,7 +97,7 @@ def init_model(cfg, tr_dset, checkpoint_data=None):
             feature_dim=cfg.model.feature_dim, radius=tr_dset.radius,
             n_intersections=n_intersections, step_size=step_size, second_G=cfg.model.second_G,
             grid_dim=cfg.model.grid_dim)
-    elif cfg.model.lowrank_learnable_hash:  # Option to use lowrank learnable hash function
+    elif cfg.model.type == "lowrank_learnable_hash":  # Option to use lowrank learnable hash function
         voxel_size = (tr_dset.radius * 2) / cfg.model.resolution
         # step-size and n-intersections are scaled to artificially increment resolution of model
         step_size = voxel_size / cfg.optim.samples_per_voxel
@@ -121,10 +107,12 @@ def init_model(cfg, tr_dset, checkpoint_data=None):
             feature_dim=cfg.model.feature_dim, radius=tr_dset.radius,
             n_intersections=n_intersections, step_size=step_size, rank=cfg.model.rank,
             grid_dim=cfg.model.grid_dim)
-    else:
+    elif cfg.model.type == "grid":
         sh_encoder = plenoxel_sh_encoder(cfg.sh.degree)
         renderer = RegularGrid(resolution=cfg.model.resolution, radius=tr_dset.radius,
                                sh_deg=cfg.sh.degree, sh_encoder=sh_encoder)
+    else:
+        raise ValueError(f"Model type {cfg.model.type} invalid")
     if checkpoint_data is not None and checkpoint_data.get('model', None) is not None:
         renderer.load_state_dict(checkpoint_data['model'])
         print("=> Loaded model state from checkpoint")

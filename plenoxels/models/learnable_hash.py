@@ -8,13 +8,13 @@ from .renderers import NNRender, SHRender
 # Some pieces modified from https://github.com/ashawkey/torch-ngp/blob/6313de18bd8ec02622eb104c163295399f81278f/nerf/network_tcnn.py
 class LearnableHash(nn.Module):
     def __init__(self, resolution, num_features, feature_dim, radius: float, n_intersections: int,
-                 step_size: float, grid_dim: int, second_G=False,):
+                 step_size: float, grid_dim: int, num_scenes: int = 1, second_G: bool = False):
         super().__init__()
         self.resolution = resolution
         if grid_dim not in {2, 3, 4}:
             raise ValueError("grid_dim must be 2, 3, or 4.")
         self.grid_dim = grid_dim
-        self.num_features_per_dim = int(round(num_features**(1/self.grid_dim)))
+        self.num_features_per_dim = int(round(num_features ** (1 / self.grid_dim)))
         print("num_features_per_dim = %d" % (self.num_features_per_dim, ))
         self.feature_dim = feature_dim
         self.offset_pe_dim = 4 * 6
@@ -31,7 +31,9 @@ class LearnableHash(nn.Module):
         #           features and feed them through an MLP to predict numbers that get rounded into
         #           indices into the feature table
         # Starting with option 1 for simplicity
-        self.G1 = nn.Parameter(torch.empty(self.grid_dim, resolution, resolution, resolution))
+        self.G1 = nn.ParameterList()
+        for scene in range(num_scenes):
+            self.G1.append(nn.Parameter(torch.empty(self.grid_dim, resolution, resolution, resolution)))
         if self.second_G:
             self.G2 = nn.Parameter(torch.empty([self.grid_dim] + [16] * self.grid_dim))
         # Feature table
@@ -40,19 +42,20 @@ class LearnableHash(nn.Module):
         self.init_params()
 
     def init_params(self):
-        nn.init.normal_(self.G1, std=0.02)
+        for p in self.G1.parameters():
+            nn.init.normal_(p, std=0.01)
         if self.second_G:
             nn.init.normal_(self.G2, std=0.05)
         nn.init.normal_(self.F, std=0.05)
 
-    def compute_features(self, pts):
+    def compute_features(self, pts, grid_id):
         # pts should be between 0 and resolution
         # rds should be between -1 and 1 (unit norm ray direction vector)
         # pts [n, 3]
         # rds [n, 3]
 
         # Sequential interpolation by grid_sample
-        G1vals = grid_sample_wrapper(self.G1, pts)  # [n, grid_dim]
+        G1vals = grid_sample_wrapper(self.G1[grid_id], pts)  # [n, grid_dim]
         # Interpolate into G2 using G1
         G2vals = G1vals
         if self.second_G:
@@ -60,7 +63,7 @@ class LearnableHash(nn.Module):
         Fvals = grid_sample_wrapper(self.F, G2vals)  # [n, feature_dim]
         return Fvals
 
-    def forward(self, rays_o, rays_d):
+    def forward(self, rays_o, rays_d, grid_id=0):
         """
         rays_o : [batch, 3]
         rays_d : [batch, 3]
@@ -73,7 +76,7 @@ class LearnableHash(nn.Module):
         rays_d = rays_d / torch.linalg.norm(rays_d, dim=-1, keepdim=True)
 
         # compute features and render
-        features = self.compute_features(intersection_pts)
+        features = self.compute_features(intersection_pts, grid_id)
 
         sigma = self.renderer.compute_density(features, mask, rays_d)
         alpha, abs_light = sigma2alpha(sigma, intersections, rays_d)
@@ -85,10 +88,10 @@ class LearnableHash(nn.Module):
 
     def get_params(self, lr):
         params = [
-            {"params": self.G1, "lr": lr * 1},
-            {"params": self.F, "lr": lr * 1},
+            {"params": self.G1.parameters(), "lr": lr},
+            {"params": self.F, "lr": lr},
             {"params": self.renderer.parameters(), "lr": lr},
         ]
         if self.second_G:
-            params.append({"params": self.G2, "lr": lr * 1})
+            params.append({"params": self.G2, "lr": lr})
         return params
