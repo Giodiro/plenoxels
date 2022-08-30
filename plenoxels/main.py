@@ -44,7 +44,7 @@ args = {
     "tr_downscale": 2,
     "scale": 0.33,
     "offset": (0, 0, 0),
-    "scene_radii": [2, ],
+    "scene_radii": [1, ],
     #"dataset_paths": ["/data/DATASETS/SyntheticNerf/lego"],
     "dataset_paths": ["/data/DATASETS/Nerf/fox"],
     "max_frames": None,
