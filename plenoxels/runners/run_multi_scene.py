@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from plenoxels.configs import multiscene_config, parse_config
+from plenoxels.configs import singlescene_config, multiscene_config, parse_config
 from plenoxels.ema import EMA
 from plenoxels.models import DictPlenoxels
 # from plenoxels.models.grids.learnable_hash import LearnableHash
@@ -53,7 +53,7 @@ def default_render_fn(renderer, dset_id):
 def losses_to_postfix(losses: List[Dict[str, EMA]]) -> str:
     pfix_list = []
     for dset_id, loss_dict in enumerate(losses):
-        pfix_inner = ", ".join(f"{lname}={lval:.2e}" for lname, lval in loss_dict.items())
+        pfix_inner = ", ".join(f"{lname}={lval}" for lname, lval in loss_dict.items())
         pfix_list.append(f"D{dset_id}({pfix_inner})")
     return '  '.join(pfix_list)
 
@@ -107,7 +107,7 @@ def train_epoch(renderer,
 
                         loss_val = loss.item()
                         losses[dset_id]["mse"].update(loss_val)
-                        losses[dset_id]["psnr"].update(math.log10(loss_val))
+                        losses[dset_id]["psnr"].update(-10 * math.log10(loss_val))
                         TB_WRITER.add_scalar(
                             f"mse/D{dset_id}", loss_val, tot_step)
                         pb.set_postfix_str(losses_to_postfix(losses), refresh=False)
@@ -115,7 +115,7 @@ def train_epoch(renderer,
                         tot_step += 1
                     except StopIteration:
                         # Reset the training-iterator which has no more samples
-                        tr_iterators[dset_id][min(level, n_loader_levels)] = iter(tr_loaders[dset_id][min(level, n_loader_levels)])
+                        tr_iterators[dset_id] = iter(tr_loaders[dset_id])
             if lr_sched is not None:
                 lr_sched.step()
                 TB_WRITER.add_scalar("lr", lr_sched.get_last_lr()[0], tot_step)  # one lr per parameter-group
@@ -150,6 +150,7 @@ def init_model(cfg, tr_dsets, checkpoint_data=None):
         step_size = voxel_size / cfg.optim.samples_per_voxel
         n_intersections = math.sqrt(3.) * cfg.optim.samples_per_voxel * cfg.model.resolution
         renderer = LowrankLearnableHash(
+            num_scenes=len(tr_dsets),
             grid_config=GRID_CONFIG, radius=tr_dsets[0].radius, n_intersections=n_intersections)
     elif cfg.model.type == "learnable_hash":
         voxel_size = (tr_dsets[0].radius * 2) / cfg.model.resolution
@@ -160,7 +161,7 @@ def init_model(cfg, tr_dsets, checkpoint_data=None):
             resolution=cfg.model.resolution, num_features=cfg.model.num_features,
             feature_dim=cfg.model.feature_dim, radius=tr_dsets[0].radius,
             n_intersections=n_intersections, step_size=step_size, second_G=cfg.model.second_G,
-            grid_dim=cfg.model.grid_dim)
+            grid_dim=cfg.model.grid_dim, num_scenes=len(tr_dsets))
     elif cfg.model.type == "multi_reso":
         renderer = DictPlenoxels(
             sh_deg=cfg.sh.degree, sh_encoder=sh_encoder,
@@ -186,14 +187,14 @@ def init_model(cfg, tr_dsets, checkpoint_data=None):
 
 
 # noinspection PyUnresolvedReferences,PyProtectedMember
-def init_lr_scheduler(cfg, optim, checkpoint_data=None) -> Optional[torch.optim.lr_scheduler._LRScheduler]:
+def init_lr_scheduler(cfg, optim, batches_per_epoch, checkpoint_data=None) -> Optional[torch.optim.lr_scheduler._LRScheduler]:
     eta_min = 1e-4
     num_batches_per_dset = 10
     lr_sched = None
     if cfg_.optim.cosine:
         num_dsets = len(cfg.data.datadirs)
         lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optim, T_max=cfg.optim.num_epochs * cfg.optim.batches_per_epoch * num_dsets // num_batches_per_dset,
+            optim, T_max=cfg.optim.num_epochs * batches_per_epoch * num_dsets // num_batches_per_dset,
             eta_min=eta_min)
         if checkpoint_data is not None:
             lr_sched.load_state_dict(checkpoint_data['scheduler'])
@@ -213,7 +214,8 @@ def init_optim(cfg, model, transfer_learning=False, checkpoint_data=None) -> tor
 
 
 if __name__ == "__main__":
-    train_cfg, reload_cfg = parse_config(multiscene_config.get_cfg_defaults())
+    #train_cfg, reload_cfg = parse_config(multiscene_config.get_cfg_defaults())
+    train_cfg, reload_cfg = parse_config(singlescene_config.get_cfg_defaults())
     gpu = get_freer_gpu()
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
     print(f'gpu is {gpu}')
@@ -230,6 +232,8 @@ if __name__ == "__main__":
     os.makedirs(train_log_dir, exist_ok=True)
     TB_WRITER = SummaryWriter(log_dir=train_log_dir)
     tr_dsets_, tr_loaders_, ts_dsets_ = init_data(cfg_)
+    batches_per_epoch = len(tr_dsets_[0]) // cfg_.optim.batch_size
+    print("Will do %d batches per epoch" % (batches_per_epoch))
 
     if reload_cfg is not None and train_cfg is None:
         # We're reloading an existing model for either training or testing.
@@ -247,13 +251,13 @@ if __name__ == "__main__":
         else:
             print(f"Resuming training from epoch {checkpoint_data['epoch'] + 1}")
             optim_ = init_optim(cfg_, model_, checkpoint_data=checkpoint_data)
-            sched_ = init_lr_scheduler(cfg_, optim_, checkpoint_data=checkpoint_data)
+            sched_ = init_lr_scheduler(cfg_, optim_, batches_per_epoch=batches_per_epoch, checkpoint_data=checkpoint_data)
             train_epoch(
                 renderer=model_, tr_loaders=tr_loaders_, ts_dsets=ts_dsets_, optim=optim_,
-                batches_per_epoch=cfg_.optim.batches_per_epoch, epochs=cfg_.optim.num_epochs,
+                batches_per_epoch=batches_per_epoch, epochs=cfg_.optim.num_epochs,
                 log_dir=train_log_dir, batch_size=cfg_.optim.batch_size, lr_sched=sched_,
                 start_epoch=checkpoint_data['epoch'] + 1, start_tot_step=checkpoint_data['tot_step'] + 1,
-                train_fp16=cfg_.optim.train_fp16)
+                train_fp16=cfg_.optim.train_f16)
     elif reload_cfg is not None:
         # We're doing a transfer learning experiment. Loading a pretrained model, and fine-tuning on
         # new data.
@@ -272,21 +276,21 @@ if __name__ == "__main__":
         pretrained_model = fresh_model
         # Only optimize the coarse grids and don't reload any optimizer state.
         optim_ = init_optim(train_cfg, pretrained_model, transfer_learning=True, checkpoint_data=None)
-        sched_ = init_lr_scheduler(train_cfg, optim_, checkpoint_data=None)
+        sched_ = init_lr_scheduler(train_cfg, optim_, batches_per_epoch=batches_per_epoch, checkpoint_data=None)
         train_epoch(renderer=pretrained_model, tr_loaders=tr_loaders_, ts_dsets=ts_dsets_, optim=optim_,
-                    batches_per_epoch=train_cfg.optim.batches_per_epoch,
+                    batches_per_epoch=batches_per_epoch,
                     epochs=train_cfg.optim.num_epochs,
                     log_dir=train_log_dir, batch_size=train_cfg.optim.batch_size,
-                    lr_sched=sched_, train_fp16=train_cfg.optim.train_fp16)
+                    lr_sched=sched_, train_fp16=train_cfg.optim.train_f16)
     else:
         # Normal training.
         with open(os.path.join(train_log_dir, "config.yaml"), "w") as fh:
             fh.write(cfg_.dump())
         model_ = init_model(cfg_, tr_dsets=tr_dsets_)
         optim_ = init_optim(cfg_, model_)
-        sched_ = init_lr_scheduler(cfg_, optim_)
+        sched_ = init_lr_scheduler(cfg_, optim_, batches_per_epoch=batches_per_epoch)
         train_epoch(
             renderer=model_, tr_loaders=tr_loaders_, ts_dsets=ts_dsets_, optim=optim_,
-            batches_per_epoch=cfg_.optim.batches_per_epoch, epochs=cfg_.optim.num_epochs,
+            batches_per_epoch=batches_per_epoch, epochs=cfg_.optim.num_epochs,
             log_dir=train_log_dir, batch_size=cfg_.optim.batch_size, lr_sched=sched_,
-            train_fp16=cfg_.optim.train_fp16)
+            train_fp16=cfg_.optim.train_f16)

@@ -78,7 +78,13 @@ class SyntheticNerfDataset(TensorDataset):
             meta = json.load(f)
             poses, imgs = [], []
             num_frames = min(len(meta['frames']), self.max_frames or len(meta['frames']))
-            for i in tqdm(range(num_frames), desc=f'Loading {self.split} data'):
+            if self.split == 'train':
+                subsample = int(round(len(meta['frames']) / self.max_frames))
+                frame_ids = torch.arange(len(meta['frames']))[::subsample]
+                print(f"Fetching 1/{subsample} training images.")
+            else:
+                frame_ids = torch.arange(num_frames)
+            for i in tqdm(frame_ids, desc=f'Loading {self.split} data'):
                 frame = meta['frames'][i]
                 # Load pose
                 pose = np.array(frame['transform_matrix'])
