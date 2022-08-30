@@ -21,7 +21,8 @@ class PackedRFTracer(nn.Module):
                 rays: Rays,
                 lod_idx: Optional[int],
                 scene_idx: int,
-                num_steps: int, **kwargs) -> RenderBuffer:
+                num_steps: int,
+                **kwargs) -> RenderBuffer:
         n_rays = rays.origins.shape[0]
         # By default, PackedRFTracer will attempt to use the highest level of detail for the ray sampling.
         # This however may not actually do anything; the ray sampling behaviours are often single-LOD

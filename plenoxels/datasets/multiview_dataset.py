@@ -66,12 +66,13 @@ class MultiviewDataset(Dataset):
         self.img_shape = self.data["imgs"].shape[1:3]
         self.num_imgs = self.data["imgs"].shape[0]
 
-        self.data["imgs"] = self.data["imgs"].reshape(self.num_imgs, -1, 3)
-        self.data["rays"] = self.data["rays"].reshape(self.num_imgs, -1, 3)
+        self.data["imgs"] = self.data["imgs"].view(-1, self.data["imgs"].shape[-1])
+        self.data["rays"] = self.data["rays"].reshape(-1, 3)
+
         if "depths" in self.data:
-            self.data["depths"] = self.data["depths"].reshape(self.num_imgs, -1, 1)
+            self.data["depths"] = self.data["depths"].reshape(-1, self.data["depths"].shape[-1])
         if "masks" in self.data:
-            self.data["masks"] = self.data["masks"].reshape(self.num_imgs, -1, 1)
+            self.data["masks"] = self.data["masks"].reshape(-1, self.data["masks"].shape[-1])
 
     def get_images(self, split='train', resize_shape=None):
         """Will return the dictionary of image tensors.

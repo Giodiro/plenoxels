@@ -26,9 +26,9 @@ class BaseTrainer():
             validate()
     Each of these submodules can be overriden, or extended with super().
     """
-    def __init__(self, tracer, datasets, num_epochs, optim_cls, lr_scheduler_type, lr, weight_decay,
-                 grid_lr_weight, optim_params, log_dir, device, num_batches_per_scene=10,
-                 exp_name=None, save_every=-1, **kwargs):
+    def __init__(self, tracer, datasets, num_epochs, batch_size, optim_cls, lr_scheduler_type, lr,
+                 weight_decay, grid_lr_weight, optim_params, log_dir, device,
+                 num_batches_per_scene=10, exp_name=None, save_every=-1, **kwargs):
         self.extra_args = kwargs
         self.device = device
         device_name = torch.cuda.get_device_name(device=self.device)
@@ -53,6 +53,7 @@ class BaseTrainer():
         self.lr_scheduler_type = lr_scheduler_type
 
         # Training params
+        self.batch_size = batch_size
         self.num_epochs = num_epochs
         self.exp_name = exp_name if exp_name else "unnamed_experiment"
 
@@ -78,8 +79,8 @@ class BaseTrainer():
 
     def init_dataloaders(self):
         return [
-            DataLoader(dataset, batch_size=1, collate_fn=ray_default_collate,
-                       shuffle=True, pin_memory=True, num_workers=0)
+            DataLoader(dataset, batch_size=self.batch_size, collate_fn=ray_default_collate,
+                       shuffle=True, pin_memory=True, num_workers=4)
             for dataset in self.datasets
         ]
 

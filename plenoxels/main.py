@@ -43,7 +43,7 @@ args = {
     "dataset_paths": ["/data/DATASETS/SyntheticNerf/lego"],
     "dataset_num_workers": 4,
     "multiview_dataset_format": "standard",
-    "num_rays_sampled_per_img": 4096,
+    # "num_rays_sampled_per_img": 4096,
     "bg_color": "white",
     "data_resize_shape": (400, 400),
 
@@ -54,6 +54,7 @@ args = {
     "grid_lr_weight": 1.0,
 
     "num_epochs": 50,
+    "batch_size": 4096,
     "save_every": 10,
     "log_dir": "./logs",
     "random_lod": False,
@@ -80,7 +81,7 @@ def load_modules(cfg):
     tracer.to(device)
 
     if cfg["dataset_type"] == "multiview":
-        transform = SampleRays(cfg["num_rays_sampled_per_img"])
+        transform = None#SampleRays(cfg["num_rays_sampled_per_img"])
         train_datasets = []
         for dset in cfg["dataset_paths"]:
             train_datasets.append(MultiviewDataset(dataset_path=dset, transform=transform, **cfg))
