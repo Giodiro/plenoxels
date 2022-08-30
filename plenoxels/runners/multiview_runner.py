@@ -70,9 +70,9 @@ class MultiviewTrainer(BaseTrainer):
         lod_idx = self.get_training_lod()
 
         with torch.cuda.amp.autocast():
-            rays_o = data['rays_o']
-            rays_d = data['rays_d']
-            imgs = data['images']
+            rays_o = data['rays_o'][0]
+            rays_d = data['rays_d'][0]
+            imgs = data['images'][0]
 
             N, C = imgs.shape
 
@@ -110,9 +110,8 @@ class MultiviewTrainer(BaseTrainer):
         for memory constraints.
         """
         with torch.cuda.amp.autocast():
-            rays_o = data['rays_o']
-            rays_d = data['rays_d']
-            imgs = data['images']
+            rays_o = data['rays_o'][0]
+            rays_d = data['rays_d'][0]
 
             rb = RenderBuffer(xyz=None, hit=None, normal=None, shadow=None, dirs=None)
             for b in range(math.ceil(rays_o.shape[0] / self.batch_size)):
@@ -125,7 +124,7 @@ class MultiviewTrainer(BaseTrainer):
                                  scene_idx=scene_idx,
                                  perturb=False,
                                  num_steps=self.extra_args["num_steps"])
-        return imgs, rb
+        return rb
 
 
     def post_step(self, n_iter, pb):
@@ -153,7 +152,11 @@ class MultiviewTrainer(BaseTrainer):
                     "lod_idx": "max",
                 }
                 for img_idx, data in enumerate(tqdm(dataset.dataloader(), desc=f"Test({scene_idx})")):
-                    gt, preds = self.eval_step(data, lod_idx=None, scene_idx=scene_idx)
+                    preds = self.eval_step(data, lod_idx=None, scene_idx=scene_idx)
+                    if "images" in data:
+                        gt = data["images"][0]
+                    else:
+                        gt = None
                     metrics = self.evaluate_metrics(gt, preds, scene_idx=scene_idx,
                                                     img_idx=img_idx, name="")
                     per_scene_metrics["psnr"] += metrics["psnr"]
@@ -174,6 +177,7 @@ class MultiviewTrainer(BaseTrainer):
         preds = preds.reshape(*gt.shape[:2], -1).cpu()
         preds.gts = gt[..., :3]
         preds.err = (preds.gts - preds.rgb) ** 2
+        print("test mse: ", preds.err.mean())
         psnr_ = psnr(preds.rgb, preds.gts)
         ssim_ = ssim(preds.rgb, preds.gts)
 

@@ -27,4 +27,4 @@ def visualize_poses(poses, size=0.1):
         segs = trimesh.load_path(segs)
         objects.append(segs)
 
-    trimesh.Scene(objects).show()
+    trimesh.Scene(objects).show('notebook')

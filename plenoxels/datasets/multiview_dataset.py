@@ -131,8 +131,8 @@ def get_rays(pose, intrinsics, H, W, N=-1):
     i, j = torch.meshgrid(torch.linspace(0, W-1, W, device=device),
                           torch.linspace(0, H-1, H, device=device),
                           indexing='ij')  # float
-    i = i.t().reshape([1, H*W]) + 0.5
-    j = j.t().reshape([1, H*W]) + 0.5
+    i = i.t().reshape([H*W]) + 0.5
+    j = j.t().reshape([H*W]) + 0.5
 
     results = {}
 
@@ -153,11 +153,12 @@ def get_rays(pose, intrinsics, H, W, N=-1):
     directions = directions / torch.norm(directions, dim=-1, keepdim=True)
     rays_d = directions @ pose[:3, :3].transpose(-1, -2)  # (N, 3)
 
-    rays_o = pose[3, 3]  # [3]
-    rays_o = rays_o[..., None, :].expand_as(rays_d)  # [N, 3]
+    rays_o = pose[:3, 3]  # [3]
+    rays_o = rays_o[None, :].expand_as(rays_d)  # [N, 3]
 
     results['rays_o'] = rays_o
     results['rays_d'] = rays_d
+    return results
 
 
 class NerfDataset(Dataset):
@@ -252,12 +253,12 @@ class NerfDataset(Dataset):
             H, W = images.shape[1:3]  # downscaling already performed.
             log.info(f"Loading data with size {H}x{W}")
 
-        if True:
+        if False:
             from .viz import visualize_poses
             visualize_poses(poses.numpy())
 
         radius = poses[:, :3, 3].norm(dim=-1).mean(0).item()
-        log.info(f'[INFO] dataset camera poses: radius = {self.radius:.4f}, bound = {self.bound}')
+        log.info(f'[INFO] dataset camera poses: radius = {radius:.4f}, bound = {self.bound}')
         intrinsics = load_intrinsics(transform, downscale, W=W, H=H)
         return {
             "poses": poses,
@@ -268,7 +269,7 @@ class NerfDataset(Dataset):
         }
 
     def __len__(self):
-        len(self.poses)
+        return len(self.poses)
 
     def __getitem__(self, item):
         pose = self.poses[item].to(device=self.device)
@@ -283,7 +284,7 @@ class NerfDataset(Dataset):
             images = self.images[item].to(self.device)  # [H, W, 3/4]
             if self.split == 'train':
                 C = images.shape[-1]
-                images = torch.gather(images.view(-1, C), 1, torch.stack(C * [rays['inds']], -1))  # [N, 3/4]
+                images = torch.gather(images.view(-1, C), 0, torch.stack(C * [rays['inds']], -1))  # [N, 3/4]
             out['images'] = images
         return out
 

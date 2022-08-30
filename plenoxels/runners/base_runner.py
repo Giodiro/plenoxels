@@ -128,7 +128,7 @@ class BaseTrainer():
         return lr_sched
 
     def init_renderer(self):
-        return OfflineRenderer(**self.extra_args)
+        return None# OfflineRenderer(**self.extra_args)
 
     def train_one_epoch(self):
         self.pre_epoch()

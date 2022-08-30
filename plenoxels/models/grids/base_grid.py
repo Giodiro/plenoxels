@@ -66,6 +66,9 @@ class BaseGrid(nn.Module):
         # Batched generation of samples
         samples = rays_o[:, None, :] + rays_d[:, None, :] * depth[..., None]  # [num_rays, num_samples, 3]
 
+        # Normalize between -1, 1
+        samples = samples / radius
+
         deltas = depth.diff(dim=-1, prepend=near)
 
         mask = self.query_mask(samples.reshape(-1, 3), lod_idx, scene_idx).reshape(num_rays, num_samples)

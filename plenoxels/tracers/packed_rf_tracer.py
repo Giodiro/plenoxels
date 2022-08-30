@@ -40,7 +40,7 @@ class PackedRFTracer(nn.Module):
         # Check for the base case where the BLAS traversal hits nothing
         if ridx.shape[0] == 0:
             hit = torch.zeros(n_rays, device=ridx.device).bool()
-            if bg_color.shape == (n_rays, 3):
+            if isinstance(bg_color, torch.Tensor) and bg_color.shape == (n_rays, 3):
                 rgb = bg_color
             else:
                 rgb = torch.ones(n_rays, 3, device=ridx.device) * bg_color
@@ -49,7 +49,7 @@ class PackedRFTracer(nn.Module):
             return RenderBuffer(depth=depth, hit=hit, rgb=rgb, alpha=alpha)
 
         # Get the indices of the ray tensor which correspond to hits
-        ridx_hit = ridx[spc_render.mark_pack_boundaries(ridx.int())]
+        ridx_hit = ridx[boundary]
 
         # Compute the color and density for each ray and their samples
         nef_out = self.nef(
@@ -79,7 +79,10 @@ class PackedRFTracer(nn.Module):
 
         # Populate the background
         rgb = torch.ones(n_rays, 3, device=color.device)
-        color = alpha * ray_colors + (1.0 - alpha) * bg_color
-        rgb[ridx_hit.long(), :3] = color
+        if isinstance(bg_color, torch.Tensor) and bg_color.shape[0] == n_rays:
+            color = alpha * ray_colors + (1.0 - alpha) * bg_color[ridx_hit.long(), :]
+        else:
+            color = alpha * ray_colors + (1.0 - alpha) * bg_color
+        rgb[ridx_hit.long(), :] = color
 
         return RenderBuffer(depth=depth, hit=hit, rgb=rgb, alpha=out_alpha)

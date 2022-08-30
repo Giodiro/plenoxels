@@ -42,14 +42,14 @@ args = {
     "dataset_type": "blender",
     "batch_size": 4096,
     "tr_downscale": 2,
-    "scale": 0.33,
+    "scale": 0.8,
     "offset": (0, 0, 0),
-    "scene_radii": [2, ],
-    #"dataset_paths": ["/data/DATASETS/SyntheticNerf/lego"],
-    "dataset_paths": ["/data/DATASETS/Nerf/fox"],
+    "scene_radii": [3, ],
+    "dataset_paths": ["/data/DATASETS/SyntheticNerf/lego"],
+    #"dataset_paths": ["/data/DATASETS/Nerf/fox"],
     "max_frames": None,
     "max_test_frames": 10,
-    "subsample_frames": "staggerred",
+    "subsample_frames": "staggered",
 
     "optimizer_type": "adam",
     "lr": 2e-3,
@@ -61,7 +61,7 @@ args = {
     "save_every": 10,
     "log_dir": "./logs",
     "random_lod": False,
-    "valid_every": 10,
+    "valid_every": 2,
     "pretrained": False,
     "valid_only": False,
 
@@ -82,12 +82,9 @@ def load_modules(cfg):
     tracer = tracer_cls(nef=nef, **cfg)
     tracer.to(device)
 
-    if cfg["dataset_type"] == "multiview":
-        train_datasets = []
-        for dset, bound in zip(cfg["dataset_paths"], cfg["scene_radii"]):
-            train_datasets.append(NerfDataset(data_root=dset, bound=(-bound, bound), **cfg))
-    else:
-        raise ValueError(f"Dataset type {cfg['dataset_type']} invalid.")
+    train_datasets = []
+    for dset, bound in zip(cfg["dataset_paths"], cfg["scene_radii"]):
+        train_datasets.append(NerfDataset(data_root=dset, bound=(-bound, bound), split='train', device='cuda', **cfg))
 
     return tracer, train_datasets, device
 
