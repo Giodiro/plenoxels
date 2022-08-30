@@ -9,7 +9,7 @@ from plenoxels.nerf_rendering import shrgb2rgb, sigma2alpha
 # Some pieces modified from https://github.com/ashawkey/torch-ngp/blob/6313de18bd8ec02622eb104c163295399f81278f/nerf/network_tcnn.py
 class LowrankLearnableHash(nn.Module):
     def __init__(self, resolution, num_features, feature_dim, radius: float, n_intersections: int,
-                 step_size: float, grid_dim: int, rank: int, G_init_std: float):
+                 step_size: float, grid_dim: int, rank: int, G_init_std: float, second_G=False):
         super().__init__()
         self.resolution = resolution
         if grid_dim not in {2, 3, 4}:
@@ -21,13 +21,16 @@ class LowrankLearnableHash(nn.Module):
         self.radius = radius
         self.n_intersections = n_intersections
         self.step_size = step_size
+        self.second_G = second_G
         self.rank = rank
         print(f"rank: {self.rank}")
         self.G_init_std = G_init_std
 
         # Volume representation
-        self.G = nn.Parameter(torch.empty(3, self.grid_dim * rank, resolution, resolution))
-        # total memory requirement is reso*reso*rank*3*3 compared to reso*reso*reso*3
+        self.G = nn.Parameter(torch.empty(3, self.grid_dim * rank, resolution, resolution)) # The 3 is for xy, xz, yz
+        # total memory requirement is reso*reso*rank*3*4 compared to reso*reso*reso*4
+        if self.second_G:
+            self.G2 = nn.Parameter(torch.empty([self.grid_dim] + [8] * self.grid_dim))
 
         # Feature table
         self.F = nn.Parameter(torch.empty([feature_dim] + [self.num_features_per_dim] * self.grid_dim))
@@ -68,6 +71,8 @@ class LowrankLearnableHash(nn.Module):
 
     def init_params(self):
         nn.init.normal_(self.G, std=self.G_init_std)
+        if self.second_G:
+            nn.init.normal_(self.G2, std=self.G_init_std)
         nn.init.normal_(self.F, std=0.05)
 
     def eval_pts(self, pts, rds):
@@ -83,13 +88,12 @@ class LowrankLearnableHash(nn.Module):
         coo_plane = torch.stack((pts[..., [0, 1]], pts[..., [0, 2]], pts[..., [1, 2]]))  # [3, n, 2]
         interp = grid_sample_wrapper(self.G, coo_plane).view(3, -1, self.grid_dim, self.rank)
         Gvals = interp.prod(dim=0).sum(dim=-1)  # [n, grid_dim]
-        #Gvals = torch.sum(interp_xy * interp_xz * interp_yz, dim=-1)  # [n, grid_dim]
-        # This version works well but is high-memory because it instantiates a grid of size [grid_dim, reso, reso, reso, rank]
-        # grid = self.Gxy * self.Gxz * self.Gyz  # [grid_dim, reso, reso, reso, rank]
-        # grid = torch.sum(grid, dim=-1)  # [grid_dim, reso, reso, reso]
-        # Gvals = grid_sample_wrapper(grid, pts)  # [n, grid_dim]
+        # Interpolate into G2 using G
+        G2vals = Gvals
+        if self.second_G:
+            G2vals = grid_sample_wrapper(self.G2, Gvals)  # [n, grid_dim]
         # Interpolate into F using G
-        Fvals = grid_sample_wrapper(self.F, Gvals)  # [n, feature_dim]
+        Fvals = grid_sample_wrapper(self.F, G2vals)  # [n, feature_dim]
 
         # Extract color and density from features
         Fvals = self.sigma_net(Fvals)  # [n, 16]
@@ -133,5 +137,7 @@ class LowrankLearnableHash(nn.Module):
             {"params": self.sigma_net.parameters(), "lr": lr},
             {"params": self.color_net.parameters(), "lr": lr},
         ]
+        if self.second_G:
+            params.append({"params": self.G2, "lr": lr * 1})
         return params
 
