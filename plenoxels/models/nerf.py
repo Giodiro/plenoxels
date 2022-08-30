@@ -26,6 +26,9 @@ class NeuralRadianceField(nn.Module):
         self.embedder_output_dim = 0
         self.input_dim = 0
 
+        self.init_grid()
+        self.init_decoder()
+
     def init_grid(self):
         """Initialize the grid object.
         """
@@ -50,8 +53,6 @@ class NeuralRadianceField(nn.Module):
     def forward(self, coords, rays_d, lod_idx: Optional[int], scene_idx: int) -> Dict[str, torch.Tensor]:
         if lod_idx is None:
             lod_idx = self.grid.num_lods - 1
-        batch, num_samples, _ = coords.shape
-
         # Embed coordinates into high-dimensional vectors with the grid.
         feats = self.grid.interpolate(coords, lod_idx, scene_idx)
 

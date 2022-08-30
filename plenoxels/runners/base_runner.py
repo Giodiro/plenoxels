@@ -146,7 +146,7 @@ class BaseTrainer():
                 # go to next scene
                 ascene_idx = (ascene_idx + 1) % len(active_scenes)
                 iteration += 1
-            if ascene_idx == 0 and step_successful:  # we went through all scenes
+            if ascene_idx == 0 and step_successful and self.scheduler is not None:  # we went through all scenes
                 self.scheduler.step()
         self.post_epoch()
 
@@ -169,7 +169,7 @@ class BaseTrainer():
                 self.epoch % self.extra_args["valid_every"] == 0 and \
                 self.epoch != 0:
             self.validate()
-        if self >= self.num_epochs:
+        if self.epoch >= self.num_epochs:
             raise StopIteration(f"Finished after {self.num_epochs} epochs.")
 
     @abc.abstractmethod

@@ -82,7 +82,7 @@ class MultiviewTrainer(BaseTrainer):
     def post_step(self, n_iter, pb):
         pfix_list = []
         for dset_id, loss_dict in enumerate(self.loss_info):
-            pfix_inner = ", ".join(f"{lname}={lval:.2e}" for lname, lval in loss_dict.items())
+            pfix_inner = ", ".join(f"{lname}={lval.value:.2e}" for lname, lval in loss_dict.items())
             pfix_list.append(f"S{dset_id}({pfix_inner})")
         pfix_str = ' '.join(pfix_list)
         pb.set_postfix_str(pfix_str, refresh=False)

@@ -3,7 +3,7 @@ import sys
 
 import torch
 
-from .trainers import MultiviewTrainer  # noqa
+from .runners.multiview_runner import MultiviewTrainer
 
 args = {
     "trainer_type": "MultiviewTrainer",
@@ -49,6 +49,7 @@ args = {
 
     "optimizer_type": "adam",
     "lr": 2e-3,
+    "lr_scheduler_type": "no-schedule",
     "weight_decay": 0,
     "grid_lr_weight": 1.0,
 
@@ -56,7 +57,7 @@ args = {
     "save_every": 10,
     "log_dir": "./logs",
     "random_lod": False,
-    "valid_every": 1,
+    "valid_every": 10,
     "pretrained": False,
     "valid_only": False,
 

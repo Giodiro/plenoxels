@@ -77,7 +77,7 @@ class RenderBuffer:
                 # create a Renderbuffer dataclass variant with new additional channels as fields
                 rb_class = make_dataclass(
                     f'Renderbuffer_{len(__RB_VARIANTS__)}',
-                    fields=[(k, Optional[torch.Tensor]) for k in kwargs.keys()],
+                    fields=[(k, Optional[torch.Tensor], None) for k in kwargs.keys()],
                     bases=(RenderBuffer,))
                 __RB_VARIANTS__[class_key] = rb_class  # Cache for future __new__ calls
             return super(RenderBuffer, rb_class).__new__(rb_class)  # Construct the new Renderbuffer variant

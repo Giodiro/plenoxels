@@ -21,7 +21,7 @@ class PackedRFTracer(nn.Module):
                 rays: Rays,
                 lod_idx: Optional[int],
                 scene_idx: int,
-                num_steps: int) -> RenderBuffer:
+                num_steps: int, **kwargs) -> RenderBuffer:
         n_rays = rays.origins.shape[0]
         # By default, PackedRFTracer will attempt to use the highest level of detail for the ray sampling.
         # This however may not actually do anything; the ray sampling behaviours are often single-LOD
@@ -50,7 +50,7 @@ class PackedRFTracer(nn.Module):
 
         # Compute the color and density for each ray and their samples
         nef_out = self.nef(
-            coords=samples, ray_d=rays.dirs.index_select(0, ridx),
+            coords=samples, rays_d=rays.dirs.index_select(0, ridx),
             lod_idx=lod_idx, scene_idx=scene_idx)
         color = nef_out['rgb']
         density = nef_out['density']

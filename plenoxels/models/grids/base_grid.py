@@ -63,7 +63,7 @@ class BaseGrid(nn.Module):
         # Batched generation of samples
         samples = rays.origins[:, None] + rays.dirs[:, None] * depth[..., None]  # [num_rays, num_samples, 3]
         samples = samples / 2.8
-        print(f"generating samples in range {samples.min()} -- {samples.max()}")
+        #print(f"generating samples in range {samples.min()} -- {samples.max()}")
         deltas = depth.diff(dim=-1, prepend=torch.zeros(num_rays, 1, device=dev) + rays.dist_min)
 
         mask = self.query_mask(samples.reshape(-1, 3), lod_idx, scene_idx).reshape(num_rays, num_samples)
