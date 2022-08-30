@@ -20,7 +20,7 @@ def psnr(rgb, gts):
     Assumes the RGB image is in [0,1]
 
     Args:
-        rgb (torch.FloatTensor): Image tensor of shape [H,W3]
+        rgb (torch.Tensor): Image tensor of shape [H,W3]
 
     Returns:
         (float): The PSNR score
@@ -40,8 +40,8 @@ def ssim(rgb, gts):
     Assumes the RGB image is in [0,1]
 
     Args:
-        rgb (torch.FloatTensor): Image tensor of shape [H,W,3]
-        gts (torch.FloatTensor): Image tensor of shape [H,W,3]
+        rgb (torch.Tensor): Image tensor of shape [H,W,3]
+        gts (torch.Tensor): Image tensor of shape [H,W,3]
 
     Returns:
         (float): The SSIM score

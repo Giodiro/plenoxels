@@ -7,270 +7,278 @@
 # license agreement from NVIDIA CORPORATION & AFFILIATES is strictly prohibited.
 
 import os
-import glob
 import logging as log
 import json
-from typing import Dict, Any
 
-from cv2 import INTER_AREA
-import skimage
-import imageio
+import cv2
 from tqdm import tqdm
 import numpy as np
 import torch
 from torch.multiprocessing import Pool
-from kaolin.render.camera import Camera, blender_coords
 
-from ..core import Rays
-from ..ops.rays import generate_pinhole_rays, generate_centered_pixel_coords
-from ..ops.image import resize_to_shape
+from scipy.spatial.transform import Slerp, Rotation
 
-""" A module for loading data files in the standard NeRF format, including extensions to the format
-    supported by Instant Neural Graphics Primitives.
-    See: https://github.com/NVlabs/instant-ngp
-"""
+from torch.utils.data import Dataset, DataLoader
 
 
-# Local function for multiprocess. Just takes a frame from the JSON to load images and poses.
-def _load_standard_imgs(frame, root, shape=None):
-    """Helper for multiprocessing for the standard dataset. Should not have to be invoked by users.
+def load_image(data_root, frame, downscale, dset_type, scale, offset, H, W):
+    # Fix file-path
+    f_path = os.path.join(data_root, frame['file_path'])
+    if dset_type == 'blender' and '.' not in os.path.basename(f_path):
+        f_path += '.png'  # so silly...
+    if not os.path.exists(f_path):  # there are non-exist paths in fox...
+        return (None, None)
 
-    Args:
-        root: The root of the dataset.
-        frame: The frame object from the transform.json.
+    pose = np.array(frame['transform_matrix'], dtype=np.float32)  # [4, 4]
+    pose = nerf_matrix_to_ngp(pose, scale=scale, offset=offset)
 
-    Returns:
-        (dict): Dictionary of the image and pose.
-    """
-    fpath = os.path.join(root, frame['file_path'].replace("\\", "/"))
+    image = cv2.imread(f_path, cv2.IMREAD_UNCHANGED)  # [H, W, 3] o [H, W, 4]
+    if H is None or W is None:
+        H = int(image.shape[0] / downscale)
+        W = int(image.shape[1] / downscale)
 
-    basename = os.path.basename(os.path.splitext(fpath)[0])
-    if os.path.splitext(fpath)[1] == "":
-        # Assume PNG file if no extension exists... the NeRF synthetic data follows this convention.
-        fpath += '.png'
-
-    # For some reason instant-ngp allows missing images that exist in the transform but not in the data.
-    # Handle this... also handles the above case well too.
-    if os.path.exists(fpath):
-        img = imageio.imread(fpath)
-        img = skimage.img_as_float32(img)
-        if shape is not None:
-            img = resize_to_shape(img, shape, interpolation=INTER_AREA)
-        return dict(basename=basename,
-                    img=torch.FloatTensor(img),
-                    pose=torch.FloatTensor(np.array(frame['transform_matrix'])))
+    # add support for the alpha channel as a mask.
+    if image.shape[-1] == 3:
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     else:
-        # log.info(f"File name {fpath} doesn't exist. Ignoring.")
-        return None
+        image = cv2.cvtColor(image, cv2.COLOR_BGRA2RGBA)
+
+    if image.shape[0] != H or image.shape[1] != W:
+        image = cv2.resize(image, (W, H), interpolation=cv2.INTER_AREA)
+
+    image = image.astype(np.float32) / 255  # [H, W, 3/4]
+    return pose, image
 
 
-def _parallel_load_standard_imgs(args):
-    """Internal function for multiprocessing.
-    """
+def parallel_load_images(args):
     torch.set_num_threads(1)
-    result = _load_standard_imgs(args['frame'], args['root'], shape=args['shape'])
-    if result is None:
-        return dict(basename=None, img=None, pose=None)
+    return load_image(args['data_root'], args['frame'], args['downscale'], args['dset_type'],
+                      args['scale'], args['offset'], args['H'], args['W'])
+
+
+# ref: https://github.com/NVlabs/instant-ngp/blob/b76004c8cf478880227401ae763be4c02f80b62f/include/neural-graphics-primitives/nerf_loader.h#L50
+def nerf_matrix_to_ngp(pose, scale=0.33, offset=(0, 0, 0)):
+    # for the fox dataset, 0.33 scales camera radius to ~ 2
+    new_pose = np.array([
+        [pose[1, 0], -pose[1, 1], -pose[1, 2], pose[1, 3] * scale + offset[0]],
+        [pose[2, 0], -pose[2, 1], -pose[2, 2], pose[2, 3] * scale + offset[1]],
+        [pose[0, 0], -pose[0, 1], -pose[0, 2], pose[0, 3] * scale + offset[2]],
+        [0, 0, 0, 1],
+    ], dtype=np.float32)
+    return new_pose
+
+
+def load_transforms(root, dset_type, split):
+    if dset_type == "colmap":
+        # Only one transform file (no splits provided)
+        with open(os.path.join(root, "transforms.json"), "r") as fh:
+            transforms = json.load(fh)
+    elif dset_type == "blender":
+        with open(os.path.join(root, f"transforms_{split}.json"), "r") as fh:
+            transforms = json.load(fh)
     else:
-        return dict(basename=result['basename'], img=result['img'], pose=result['pose'])
+        raise NotImplementedError(dset_type)
+
+    return transforms
 
 
-def load_nerf_standard_data(root, split='train', bg_color='white', num_workers=-1, shape=None):
-    """Standard loading function.
+def load_colmap_test(frames, scale, offset, max_test_frames):
+    # choose two random poses, and interpolate between.
+    f0, f1 = np.random.choice(frames, 2, replace=False)
+    pose0 = nerf_matrix_to_ngp(np.array(f0['transform_matrix'], dtype=np.float32),
+                               scale=scale, offset=offset)  # [4, 4]
+    pose1 = nerf_matrix_to_ngp(np.array(f1['transform_matrix'], dtype=np.float32),
+                               scale=scale, offset=offset)  # [4, 4]
+    rots = Rotation.from_matrix(np.stack([pose0[:3, :3], pose1[:3, :3]]))
+    slerp = Slerp([0, 1], rots)
 
-    This follows the conventions defined in https://github.com/NVlabs/instant-ngp.
-
-    There are two pairs of standard file structures this follows:
-
-    ```
-    /path/to/dataset/transform.json
-    /path/to/dataset/images/____.png
-    ```
-
-    or
-
-    ```
-    /path/to/dataset/transform_{split}.json
-    /path/to/dataset/{split}/_____.png
-    ```
-
-    Args:
-        root (str): The root directory of the dataset.
-        split (str): The dataset split to use from 'train', 'val', 'test'.
-        bg_color (str): The background color to use for when alpha=0.
-        num_workers (int): The number of workers to use for multithreaded loading. If -1, will not multithread.
-
-    Returns:
-        (dict of torch.FloatTensors): Different channels of information from NeRF.
-    """
-    transforms = sorted(glob.glob(os.path.join(root, "*.json")))
-    transform_dict: Dict[str, Any] = {}
-    if len(transforms) == 1:
-        transform_dict['train'] = transforms[0]
-    elif len(transforms) == 3:
-        fnames = [os.path.basename(transform) for transform in transforms]
-        # Create dictionary of split to file path, probably there is simpler way of doing this
-        for _split in ['test', 'train', 'val']:
-            for i, fname in enumerate(fnames):
-                if _split in fname:
-                    transform_dict[_split] = transforms[i]
-    else:
-        raise RuntimeError("Unsupported number of splits, there should be ['test', 'train', 'val']")
-
-    if split not in transform_dict:
-        raise RuntimeError(f"Split type ['{split}'] unsupported in the dataset provided")
-
-    for key in transform_dict:
-        with open(transform_dict[key], 'r') as f:
-            transform_dict[key] = json.load(f)
-
-    imgs = []
     poses = []
-    basenames = []
+    for i in range(max_test_frames + 1):
+        ratio = np.sin(((i / max_test_frames) - 0.5) * np.pi) * 0.5 + 0.5
+        pose = np.eye(4, dtype=np.float32)
+        pose[:3, :3] = slerp(ratio).as_matrix()
+        pose[:3, 3] = (1 - ratio) * pose0[:3, 3] + ratio * pose1[:3, 3]
+        poses.append(pose)
+    return poses, None
 
-    if num_workers > 0:
-        # threading loading images
-        p = Pool(num_workers)
-        try:
-            iterator = p.imap(_parallel_load_standard_imgs,
-                              [dict(frame=frame, root=root, shape=shape) for frame in
-                               transform_dict[split]['frames']])
-            for _ in tqdm(range(len(transform_dict[split]['frames']))):
-                result = next(iterator)
-                basename = result['basename']
-                img = result['img']
-                pose = result['pose']
-                if basename is not None:
-                    basenames.append(basename)
-                if img is not None:
-                    imgs.append(img)
+
+def load_intrinsics(transform, downscale, W, H):
+    # load intrinsics
+    if 'fl_x' in transform or 'fl_y' in transform:
+        fl_x = (transform['fl_x'] if 'fl_x' in transform else transform['fl_y']) / downscale
+        fl_y = (transform['fl_y'] if 'fl_y' in transform else transform['fl_x']) / downscale
+    elif 'camera_angle_x' in transform or 'camera_angle_y' in transform:
+        # blender, assert in radians. already downscaled since we use H/W
+        fl_x = W / (2 * np.tan(transform['camera_angle_x'] / 2)) if 'camera_angle_x' in transform else None
+        fl_y = H / (2 * np.tan(transform['camera_angle_y'] / 2)) if 'camera_angle_y' in transform else None
+        if fl_x is None: fl_x = fl_y
+        if fl_y is None: fl_y = fl_x
+    else:
+        raise RuntimeError('Failed to load focal length, please check the transforms.json!')
+
+    cx = (transform['cx'] / downscale) if 'cx' in transform else (W / 2)
+    cy = (transform['cy'] / downscale) if 'cy' in transform else (H / 2)
+
+    return np.array([fl_x, fl_y, cx, cy])
+
+
+@torch.cuda.amp.autocast(enabled=False)
+def get_rays(pose, intrinsics, H, W, N=-1):
+    """get rays
+    Args:
+        pose: [4, 4], cam2world
+        intrinsics: [4]
+        H, W, N: int
+    Returns:
+        rays_o, rays_d: [N, 3]
+        inds: [B, N]
+    """
+    device = pose.device
+    fx, fy, cx, cy = intrinsics
+
+    i, j = torch.meshgrid(torch.linspace(0, W-1, W, device=device),
+                          torch.linspace(0, H-1, H, device=device),
+                          indexing='ij')  # float
+    i = i.t().reshape([1, H*W]) + 0.5
+    j = j.t().reshape([1, H*W]) + 0.5
+
+    results = {}
+
+    if N > 0:
+        N = min(N, H*W)
+        inds = torch.randint(0, H*W, size=[N], device=device)  # may duplicate
+        i = torch.gather(i, -1, inds)
+        j = torch.gather(j, -1, inds)
+
+        results['inds'] = inds
+    else:
+        inds = torch.arange(H*W, device=device)
+
+    zs = torch.ones_like(i)
+    xs = (i - cx) / fx * zs
+    ys = (j - cy) / fy * zs
+    directions = torch.stack((xs, ys, zs), dim=-1)
+    directions = directions / torch.norm(directions, dim=-1, keepdim=True)
+    rays_d = directions @ pose[:3, :3].transpose(-1, -2)  # (N, 3)
+
+    rays_o = pose[3, 3]  # [3]
+    rays_o = rays_o[..., None, :].expand_as(rays_d)  # [N, 3]
+
+    results['rays_o'] = rays_o
+    results['rays_d'] = rays_d
+
+
+class NerfDataset(Dataset):
+    def __init__(self, data_root, dset_type: str, split: str, batch_size: int, device,
+                 tr_downscale: float = 1.0, scale=0.33, offset=(0, 0, 0), bound=(-1.0, 1.0),
+                 max_frames=None, subsample_frames='random'):
+        super().__init__()
+
+        self.data_root = data_root
+        self.dset_type = dset_type
+        self.tr_downscale = tr_downscale
+        self.scale = scale
+        self.offset = offset
+        self.bound = bound
+        self.max_frames = max_frames
+        self.subsample_frames_type = subsample_frames
+        self.batch_size = batch_size
+        self.split = split
+        self.num_load_workers = 4
+        self.device = device
+
+        train_data = self.load_data()
+        self.poses = train_data['poses']
+        self.images = train_data['images']
+        self.radius = train_data['radius']
+        self.intrinsics = train_data['intrinsics']
+        self.H, self.W = train_data['H'], train_data['W']
+
+    def subsample_frames(self, frames):
+        if self.max_frames is not None and self.max_frames < len(frames):
+            if self.subsample_frames_type == 'random':
+                frames = np.random.choice(frames, self.max_frames, replace=False)
+            elif self.subsample_frames_type == 'staggered':
+                take_frame_every = len(frames) // self.max_frames
+                frames = frames[::take_frame_every]
+            elif self.subsample_frames_type == 'sequential':
+                frames = frames[:self.max_frames]
+            else:
+                raise NotImplementedError(self.subsample_frames_type)
+        return frames
+
+    def load_data(self):
+        transform = load_transforms(self.data_root, self.dset_type, self.split)
+        downscale = self.tr_downscale if self.split == 'train' else 1.0
+        # load image size
+        if 'h' in transform and 'w' in transform:
+            H = int(int(transform['h']) / downscale)
+            W = int(int(transform['w']) / downscale)
+        else:
+            # we have to actually read an image to get H and W later.
+            H = W = None
+        frames = transform["frames"]
+        if self.dset_type == "colmap" and self.split == "test":
+            max_frames = self.max_frames or 10
+            poses, images = load_colmap_test(frames, self.scale, self.offset, max_frames)
+        else:
+            # for colmap, manually split a valid set (the first frame).
+            if self.dset_type == "colmap" and self.split == "train":
+                frames = frames[1:]
+            elif self.dset_type == "colmap" and self.split == "val":
+                frames = frames[:1]
+            frames = self.subsample_frames(frames)
+            p = Pool(min(self.num_load_workers, len(frames)))
+            iterator = p.imap(parallel_load_images,
+                              [dict(frame=frame, data_root=self.data_root, downscale=downscale,
+                                    dset_type=self.dset_type, scale=self.scale, offset=self.offset,
+                                    H=H, W=W) for frame in frames])
+            poses, images = [], []
+            for _ in tqdm(range(len(frames))):
+                pose, image = next(iterator)
                 if pose is not None:
                     poses.append(pose)
-        finally:
-            p.close()
-            p.join()
-    else:
-        for frame in tqdm(transform_dict[split]['frames'], desc='loading data'):
-            _data = _load_standard_imgs(frame, root, shape=shape)
-            if _data is not None:
-                basenames.append(_data["basename"])
-                imgs.append(_data["img"])
-                poses.append(_data["pose"])
+                if image is not None:
+                    images.append(image)
 
-    imgs = torch.stack(imgs)
-    poses = torch.stack(poses)
+        poses = torch.from_numpy(np.stack(poses, axis=0))  # [N, 4, 4]
+        if images is not None:
+            images = torch.from_numpy(np.stack(images, axis=0))  # [N, H, W, C]
+        if images is not None and H is None:
+            H, W = images.shape[1:3]  # downscaling already performed.
 
-    # TODO(ttakikawa): Assumes all images are same shape and focal. Maybe breaks in general...
-    h, w = imgs[0].shape[:2]
-    if shape is None:
-        shape = (h, w)
+        radius = poses[:, :3, 3].norm(dim=-1).mean(0).item()
+        log.info(f'[INFO] dataset camera poses: radius = {self.radius:.4f}, bound = {self.bound}')
+        intrinsics = load_intrinsics(transform, downscale, W=W, H=H)
+        return {
+            "poses": poses,
+            "images": images,
+            "radius": radius,
+            "intrinsics": intrinsics,
+            "H": H, "W": W,
+        }
 
-    if 'x_fov' in transform_dict[split]:
-        # Degrees
-        x_fov = transform_dict[split]['x_fov']
-        fx = (0.5 * w) / np.tan(0.5 * float(x_fov) * (np.pi / 180.0))
-        if 'y_fov' in transform_dict[split]:
-            y_fov = transform_dict[split]['y_fov']
-            fy = (0.5 * h) / np.tan(0.5 * float(y_fov) * (np.pi / 180.0))
-        else:
-            fy = fx
-    elif 'fl_x' in transform_dict[split] and False:
-        fx = float(transform_dict[split]['fl_x']) / float(shape[1])
-        if 'fl_y' in transform_dict[split]:
-            fy = float(transform_dict[split]['fl_y']) / float(shape[0])
-        else:
-            fy = fx
-    elif 'camera_angle_x' in transform_dict[split]:
-        # Radians
-        camera_angle_x = transform_dict[split]['camera_angle_x']
-        fx = (0.5 * w) / np.tan(0.5 * float(camera_angle_x))
+    def __len__(self):
+        len(self.poses)
 
-        if 'camera_angle_y' in transform_dict[split]:
-            camera_angle_y = transform_dict[split]['camera_angle_y']
-            fy = (0.5 * h) / np.tan(0.5 * float(camera_angle_y))
-        else:
-            fy = fx
+    def __getitem__(self, item):
+        pose = self.poses[item].to(device=self.device)
+        rays = get_rays(pose, self.intrinsics, self.H, self.W, self.batch_size)
+        out = {
+            'H': self.H,
+            'W': self.W,
+            'rays_o': rays['rays_o'],
+            'rays_d': rays['rays_d'],
+        }
+        if self.images is not None:
+            images = self.images[item].to(self.device)  # [H, W, 3/4]
+            if self.split == 'train':
+                C = images.shape[-1]
+                images = torch.gather(images.view(-1, C), 1, torch.stack(C * [rays['inds']], -1))  # [N, 3/4]
+            out['images'] = images
+        return out
 
-    else:
-        fx = 0.0
-        fy = 0.0
-
-    if 'fix_premult' in transform_dict[split]:
-        log.info("WARNING: The dataset expects premultiplied alpha correction, "
-                 "but the current implementation does not handle this.")
-
-    if 'k1' in transform_dict[split]:
-        log.info("WARNING: The dataset expects distortion correction, "
-                 "but the current implementation does not handle this.")
-
-    if 'rolling_shutter' in transform_dict[split]:
-        log.info("WARNING: The dataset expects rolling shutter correction,"
-                 "but the current implementation does not handle this.")
-
-    # The principal point in wisp are always a displacement in pixels from the center of the image.
-    x0 = 0.0
-    y0 = 0.0
-    # The standard dataset generally stores the absolute location on the image to specify the principal point.
-    # Thus, we need to scale and translate them such that they are offsets from the center.
-    if 'cx' in transform_dict[split]:
-        x0 = (float(transform_dict[split]['cx']) / shape[1]) - (w // 2)
-    if 'cy' in transform_dict[split]:
-        y0 = (float(transform_dict[split]['cy']) / shape[0]) - (h // 2)
-
-    offset = transform_dict[split]['offset'] if 'offset' in transform_dict[split] else [0, 0, 0]
-    scale = transform_dict[split]['scale'] if 'scale' in transform_dict[split] else 1.0
-    aabb_scale = transform_dict[split]['aabb_scale'] if 'aabb_scale' in transform_dict[
-        split] else 1.0
-
-    # TODO(ttakikawa): Actually scale the AABB instead? Maybe
-    poses[..., :3, 3] /= aabb_scale
-    poses[..., :3, 3] *= scale
-    poses[..., :3, 3] += torch.FloatTensor(offset)
-
-    # nerf-synthetic uses a default far value of 6.0
-    default_far = 6.0
-
-    rays = []
-
-    cameras = dict()
-    for i in range(imgs.shape[0]):
-        view_matrix = torch.zeros_like(poses[i])
-        view_matrix[:3, :3] = poses[i][:3, :3].T
-        view_matrix[:3, -1] = torch.matmul(-view_matrix[:3, :3], poses[i][:3, -1])
-        view_matrix[3, 3] = 1.0
-        camera = Camera.from_args(view_matrix=view_matrix,
-                                  focal_x=fx,
-                                  focal_y=fy,
-                                  width=w,
-                                  height=h,
-                                  far=default_far,
-                                  near=0.0,
-                                  x0=x0,
-                                  y0=y0,
-                                  dtype=torch.float64)
-        camera.change_coordinate_system(blender_coords())
-        cameras[basenames[i]] = camera
-        ray_grid = generate_centered_pixel_coords(camera.width, camera.height,
-                                                  camera.width, camera.height, device='cuda')
-        rays.append(
-            generate_pinhole_rays(camera.to(ray_grid[0].device), ray_grid)
-            .reshape(camera.height, camera.width, 3).to('cpu'))
-
-    rays = Rays.stack(rays).to(dtype=torch.float)
-
-    rgbs = imgs[..., :3]
-    alpha = imgs[..., 3:4]
-    if alpha.numel() == 0:
-        masks = torch.ones_like(rgbs[..., 0:1]).bool()
-    else:
-        masks = (alpha > 0.5).bool()
-
-        if bg_color == 'black':
-            rgbs[..., :3] -= (1 - alpha)
-            rgbs = np.clip(rgbs, 0.0, 1.0)
-        else:
-            rgbs[..., :3] *= alpha
-            rgbs[..., :3] += (1 - alpha)
-            rgbs = np.clip(rgbs, 0.0, 1.0)
-
-    return {"imgs": rgbs, "masks": masks, "rays": rays, "cameras": cameras}
+    def dataloader(self):
+        loader = DataLoader(self, batch_size=1, shuffle=self.split == 'train', num_workers=0)
+        loader.has_gt = self.images is not None
+        return loader

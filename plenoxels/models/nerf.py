@@ -4,7 +4,8 @@ import torch
 import torch.nn as nn
 
 from .grids.learnable_hash import LearnableHashGrid
-from .decoders import NNDecoder, SHDecoder
+from .grids.base_grid import BaseGrid
+from .decoders import NNDecoder, SHDecoder, BaseDecoder
 
 
 class NeuralRadianceField(nn.Module):
@@ -15,8 +16,8 @@ class NeuralRadianceField(nn.Module):
                  decoder_type: str,
                  **kwargs):
         super().__init__()
-        self.decoder = None
-        self.grid = None
+        self.decoder: Optional[BaseDecoder] = None
+        self.grid: Optional[BaseGrid] = None
 
         self.grid_type = grid_type
         self.decoder_type = decoder_type

@@ -1,48 +1,50 @@
-from typing import Optional
+from typing import Optional, Union
 
 import torch
 import torch.nn as nn
 import kaolin.render.spc as spc_render
 
 from ..models.nerf import NeuralRadianceField
-from ..core import RenderBuffer, Rays
+from ..core import RenderBuffer
 
 
 class PackedRFTracer(nn.Module):
     """Tracer class for sparse (packed) radiance fields.
     """
-    def __init__(self, nef: NeuralRadianceField, bg_color: str, **kwargs):
+    def __init__(self, nef: NeuralRadianceField, **kwargs):
         super().__init__()
         self.nef = nef
-        self.bg_color = bg_color
         self.extra_args = kwargs
 
     def forward(self,
-                rays: Rays,
+                rays_o: torch.Tensor,
+                rays_d: torch.Tensor,
                 lod_idx: Optional[int],
                 scene_idx: int,
                 num_steps: int,
+                bg_color: Optional[Union[torch.Tensor, int]],
+                perturb: bool,
                 **kwargs) -> RenderBuffer:
-        n_rays = rays.origins.shape[0]
+        n_rays = rays_o.shape[0]
         # By default, PackedRFTracer will attempt to use the highest level of detail for the ray sampling.
         # This however may not actually do anything; the ray sampling behaviours are often single-LOD
         # and is governed by however the underlying feature grid class uses the BLAS to implement the sampling.
         if lod_idx is None:
             lod_idx = self.nef.grid.num_lods - 1
+        if bg_color is None:
+            bg_color = 1
 
         ridx, samples, depths, deltas, boundary = self.nef.grid.raymarch(
-            rays, lod_idx=lod_idx, scene_idx=scene_idx, num_samples=num_steps)
+            rays_o, rays_d, lod_idx=lod_idx, scene_idx=scene_idx, num_samples=num_steps, perturb=perturb)
 
         # Check for the base case where the BLAS traversal hits nothing
         if ridx.shape[0] == 0:
-            if self.bg_color == 'white':
-                hit = torch.zeros(n_rays, device=ridx.device).bool()
-                rgb = torch.ones(n_rays, 3, device=ridx.device)
-                alpha = torch.zeros(n_rays, 1, device=ridx.device)
+            hit = torch.zeros(n_rays, device=ridx.device).bool()
+            if bg_color.shape == (n_rays, 3):
+                rgb = bg_color
             else:
-                hit = torch.zeros(n_rays, 1, device=ridx.device).bool()
-                rgb = torch.zeros(n_rays, 3, device=ridx.device)
-                alpha = torch.zeros(n_rays, 1, device=ridx.device)
+                rgb = torch.ones(n_rays, 3, device=ridx.device) * bg_color
+            alpha = torch.zeros(n_rays, 1, device=ridx.device)
             depth = torch.zeros(n_rays, 1, device=ridx.device)
             return RenderBuffer(depth=depth, hit=hit, rgb=rgb, alpha=alpha)
 
@@ -51,11 +53,11 @@ class PackedRFTracer(nn.Module):
 
         # Compute the color and density for each ray and their samples
         nef_out = self.nef(
-            coords=samples, rays_d=rays.dirs.index_select(0, ridx),
+            coords=samples, rays_d=rays_d.index_select(0, ridx),
             lod_idx=lod_idx, scene_idx=scene_idx)
         color = nef_out['rgb']
         density = nef_out['density']
-        del ridx, rays
+        del ridx, rays_o, rays_d
 
         # Compute optical thickness
         tau = density.reshape(-1, 1) * deltas
@@ -76,13 +78,8 @@ class PackedRFTracer(nn.Module):
         hit[ridx_hit.long()] = alpha[..., 0] > 0.0
 
         # Populate the background
-        if self.bg_color == 'white':
-            rgb = torch.ones(n_rays, 3, device=color.device)
-            bg = torch.ones([ray_colors.shape[0], 3], device=ray_colors.device)
-            color = (1.0 - alpha) * bg + alpha * ray_colors
-        else:
-            rgb = torch.zeros(n_rays, 3, device=color.device)
-            color = alpha * ray_colors
+        rgb = torch.ones(n_rays, 3, device=color.device)
+        color = alpha * ray_colors + (1.0 - alpha) * bg_color
         rgb[ridx_hit.long(), :3] = color
 
         return RenderBuffer(depth=depth, hit=hit, rgb=rgb, alpha=out_alpha)

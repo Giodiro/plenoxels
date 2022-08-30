@@ -13,6 +13,7 @@ from ...ops.interpolation import grid_sample_4d
 class LearnableHashGrid(BaseGrid):
     def __init__(self,
                  grid_config: Union[str, List[List[Dict]]],
+                 scene_radii: List[float],
                  num_scenes: int = 1,
                  multiscale_type: str = 'cat',
                  **kwargs):
@@ -21,7 +22,8 @@ class LearnableHashGrid(BaseGrid):
         else:
             self.config: List[List[Dict]] = grid_config
         self.num_lods = len(self.config)
-        super().__init__(self.num_lods)
+        assert len(scene_radii) == num_scenes
+        super().__init__(self.num_lods, scene_radii)
 
         self.multiscale_type = multiscale_type
         self.scene_lod_grids = nn.ModuleList()
@@ -73,8 +75,8 @@ class LearnableHashGrid(BaseGrid):
             return self.feature_dim_
 
     def query_mask(self, coords, lod_idx, scene_idx=0):
-        # TODO: Fix hardcoded
-        return ((-1 <= coords) & (coords <= 1)).all(dim=-1)
+        radius: torch.Tensor = self.radii[scene_idx]
+        return ((-radius <= coords) & (coords <= radius)).all(dim=-1)
 
     @staticmethod
     def get_coo_plane(coords, dim):

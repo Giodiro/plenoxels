@@ -3,11 +3,11 @@ import collections
 from torch.utils.data.dataloader import default_collate
 
 from .transforms import SampleRays
-from .multiview_dataset import MultiviewDataset
+from .multiview_dataset import NerfDataset
 from ..core import Rays
 
 __all__ = (
-    "MultiviewDataset",
+    "NerfDataset",
     "SampleRays",
     "ray_default_collate",
 )

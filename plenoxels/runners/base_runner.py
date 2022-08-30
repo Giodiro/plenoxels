@@ -2,6 +2,7 @@ import abc
 import logging as log
 import os
 from datetime import datetime
+from typing import List
 
 import torch
 from torch.utils.data import DataLoader
@@ -10,6 +11,7 @@ from tqdm import tqdm
 
 from ..render import OfflineRenderer
 from ..datasets import ray_default_collate
+from ..tracers import PackedRFTracer
 
 
 class BaseTrainer():
@@ -26,8 +28,9 @@ class BaseTrainer():
             validate()
     Each of these submodules can be overriden, or extended with super().
     """
-    def __init__(self, tracer, datasets, num_epochs, batch_size, optim_cls, lr_scheduler_type, lr,
-                 weight_decay, grid_lr_weight, optim_params, log_dir, device,
+    def __init__(self, tracer: PackedRFTracer, datasets: List[torch.utils.data.Dataset],
+                 num_epochs: int, batch_size: int, optim_cls, lr_scheduler_type: str, lr: float,
+                 weight_decay: float, grid_lr_weight: float, optim_params, log_dir: str, device,
                  num_batches_per_scene=10, exp_name=None, save_every=-1, **kwargs):
         self.extra_args = kwargs
         self.device = device
@@ -69,19 +72,18 @@ class BaseTrainer():
         self.writer = SummaryWriter(self.log_dir, purge_step=0)
         self.save_every = save_every
 
-        self.optimizer = self.init_optimizer()
-        self.renderer = self.init_renderer()
+        self.optimizer: torch.optim.Optimizer = self.init_optimizer()
+        self.renderer: OfflineRenderer = self.init_renderer()
         self.scheduler = self.init_lr_scheduler()
         self.train_data_loaders = self.init_dataloaders()
 
     def total_batches_per_epoch(self):
+        # noinspection PyTypeChecker
         return sum(len(dset) // self.batch_size for dset in self.datasets)
 
     def init_dataloaders(self):
         return [
-            DataLoader(dataset, batch_size=self.batch_size, collate_fn=ray_default_collate,
-                       shuffle=True, pin_memory=True, num_workers=4)
-            for dataset in self.datasets
+            dataset.dataloader() for dataset in self.datasets
         ]
 
     def reset_data_iterators(self, dataset_idx=None):
@@ -116,7 +118,7 @@ class BaseTrainer():
         ]
         return self.optim_cls(params, **self.optim_params)
 
-    def init_lr_scheduler(self, checkpoint_data=None):
+    def init_lr_scheduler(self):
         lr_sched = None
         if self.lr_scheduler_type == "cosine":
             eta_min = 1e-4
@@ -218,5 +220,5 @@ class BaseTrainer():
             self.writer.close()
 
     @abc.abstractmethod
-    def validate(self, use_test_set=False):
+    def validate(self):
         pass

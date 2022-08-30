@@ -13,7 +13,7 @@ from .base_runner import BaseTrainer
 from ..ema import EMA
 from ..ops.image.metrics import psnr, ssim
 from ..ops.image.io import write_png, write_exr
-from ..core.rays import Rays
+from ..core import RenderBuffer
 
 
 class MultiviewTrainer(BaseTrainer):
@@ -28,9 +28,20 @@ class MultiviewTrainer(BaseTrainer):
                          render_every=render_every, save_every=save_every, **kwargs)
 
         self.valid_log_dir = os.path.join(self.log_dir, "val")
+        self.criterion = torch.nn.MSELoss(reduction='none')
         os.makedirs(self.valid_log_dir, exist_ok=True)
 
         self.loss_info = None
+        self.test_datasets = None
+
+    def init_test_datasets(self):
+        if self.test_datasets is None:
+            self.test_datasets = [
+                dset.get_different_split(
+                    'test', device='cpu', max_frames=self.extra_args.get("max_test_frames", None))
+                for dset in self.datasets]
+            for dset in self.test_datasets:
+                dset.batch_size = -1
 
     def init_epoch_info(self):
         ema_weight = 0.1
@@ -40,14 +51,7 @@ class MultiviewTrainer(BaseTrainer):
         super().pre_epoch()
         self.init_epoch_info()
 
-    def step(self, n_iter, data, scene_idx):
-        """Implement the optimization over image-space loss.
-        """
-        rays = data['rays'].to(self.device).squeeze(0)
-        img_gts = data['imgs'].to(self.device).squeeze(0)
-
-        self.optimizer.zero_grad(set_to_none=True)
-
+    def get_training_lod(self):
         if self.extra_args["random_lod"]:
             # Sample from a geometric distribution
             population = [i for i in range(self.tracer.nef.num_lods)]
@@ -57,27 +61,72 @@ class MultiviewTrainer(BaseTrainer):
         else:
             # Sample only the max lod (None is max lod by default)
             lod_idx = None
+        return lod_idx
+
+    def step(self, n_iter, data, scene_idx):
+        """Implement the optimization over image-space loss.
+        """
+        self.optimizer.zero_grad(set_to_none=True)
+        lod_idx = self.get_training_lod()
 
         with torch.cuda.amp.autocast():
-            rb = self.tracer(rays=rays,
+            rays_o = data['rays_o']
+            rays_d = data['rays_d']
+            imgs = data['images']
+
+            N, C = imgs.shape
+
+            if C == 3:
+                bg_color = 1
+            else:
+                bg_color = torch.rand_like(imgs[..., :3])
+            if C == 4:
+                imgs = imgs[..., :3] * imgs[..., 3:] + bg_color * (1 - imgs[..., 3:])
+
+            rb = self.tracer(rays_o=rays_o,
+                             rays_d=rays_d,
+                             bg_color=bg_color,
                              lod_idx=lod_idx,
                              scene_idx=scene_idx,
+                             perturb=True,
                              num_steps=self.extra_args["num_steps"])
-            # RGB Loss
-            # TODO: This should either default to MSE or be a parameter.
-            #loss = F.mse_loss(rb.rgb, img_gts, reduction='mean')
-            loss = F.l1_loss(rb.rgb[..., :3], img_gts[..., :3], reduction='mean')
+            loss = self.criterion(rb.rgb, imgs).mean()
 
         self.scaler.scale(loss).backward()
         self.scaler.step(self.optimizer)
         scale = self.scaler.get_scale()
         self.scaler.update()
+
         self.loss_info[scene_idx]["rgb_loss"].update(loss.item())
-        mse = F.mse_loss(rb.rgb[..., :3].detach(), img_gts[..., :3])
+        mse = F.mse_loss(rb.rgb.detach(), imgs)
         self.loss_info[scene_idx]["mse"].update(mse.item())
         self.loss_info[scene_idx]["psnr"].update(10 * math.log10(1.0 / mse))
 
         return scale <= self.scaler.get_scale()
+
+    def eval_step(self, data, lod_idx, scene_idx):
+        """
+        Note that here `data` contains a whole image. we need to split it up before tracing
+        for memory constraints.
+        """
+        with torch.cuda.amp.autocast():
+            rays_o = data['rays_o']
+            rays_d = data['rays_d']
+            imgs = data['images']
+
+            rb = RenderBuffer(xyz=None, hit=None, normal=None, shadow=None, dirs=None)
+            for b in range(math.ceil(rays_o.shape[0] / self.batch_size)):
+                rays_o_b = rays_o[b * self.batch_size: (b + 1) * self.batch_size].cuda()
+                rays_d_b = rays_d[b * self.batch_size: (b + 1) * self.batch_size].cuda()
+                rb += self.tracer(rays_o=rays_o_b,
+                                 rays_d=rays_d_b,
+                                 bg_color=None,
+                                 lod_idx=lod_idx,
+                                 scene_idx=scene_idx,
+                                 perturb=False,
+                                 num_steps=self.extra_args["num_steps"])
+        return imgs, rb
+
 
     def post_step(self, n_iter, pb):
         pfix_list = []
@@ -91,67 +140,49 @@ class MultiviewTrainer(BaseTrainer):
     def post_epoch(self):
         super().post_epoch()
 
-    def validate(self, use_test_set=False):
+    def validate(self):
         log.info("Beginning validation...")
-
+        self.init_test_datasets()
         val_metrics = []
-        lods = list(range(self.tracer.nef.grid.num_lods))[::-1]
-        split_name = "test" if use_test_set else "val"
-        for scene_idx, dataset in enumerate(self.datasets):
-            if use_test_set:
-                val_data = dataset.get_full_test_set()
-            else:
-                val_data = dataset.get_full_val_set()
-            imgs = list(val_data["imgs"])
-            img_shape = imgs[0].shape
-            log.info(f"Loaded validation set for dataset {scene_idx} with {len(imgs)} images "
-                     f"at resolution {img_shape[0]}x{img_shape[1]}")
-
-            log.info(f"Saving validation result to {self.valid_log_dir}")
-
-            for lod in lods:
-                metrics = self.evaluate_metrics(
-                    self.epoch, val_data["rays"], imgs, lod, scene_idx, name=f"{split_name}_lod{lod}")
-                metrics['lod_idx'] = lod
-                metrics['scene_idx'] = scene_idx
-                val_metrics.append(metrics)
-        df = pd.DataFrame.from_records(val_metrics)
-        df.to_csv(os.path.join(self.valid_log_dir, f"{split_name}_metrics_epoch{self.epoch}.csv"))
-
-    def evaluate_metrics(self, epoch, rays, imgs, lod_idx, scene_idx, name=None):
-        ray_os = list(rays.origins)
-        ray_ds = list(rays.dirs)
-
-        psnr_total = 0.0
-        ssim_total = 0.0
         with torch.no_grad():
-            for idx, (img, ray_o, ray_d) in tqdm(enumerate(zip(imgs, ray_os, ray_ds))):
-                rays = Rays(ray_o, ray_d, dist_min=rays.dist_min, dist_max=rays.dist_max)
-                rays = rays.reshape(-1, 3)
-                rays = rays.to('cuda')
-                rb = self.renderer.render(self.tracer, rays, lod_idx=lod_idx, scene_idx=scene_idx)
-                rb.view = None
-                rb.hit = None
-                rb = rb.reshape(*img.shape[:2], -1).cpu()
-                rb.gts = img
-                rb.err = (rb.gts[..., :3] - rb.rgb[..., :3]) ** 2
-                psnr_total += psnr(rb.rgb[..., :3], rb.gts[..., :3])
-                ssim_total += ssim(rb.rgb[..., :3], rb.gts[..., :3])
+            for scene_idx, dataset in enumerate(self.test_datasets):
+                per_scene_metrics = {
+                    "psnr": 0,
+                    "ssim": 0,
+                    "scene_idx": scene_idx,
+                    "lod_idx": "max",
+                }
+                for img_idx, data in enumerate(tqdm(dataset.dataloader(), desc=f"Test({scene_idx})")):
+                    gt, preds = self.eval_step(data, lod_idx=None, scene_idx=scene_idx)
+                    metrics = self.evaluate_metrics(gt, preds, scene_idx=scene_idx,
+                                                    img_idx=img_idx, name="")
+                    per_scene_metrics["psnr"] += metrics["psnr"]
+                    per_scene_metrics["ssim"] += metrics["ssim"]
+                per_scene_metrics["psnr"] /= len(dataset)
+                per_scene_metrics["ssim"] /= len(dataset)
+                log_text = f"EPOCH {self.epoch}/{self.num_epochs} | scene {scene_idx} lod max"
+                log_text += f" | D{scene_idx} PSNR: {per_scene_metrics['psnr']:.2f}"
+                log_text += f" | D{scene_idx} SSIM: {per_scene_metrics['ssim']:.6f}"
+                log.info(log_text)
+                val_metrics.append(per_scene_metrics)
+        df = pd.DataFrame.from_records(val_metrics)
+        df.to_csv(os.path.join(self.valid_log_dir, f"test_metrics_epoch{self.epoch}.csv"))
 
-                exrdict = rb.exr_dict()
+    def evaluate_metrics(self, gt, preds: RenderBuffer, scene_idx, img_idx, name=None):
+        preds.view = None
+        preds.hit = None
+        preds = preds.reshape(*gt.shape[:2], -1).cpu()
+        preds.gts = gt[..., :3]
+        preds.err = (preds.gts - preds.rgb) ** 2
+        psnr_ = psnr(preds.rgb, preds.gts)
+        ssim_ = ssim(preds.rgb, preds.gts)
 
-                out_name = f"epoch{epoch}-D{scene_idx}-{idx}"
-                if name is not None:
-                    out_name += "-" + name
+        exrdict = preds.exr_dict()
+        out_name = f"epoch{self.epoch}-D{scene_idx}-{img_idx}"
+        if name is not None:
+            out_name += "-" + name
 
-                write_exr(os.path.join(self.valid_log_dir, out_name + ".exr"), exrdict)
-                write_png(os.path.join(self.valid_log_dir, out_name + ".png"), rb.image().byte().rgb.numpy())
-        psnr_total /= len(imgs)
-        ssim_total /= len(imgs)
+        write_exr(os.path.join(self.valid_log_dir, out_name + ".exr"), exrdict)
+        write_png(os.path.join(self.valid_log_dir, out_name + ".png"), preds.image().byte().rgb.numpy())
 
-        log_text = f"EPOCH {epoch}/{self.num_epochs} | scene {scene_idx} lod {lod_idx}"
-        log_text += ' | {}: {:.2f}'.format(f"{name} PSNR", psnr_total)
-        log_text += ' | {}: {:.6f}'.format(f"{name} SSIM", ssim_total)
-        log.info(log_text)
-
-        return {"psnr": psnr_total, "ssim": ssim_total}
+        return {"psnr": psnr_, "ssim": ssim_}

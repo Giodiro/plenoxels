@@ -39,14 +39,17 @@ args = {
     "sigma_net_layers": 1,
     "sh_degree": 2,
 
-    "dataset_type": "multiview",
+    "dataset_type": "blender",
+    "batch_size": 4096,
+    "tr_downscale": 2,
+    "scale": 0.33,
+    "offset": (0, 0, 0),
+    "scene_radii": [2, ],
     #"dataset_paths": ["/data/DATASETS/SyntheticNerf/lego"],
     "dataset_paths": ["/data/DATASETS/Nerf/fox"],
-    "dataset_num_workers": 4,
-    "multiview_dataset_format": "standard",
-    # "num_rays_sampled_per_img": 4096,
-    "bg_color": "white",
-    "data_resize_shape": (400, 400),
+    "max_frames": None,
+    "max_test_frames": 10,
+    "subsample_frames": "staggerred",
 
     "optimizer_type": "adam",
     "lr": 2e-3,
@@ -55,7 +58,6 @@ args = {
     "grid_lr_weight": 1.0,
 
     "num_epochs": 50,
-    "batch_size": 4096,
     "save_every": 10,
     "log_dir": "./logs",
     "random_lod": False,
@@ -63,7 +65,6 @@ args = {
     "pretrained": False,
     "valid_only": False,
 
-    "render_batch": 4000,
     "num_steps": 256,
 }
 
@@ -72,7 +73,7 @@ def load_modules(cfg):
     import torch
     from .models.nerf import NeuralRadianceField
     from .tracers import PackedRFTracer
-    from .datasets import MultiviewDataset, SampleRays
+    from .datasets import NerfDataset, SampleRays
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     nef_cls = NeuralRadianceField
     tracer_cls = PackedRFTracer
@@ -82,11 +83,9 @@ def load_modules(cfg):
     tracer.to(device)
 
     if cfg["dataset_type"] == "multiview":
-        transform = None#SampleRays(cfg["num_rays_sampled_per_img"])
         train_datasets = []
-        for dset in cfg["dataset_paths"]:
-            train_datasets.append(MultiviewDataset(dataset_path=dset, transform=transform, **cfg))
-            train_datasets[-1].init()
+        for dset, bound in zip(cfg["dataset_paths"], cfg["scene_radii"]):
+            train_datasets.append(NerfDataset(data_root=dset, bound=(-bound, bound), **cfg))
     else:
         raise ValueError(f"Dataset type {cfg['dataset_type']} invalid.")
 
