@@ -62,7 +62,7 @@ class BaseGrid(nn.Module):
 
         # Batched generation of samples
         samples = rays.origins[:, None] + rays.dirs[:, None] * depth[..., None]  # [num_rays, num_samples, 3]
-        samples = samples / 2.8
+        samples = samples / 2
         #print(f"generating samples in range {samples.min()} -- {samples.max()}")
         deltas = depth.diff(dim=-1, prepend=torch.zeros(num_rays, 1, device=dev) + rays.dist_min)
 

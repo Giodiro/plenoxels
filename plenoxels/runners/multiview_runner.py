@@ -65,7 +65,7 @@ class MultiviewTrainer(BaseTrainer):
                              num_steps=self.extra_args["num_steps"])
             # RGB Loss
             # TODO: This should either default to MSE or be a parameter.
-            # rgb_loss = F.mse_loss(rb.rgb, img_gts, reduction='none')
+            #loss = F.mse_loss(rb.rgb, img_gts, reduction='mean')
             loss = F.l1_loss(rb.rgb[..., :3], img_gts[..., :3], reduction='mean')
 
         self.scaler.scale(loss).backward()

@@ -74,7 +74,7 @@ class LearnableHashGrid(BaseGrid):
 
     def query_mask(self, coords, lod_idx, scene_idx=0):
         # TODO: Fix hardcoded
-        return ((-2.8 <= coords) & (coords <= 2.8)).all(dim=-1)
+        return ((-1 <= coords) & (coords <= 1)).all(dim=-1)
 
     @staticmethod
     def get_coo_plane(coords, dim):
@@ -142,7 +142,7 @@ class LearnableHashGrid(BaseGrid):
                     interp,
                     level_info.get("grid_dimensions", level_info["input_coordinate_dim"])
                 )
-                interp = self.grid_sample_wrapper(grid, coo_plane).view(
+                interp = self.grid_sample_wrapper(grid, coords).view(
                     grid.shape[0], -1, level_info["output_coordinate_dim"], level_info["rank"])
                 interp = interp.prod(dim=0).sum(dim=-1)
             feats.append(self.grid_sample_wrapper(lod_features[lodi], interp))

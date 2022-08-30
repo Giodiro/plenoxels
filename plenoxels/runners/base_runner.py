@@ -75,7 +75,7 @@ class BaseTrainer():
         self.train_data_loaders = self.init_dataloaders()
 
     def total_batches_per_epoch(self):
-        return sum(len(dset) for dset in self.datasets)
+        return sum(len(dset) // self.batch_size for dset in self.datasets)
 
     def init_dataloaders(self):
         return [
@@ -139,7 +139,7 @@ class BaseTrainer():
             try:
                 for j in range(self.num_batches_per_scene):
                     data = next(self.train_data_loader_iters[active_scenes[ascene_idx]])
-                    step_successful = step_successful or self.step(iteration, data, active_scenes[ascene_idx])
+                    step_successful |= self.step(iteration, data, active_scenes[ascene_idx])
                     self.post_step(n_iter=iteration, pb=pb)
             except StopIteration:
                 active_scenes.pop(ascene_idx)

@@ -15,14 +15,14 @@ args = {
     [
         {
             "input_coordinate_dim": 3,
-            "output_coordinate_dim": 4,
-            "grid_dimensions": 2,
+            "output_coordinate_dim": 3,
+            "grid_dimensions": 3,
             "resolution": 128,
-            "rank": 5,
-            "init_std": 0.05,
+            "rank": 1,
+            "init_std": 0.01,
         },
         {
-            "input_coordinate_dim": 4,
+            "input_coordinate_dim": 3,
             "resolution": 8,
             "feature_dim": 32,
             "init_std": 0.05
@@ -40,7 +40,8 @@ args = {
     "sh_degree": 2,
 
     "dataset_type": "multiview",
-    "dataset_paths": ["/data/DATASETS/SyntheticNerf/lego"],
+    #"dataset_paths": ["/data/DATASETS/SyntheticNerf/lego"],
+    "dataset_paths": ["/data/DATASETS/Nerf/fox"],
     "dataset_num_workers": 4,
     "multiview_dataset_format": "standard",
     # "num_rays_sampled_per_img": 4096,
@@ -63,7 +64,7 @@ args = {
     "valid_only": False,
 
     "render_batch": 4000,
-    "num_steps": 512,
+    "num_steps": 256,
 }
 
 

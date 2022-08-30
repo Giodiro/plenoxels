@@ -17,7 +17,7 @@ def ray_default_collate(batch):
     elem = batch[0]
 
     if isinstance(elem, Rays):
-        return Rays.cat(batch)
+        return Rays.stack(batch)
     elif isinstance(elem, collections.abc.Mapping):  # noqa
         return {key: ray_default_collate([d[key] for d in batch]) for key in elem}
     else:
