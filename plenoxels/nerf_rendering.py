@@ -26,6 +26,7 @@ def depth_map(abs_light: torch.Tensor, intersections: torch.Tensor) -> torch.Ten
         depth: torch.Tensor = (abs_light * intersections[..., :-1]).sum(dim=-1)
         return depth
 
+
 @torch.jit.script
 def sigma2alpha(sigma: torch.Tensor, intersections: torch.Tensor, rays_d: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     # Convert ray-relative distance to absolute distance (shouldn't matter if rays_d is normalized)

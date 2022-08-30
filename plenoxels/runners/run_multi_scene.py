@@ -12,17 +12,36 @@ from tqdm import tqdm
 
 from plenoxels.configs import singlescene_config, multiscene_config, parse_config
 from plenoxels.ema import EMA
-from plenoxels.models import DictPlenoxels, make_weights_unit_norm
-from plenoxels.models.learnable_hash import LearnableHash
+from plenoxels.models import DictPlenoxels
+# from plenoxels.models.grids.learnable_hash import LearnableHash
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash
 from plenoxels.models.single_res_multi_scene import SingleResoDictPlenoxels
 from plenoxels.models.superres import SuperResoPlenoxel
 from plenoxels.tc_harmonics import plenoxel_sh_encoder
-from plenoxels.models import single_res_multi_scene
 
 from plenoxels.runners.utils import *
 
 TB_WRITER = None
+GRID_CONFIG = """
+[
+    [
+        {
+            "input_coordinate_dim": 3,
+            "output_coordinate_dim": 4,
+            "grid_dimensions": 2,
+            "resolution": 128,
+            "rank": 5,
+            "init_std": 0.05,
+        },
+        {
+            "input_coordinate_dim": 4,
+            "resolution": 8,
+            "feature_dim": 32,
+            "init_std": 0.05
+        }
+    ]
+]
+"""
 
 
 def default_render_fn(renderer, dset_id):
@@ -131,10 +150,8 @@ def init_model(cfg, tr_dsets, checkpoint_data=None):
         step_size = voxel_size / cfg.optim.samples_per_voxel
         n_intersections = math.sqrt(3.) * cfg.optim.samples_per_voxel * cfg.model.resolution
         renderer = LowrankLearnableHash(
-            resolution=cfg.model.resolution, num_features=cfg.model.num_features,
-            feature_dim=cfg.model.feature_dim, radius=tr_dsets[0].radius,
-            n_intersections=n_intersections, step_size=step_size, rank=cfg.model.rank,
-            grid_dim=cfg.model.grid_dim, num_scenes=len(tr_dsets))
+            num_scenes=len(tr_dsets),
+            grid_config=GRID_CONFIG, radius=tr_dsets[0].radius, n_intersections=n_intersections)
     elif cfg.model.type == "learnable_hash":
         voxel_size = (tr_dsets[0].radius * 2) / cfg.model.resolution
         # step-size and n-intersections are scaled to artificially increment resolution of model

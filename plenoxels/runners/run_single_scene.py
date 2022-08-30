@@ -17,7 +17,7 @@ from plenoxels.ema import EMA
 from plenoxels.models.grid_plenoxel import RegularGrid
 from plenoxels.runners.utils import *
 from plenoxels.tc_harmonics import plenoxel_sh_encoder
-from plenoxels.models.learnable_hash import LearnableHash
+from plenoxels.models.grids.learnable_hash import LearnableHash
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash
 
 TB_WRITER = None

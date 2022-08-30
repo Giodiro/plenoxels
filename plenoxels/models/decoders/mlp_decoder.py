@@ -1,10 +1,10 @@
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import tinycudann as tcnn
 
+from .base_decoder import BaseDecoder
 
-class NNRender(nn.Module):
+
+class NNDecoder(BaseDecoder):
     def __init__(self, feature_dim, sigma_net_width=64, sigma_net_layers=1):
         super().__init__()
 
@@ -44,35 +44,20 @@ class NNRender(nn.Module):
         )
         self.color = None
 
-    def compute_density(self, density_features, mask, rays_d):
-        """
-        :param density_features:  [n, feature_dim]
-        :param rays_d:            [n, 3] (normalized between -1, +1)
-        :return:
-        """
-        dim_batch, dim_nintrs = mask.shape
+    def compute_density(self, features, rays_d):
+        density_rgb = self.sigma_net(features)  # [batch, 16]
+        density = density_rgb[:, :1]
 
-        density_and_color = self.sigma_net(density_features)  # [n, 16]
-        sigma_valid = density_and_color[:, 0]
-        sigma_valid = F.relu(sigma_valid)
-        sigma = torch.zeros(dim_batch, dim_nintrs, device=sigma_valid.device, dtype=sigma_valid.dtype)
-        sigma.masked_scatter_(mask, sigma_valid)
+        enc_rays_d = self.direction_encoder((rays_d + 1) / 2)
+        color_features = torch.cat((density_rgb[:, 1:], enc_rays_d), dim=-1)
+        self.color = self.color_net(color_features)
 
-        # rays_d from [batch, 3] to [n_valid_intrs, n_dir_dims]
-        rays_d = self.direction_encoder((rays_d + 1) / 2)  # tcnn SH encoding requires inputs to be in [0, 1]
-        pwise_rays_d = torch.repeat_interleave(rays_d, mask.sum(1), dim=0)
-        colors_valid = self.color_net(torch.cat((pwise_rays_d, density_and_color[:, 1:]), dim=-1))  # [n, 3]
-        color = torch.zeros((dim_batch, dim_nintrs, 3), device=colors_valid.device, dtype=colors_valid.dtype)
-        color.masked_scatter_(mask.unsqueeze(-1), colors_valid)
-        #color[mask] = colors_valid
-        self.color = color
+        return density
 
-        return sigma
-
-    def compute_color(self, color_features=None, mask=None, rays_d=None):
+    def compute_color(self, features, rays_d):
         color = self.color
         del self.color
-        return color
+        return color  # noqa
 
     def __repr__(self):
         return f"NNRender(feature_dim={self.feature_dim}, sigma_net_width={self.sigma_net_width}, sigma_net_layers={self.sigma_net_layers})"
