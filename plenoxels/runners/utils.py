@@ -71,7 +71,7 @@ def init_data(cfg):
     # Test datasets are a single list over the different scenes, all at full resolution
     print(f"Loading datasets with reso={resolution}, downsample={downsample}")
     tr_dsets, tr_loaders, ts_dsets = [], [], []
-    for data_dir in cfg.data.datadirs:
+    for data_dir in cfg.data.datadir:
         tr_dsets.append(SyntheticNerfDataset(
             data_dir, split='train', downsample=downsample, resolution=resolution,
             max_frames=cfg.data.max_tr_frames))
