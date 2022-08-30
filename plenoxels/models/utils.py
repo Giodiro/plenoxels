@@ -7,6 +7,37 @@ import torch.nn.functional as F
 
 
 @torch.no_grad()
+def get_intersections_wisp(rays, n_intersections: int, near: float, far: float):
+    rays_o, rays_d = rays
+    # Sample points along 1D line
+    depth = torch.linspace(0, 1.0, n_intersections, device=rays_o.device)[None] + \
+            (torch.rand(rays_o.shape[0], n_intersections, device=rays_o.device) / n_intersections)
+    depth = depth ** 2
+
+    # Normalize between near and far plane
+    depth *= far - near
+    depth += near
+
+    # Batched generation of samples
+    samples = rays_o[:, None] + rays_d[:, None] * depth[..., None]
+    deltas = depth.diff(dim=-1, prepend=torch.full((depth.shape[0], 1), near, device=depth.device))
+    # Hack together pidx, mask, ridx, boundaries, etc
+    pidx = self.query(samples.reshape(-1, 3), level=level).reshape(-1, num_samples)
+    mask = (pidx > -1)
+    ridx = torch.arange(0, pidx.shape[0], device=pidx.device)
+    ridx = ridx[...,None].repeat(1, num_samples)[mask]
+    boundary = spc_render.mark_pack_boundaries(ridx)
+    pidx = pidx[mask]
+    #depth_samples = depth[None].repeat(rays.origins.shape[0], 1)[mask][..., None]
+    depth_samples = depth[mask][..., None]
+
+    #deltas = spc_render.diff(depth_samples, boundary).reshape(-1, 1)
+    deltas = deltas[mask].reshape(-1, 1)
+
+    samples = samples[mask][:,None]
+
+
+@torch.no_grad()
 def get_intersections(rays_o, rays_d, radius: float, n_intersections: int, step_size: float):
     """
     Produces ray-grid intersections in world-coordinates (between -radius, +radius)
