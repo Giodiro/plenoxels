@@ -12,13 +12,12 @@ from tqdm import tqdm
 
 from plenoxels.configs import multiscene_config, parse_config
 from plenoxels.ema import EMA
-from plenoxels.models import DictPlenoxels, make_weights_unit_norm
-from plenoxels.models.learnable_hash import LearnableHash
+from plenoxels.models import DictPlenoxels
+from plenoxels.models.grids.learnable_hash import LearnableHash
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash
 from plenoxels.models.single_res_multi_scene import SingleResoDictPlenoxels
 from plenoxels.models.superres import SuperResoPlenoxel
 from plenoxels.tc_harmonics import plenoxel_sh_encoder
-from plenoxels.models import single_res_multi_scene
 
 from plenoxels.runners.utils import *
 
