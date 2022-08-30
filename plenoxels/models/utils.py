@@ -5,62 +5,43 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-
-@torch.no_grad()
-def get_intersections_wisp(rays, n_intersections: int, near: float, far: float):
-    rays_o, rays_d = rays
-    # Sample points along 1D line
-    depth = torch.linspace(0, 1.0, n_intersections, device=rays_o.device)[None] + \
-            (torch.rand(rays_o.shape[0], n_intersections, device=rays_o.device) / n_intersections)
-    depth = depth ** 2
-
-    # Normalize between near and far plane
-    depth *= far - near
-    depth += near
-
-    # Batched generation of samples
-    samples = rays_o[:, None] + rays_d[:, None] * depth[..., None]
-    deltas = depth.diff(dim=-1, prepend=torch.full((depth.shape[0], 1), near, device=depth.device))
-    # Hack together pidx, mask, ridx, boundaries, etc
-    pidx = self.query(samples.reshape(-1, 3), level=level).reshape(-1, num_samples)
-    mask = (pidx > -1)
-    ridx = torch.arange(0, pidx.shape[0], device=pidx.device)
-    ridx = ridx[...,None].repeat(1, num_samples)[mask]
-    boundary = spc_render.mark_pack_boundaries(ridx)
-    pidx = pidx[mask]
-    #depth_samples = depth[None].repeat(rays.origins.shape[0], 1)[mask][..., None]
-    depth_samples = depth[mask][..., None]
-
-    #deltas = spc_render.diff(depth_samples, boundary).reshape(-1, 1)
-    deltas = deltas[mask].reshape(-1, 1)
-
-    samples = samples[mask][:,None]
+from plenoxels.ops.interpolation import grid_sample_4d
 
 
 @torch.no_grad()
-def get_intersections(rays_o, rays_d, radius: float, n_intersections: int, step_size: float):
+def get_intersections(rays_o, rays_d, radius: float, n_intersections: int, perturb: bool = False):
     """
     Produces ray-grid intersections in world-coordinates (between -radius, +radius)
     :param rays_o:
     :param rays_d:
     :param radius:
     :param n_intersections:
-    :param step_size:
     :return:
     """
     dev, dt = rays_o.device, rays_o.dtype
-    rays_d_nodiv0 = torch.where(rays_d == 0, torch.full_like(rays_d, 1e-6), rays_d)
-    offsets_pos = (radius - rays_o) / rays_d_nodiv0  # [batch, 3]
-    offsets_neg = (-radius - rays_o) / rays_d_nodiv0  # [batch, 3]
+    inv_rays_d = torch.reciprocal(torch.where(rays_d == 0, torch.full_like(rays_d, 1e-6), rays_d))
+    offsets_pos = (radius - rays_o) * inv_rays_d  # [batch, 3]
+    offsets_neg = (-radius - rays_o) * inv_rays_d  # [batch, 3]
     offsets_in = torch.minimum(offsets_pos, offsets_neg)  # [batch, 3]
+    offsets_out = torch.maximum(offsets_pos, offsets_neg)
     start = torch.amax(offsets_in, dim=-1, keepdim=True)  # [batch, 1]
+    end = torch.amin(offsets_out, dim=-1, keepdim=True)
 
-    steps = torch.arange(n_intersections, dtype=dt, device=dev).unsqueeze(0)  # [1, n_intrs]
-    steps = steps.repeat(rays_d.shape[0], 1)   # [batch, n_intrs]
-    intersections = start + steps * step_size  # [batch, n_intrs]
+    n_rays = rays_o.shape[0]
+
+    steps = (torch.linspace(0, 1.0, n_intersections, device=dev)[None])  # [1, num_samples]
+    steps = steps.expand((n_rays, n_intersections))  # [num_rays, num_samples]
+    intersections = start + (end - start) * steps
+
+    if perturb:
+        sample_dist = (end - start) / n_intersections
+        intersections += (torch.rand_like(intersections) - 0.5) * sample_dist
+
+    # steps = torch.arange(n_intersections, dtype=dt, device=dev).unsqueeze(0)  # [1, n_intrs]
+    # steps = steps.repeat(rays_d.shape[0], 1)   # [batch, n_intrs]
+    # intersections = start + steps * step_size  # [batch, n_intrs]
     intersections_trunc = intersections[:, :-1]
     intrs_pts = rays_o[..., None, :] + rays_d[..., None, :] * intersections_trunc[..., None]  # [batch, n_intrs, 3]
-    # noinspection PyUnresolvedReferences
     mask = ((-radius <= intrs_pts) & (intrs_pts <= radius)).all(dim=-1)
     return intrs_pts, intersections, mask
 
@@ -121,29 +102,31 @@ def ensure_list(el, expand_size: Optional[int] = None) -> list:
 
 def grid_sample_wrapper(grid: torch.Tensor, coords: torch.Tensor) -> torch.Tensor:
     grid_dim = coords.shape[-1]
+
+    if grid.dim() == grid_dim + 1:
+        # no batch dimension present, need to add it
+        grid = grid.unsqueeze(0)
+    if coords.dim() == 2:
+        coords = coords.unsqueeze(0)
+
     if grid_dim == 2:
         interp = F.grid_sample(
-            grid[None, ...],  # [1, feature_dim, reso, reso]
-            coords[None, None, ...],  # [1, 1, n, 2]
+            grid,  # [B, feature_dim, reso, reso]
+            coords[:, None, ...],  # [B, 1, n, 2]
             align_corners=True,
-            mode='bilinear', padding_mode='border').squeeze().permute(1, 0)  # [n, feature_dim]
+            mode='bilinear', padding_mode='border').squeeze().transpose(-1, -2)  # [B?, n, feature_dim]
     elif grid_dim == 3:
         interp = F.grid_sample(
-            grid[None, ...],  # [1, feature_dim, reso, reso, reso]
-            coords[None, None, None, ...],  # [1, 1, 1, n, 3]
+            grid,  # [B, feature_dim, reso, reso, reso]
+            coords[:, None, None, ...],  # [B, 1, 1, n, 3]
             align_corners=True,
-            mode='bilinear', padding_mode='border').squeeze().permute(1, 0)  # [n, feature_dim]
+            mode='bilinear', padding_mode='border').squeeze().transpose(-1, -2)  # [B?, n, feature_dim]
     elif grid_dim == 4:
-        if not hasattr(torch.ops, 'plenoxels'):
-            spec = PathFinder().find_spec("c_ext", [str(Path(__file__).resolve().parents[1])])
-            torch.ops.load_library(spec.origin)
-        interp = torch.ops.plenoxels.grid_sample_4d(
-            grid[None, ...],  # [1, feature_dim, reso, reso, reso, reso]
-            coords[None, None, None, None, ...],  # [1, 1, 1, n, 4]
-            0,  # interpolation_mode
-            1,  # padding_mode
-            True,  # align_corners
-        ).squeeze().permute(1, 0)  # [n, feature_dim]
+        interp = grid_sample_4d(
+            grid,  # [B, feature_dim, reso, reso, reso, reso]
+            coords[:, None, None, None, ...],  # [B, 1, 1, 1, n, 4]
+            align_corners=True,
+            mode='bilinear', padding_mode='border').squeeze().transpose(-1, -2)  # [B?, n, feature_dim]
     else:
         raise ValueError("grid_dim can be 2, 3 or 4.")
     return interp
