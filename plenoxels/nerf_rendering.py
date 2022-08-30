@@ -5,7 +5,7 @@ import torch
 __all__ = ("shrgb2rgb", "depth_map", "sigma2alpha")
 
 
-@torch.jit.script
+#@torch.jit.script
 def shrgb2rgb(sh_rgb: torch.Tensor, abs_light: torch.Tensor, white_bkgd: bool) -> torch.Tensor:
     # Accumulated color over the samples, ignoring background
     rgb = torch.sigmoid(sh_rgb)  # [batch, n_intrs-1, 3]
@@ -19,7 +19,7 @@ def shrgb2rgb(sh_rgb: torch.Tensor, abs_light: torch.Tensor, white_bkgd: bool) -
     return rgb_map
 
 
-@torch.jit.script
+#@torch.jit.script
 def depth_map(abs_light: torch.Tensor, intersections: torch.Tensor) -> torch.Tensor:
     with torch.autograd.no_grad():  # Depth & Inverse Depth-map
         # Weighted average of depths by contribution to final color
