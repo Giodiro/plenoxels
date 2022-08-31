@@ -1,14 +1,15 @@
 import itertools
 import math
 from typing import Dict, List, Union
+import logging as log
 
 import torch
 import torch.nn as nn
 import kaolin.render.spc as spc_render
 
 from plenoxels.models.utils import get_intersections, grid_sample_wrapper
-from plenoxels.nerf_rendering import shrgb2rgb, sigma2alpha, shrgb2rgb_masked, sigma2alpha_masked
 from .decoders import NNDecoder, SHDecoder
+from ..ops.activations import trunc_exp
 
 
 class LowrankLearnableHash(nn.Module):
@@ -48,7 +49,7 @@ class LowrankLearnableHash(nn.Module):
                     # Configuration correctness checks
                     if li == 0:
                         assert in_dim == 3
-                    assert out_dim in {2, 3, 4}
+                    assert out_dim in {1, 2, 3, 4}
                     assert grid_nd <= in_dim
                     if grid_nd == in_dim:
                         assert rank == 1
@@ -59,6 +60,8 @@ class LowrankLearnableHash(nn.Module):
                     )
             self.scene_grids.append(grids)
         self.renderer = NNDecoder(feature_dim=feature_dim, sigma_net_width=64, sigma_net_layers=1)
+        log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes. "
+                 f"Ray-marching will use {n_intersections} samples.")
 
     @staticmethod
     def get_coo_plane(coords, dim):
@@ -109,13 +112,12 @@ class LowrankLearnableHash(nn.Module):
 
         # compute features and render
         features = self.compute_features(intersection_pts, grid_id)
-
-        density_masked = torch.relu(self.renderer.compute_density(features, rays_d=rays_d_rep))
+        density_masked = trunc_exp(self.renderer.compute_density(features, rays_d=rays_d_rep))
         rgb_masked = torch.sigmoid(self.renderer.compute_color(features, rays_d_rep))
 
         # Compute optical thickness
         tau = density_masked.reshape(-1, 1) * deltas.reshape(-1, 1)
-        #
+        # ridx_hit are the ray-IDs at the first intersection (the boundary).
         ridx_hit = ridx[boundary]
         # Perform volumetric integration
         ray_colors, transmittance = spc_render.exponential_integration(

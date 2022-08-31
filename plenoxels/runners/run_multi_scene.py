@@ -1,4 +1,6 @@
+import logging
 import math
+import sys
 from typing import Dict, List, Optional
 import os
 from collections import defaultdict
@@ -154,9 +156,8 @@ def init_model(cfg, tr_dsets, checkpoint_data=None):
         voxel_size = (tr_dsets[0].radius * 2) / cfg.model.resolution
         # step-size and n-intersections are scaled to artificially increment resolution of model
         step_size = voxel_size / cfg.optim.samples_per_voxel
-        n_intersections=int(math.sqrt(3.) * cfg.optim.samples_per_voxel * cfg.model.resolution)
+        n_intersections = int(math.sqrt(3.) * cfg.optim.samples_per_voxel * cfg.model.resolution)
         n_intersections = 256
-        print("n_intersections: ", n_intersections)
         renderer = LowrankLearnableHash(
             num_scenes=len(tr_dsets),
             grid_config=GRID_CONFIG, radius=tr_dsets[0].radius, n_intersections=n_intersections)
@@ -190,7 +191,9 @@ def init_model(cfg, tr_dsets, checkpoint_data=None):
         raise ValueError(f"Model type {cfg.model.type} invalid")
     if checkpoint_data is not None:
         renderer.load_state_dict(checkpoint_data['model'])
-        print("=> Loaded model state from checkpoint")
+        logging.info("=> Loaded model state from checkpoint")
+    logging.info(f"Loaded model of type {cfg.model.type} with "
+                 f"{sum(torch.prod(p.shape) for p in renderer.parameters()):'} parameters.")
     return renderer
 
 
@@ -221,27 +224,38 @@ def init_optim(cfg, model, transfer_learning=False, checkpoint_data=None) -> tor
     return optim
 
 
+def setup_logging(log_level=logging.INFO):
+    handlers = [logging.StreamHandler(sys.stdout)]
+    logging.basicConfig(level=log_level,
+                        format='%(asctime)s|%(levelname)8s| %(message)s',
+                        handlers=handlers)
+
+
 if __name__ == "__main__":
     #train_cfg, reload_cfg = parse_config(multiscene_config.get_cfg_defaults())
     train_cfg, reload_cfg = parse_config(singlescene_config.get_cfg_defaults())
     gpu = get_freer_gpu()
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
-    print(f'gpu is {gpu}')
-    print(f'reload config is {reload_cfg}')
-    print(f'train config is {train_cfg}')
-    # Make config immutable
+    setup_logging()
+    logging.info(f"Selected GPU {gpu}")
+    if reload_cfg is not None:
+        logging.info(f"Reload config:\n{reload_cfg}")
     if train_cfg is not None:
-        train_cfg.freeze()
+        logging.info(f"Train config:\n{train_cfg}")
+    # Make config immutable
     if reload_cfg is not None:
         reload_cfg.freeze()
+    if train_cfg is not None:
+        train_cfg.freeze()
     # Set up the training
     cfg_ = train_cfg if train_cfg is not None else reload_cfg
     train_log_dir = os.path.join(cfg_.logdir, cfg_.expname)
     os.makedirs(train_log_dir, exist_ok=True)
     TB_WRITER = SummaryWriter(log_dir=train_log_dir)
     tr_dsets_, tr_loaders_, ts_dsets_ = init_data(cfg_)
+
     batches_per_epoch = len(tr_dsets_[0]) // cfg_.optim.batch_size
-    print("Will do %d batches per epoch" % (batches_per_epoch))
+    logging.info(f"Each epoch consists of {batches_per_epoch} batches.")
 
     if reload_cfg is not None and train_cfg is None:
         # We're reloading an existing model for either training or testing.

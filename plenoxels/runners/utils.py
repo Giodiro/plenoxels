@@ -1,6 +1,7 @@
 import os
 import math
 from typing import Tuple, Union, Optional
+import logging as log
 
 import imageio
 import numpy as np
@@ -69,7 +70,7 @@ def init_data(cfg):
         downsample = 1.0
     # Training datasets are lists of lists, where each inner list is different resolutions for the same scene
     # Test datasets are a single list over the different scenes, all at full resolution
-    print(f"Loading datasets with reso={resolution}, downsample={downsample}")
+    log.info(f"About to load data at reso={resolution}, downsample={downsample}")
     tr_dsets, tr_loaders, ts_dsets = [], [], []
     for data_dir in cfg.data.datadir:
         tr_dsets.append(SyntheticNerfDataset(
@@ -82,36 +83,6 @@ def init_data(cfg):
             data_dir, split='test', downsample=1, resolution=800,
             max_frames=cfg.data.max_ts_frames))
     return tr_dsets, tr_loaders, ts_dsets
-
-
-def init_data_wisp(cfg):
-    resolution = cfg.data.resolution
-    downsample = cfg.data.downsample
-    model_resolution = cfg.model.resolution
-    datadirs = cfg.data.datadirs if hasattr(cfg.data, 'datadirs') else cfg.data.datadir
-    if not isinstance(datadirs, list):
-        datadirs = [datadirs]
-
-    if resolution is None:
-        # None is code for automatic resolution adjustment to match the model resolution
-        # also adjusting the downsampling.
-        resolution = model_resolution
-        downsample = max(1.0, 800 / (resolution * 2))
-    if downsample is None:
-        downsample = 1.0
-
-    print(f"Loading datasets with reso={resolution}, downsample={downsample}")
-    tr_dsets, tr_loaders, ts_dsets = [], [], []
-    for datadir in datadirs:
-        transform = wisp.datasets.SampleRays(4096)
-        tr_dsets.append(wisp.datasets.MultiViewDataset(
-            dataset_path=datadir, multiview_dataset_format="standard", mip=None,
-            bg_color='white', dataset_num_workers=3, transform=transform
-        ))
-
-
-
-
 
 
 def save_image(img_or_fig, log_dir, img_name, iteration, summary_writer):
