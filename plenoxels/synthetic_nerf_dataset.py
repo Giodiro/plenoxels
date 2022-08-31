@@ -82,7 +82,7 @@ class SyntheticNerfDataset(TensorDataset):
         if out_h != out_w:
             log.warning("")
         if self.resolution[0] is not None and self.resolution[1] is not None and \
-                self.resolution[0] * 2 < out_h or self.resolution[1] * 2 < out_w:
+                (self.resolution[0] * 2 < out_h or self.resolution[1] * 2 < out_w):
             img = img.resize((self.resolution[0] * 2, self.resolution[1] * 2), Image.LANCZOS)
             img = img.resize((out_h, out_w), Image.LANCZOS)
         else:

@@ -121,7 +121,7 @@ class Trainer():
         return scale <= self.gscaler.get_scale()
 
     def post_step(self, dset_id, progress_bar):
-        self.writer.add_scalar(f"mse/D{dset_id}", self.loss_info[dset_id]["mse"], self.global_step)
+        self.writer.add_scalar(f"mse/D{dset_id}", self.loss_info[dset_id]["mse"].value, self.global_step)
         progress_bar.set_postfix_str(losses_to_postfix(self.loss_info), refresh=False)
         progress_bar.update(1)
 
@@ -311,6 +311,7 @@ class Trainer():
             raise ValueError(f"Model type {self.model_type} invalid")
         logging.info(f"Loaded model of type {self.model_type} with "
                      f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters.")
+        model.cuda()
         return model
 
 

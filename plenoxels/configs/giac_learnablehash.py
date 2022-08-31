@@ -7,7 +7,7 @@ config = {
     "max_ts_frames": 10,
     "batch_size": 4096,
     "num_batches_per_dset": 1,
-    "num_epoch": 10,
+    "num_epochs": 10,
     "scheduler_type": None,
     "optim_type": "adam",
     "model_type": "learnable_hash",

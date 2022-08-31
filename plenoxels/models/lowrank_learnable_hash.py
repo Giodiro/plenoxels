@@ -98,7 +98,7 @@ class LowrankLearnableHash(nn.Module):
         rays_d : [batch, 3]
         """
         intersection_pts, ridx, boundary, deltas = get_intersections(
-            rays_o, rays_d, self.radius, self.n_intersections, perturb=self.training)
+            rays_o, rays_d, self.radi[grid_id], self.n_intersections, perturb=self.training)
         n_rays = rays_o.shape[0]
         dev = rays_o.device
 
