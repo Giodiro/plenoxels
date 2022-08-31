@@ -44,16 +44,16 @@ def get_intersections(rays_o, rays_d, radius: float, n_intersections: int, pertu
         sample_dist = (end - start) / n_intersections
         intersections += (torch.rand_like(intersections) - 0.5) * sample_dist
 
-    intersections_trunc = intersections#[:, :-1]
-    intrs_pts = rays_o[..., None, :] + rays_d[..., None, :] * intersections_trunc[..., None]  # [batch, n_intrs, 3]
+    intrs_pts = rays_o[..., None, :] + rays_d[..., None, :] * intersections[..., None]  # [batch, n_intrs, 3]
     mask = ((-radius <= intrs_pts) & (intrs_pts <= radius)).all(dim=-1)
 
     ridx = torch.arange(0, n_rays, device=dev)
     ridx = ridx[..., None].repeat(1, n_intersections)[mask]
     boundary = spc_render.mark_pack_boundaries(ridx)
     deltas = deltas[mask]
+    intrs_pts = intrs_pts[mask]
 
-    return intrs_pts, intersections, mask, ridx, boundary, deltas
+    return intrs_pts, ridx, boundary, deltas
 
 
 def interp_regular(grid, pts, align_corners=True, padding_mode='border'):

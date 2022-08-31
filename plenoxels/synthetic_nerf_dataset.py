@@ -81,7 +81,8 @@ class SyntheticNerfDataset(TensorDataset):
         # We only do the low-pass filtering if resolution * 2 is lower-res than out_h, out_w
         if out_h != out_w:
             log.warning("")
-        if self.resolution[0] * 2 < out_h or self.resolution[1] * 2 < out_w:
+        if self.resolution[0] is not None and self.resolution[1] is not None and \
+                self.resolution[0] * 2 < out_h or self.resolution[1] * 2 < out_w:
             img = img.resize((self.resolution[0] * 2, self.resolution[1] * 2), Image.LANCZOS)
             img = img.resize((out_h, out_w), Image.LANCZOS)
         else:
@@ -115,15 +116,13 @@ class SyntheticNerfDataset(TensorDataset):
     def subsample_dataset(self, frames):
         tot_frames = len(frames)
 
+        num_frames = min(tot_frames, self.max_frames or tot_frames)
         if self.split == 'train':
-            if self.max_frames is None:
-                subsample = 1
-            else:
-                subsample = int(round(tot_frames / self.max_frames))
+            subsample = int(round(tot_frames / num_frames))
             frame_ids = np.arange(tot_frames)[::subsample]
-            log.info(f"Subsampling training set to 1 every {subsample} images.")
+            if subsample > 1:
+                log.info(f"Subsampling training set to 1 every {subsample} images.")
         else:
-            num_frames = min(tot_frames, self.max_frames or tot_frames)
             frame_ids = np.arange(num_frames)
         return np.take(frames, frame_ids).tolist()
 

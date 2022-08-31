@@ -15,7 +15,7 @@ from ..ops.activations import trunc_exp
 class LowrankLearnableHash(nn.Module):
     def __init__(self,
                  grid_config: Union[str, List[Dict]],
-                 radius: float,
+                 radi: List[float],
                  n_intersections: int,
                  num_scenes: int = 1):
         super().__init__()
@@ -23,7 +23,7 @@ class LowrankLearnableHash(nn.Module):
             self.config: List[Dict] = eval(grid_config)
         else:
             self.config: List[Dict] = grid_config
-        self.radius = radius
+        self.radi = radi
         self.n_intersections = n_intersections
 
         self.scene_grids = nn.ModuleList()
@@ -59,7 +59,7 @@ class LowrankLearnableHash(nn.Module):
                             mean=0.0, std=grid_config["init_std"]))
                     )
             self.scene_grids.append(grids)
-        self.renderer = NNDecoder(feature_dim=feature_dim, sigma_net_width=64, sigma_net_layers=1)
+        self.decoder = NNDecoder(feature_dim=feature_dim, sigma_net_width=64, sigma_net_layers=1)
         log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes. "
                  f"Ray-marching will use {n_intersections} samples.")
 
@@ -97,23 +97,24 @@ class LowrankLearnableHash(nn.Module):
         rays_o : [batch, 3]
         rays_d : [batch, 3]
         """
-        intersection_pts, intersections, mask, ridx, boundary, deltas = get_intersections(
+        intersection_pts, ridx, boundary, deltas = get_intersections(
             rays_o, rays_d, self.radius, self.n_intersections, perturb=self.training)
         n_rays = rays_o.shape[0]
         dev = rays_o.device
 
         # mask has shape [batch, n_intrs]
-        intersection_pts = intersection_pts[mask]  # [n_valid_intrs, 3] puts together the valid intrs from all rays
+        # intersection_pts has shape [n_valid_intrs, 3]
+
         # Normalization (between [-1, 1])
-        intersection_pts = intersection_pts / self.radius
+        intersection_pts = intersection_pts / self.radi[grid_id]
         rays_d = rays_d / torch.linalg.norm(rays_d, dim=-1, keepdim=True)
         # rays_d in the packed format (essentially repeated a number of times)
         rays_d_rep = rays_d.index_select(0, ridx)
 
         # compute features and render
         features = self.compute_features(intersection_pts, grid_id)
-        density_masked = trunc_exp(self.renderer.compute_density(features, rays_d=rays_d_rep))
-        rgb_masked = torch.sigmoid(self.renderer.compute_color(features, rays_d_rep))
+        density_masked = trunc_exp(self.decoder.compute_density(features, rays_d=rays_d_rep))
+        rgb_masked = torch.sigmoid(self.decoder.compute_color(features, rays_d=rays_d_rep))
 
         # Compute optical thickness
         tau = density_masked.reshape(-1, 1) * deltas.reshape(-1, 1)
@@ -136,7 +137,7 @@ class LowrankLearnableHash(nn.Module):
 
     def get_params(self, lr):
         params = [
-            {"params": self.renderer.parameters(), "lr": lr},
+            {"params": self.decoder.parameters(), "lr": lr},
             {"params": self.scene_grids.parameters(), "lr": lr},
             {"params": self.features, "lr": lr},
         ]

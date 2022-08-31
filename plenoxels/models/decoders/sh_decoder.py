@@ -3,6 +3,7 @@ import tinycudann as tcnn
 
 from .base_decoder import BaseDecoder
 
+
 class SHDecoder(BaseDecoder):
     def __init__(self, feature_dim: int, sh_degree: int):
         super().__init__()
