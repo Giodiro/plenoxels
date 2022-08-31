@@ -6,6 +6,7 @@ import os
 from collections import defaultdict
 import time
 
+import numpy as np
 import torch
 import torch.utils.data
 import torch.nn.functional as F
@@ -193,7 +194,7 @@ def init_model(cfg, tr_dsets, checkpoint_data=None):
         renderer.load_state_dict(checkpoint_data['model'])
         logging.info("=> Loaded model state from checkpoint")
     logging.info(f"Loaded model of type {cfg.model.type} with "
-                 f"{sum(torch.prod(p.shape) for p in renderer.parameters()):'} parameters.")
+                 f"{sum(np.prod(p.shape) for p in renderer.parameters()):,} parameters.")
     return renderer
 
 

@@ -89,7 +89,7 @@ class SyntheticNerfDataset(TensorDataset):
         img = self.pil2tensor(img)  # [C, H, W]
         img = img.permute(1, 2, 0)  # [H, W, C]
 
-        pose = np.array(frame['transform_matrix'], dtype=np.float32)
+        pose = torch.tensor(frame['transform_matrix'], dtype=torch.float32)
 
         return (img, pose)
 
@@ -112,21 +112,32 @@ class SyntheticNerfDataset(TensorDataset):
 
         return np.array([fl_x, fl_y, cx, cy])
 
+    def subsample_dataset(self, frames):
+        tot_frames = len(frames)
+
+        if self.split == 'train':
+            if self.max_frames is None:
+                subsample = 1
+            else:
+                subsample = int(round(tot_frames / self.max_frames))
+            frame_ids = np.arange(tot_frames)[::subsample]
+            log.info(f"Subsampling training set to 1 every {subsample} images.")
+        else:
+            num_frames = min(tot_frames, self.max_frames or tot_frames)
+            frame_ids = np.arange(num_frames)
+        return np.take(frames, frame_ids).tolist()
+
+
     def load_from_disk(self):
         with open(os.path.join(self.datadir, f"transforms_{self.split}.json"), 'r') as f:
             meta = json.load(f)
             poses, imgs = [], []
-            num_frames = min(len(meta['frames']), self.max_frames or len(meta['frames']))
-            if self.split == 'train':
-                subsample = int(round(len(meta['frames']) / self.max_frames))
-                frame_ids = torch.arange(len(meta['frames']))[::subsample]
-                log.info(f"Subsampling training set to 1 every {subsample} images.")
-            else:
-                frame_ids = torch.arange(num_frames)
-            for i in tqdm(frame_ids, desc=f'Loading {self.split} data'):
-                img, pose = self.load_image_pose(meta['frames'][i], self.img_h, self.img_w)
+            frames = self.subsample_dataset(meta['frames'])
+            for frame in tqdm(frames, desc=f'Loading {self.split} data'):
+                img, pose = self.load_image_pose(frame, self.img_h, self.img_w)
                 imgs.append(img)
                 poses.append(pose)
+            self.img_h, self.img_w = imgs[0].shape[:2]
             intrinsics = self.load_intrinsics(meta)
         imgs = torch.stack(imgs, 0)  # [N, H, W, 3/4]
         poses = torch.stack(poses, 0)  # [N, ????]
@@ -137,7 +148,7 @@ class SyntheticNerfDataset(TensorDataset):
         return imgs, poses, intrinsics
 
     def init_rays(self, imgs):
-        assert imgs is not None and self.poses is not None and self.focal is not None
+        assert imgs is not None and self.poses is not None and self.intrinsics is not None
         # Low-pass the images at required resolution
         num_frames = imgs.shape[0]
         imgs = imgs.view(-1, imgs.shape[-1])  # [N*H*W, 3]
