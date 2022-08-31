@@ -163,9 +163,9 @@ class Trainer():
                     self.global_step += 1
                 if ascene_idx == 0 and step_successful and self.scheduler is not None:  # we went through all scenes
                     self.scheduler.step()
-            self.post_epoch()
         finally:
             pb.close()
+        self.post_epoch()
 
     def train(self):
         """Override this if some very specific training procedure is needed."""
@@ -211,7 +211,9 @@ class Trainer():
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_epoch{self.epoch}.csv"))
 
     def evaluate_metrics(self, gt, preds: torch.Tensor, dset, dset_id, img_idx, name=None):
-        gt = gt.reshape(dset.img_h, dset.img_w, -1)[..., :3].cpu()
+        gt = gt.reshape(dset.img_h, dset.img_w, -1).cpu()
+        if gt.shape[-1] == 4:
+            gt = gt[..., :3] * gt[..., 3:] + (1.0 - gt[..., 3:])
         preds = preds.reshape(dset.img_h, dset.img_w, 3).cpu()
         err = (gt - preds) ** 2
         exrdict = {
