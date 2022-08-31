@@ -90,7 +90,7 @@ def init_lr_scheduler(cfg, optim, num_batches_per_dset: int, checkpoint_data=Non
 def init_optim(cfg, model, checkpoint_data=None):
     optim = torch.optim.Adam([
         {'params': [vbr_layer.grid for vbr_layer in model.grids], 'lr': 0.1},
-        {'params': model.renderer.parameters(), 'lr': 0.001},
+        {'params': model.decoder.parameters(), 'lr': 0.001},
         {'params': [vbr_layer.codebook for vbr_layer in model.grids], 'lr': 0.001},
     ], lr=0.001)
     if checkpoint_data is not None and checkpoint_data.get("optimizer", None) is not None:

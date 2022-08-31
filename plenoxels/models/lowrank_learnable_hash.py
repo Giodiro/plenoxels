@@ -1,143 +1,146 @@
+import itertools
+import math
+from typing import Dict, List, Union
+import logging as log
+
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import tinycudann as tcnn
+import kaolin.render.spc as spc_render
+
 from plenoxels.models.utils import get_intersections, grid_sample_wrapper
-from plenoxels.nerf_rendering import shrgb2rgb, sigma2alpha
+from .decoders import NNDecoder, SHDecoder
+from ..ops.activations import trunc_exp
 
 
-# Some pieces modified from https://github.com/ashawkey/torch-ngp/blob/6313de18bd8ec02622eb104c163295399f81278f/nerf/network_tcnn.py
 class LowrankLearnableHash(nn.Module):
-    def __init__(self, resolution, num_features, feature_dim, radius: float, n_intersections: int,
-                 step_size: float, grid_dim: int, rank: int, G_init_std: float, second_G=False):
+    def __init__(self,
+                 grid_config: Union[str, List[Dict]],
+                 radi: List[float],
+                 n_intersections: int,
+                 num_scenes: int = 1):
         super().__init__()
-        self.resolution = resolution
-        if grid_dim not in {2, 3, 4}:
-            raise ValueError("grid_dim must be 2, 3, or 4.")
-        self.grid_dim = grid_dim
-        self.num_features_per_dim = int(round(num_features**(1/self.grid_dim)))
-        print("num_features_per_dim = %d" % (self.num_features_per_dim, ))
-        self.feature_dim = feature_dim
-        self.radius = radius
+        if isinstance(grid_config, str):
+            self.config: List[Dict] = eval(grid_config)
+        else:
+            self.config: List[Dict] = grid_config
+        self.radi = radi
         self.n_intersections = n_intersections
-        self.step_size = step_size
-        self.second_G = second_G
-        self.rank = rank
-        print(f"rank: {self.rank}")
-        self.G_init_std = G_init_std
 
-        # Volume representation
-        self.G = nn.Parameter(torch.empty(3, self.grid_dim * rank, resolution, resolution)) # The 3 is for xy, xz, yz
-        # total memory requirement is reso*reso*rank*3*4 compared to reso*reso*reso*4
-        if self.second_G:
-            self.G2 = nn.Parameter(torch.empty([self.grid_dim] + [8] * self.grid_dim))
+        self.scene_grids = nn.ModuleList()
+        self.features = None
+        feature_dim = None
+        for si in range(num_scenes):
+            grids = nn.ParameterList()
+            for li, grid_config in enumerate(self.config):
+                if "feature_dim" in grid_config and si == 0:
+                    in_dim = grid_config["input_coordinate_dim"]
+                    reso = grid_config["resolution"]
+                    self.features = nn.Parameter(nn.init.normal_(
+                            torch.empty([grid_config["feature_dim"]] + [reso] * in_dim),
+                            mean=0.0, std=grid_config["init_std"]))
+                    feature_dim = grid_config["feature_dim"]
+                else:
+                    in_dim = grid_config["input_coordinate_dim"]
+                    out_dim = grid_config["output_coordinate_dim"]
+                    grid_nd = grid_config["grid_dimensions"]
+                    reso = grid_config["resolution"]
+                    rank = grid_config["rank"]
+                    num_comp = math.comb(in_dim, grid_nd)
+                    # Configuration correctness checks
+                    if li == 0:
+                        assert in_dim == 3
+                    assert out_dim in {1, 2, 3, 4}
+                    assert grid_nd <= in_dim
+                    if grid_nd == in_dim:
+                        assert rank == 1
+                    grids.append(
+                        nn.Parameter(nn.init.normal_(
+                            torch.empty([num_comp, out_dim * rank] + [reso] * grid_nd),
+                            mean=0.0, std=grid_config["init_std"]))
+                    )
+            self.scene_grids.append(grids)
+        self.decoder = NNDecoder(feature_dim=feature_dim, sigma_net_width=64, sigma_net_layers=1)
+        log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes. "
+                 f"Ray-marching will use {n_intersections} samples.")
 
-        # Feature table
-        self.F = nn.Parameter(torch.empty([feature_dim] + [self.num_features_per_dim] * self.grid_dim))
+    @staticmethod
+    def get_coo_plane(coords, dim):
+        """
+        :param coords:
+            torch tensor [n, input d]
+        :param dim:
+        :return:
+            torch tensor [num_comp, n, dim]
+        """
+        coo_combs = list(itertools.combinations(range(coords.shape[-1]), dim))
+        return coords[..., coo_combs].transpose(0, 1)
 
-        # Feature decoder (modified from Instant-NGP)
-        self.sigma_net = tcnn.Network(
-            n_input_dims=feature_dim,
-            n_output_dims=16,
-            network_config={
-                "otype": "FullyFusedMLP",
-                "activation": "ReLU",
-                "output_activation": "None",
-                "n_neurons": 64,
-                "n_hidden_layers": 1,
-            },
-        )
-        self.direction_encoder = tcnn.Encoding(
-            n_input_dims=3,
-            encoding_config={
-                "otype": "SphericalHarmonics",
-                "degree": 4,
-            },
-        )
-        self.in_dim_color = self.direction_encoder.n_output_dims + 15
-        self.color_net = tcnn.Network(
-            n_input_dims=self.in_dim_color,
-            n_output_dims=3,
-            network_config={
-                "otype": "FullyFusedMLP",
-                "activation": "ReLU",
-                "output_activation": "None",
-                "n_neurons": 64,
-                "n_hidden_layers": 2,
-            },
-        )
+    def compute_features(self, pts, grid_id):
+        grids = self.scene_grids[grid_id]
+        grids_info = self.config
 
-        self.init_params()
+        interp = pts
+        for level_info, grid in zip(grids_info, grids):
+            if "feature_dim" in level_info:
+                continue
+            coo_plane = self.get_coo_plane(
+                interp,
+                level_info.get("grid_dimensions", level_info["input_coordinate_dim"])
+            )
+            interp = grid_sample_wrapper(grid, coo_plane).view(
+                grid.shape[0], -1, level_info["output_coordinate_dim"], level_info["rank"])
+            interp = interp.prod(dim=0).sum(dim=-1)
+        return grid_sample_wrapper(self.features, interp)
 
-    def init_params(self):
-        nn.init.normal_(self.G, std=self.G_init_std)
-        if self.second_G:
-            nn.init.normal_(self.G2, std=self.G_init_std)
-        nn.init.normal_(self.F, std=0.05)
-
-    def eval_pts(self, pts, rds):
-        # pts should be between 0 and resolution
-        # rds should be between -1 and 1 (unit norm ray direction vector)
-        # pts [n, 3]
-        # rds [n, 3]
-
-        # Sequential interpolation by grid_sample
-        # move pts to be in [-1, 1]
-        pts = (pts * 2 / self.resolution) - 1
-        # Interpolate into G using pts
-        coo_plane = torch.stack((pts[..., [0, 1]], pts[..., [0, 2]], pts[..., [1, 2]]))  # [3, n, 2]
-        interp = grid_sample_wrapper(self.G, coo_plane).view(3, -1, self.grid_dim, self.rank)
-        Gvals = interp.prod(dim=0).sum(dim=-1)  # [n, grid_dim]
-        # Interpolate into G2 using G
-        G2vals = Gvals
-        if self.second_G:
-            G2vals = grid_sample_wrapper(self.G2, Gvals)  # [n, grid_dim]
-        # Interpolate into F using G
-        Fvals = grid_sample_wrapper(self.F, G2vals)  # [n, feature_dim]
-
-        # Extract color and density from features
-        Fvals = self.sigma_net(Fvals)  # [n, 16]
-        sigmas = Fvals[:, 0]
-        encoded_rd = self.direction_encoder((rds + 1) / 2) # tcnn SH encoding requires inputs to be in [0, 1]
-        colors = self.color_net(torch.cat([encoded_rd, Fvals[:,1:]], dim=-1))  # [n, 3]
-        return sigmas, colors
-
-    def forward(self, rays_o, rays_d):
+    def forward(self, rays_o, rays_d, bg_color, grid_id=0):
         """
         rays_o : [batch, 3]
         rays_d : [batch, 3]
         """
-        intersection_pts, intersections, mask = get_intersections(rays_o, rays_d, self.radius, self.n_intersections, self.step_size)
+        intersection_pts, ridx, boundary, deltas = get_intersections(
+            rays_o, rays_d, self.radi[grid_id], self.n_intersections, perturb=self.training)
+        n_rays = rays_o.shape[0]
+        dev = rays_o.device
+
         # mask has shape [batch, n_intrs]
-        intersection_pts = intersection_pts[mask]  # [n_valid_intrs, 3] puts together the valid intrs from all rays
-        # Normalization
-        intersection_pts = (intersection_pts / self.radius + 1) * self.resolution / 2  # between [0, reso]
+        # intersection_pts has shape [n_valid_intrs, 3]
+
+        # Normalization (between [-1, 1])
+        intersection_pts = intersection_pts / self.radi[grid_id]
         rays_d = rays_d / torch.linalg.norm(rays_d, dim=-1, keepdim=True)
+        # rays_d in the packed format (essentially repeated a number of times)
+        rays_d_rep = rays_d.index_select(0, ridx)
 
-        pointwise_rays_d = torch.repeat_interleave(rays_d, mask.sum(1), dim=0)  # [n_valid_intrs, 3]
-        sigma_masked, color_masked = self.eval_pts(intersection_pts, pointwise_rays_d)
-        # Rendering
-        batch, nintrs = intersections.shape[0], intersections.shape[1] - 1
+        # compute features and render
+        features = self.compute_features(intersection_pts, grid_id)
+        density_masked = trunc_exp(self.decoder.compute_density(features, rays_d=rays_d_rep))
+        rgb_masked = torch.sigmoid(self.decoder.compute_color(features, rays_d=rays_d_rep))
 
-        sigma = torch.zeros(batch, nintrs, dtype=sigma_masked.dtype, device=sigma_masked.device)
-        sigma.masked_scatter_(mask, sigma_masked)
-        sigma = F.relu(sigma)
-        alpha, abs_light = sigma2alpha(sigma, intersections, rays_d)  # both [batch, n_intrs-1]
+        # Compute optical thickness
+        tau = density_masked.reshape(-1, 1) * deltas.reshape(-1, 1)
+        # ridx_hit are the ray-IDs at the first intersection (the boundary).
+        ridx_hit = ridx[boundary]
+        # Perform volumetric integration
+        ray_colors, transmittance = spc_render.exponential_integration(
+            rgb_masked.reshape(-1, 3), tau, boundary, exclusive=True)
+        alpha = spc_render.sum_reduce(transmittance, boundary)
+        # Blend output color with background
+        if isinstance(bg_color, torch.Tensor) and bg_color.shape == (n_rays, 3):
+            rgb = bg_color
+            color = ray_colors + (1.0 - alpha) * bg_color[ridx_hit.long(), :]
+        else:
+            rgb = torch.full((n_rays, 3), bg_color, dtype=ray_colors.dtype, device=dev)
+            color = ray_colors + (1.0 - alpha) * bg_color
+        rgb[ridx_hit.long(), :] = color
 
-        color = torch.zeros(batch, nintrs, 3, dtype=color_masked.dtype, device=color_masked.device)
-        color.masked_scatter_(mask.unsqueeze(-1), color_masked)
-        color = shrgb2rgb(color, abs_light, True)
-        return color
+        return rgb
 
     def get_params(self, lr):
         params = [
-            {"params": self.G, "lr": lr * 1},
-            {"params": self.F, "lr": lr * 1},
-            {"params": self.direction_encoder.parameters(), "lr": lr},
-            {"params": self.sigma_net.parameters(), "lr": lr},
-            {"params": self.color_net.parameters(), "lr": lr},
+            {"params": self.decoder.parameters(), "lr": lr},
+            {"params": self.scene_grids.parameters(), "lr": lr},
+            {"params": self.features, "lr": lr},
         ]
         if self.second_G:
             params.append({"params": self.G2, "lr": lr * 1})
         return params
-

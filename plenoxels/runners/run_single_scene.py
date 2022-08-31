@@ -17,7 +17,7 @@ from plenoxels.ema import EMA
 from plenoxels.models.grid_plenoxel import RegularGrid
 from plenoxels.runners.utils import *
 from plenoxels.tc_harmonics import plenoxel_sh_encoder
-from plenoxels.models.learnable_hash import LearnableHash
+from plenoxels.models.grids.learnable_hash import LearnableHash
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash
 
 TB_WRITER = None
@@ -57,13 +57,10 @@ def train_epoch(renderer, tr_loader, ts_dset, optim, lr_sched, max_epochs, log_d
             grad_scaler.update()
             skip_lr_sched = scale > grad_scaler.get_scale()
 
-            # print(f'sigma_net grad is {torch.norm(renderer.F.grad)}')
-            # assert False
-
             loss_val = loss.item()
             losses["mse"].update(loss_val)
             TB_WRITER.add_scalar(f"mse", loss_val, tot_step)
-            pb.set_postfix_str(f"mse={loss_val:.4f} - psnr={-10 * math.log10(loss_val)}", refresh=False)
+            pb.set_postfix_str(f"mse={loss_val:.4f} - psnr={-10 * math.log10(loss_val):.2f}", refresh=False)
             pb.update(1)
             tot_step += 1
             if lr_sched is not None and not skip_lr_sched:
@@ -73,23 +70,12 @@ def train_epoch(renderer, tr_loader, ts_dset, optim, lr_sched, max_epochs, log_d
         # Save and evaluate model
         time_s = time.time()
         with torch.cuda.amp.autocast(enabled=train_fp16):
-            psnr0 = plot_ts(
-                ts_dset, 0, renderer, log_dir,
-                iteration=tot_step, batch_size=batch_size, image_id=0, verbose=True,
-                summary_writer=TB_WRITER, render_fn=default_render_fn(renderer), plot_type="imageio")
-            psnr3 = plot_ts(
-                ts_dset, 0, renderer, log_dir,
-                iteration=tot_step, batch_size=batch_size, image_id=3, verbose=True,
-                summary_writer=TB_WRITER, render_fn=default_render_fn(renderer), plot_type="imageio")
-            psnr6 = plot_ts(
-                ts_dset, 0, renderer, log_dir,
-                iteration=tot_step, batch_size=batch_size, image_id=6, verbose=True,
-                summary_writer=TB_WRITER, render_fn=default_render_fn(renderer), plot_type="imageio")
-            psnr9 = plot_ts(
-                ts_dset, 0, renderer, log_dir,
-                iteration=tot_step, batch_size=batch_size, image_id=9, verbose=True,
-                summary_writer=TB_WRITER, render_fn=default_render_fn(renderer), plot_type="imageio")
-        TB_WRITER.add_scalar(f"TestPSNR", psnr0, tot_step)
+            for image_id in [0, 3, 6, 9]:
+                psnr = plot_ts(
+                    ts_dset, 0, renderer, log_dir,
+                    iteration=tot_step, batch_size=batch_size, image_id=image_id, verbose=True,
+                    summary_writer=TB_WRITER, render_fn=default_render_fn(renderer), plot_type="imageio")
+        TB_WRITER.add_scalar(f"TestPSNR", psnr, tot_step)
         torch.save({
             'epoch': e,
             'tot_step': tot_step,

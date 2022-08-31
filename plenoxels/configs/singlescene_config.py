@@ -20,7 +20,7 @@ _C.optim.samples_per_voxel = 2
 _C.optim.regularization = CN()
 
 _C.data = CN()
-_C.data.datadir = "/data/DATASETS/SyntheticNerf/lego"
+_C.data.datadir = ["/data/DATASETS/SyntheticNerf/lego", ]
 _C.data.resolution = None
 _C.data.downsample = None
 _C.data.max_tr_frames = None
@@ -28,8 +28,7 @@ _C.data.max_ts_frames = None
 
 _C.model = CN()
 _C.model.resolution = 128
-_C.model.learnable_hash = False
-_C.model.lowrank_learnable_hash = False
+_C.model.type = "lowrank_learnable_hash"
 _C.model.num_features = 100000
 _C.model.feature_dim = 32
 _C.model.second_G = False

@@ -1,6 +1,7 @@
 import os
 import math
 from typing import Tuple, Union, Optional
+import logging as log
 
 import imageio
 import numpy as np
@@ -29,9 +30,12 @@ from plenoxels.tc_harmonics import plenoxel_sh_encoder
 
 
 def get_freer_gpu():
-    os.system('nvidia-smi -q -d Memory |grep -A4 GPU|grep Free >tmp')
-    memory_available = [int(x.split()[2]) for x in open('tmp', 'r').readlines()]
-    return np.argmax(memory_available)
+    try:
+        os.system('nvidia-smi -q -d Memory |grep -A4 GPU|grep Free >tmp')
+        memory_available = [int(x.split()[2]) for x in open('tmp', 'r').readlines()]
+        return np.argmax(memory_available)
+    except:  # On some Giacomo GPUs this fails due to newer drivers. But I have 1 GPU anyways
+        return 0
 
 
 def init_data_single_dset(cfg):
@@ -55,31 +59,26 @@ def init_data_single_dset(cfg):
 
 
 def init_data(cfg):
-    resolution = [cfg.data.resolution]
-    downsample = [cfg.data.downsample]
+    resolution = cfg.data.resolution
+    downsample = cfg.data.downsample
     if cfg.data.resolution is None:
-        # None is code for automatic resolution adjustment to match the fine dictionaries
-        # also adjust the downsampling so that the number of rays isn't so huge for small dicts
-        resolution = []
-        downsample = []
-        for fine in cfg.model.fine_reso:
-            resolution.append(cfg.model.coarse_reso * fine)
-            downsample.append(800.0 / (cfg.model.coarse_reso * fine * 2.0))
+        # None is code for automatic resolution adjustment to match the model resolution
+        # also adjusting the downsampling.
+        resolution = cfg.model.resolution
+        downsample = max(1.0, 800 / (resolution * 2))
+    if downsample is None:
+        downsample = 1.0
     # Training datasets are lists of lists, where each inner list is different resolutions for the same scene
     # Test datasets are a single list over the different scenes, all at full resolution
-    print(f"Loading datasets with reso={resolution}, downsample={downsample}")
+    log.info(f"About to load data at reso={resolution}, downsample={downsample}")
     tr_dsets, tr_loaders, ts_dsets = [], [], []
-    for data_dir in cfg.data.datadirs:
-        train, train_load = [], []
-        for reso, down in zip(resolution, downsample):
-            train.append(SyntheticNerfDataset(
-                data_dir, split='train', downsample=down, resolution=reso,
-                max_frames=cfg.data.max_tr_frames))
-            train_load.append(torch.utils.data.DataLoader(
-                train[-1], batch_size=cfg.optim.batch_size, shuffle=True, num_workers=3,
-                prefetch_factor=4, pin_memory=True))
-        tr_dsets.append(train)
-        tr_loaders.append(train_load)
+    for data_dir in cfg.data.datadir:
+        tr_dsets.append(SyntheticNerfDataset(
+            data_dir, split='train', downsample=downsample, resolution=resolution,
+            max_frames=cfg.data.max_tr_frames))
+        tr_loaders.append(torch.utils.data.DataLoader(
+            tr_dsets[-1], batch_size=cfg.optim.batch_size, shuffle=True, num_workers=3,
+            prefetch_factor=4, pin_memory=True))
         ts_dsets.append(SyntheticNerfDataset(
             data_dir, split='test', downsample=1, resolution=800,
             max_frames=cfg.data.max_ts_frames))
@@ -123,6 +122,8 @@ def render_ts_img(data: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
     depth = None
     if len(depths) > 0:
         depth = torch.cat(depths, 0).view(img_h, img_w)
+    if rgb.shape[-1] == 4:
+        rgb = rgb[..., :3] * rgb[..., 3:] + (1.0 - rgb[..., 3:])
     rgb = rgb.view(img_h, img_w, 3)
     return pred, rgb, depth
 

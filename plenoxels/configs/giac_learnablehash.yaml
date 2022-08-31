@@ -1,20 +1,21 @@
-expname: "learnablehash_lego_128_cosine_x4rays_rg1=8_rg2=4_f32"
+expname: "learnablehash_lego_128_lowrank"
 seed: 1299
 
 data:
-  datadir: "/data/DATASETS/SyntheticNerf/lego"
+  datadir: ["/data/DATASETS/SyntheticNerf/chair"]
   resolution: 256
-  downsample: 1.5625
-  max_tr_frames: 100
+  downsample: 1.562
+  max_tr_frames: 25
   max_ts_frames: 10
 
 model:
   resolution: 128
-  learnable_hash: True
   num_features: 4096
   feature_dim: 32
   second_G: False
   grid_dim: 4
+  type: "lowrank_learnable_hash"
+  rank: 20
 
 optim:
   batch_size: 4000
