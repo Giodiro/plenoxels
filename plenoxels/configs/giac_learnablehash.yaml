@@ -23,7 +23,7 @@ optim:
   lr: 2e-3
   cosine: False
   train_f16: True
-  samples_per_voxel: 4
+  samples_per_voxel: 2
 
 sh:
   degree: 0

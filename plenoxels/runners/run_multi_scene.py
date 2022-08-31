@@ -24,22 +24,20 @@ from plenoxels.runners.utils import *
 TB_WRITER = None
 GRID_CONFIG = """
 [
-    [
-        {
-            "input_coordinate_dim": 3,
-            "output_coordinate_dim": 4,
-            "grid_dimensions": 2,
-            "resolution": 128,
-            "rank": 5,
-            "init_std": 0.05,
-        },
-        {
-            "input_coordinate_dim": 4,
-            "resolution": 8,
-            "feature_dim": 32,
-            "init_std": 0.05
-        }
-    ]
+    {
+        "input_coordinate_dim": 3,
+        "output_coordinate_dim": 4,
+        "grid_dimensions": 2,
+        "resolution": 128,
+        "rank": 10,
+        "init_std": 0.15,
+    },
+    {
+        "input_coordinate_dim": 4,
+        "resolution": 8,
+        "feature_dim": 32,
+        "init_std": 0.05
+    }
 ]
 """
 
@@ -148,7 +146,9 @@ def init_model(cfg, tr_dsets, checkpoint_data=None):
         voxel_size = (tr_dsets[0].radius * 2) / cfg.model.resolution
         # step-size and n-intersections are scaled to artificially increment resolution of model
         step_size = voxel_size / cfg.optim.samples_per_voxel
-        n_intersections = math.sqrt(3.) * cfg.optim.samples_per_voxel * cfg.model.resolution
+        n_intersections=int(math.sqrt(3.) * cfg.optim.samples_per_voxel * cfg.model.resolution)
+        n_intersections = 256
+        print("n_intersections: ", n_intersections)
         renderer = LowrankLearnableHash(
             num_scenes=len(tr_dsets),
             grid_config=GRID_CONFIG, radius=tr_dsets[0].radius, n_intersections=n_intersections)

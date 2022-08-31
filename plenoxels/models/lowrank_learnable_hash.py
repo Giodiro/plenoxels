@@ -33,7 +33,7 @@ class LowrankLearnableHash(nn.Module):
                 if "feature_dim" in grid_config and si == 0:
                     in_dim = grid_config["input_coordinate_dim"]
                     reso = grid_config["resolution"]
-                    self.lod_features = nn.Parameter(nn.init.normal_(
+                    self.features = nn.Parameter(nn.init.normal_(
                             torch.empty([grid_config["feature_dim"]] + [reso] * in_dim),
                             mean=0.0, std=grid_config["init_std"]))
                     feature_dim = grid_config["feature_dim"]
@@ -83,10 +83,10 @@ class LowrankLearnableHash(nn.Module):
                 interp,
                 level_info.get("grid_dimensions", level_info["input_coordinate_dim"])
             )
-            interp = self.grid_sample_wrapper(grid, coo_plane).view(
+            interp = grid_sample_wrapper(grid, coo_plane).view(
                 grid.shape[0], -1, level_info["output_coordinate_dim"], level_info["rank"])
             interp = interp.prod(dim=0).sum(dim=-1)
-        return self.grid_sample_wrapper(self.features, interp)
+        return grid_sample_wrapper(self.features, interp)
 
     def forward(self, rays_o, rays_d, grid_id=0):
         """
@@ -95,21 +95,26 @@ class LowrankLearnableHash(nn.Module):
         """
         intersection_pts, intersections, mask = get_intersections(
             rays_o, rays_d, self.radius, self.n_intersections, perturb=self.training)
+
+        ridx = torch.arange(0, rays_d.shape[0], device=rays_o.device)
+        ridx = ridx[..., None].repeat(1, mask.shape[1])[mask]
+
         # mask has shape [batch, n_intrs]
         intersection_pts = intersection_pts[mask]  # [n_valid_intrs, 3] puts together the valid intrs from all rays
         # Normalization (between [-1, 1])
         intersection_pts = intersection_pts / self.radius
         rays_d = rays_d / torch.linalg.norm(rays_d, dim=-1, keepdim=True)
+        rays_d_rep = rays_d.index_select(0, ridx)
 
         # compute features and render
         features = self.compute_features(intersection_pts, grid_id)
 
-        density_masked = torch.relu(self.renderer.compute_density(features, rays_d=rays_d))
+        density_masked = torch.relu(self.renderer.compute_density(features, rays_d=rays_d_rep))
         density = torch.zeros(mask.shape[0], mask.shape[1], dtype=density_masked.dtype, device=density_masked.device)
         density.masked_scatter_(mask, density_masked)
         alpha, abs_light = sigma2alpha(density, intersections, rays_d)
 
-        rgb_masked = self.renderer.compute_color(features, rays_d)
+        rgb_masked = self.renderer.compute_color(features, rays_d_rep)
         rgb = torch.zeros(mask.shape[0], mask.shape[1], 3, dtype=rgb_masked.dtype, device=rgb_masked.device)
         rgb.masked_scatter_(mask.unsqueeze(-1), rgb_masked)
         rgb = shrgb2rgb(rgb, abs_light, True)
