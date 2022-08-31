@@ -4,12 +4,13 @@ from typing import Dict, List, Union
 
 import torch
 import torch.nn as nn
+import kaolin.render.spc as spc_render
+
 from plenoxels.models.utils import get_intersections, grid_sample_wrapper
 from plenoxels.nerf_rendering import shrgb2rgb, sigma2alpha
 from .decoders import NNDecoder, SHDecoder
 
 
-# Some pieces modified from https://github.com/ashawkey/torch-ngp/blob/6313de18bd8ec02622eb104c163295399f81278f/nerf/network_tcnn.py
 class LowrankLearnableHash(nn.Module):
     def __init__(self,
                  grid_config: Union[str, List[Dict]],
@@ -93,31 +94,46 @@ class LowrankLearnableHash(nn.Module):
         rays_o : [batch, 3]
         rays_d : [batch, 3]
         """
-        intersection_pts, intersections, mask = get_intersections(
+        intersection_pts, intersections, mask, ridx, boundary, deltas = get_intersections(
             rays_o, rays_d, self.radius, self.n_intersections, perturb=self.training)
-
-        ridx = torch.arange(0, rays_d.shape[0], device=rays_o.device)
-        ridx = ridx[..., None].repeat(1, mask.shape[1])[mask]
+        n_rays = rays_o.shape[0]
+        dev = rays_o.device
 
         # mask has shape [batch, n_intrs]
         intersection_pts = intersection_pts[mask]  # [n_valid_intrs, 3] puts together the valid intrs from all rays
         # Normalization (between [-1, 1])
         intersection_pts = intersection_pts / self.radius
         rays_d = rays_d / torch.linalg.norm(rays_d, dim=-1, keepdim=True)
+        # rays_d in the packed format (essentially repeated a number of times)
         rays_d_rep = rays_d.index_select(0, ridx)
 
         # compute features and render
         features = self.compute_features(intersection_pts, grid_id)
 
         density_masked = torch.relu(self.renderer.compute_density(features, rays_d=rays_d_rep))
-        density = torch.zeros(mask.shape[0], mask.shape[1], dtype=density_masked.dtype, device=density_masked.device)
-        density.masked_scatter_(mask, density_masked)
-        alpha, abs_light = sigma2alpha(density, intersections, rays_d)
-
         rgb_masked = self.renderer.compute_color(features, rays_d_rep)
-        rgb = torch.zeros(mask.shape[0], mask.shape[1], 3, dtype=rgb_masked.dtype, device=rgb_masked.device)
-        rgb.masked_scatter_(mask.unsqueeze(-1), rgb_masked)
-        rgb = shrgb2rgb(rgb, abs_light, True)
+
+        # Compute optical thickness
+        tau = density_masked.reshape(-1, 1) * deltas
+        #
+        ridx_hit = ridx[boundary]
+        # Perform volumetric integration
+        ray_colors, transmittance = spc_render.exponential_integration(
+            rgb_masked.reshape(-1, 3), tau, boundary, exclusive=True)
+        alpha = spc_render.sum_reduce(transmittance, boundary)
+        # Blend output color with background
+        rgb = torch.ones(n_rays, 3, device=dev)
+        bg = torch.ones([ray_colors.shape[0], 3], device=dev)
+        color = (1.0 - alpha) * bg + alpha * ray_colors
+        rgb[ridx_hit.long(), :3] = color
+
+        # density = torch.zeros(mask.shape[0], mask.shape[1], dtype=density_masked.dtype, device=density_masked.device)
+        # density.masked_scatter_(mask, density_masked)
+        # alpha, abs_light = sigma2alpha(density, intersections, rays_d)
+        #
+        # rgb = torch.zeros(mask.shape[0], mask.shape[1], 3, dtype=rgb_masked.dtype, device=rgb_masked.device)
+        # rgb.masked_scatter_(mask.unsqueeze(-1), rgb_masked)
+        # rgb = shrgb2rgb(rgb, abs_light, True)
         return rgb
 
     def get_params(self, lr):
