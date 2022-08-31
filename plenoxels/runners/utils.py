@@ -12,8 +12,6 @@ import torch.utils.data
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
-import wisp
-
 from plenoxels.nerf_rendering import sigma2alpha, shrgb2rgb
 from plenoxels.synthetic_nerf_dataset import SyntheticNerfDataset, get_rays
 
@@ -153,6 +151,8 @@ def render_ts_img(data: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
     depth = None
     if len(depths) > 0:
         depth = torch.cat(depths, 0).view(img_h, img_w)
+    if rgb.shape[-1] == 4:
+        rgb = rgb[..., :3] * rgb[..., 3:] + (1.0 - rgb[..., 3:])
     rgb = rgb.view(img_h, img_w, 3)
     return pred, rgb, depth
 

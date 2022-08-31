@@ -82,32 +82,32 @@ namespace {
     CUDA_KERNEL_LOOP_TYPE(index, nthreads, index_t) {
       const index_t w = index % out_W;
       const index_t n = index / out_W;
-      const index_t grid_offset = n * grid_sN + w * grid_sW;
+      const auto grid_offset = n * grid_sN + w * grid_sW;
 
       // get the corresponding input x co-ordinate from grid
       scalar_t x = grid.data[grid_offset];
 
-      scalar_t ix = grid_sampler_compute_source_index(x, inp_W, padding_mode, align_corners);
+      scalar_t ix = at::native::grid_sampler_compute_source_index(x, inp_W, padding_mode, align_corners);
 
       if (interpolation_mode == GridSamplerInterpolation::Bilinear) {
         // get E, W pixel values from x
-        index_t ix_w = static_cast<index_t>(::floor(ix));
-        index_t ix_e = ix_w + 1;
+        index_t ix_west = static_cast<index_t>(::floor(ix));
+        index_t ix_east = ix_west + 1;
 
         // get surfaces to each neighbor:
-        scalar_t w = (ix_e - ix);
-        scalar_t e = (ix - ix_w);
+        scalar_t west = (ix_east - ix);
+        scalar_t east = (ix - ix_west);
 
         // calculate bilinear weighted pixel value and set output pixel
         auto inp_ptr_NC = input.data + n * inp_sN;
         auto out_ptr_NCW = output.data + n * out_sN + w * out_sW;
         for (index_t c = 0; c < C; ++c, inp_ptr_NC += inp_sC, out_ptr_NCW += out_sC) {
           *out_ptr_NCW = static_cast<scalar_t>(0);
-          if (within_bounds_1d(ix_w, inp_W)) {
-            *out_ptr_NCW += inp_ptr_NC[ix_w * inp_sW] * w;
+          if (within_bounds_1d(ix_west, inp_W)) {
+            *out_ptr_NCW += inp_ptr_NC[ix_west * inp_sW] * west;
           }
-          if (within_bounds_1d(ix_e, inp_W)) {
-            *out_ptr_NCW += inp_ptr_NC[ix_e * inp_sW] * e;
+          if (within_bounds_1d(ix_east, inp_W)) {
+            *out_ptr_NCW += inp_ptr_NC[ix_east * inp_sW] * east;
           }
         }
       }
@@ -150,9 +150,9 @@ namespace {
     index_t inp_sW = input.strides[2];
     index_t grid_sN = grid.strides[0];
     index_t grid_sW = grid.strides[1];
-    index_t gout_sN = grad_output.strides[0];
-    index_t gout_sC = grad_output.strides[1];
-    index_t gout_sW = grad_output.strides[2];
+    index_t gOut_sN = grad_output.strides[0];
+    index_t gOut_sC = grad_output.strides[1];
+    index_t gOut_sW = grad_output.strides[2];
     // gInp_* (and NC_offset below) are not really needed if input_requires_grad is false.
     index_t gInp_sN;
     index_t gInp_sC;
@@ -174,16 +174,16 @@ namespace {
 
       // multipliers for gradients on ix and iy
       scalar_t gix_mult, giy_mult;
-      scalar_t ix = grid_sampler_compute_source_index_set_grad(x, inp_W, padding_mode, align_corners, &gix_mult);
+      scalar_t ix = at::native::grid_sampler_compute_source_index_set_grad(x, inp_W, padding_mode, align_corners, &gix_mult);
 
       if (interpolation_mode == GridSamplerInterpolation::Bilinear) {
         // get E, W pixel values from x
-        index_t ix_w = static_cast<index_t>(::floor(ix));
-        index_t ix_e = ix_w + 1;
+        index_t ix_west = static_cast<index_t>(::floor(ix));
+        index_t ix_east = ix_west + 1;
 
         // get surfaces to each neighbor:
-        scalar_t w = (ix_e - ix);
-        scalar_t e = (ix - ix_w);
+        scalar_t west = (ix_east - ix);
+        scalar_t east = (ix - ix_west);
 
         scalar_t gix = static_cast<scalar_t>(0), giy = static_cast<scalar_t>(0);
         scalar_t *gOut_ptr_NCW = grad_output.data + n * gOut_sN + w * gOut_sW;
@@ -194,18 +194,18 @@ namespace {
 
           if (input_requires_grad) {
             // calculate and set grad_input. See Note [Passing pointer and offset to fastAtomicAdd].
-            safe_add_1d(grad_input.data, ix_w, gInp_sW, inp_W, w * gOut, NC_offset, grad_input_memory_span);
-            safe_add_1d(grad_input.data, ix_e, gInp_sW, inp_W, e * gOut, NC_offset, grad_input_memory_span);
+            safe_add_1d(grad_input.data, ix_west, gInp_sW, inp_W, west * gOut, NC_offset, grad_input_memory_span);
+            safe_add_1d(grad_input.data, ix_east, gInp_sW, inp_W, east * gOut, NC_offset, grad_input_memory_span);
           }
 
           // calculate grad_grid
-          if (within_bounds_1d(ix_w, inp_W)) {
-            scalar_t w_val = inp_ptr_NC[ix_w * inp_sW];
-            gix -= w_val * gOut;
+          if (within_bounds_1d(ix_west, inp_W)) {
+            scalar_t west_val = inp_ptr_NC[ix_west * inp_sW];
+            gix -= west_val * gOut;
           }
-          if (within_bounds_1d(ix_e, inp_W)) {
-            scalar_t e_val = inp_ptr_NC[ix_e * inp_sW];
-            gix += e_val * gOut;
+          if (within_bounds_1d(ix_east, inp_W)) {
+            scalar_t east_val = inp_ptr_NC[ix_east * inp_sW];
+            gix += east_val * gOut;
           }
         }
         // assuming grad_grid is contiguous
@@ -265,7 +265,7 @@ void launch_grid_sampler_1d_forward_kernel(
             align_corners);
         C10_CUDA_KERNEL_LAUNCH_CHECK();
       } else {
-        grid_sampler_4d_kernel<scalar_t>
+        grid_sampler_1d_kernel<scalar_t>
           <<<GET_BLOCKS(count, 256), 256, 0, at::cuda::getCurrentCUDAStream()>>>(
             count,
             getTensorInfo<scalar_t, int64_t>(input),
@@ -294,7 +294,7 @@ void launch_grid_sampler_1d_backward_kernel(
 
   // See Note [Writing Nondeterministic Operations]
   // Nondeterministic because of atomicAdd usage
-  //globalContext().alertNotDeterministic("grid_sampler_4d_backward_cuda");
+  //globalContext().alertNotDeterministic("grid_sampler_1d_backward_cuda");
   auto N = input.size(0);
   auto W = grid.size(1);
 
@@ -391,3 +391,16 @@ class GridSample1d : public Function<GridSample1d> {
       return {grad_input, grad_grid, Tensor(), Tensor(), Tensor()};
     }
 };
+
+
+Tensor grid_sample_1d(Tensor &input,
+                      Tensor &grid,
+                      int64_t interpolation_mode,
+                      int64_t padding_mode,
+                      bool align_corners) {
+  return GridSample1d::apply(input, grid, interpolation_mode, padding_mode, align_corners);
+}
+
+static auto registry = torch::RegisterOperators()
+                        .op("plenoxels::grid_sample_1d", &grid_sample_1d);
+

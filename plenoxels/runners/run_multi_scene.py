@@ -27,7 +27,7 @@ GRID_CONFIG = """
     {
         "input_coordinate_dim": 3,
         "output_coordinate_dim": 4,
-        "grid_dimensions": 2,
+        "grid_dimensions": 1,
         "resolution": 128,
         "rank": 10,
         "init_std": 0.15,
@@ -42,9 +42,9 @@ GRID_CONFIG = """
 """
 
 
-def default_render_fn(renderer, dset_id):
+def eval_render_fn(renderer, dset_id):
     def render_fn(ro, rd):
-        return renderer(ro, rd, dset_id)
+        return renderer(ro, rd, grid_id=dset_id, bg_color=1.0)
     return render_fn
 
 
@@ -93,10 +93,18 @@ def train_epoch(renderer,
                         imgs = imgs.cuda()
                         rays_o = rays_o.cuda()
                         rays_d = rays_d.cuda()
-                        optim.zero_grad()
+                        optim.zero_grad(set_to_none=True)
+
+                        C = imgs.shape[-1]
+                        # Random bg-color
+                        if C == 3:
+                            bg_color = 1
+                        else:
+                            bg_color = torch.rand_like(imgs[..., :3])
+                            imgs = imgs[..., :3] * imgs[..., 3:] + bg_color * (1.0 - imgs[..., 3:])
 
                         with torch.cuda.amp.autocast(enabled=train_fp16):
-                            rgb_preds = renderer(rays_o, rays_d, grid_id=dset_id)
+                            rgb_preds = renderer(rays_o, rays_d, grid_id=dset_id, bg_color=bg_color)
                             loss = F.mse_loss(rgb_preds, imgs)
 
                         grad_scaler.scale(loss).backward()
@@ -125,7 +133,7 @@ def train_epoch(renderer,
             for ts_dset_id, ts_dset in enumerate(ts_dsets):
                 for image_id in [0, 3, 6, 9]:
                     psnr = plot_ts(
-                        ts_dset, ts_dset_id, renderer, log_dir, render_fn=default_render_fn(renderer, ts_dset_id),
+                        ts_dset, ts_dset_id, renderer, log_dir, render_fn=eval_render_fn(renderer, ts_dset_id),
                         iteration=tot_step, batch_size=batch_size, image_id=image_id, verbose=True,
                         summary_writer=TB_WRITER, plot_type="imageio")
                 TB_WRITER.add_scalar(f"TestPSNR/D{ts_dset_id}", psnr, tot_step)
@@ -247,7 +255,7 @@ if __name__ == "__main__":
             for ts_dset_id, ts_dset in enumerate(ts_dsets_):
                 print(f"Testing dataset {ts_dset_id}.")
                 test_model(model_, ts_dset, train_log_dir, reload_cfg.optim.batch_size,
-                           render_fn=default_render_fn(model_, ts_dset_id), plot_type="imageio")
+                           render_fn=eval_render_fn(model_, ts_dset_id), plot_type="imageio")
         else:
             print(f"Resuming training from epoch {checkpoint_data['epoch'] + 1}")
             optim_ = init_optim(cfg_, model_, checkpoint_data=checkpoint_data)

@@ -56,7 +56,7 @@ class SyntheticNerfDataset(TensorDataset):
         if "ship" in datadir:
             self.radius = 1.5
         else:
-            self.radius = 1.0
+            self.radius = 1.3
         self.scene_bbox = torch.tensor([[-self.radius] * 3, [self.radius] * 3])
         self.pil2tensor = torchvision.transforms.ToTensor()
         self.tensor2pil = torchvision.transforms.ToPILImage()
@@ -95,10 +95,9 @@ class SyntheticNerfDataset(TensorDataset):
                 img = img.resize((self.img_w, self.img_h), Image.LANCZOS)
                 img = self.pil2tensor(img)
                 img = img.permute(1, 2, 0)  # [h, w, 4]
-                img = img[..., :3] * img[..., 3:] + (1.0 - img[..., 3:])  # Blend A into RGB
                 imgs.append(img)
             focal = 0.5 * self.img_w / np.tan(0.5 * meta['camera_angle_x'])
-        orig_imgs = torch.stack(imgs, 0)  # [N, H, W, 3]
+        orig_imgs = torch.stack(imgs, 0)  # [N, H, W, 3/4]
         poses = torch.stack(poses, 0)  # [N, ????]
         return orig_imgs, poses, focal
 
@@ -117,7 +116,7 @@ class SyntheticNerfDataset(TensorDataset):
         # Low-pass the images at required resolution
         num_frames = self.orig_imgs.shape[0]
         imgs = self.low_pass(self.orig_imgs)
-        imgs = imgs.view(-1, 3)  # [N*H*W, 3]
+        imgs = imgs.view(-1, imgs.shape[-1])  # [N*H*W, 3]
 
         # Rays
         rays = torch.stack(
@@ -130,7 +129,7 @@ class SyntheticNerfDataset(TensorDataset):
         rays_d = rays_d.to(dtype=torch.float32).contiguous()
 
         if self.split == "test":
-            imgs = imgs.view(num_frames, self.img_w * self.img_h, 3)  # [N, H*W, 3]
+            imgs = imgs.view(num_frames, self.img_w * self.img_h, -1)  # [N, H*W, 3/4]
             rays_o = rays_o.view(num_frames, self.img_w * self.img_h, 3)  # [N, H*W, 3]
             rays_d = rays_d.view(num_frames, self.img_w * self.img_h, 3)  # [N, H*W, 3]
         return imgs, rays_o, rays_d

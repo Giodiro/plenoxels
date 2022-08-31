@@ -41,3 +41,20 @@ def sigma2alpha(sigma: torch.Tensor, intersections: torch.Tensor, rays_d: torch.
                            torch.cumprod(1 - alpha[:, :-1] + 1e-10, dim=-1)), dim=-1)  # [batch, n_intrs-1]
     abs_light = alpha * cum_light  # [batch, n_intersections - 1]
     return alpha, abs_light
+
+def sigma2alpha_masked(sigma, intersections, boundaries, mask):
+    import kaolin.render.spc as spc_render
+    delta = torch.diff(intersections, n=1, dim=1)[mask]
+    tau = sigma.view(-1, 1) * delta.view(-1, 1)
+    alpha = 1.0 - torch.exp(-tau)
+    abs_light = torch.exp(-spc_render.cumsum(tau, boundaries, exclusive=True)) * alpha
+    return alpha, abs_light
+
+
+def shrgb2rgb_masked(sh_rgb, abs_light, white_bkgd, boundaries):
+    import kaolin.render.spc as spc_render
+    rgb_map = spc_render.sum_reduce(abs_light * sh_rgb, boundaries)
+    if white_bkgd:
+        alpha = spc_render.sum_reduce(abs_light, boundaries)
+        rgb_map =  alpha + 1.0 - alpha
+    return rgb_map
