@@ -173,7 +173,7 @@ namespace {
       scalar_t x = grid.data[grid_offset];
 
       // multipliers for gradients on ix and iy
-      scalar_t gix_mult, giy_mult;
+      scalar_t gix_mult;
       scalar_t ix = at::native::grid_sampler_compute_source_index_set_grad(x, inp_W, padding_mode, align_corners, &gix_mult);
 
       if (interpolation_mode == GridSamplerInterpolation::Bilinear) {
@@ -185,7 +185,7 @@ namespace {
         scalar_t west = (ix_east - ix);
         scalar_t east = (ix - ix_west);
 
-        scalar_t gix = static_cast<scalar_t>(0), giy = static_cast<scalar_t>(0);
+        scalar_t gix = static_cast<scalar_t>(0);
         scalar_t *gOut_ptr_NCW = grad_output.data + n * gOut_sN + w * gOut_sW;
         index_t NC_offset = n * gInp_sN;
         scalar_t *inp_ptr_NC = input.data + n * inp_sN;

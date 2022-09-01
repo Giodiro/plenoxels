@@ -37,7 +37,6 @@ namespace {
     index_t C = input.sizes[1];
     index_t inp_H = input.sizes[2];
     index_t inp_W = input.sizes[3];
-    index_t out_H = grid.sizes[1];
     index_t out_W = grid.sizes[2];
     index_t inp_sN = input.strides[0];
     index_t inp_sC = input.strides[1];
@@ -101,8 +100,8 @@ namespace {
             if (at::native::within_bounds_2d(iy_se, ix_se, inp_H, inp_W)) {
               out_val += inp_ptr_NC[iy_se * inp_sH + ix_se * inp_sW] * se;
             }
+            *out_ptr_CHW *= out_val;
           }
-          *out_ptr_CHW *= out_val;
         } else if (interpolation_mode == GridSamplerInterpolation::Nearest) {
           index_t ix_nearest = static_cast<index_t>(::round(ix));
           index_t iy_nearest = static_cast<index_t>(::round(iy));
@@ -148,7 +147,6 @@ namespace {
     index_t C = input.sizes[1];
     index_t inp_H = input.sizes[2];
     index_t inp_W = input.sizes[3];
-    index_t out_H = grid.sizes[1];
     index_t out_W = grid.sizes[2];
     index_t inp_sN = input.strides[0];
     index_t inp_sC = input.strides[1];
