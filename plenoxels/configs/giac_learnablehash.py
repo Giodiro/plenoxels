@@ -22,7 +22,11 @@ config = {
 
     "lr": 2e-3,
 
+    "raymarch_type": "voxel_size",
+    "sampling_resolution": 256,
+    "num_sample_multiplier": 1,
     "n_intersections": 256,
+
     "grid_config": """
 [
     {

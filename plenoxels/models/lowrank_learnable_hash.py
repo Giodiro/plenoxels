@@ -10,21 +10,22 @@ import kaolin.render.spc as spc_render
 from plenoxels.models.utils import get_intersections, grid_sample_wrapper
 from .decoders import NNDecoder, SHDecoder
 from ..ops.activations import trunc_exp
+from ..raymarching.raymarching import RayMarcher
 
 
 class LowrankLearnableHash(nn.Module):
     def __init__(self,
                  grid_config: Union[str, List[Dict]],
                  radi: List[float],
-                 n_intersections: int,
-                 num_scenes: int = 1):
+                 num_scenes: int = 1,
+                 **kwargs):
         super().__init__()
         if isinstance(grid_config, str):
             self.config: List[Dict] = eval(grid_config)
         else:
             self.config: List[Dict] = grid_config
         self.radi = radi
-        self.n_intersections = n_intersections
+        self.extra_args = kwargs
 
         self.scene_grids = nn.ModuleList()
         self.features = None
@@ -60,8 +61,8 @@ class LowrankLearnableHash(nn.Module):
                     )
             self.scene_grids.append(grids)
         self.decoder = NNDecoder(feature_dim=feature_dim, sigma_net_width=64, sigma_net_layers=1)
-        log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes. "
-                 f"Ray-marching will use {n_intersections} samples.")
+        self.raymarcher = RayMarcher(**self.extra_args)
+        log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes.")
 
     @staticmethod
     def get_coo_plane(coords, dim):
@@ -97,8 +98,8 @@ class LowrankLearnableHash(nn.Module):
         rays_o : [batch, 3]
         rays_d : [batch, 3]
         """
-        intersection_pts, ridx, boundary, deltas = get_intersections(
-            rays_o, rays_d, self.radi[grid_id], self.n_intersections, perturb=self.training)
+        intersection_pts, ridx, boundary, deltas = self.raymarcher.get_intersections(
+            rays_o, rays_d, self.radi[grid_id], perturb=self.training)
         n_rays = rays_o.shape[0]
         dev = rays_o.device
 

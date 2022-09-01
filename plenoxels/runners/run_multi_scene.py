@@ -321,7 +321,7 @@ class Trainer():
                 num_scenes=self.num_dsets,
                 grid_config=kwargs.get("grid_config"),
                 radi=radi,
-                n_intersections=kwargs.get("n_intersections"))
+                **kwargs)
         else:
             raise ValueError(f"Model type {self.model_type} invalid")
         logging.info(f"Initialized model of type {self.model_type} with "

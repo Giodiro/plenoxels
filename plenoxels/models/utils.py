@@ -1,59 +1,10 @@
 from typing import Optional
-from importlib.machinery import PathFinder
-from pathlib import Path
 
 import torch
 import torch.nn.functional as F
-import kaolin.render.spc as spc_render
 
 from plenoxels.ops.interpolation import grid_sample_4d, grid_sample_1d
 
-
-@torch.no_grad()
-def get_intersections(rays_o, rays_d, radius: float, n_intersections: int, perturb: bool = False):
-    """
-    Produces ray-grid intersections in world-coordinates (between -radius, +radius)
-    :param rays_o:
-    :param rays_d:
-    :param radius:
-    :param n_intersections:
-    :return:
-    """
-    dev, dt = rays_o.device, rays_o.dtype
-    n_rays = rays_o.shape[0]
-    inv_rays_d = torch.reciprocal(torch.where(rays_d == 0, torch.full_like(rays_d, 1e-6), rays_d))
-    offsets_pos = ( radius - rays_o) * inv_rays_d  # [batch, 3]
-    offsets_neg = (-radius - rays_o) * inv_rays_d  # [batch, 3]
-    offsets_in = torch.minimum(offsets_pos, offsets_neg)  # [batch, 3]
-    offsets_out = torch.maximum(offsets_pos, offsets_neg)
-    start = torch.amax(offsets_in, dim=-1, keepdim=True)  # [batch, 1]
-    end = torch.amin(offsets_out, dim=-1, keepdim=True)
-
-    steps = (torch.linspace(0, 1.0, n_intersections, device=dev)[None])  # [1, num_samples]
-    steps = steps.expand((n_rays, n_intersections))  # [num_rays, num_samples]
-    intersections = start + (end - start) * steps
-
-    #step_size = 0.01
-    #steps = torch.arange(n_intersections, dtype=dt, device=dev).unsqueeze(0)  # [1, n_intrs]
-    #steps = steps.repeat(rays_d.shape[0], 1)   # [batch, n_intrs]
-    #intersections = start + steps * step_size  # [batch, n_intrs]
-
-    deltas = intersections.diff(dim=-1, prepend=torch.zeros(intersections.shape[0], 1, device=dev) + start)
-
-    if perturb:
-        sample_dist = (end - start) / n_intersections
-        intersections += (torch.rand_like(intersections) - 0.5) * sample_dist
-
-    intrs_pts = rays_o[..., None, :] + rays_d[..., None, :] * intersections[..., None]  # [batch, n_intrs, 3]
-    mask = ((-radius <= intrs_pts) & (intrs_pts <= radius)).all(dim=-1)
-
-    ridx = torch.arange(0, n_rays, device=dev)
-    ridx = ridx[..., None].repeat(1, n_intersections)[mask]
-    boundary = spc_render.mark_pack_boundaries(ridx)
-    deltas = deltas[mask]
-    intrs_pts = intrs_pts[mask]
-
-    return intrs_pts, ridx, boundary, deltas
 
 
 def interp_regular(grid, pts, align_corners=True, padding_mode='border'):
