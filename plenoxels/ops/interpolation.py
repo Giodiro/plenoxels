@@ -50,6 +50,26 @@ def grid_sample_1d(
     )
 
 
+def grid_sample_2d_premul(
+        input: torch.Tensor,
+        grid: torch.Tensor,
+        mode: str = "bilinear",
+        padding_mode: str = "zeros",
+        align_corners: Optional[bool] = None,
+) -> torch.Tensor:
+    interpolation_mode = get_interpolation_mode(mode)
+    padding_mode_ = get_padding_mode(padding_mode)
+    if align_corners is None:
+        align_corners = False
+    return torch.ops.plenoxels.grid_sample_2d_premul(
+        input,
+        grid,
+        interpolation_mode,
+        padding_mode_,
+        align_corners,
+    )
+
+
 def grid_sample_4d(
     input: torch.Tensor,
     grid: torch.Tensor,
