@@ -9,8 +9,10 @@ from typing import Dict, List, Optional
 import pprint
 
 import numpy as np
+np.random.seed(0)
 import pandas as pd
 import torch
+torch.manual_seed(0)
 import torch.utils.data
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -287,7 +289,7 @@ class Trainer():
         lr_sched = None
         if self.scheduler_type == "cosine":
             lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
-                self.optim,
+                self.optimizer,
                 T_max=self.num_epochs * self.total_batches_per_epoch() // self.num_batches_per_dset,
                 eta_min=eta_min)
         return lr_sched
