@@ -32,13 +32,14 @@ class LowrankLearnableHash(nn.Module):
         for si in range(num_scenes):
             grids = nn.ParameterList()
             for li, grid_config in enumerate(self.config):
-                if "feature_dim" in grid_config and si == 0:
-                    in_dim = grid_config["input_coordinate_dim"]
-                    reso = grid_config["resolution"]
-                    self.features = nn.Parameter(nn.init.normal_(
-                            torch.empty([grid_config["feature_dim"]] + [reso] * in_dim),
-                            mean=0.0, std=grid_config["init_std"]))
-                    feature_dim = grid_config["feature_dim"]
+                if "feature_dim" in grid_config:
+                    if si == 0:  # Only make one set of features
+                        in_dim = grid_config["input_coordinate_dim"]
+                        reso = grid_config["resolution"]
+                        self.features = nn.Parameter(nn.init.normal_(
+                                torch.empty([grid_config["feature_dim"]] + [reso] * in_dim),
+                                mean=0.0, std=grid_config["init_std"]))
+                        feature_dim = grid_config["feature_dim"]
                 else:
                     in_dim = grid_config["input_coordinate_dim"]
                     out_dim = grid_config["output_coordinate_dim"]

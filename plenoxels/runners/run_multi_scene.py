@@ -339,7 +339,11 @@ def eval_render_fn(renderer, dset_id):
 def losses_to_postfix(losses: List[Dict[str, EMA]]) -> str:
     pfix_list = []
     for dset_id, loss_dict in enumerate(losses):
-        pfix_inner = ", ".join(f"{lname}={lval}" for lname, lval in loss_dict.items())
+        for lname, lval in loss_dict.items():
+            if lname != 'psnr':
+                continue
+            pfix_inner = f"{lname}={lval}"
+        # pfix_inner = ", ".join(f"{lname}={lval}" for lname, lval in loss_dict.items())
         pfix_list.append(f"D{dset_id}({pfix_inner})")
     return '  '.join(pfix_list)
 
