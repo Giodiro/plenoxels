@@ -31,7 +31,6 @@ ext_modules = [
             # 'plenoxels/csrc/render_regular_tree.cu',
             'plenoxels/csrc/4d_interp.cu',
             'plenoxels/csrc/1d_interp.cu',
-            'plenoxels/csrc/2d_interp.cu',
         ],
         include_dirs=include_dirs,
         extra_compile_args={
