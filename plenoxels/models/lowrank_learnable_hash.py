@@ -141,6 +141,4 @@ class LowrankLearnableHash(nn.Module):
             {"params": self.scene_grids.parameters(), "lr": lr},
             {"params": self.features, "lr": lr},
         ]
-        if self.second_G:
-            params.append({"params": self.G2, "lr": lr * 1})
         return params

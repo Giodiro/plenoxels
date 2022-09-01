@@ -9,8 +9,10 @@ from typing import Dict, List, Optional
 import pprint
 
 import numpy as np
+np.random.seed(0)
 import pandas as pd
 import torch
+torch.manual_seed(0)
 import torch.utils.data
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -252,16 +254,29 @@ class Trainer():
         }, model_fname)
 
     def load_model(self, checkpoint_data):
-        self.model.load_state_dict(checkpoint_data["tracer"])
-        logging.info("=> Loaded tracer state from checkpoint")
-        self.optimizer.load_state_dict(checkpoint_data["optimizer"])
-        logging.info("=> Loaded optimizer state from checkpoint")
-        if self.scheduler is not None:
-            self.scheduler.load_state_dict(checkpoint_data['scheduler'])
-        logging.info("=> Loaded scheduler state from checkpoint")
-        self.epoch = checkpoint_data["epoch"]
-        self.global_step = checkpoint_data["global_step"]
-        logging.info(f"=> Loaded epoch-state {self.epoch}, step {self.global_step} from checkpoints")
+        if self.transfer_learning:
+            # Only reload model components that are not scene-specific, and don't reload the optimizer or scheduler
+            for key in checkpoint_data["model"].keys():
+                if 'scene' in key:
+                    continue
+                self.model.load_state_dict({key: checkpoint_data["model"][key]}, strict=False)
+                # Don't optimize parameters that are reloaded (this should be fine, but it doesn't train)
+                # for param in self.model.parameters():
+                #     if param.shape == checkpoint_data["model"][key].shape:
+                #         print(f'setting requires_grad false for param shape {param.shape}')
+                #         param.requires_grad = False
+                logging.info(f"=> Loaded model state key with shape {checkpoint_data['model'][key].shape} from checkpoint")
+        else:
+            self.model.load_state_dict(checkpoint_data["model"])
+            logging.info("=> Loaded model state from checkpoint")
+            self.optimizer.load_state_dict(checkpoint_data["optimizer"])
+            logging.info("=> Loaded optimizer state from checkpoint")
+            if self.scheduler is not None:
+                self.scheduler.load_state_dict(checkpoint_data['scheduler'])
+                logging.info("=> Loaded scheduler state from checkpoint")
+            self.epoch = checkpoint_data["epoch"]
+            self.global_step = checkpoint_data["global_step"]
+            logging.info(f"=> Loaded epoch-state {self.epoch}, step {self.global_step} from checkpoints")
 
     def total_batches_per_epoch(self):
         # noinspection PyTypeChecker
@@ -287,17 +302,14 @@ class Trainer():
         lr_sched = None
         if self.scheduler_type == "cosine":
             lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
-                self.optim,
+                self.optimizer,
                 T_max=self.num_epochs * self.total_batches_per_epoch() // self.num_batches_per_dset,
                 eta_min=eta_min)
         return lr_sched
 
     def init_optim(self, **kwargs) -> torch.optim.Optimizer:
         if self.optim_type == 'adam':
-            if self.transfer_learning:
-                raise NotImplementedError()
-            else:
-                optim = torch.optim.Adam(self.model.parameters(), lr=kwargs.get("lr"))
+            optim = torch.optim.Adam(filter(lambda p: p.requires_grad, self.model.parameters()), lr=kwargs.get("lr"))
         else:
             raise NotImplementedError()
         return optim
@@ -312,7 +324,7 @@ class Trainer():
                 n_intersections=kwargs.get("n_intersections"))
         else:
             raise ValueError(f"Model type {self.model_type} invalid")
-        logging.info(f"Loaded model of type {self.model_type} with "
+        logging.info(f"Initialized model of type {self.model_type} with "
                      f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters.")
         model.cuda()
         return model
@@ -380,6 +392,9 @@ def main():
     pprint.pprint(cfg.config)
     tr_loaders, ts_dsets = load_data(**cfg.config)
     trainer = Trainer(tr_loaders=tr_loaders, ts_dsets=ts_dsets, **cfg.config)
+    if trainer.transfer_learning:
+        # We have reloaded the model learned from args.log_dir
+        assert args.log_dir is not None and os.path.isdir(args.log_dir)
     if args.log_dir is not None:
         trainer.log_dir = args.log_dir
         checkpoint_path = os.path.join(trainer.log_dir, "model.pth")
