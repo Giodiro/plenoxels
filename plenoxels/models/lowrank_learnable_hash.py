@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 import kaolin.render.spc as spc_render
 
-from plenoxels.models.utils import get_intersections, grid_sample_wrapper
+from plenoxels.models.utils import grid_sample_wrapper
 from .decoders import NNDecoder, SHDecoder
 from ..ops.activations import trunc_exp
 from ..raymarching.raymarching import RayMarcher
