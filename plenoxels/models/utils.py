@@ -3,7 +3,7 @@ from typing import Optional
 import torch
 import torch.nn.functional as F
 
-from plenoxels.ops.interpolation import grid_sample_4d, grid_sample_1d
+from plenoxels.ops.interpolation import grid_sample_4d, grid_sample_1d, grid_sample_nd
 
 
 
@@ -61,7 +61,7 @@ def ensure_list(el, expand_size: Optional[int] = None) -> list:
         return [el]
 
 
-def grid_sample_wrapper(grid: torch.Tensor, coords: torch.Tensor) -> torch.Tensor:
+def grid_sample_wrapper(grid: torch.Tensor, coords: torch.Tensor, align_corners: bool = True) -> torch.Tensor:
     grid_dim = coords.shape[-1]
 
     if grid.dim() == grid_dim + 1:
@@ -74,26 +74,32 @@ def grid_sample_wrapper(grid: torch.Tensor, coords: torch.Tensor) -> torch.Tenso
         interp = grid_sample_1d(
             grid,  # [B, feature_dim, reso]
             coords,  # [B, n, 1]
-            align_corners=True,
+            align_corners=align_corners,
             mode='bilinear', padding_mode='border').squeeze().transpose(-1, -2)  # [B?, n, feature_dim]
     elif grid_dim == 2:
         interp = F.grid_sample(
             grid,  # [B, feature_dim, reso, reso]
             coords[:, None, ...],  # [B, 1, n, 2]
-            align_corners=True,
+            align_corners=align_corners,
             mode='bilinear', padding_mode='border').squeeze().transpose(-1, -2)  # [B?, n, feature_dim]
     elif grid_dim == 3:
         interp = F.grid_sample(
             grid,  # [B, feature_dim, reso, reso, reso]
             coords[:, None, None, ...],  # [B, 1, 1, n, 3]
-            align_corners=True,
+            align_corners=align_corners,
             mode='bilinear', padding_mode='border').squeeze().transpose(-1, -2)  # [B?, n, feature_dim]
     elif grid_dim == 4:
         interp = grid_sample_4d(
             grid,  # [B, feature_dim, reso, reso, reso, reso]
             coords[:, None, None, None, ...],  # [B, 1, 1, 1, n, 4]
-            align_corners=True,
+            align_corners=align_corners,
             mode='bilinear', padding_mode='border').squeeze().transpose(-1, -2)  # [B?, n, feature_dim]
     else:
-        raise ValueError("grid_dim can be 1, 2, 3 or 4.")
+        dims = coords.shape[-1]
+        coords = coords.view([coords.shape[0]] + [1] * (dims - 1) + list(coords.shape[1:]))
+        interp = grid_sample_nd(
+            grid,  # [B, feature_dim, reso, ...]
+            coords,  # [B, 1, ..., n, 4]
+            align_corners=align_corners,
+            mode='bilinear', padding_mode='border').squeeze().transpose(-1, -2)  # [B?, n, feature_dim]
     return interp
