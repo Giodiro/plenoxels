@@ -31,6 +31,7 @@ ext_modules = [
             # 'plenoxels/csrc/render_regular_tree.cu',
             'plenoxels/csrc/4d_interp.cu',
             'plenoxels/csrc/1d_interp.cu',
+            'plenoxels/csrc/nd_interp.cu',
         ],
         include_dirs=include_dirs,
         extra_compile_args={
@@ -50,6 +51,6 @@ setup(
     ext_modules=ext_modules,
     setup_requires=['pybind11>=2.5.0'],
     packages=['plenoxels'],
-    cmdclass={'build_ext': BuildExtension.with_options(no_python_abi_suffix=True, use_ninja=False)},
+    cmdclass={'build_ext': BuildExtension.with_options(no_python_abi_suffix=True, use_ninja=True)},
     zip_safe=False,
 )

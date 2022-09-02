@@ -50,7 +50,7 @@ def grid_sample_1d(
     )
 
 
-def grid_sample_2d_premul(
+def grid_sample_nd(
         input: torch.Tensor,
         grid: torch.Tensor,
         mode: str = "bilinear",
@@ -61,7 +61,10 @@ def grid_sample_2d_premul(
     padding_mode_ = get_padding_mode(padding_mode)
     if align_corners is None:
         align_corners = False
-    return torch.ops.plenoxels.grid_sample_2d_premul(
+    output = torch.empty([input.shape[0], input.shape[1]] + grid.shape[1:-1],
+                         dtype=input.dtype, device=input.device)
+    return torch.ops.plenoxels.grid_sample_nd(
+        output,
         input,
         grid,
         interpolation_mode,
