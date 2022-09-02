@@ -2,13 +2,17 @@
 # the configuration must be specified in a dictionary called `config`.
 import numpy as np
 
-samples_per_voxel = 6
-resolution = 128
+samples_per_voxel = 2
+resolution = 256
 config = {
     "expname": "test",
-    "data_resolution": 800,
-    "data_downsample": 1,
+    "data_resolution": None,
+    "data_downsample": 1.562,
     "data_dirs": ["/data/datasets/nerf/data/nerf_synthetic/lego"],
+    # "data_dirs": ["/data/datasets/nerf/data/nerf_synthetic/lego", 
+    #             "/data/datasets/nerf/data/nerf_synthetic/materials",
+    #             "/data/datasets/nerf/data/nerf_synthetic/mic",
+    #             "/data/datasets/nerf/data/nerf_synthetic/ship"],
 
     "max_tr_frames": None,
     "max_ts_frames": 10,
@@ -26,14 +30,17 @@ config = {
 
     "lr": 2e-3,
 
-    "n_intersections": resolution * samples_per_voxel,
+    "raymarch_type": "voxel_size",
+    "sampling_resolution": resolution,
+    "num_sample_multiplier": samples_per_voxel,
+    "n_intersections": resolution,
     "grid_config": """
 [
     {
         "input_coordinate_dim": 3,
         "output_coordinate_dim": 4,
         "grid_dimensions": 2,
-        "resolution": 128,
+        "resolution": 256,
         "rank": 20,
         "init_std": 0.1,
     },
