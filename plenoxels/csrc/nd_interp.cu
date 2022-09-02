@@ -125,16 +125,19 @@ namespace {
           for (uint32_t i = 0; i < N_COMBOS; i++) {
             // the first loop is done to calculate the input pointer
             index_t inp_ptr_offset = 0;
+            bool in_bounds = true;
             #pragma unroll dims
             for (int d = 0; d < dims; d++) {
               index_t coo_i_d = c0[d] + CHECK_BIT(i, d);
               if (coo_i_d < 0 || coo_i_d >= input.sizes[dims + 1 - d]) {
-                goto iloop_continue;
+                in_bounds = false;
+                break;
               }
               inp_ptr_offset += coo_i_d * input.strides[dims + 1 - d];
             }
-            *out_ptr += inp_ptr[inp_ptr_offset] * neighbor_weights[i];
-            iloop_continue:
+            if (in_bounds) {
+              *out_ptr += inp_ptr[inp_ptr_offset] * neighbor_weights[i];
+            }
           }
         }
       }
@@ -230,11 +233,13 @@ namespace {
             // calculate the pointer to grad-input, then if in-bounds do atomic-add.
             index_t ginp_ptr_offset = gInpNC_offset;
             index_t inp_ptr_offset = inpNC_offset;
+            bool in_bounds = true;
             #pragma unroll dims
             for (int d = 0; d < dims; d++) {
               index_t coo_i_d = c0[d] + CHECK_BIT(i, d);
               if (coo_i_d < 0 || coo_i_d >= grad_input.sizes[dims + 1 - d]) {
-                goto iloop_continue;
+                in_bounds = false;
+                break;
               }
               if (input_requires_grad) {
                 ginp_ptr_offset += coo_i_d * grad_input.strides[dims + 1 - d];
@@ -242,7 +247,7 @@ namespace {
               inp_ptr_offset += coo_i_d * input.strides[dims + 1 - d];
             }
             // input-grad
-            if (input_requires_grad) {
+            if (input_requires_grad && in_bounds) {
               at::native::fastAtomicAdd(grad_input.data,
                                         ginp_ptr_offset,
                                         grad_input_memory_span,
@@ -250,17 +255,20 @@ namespace {
                                         true);
             }
             // grid-grad
-            scalar_t inp_val = input.data[inp_ptr_offset];
-            for (int d = 0; d < dims; d++) {
-              scalar_t gCooD = ((__popc(i) & 1) ? static_cast<scalar_t>(1) : static_cast<scalar_t>(-1)) * gOut * inp_val;
-              #pragma unroll dims
-              for (int d2 = 0; d2 < dims; d2++) {
-                if (d2 == d) continue;
-                gCooD *= static_cast<scalar_t>((c0[d2] + CHECK_BIT(~i, d2))) - coo[d2];
+            if (in_bounds) {
+              scalar_t inp_val = input.data[inp_ptr_offset];
+              for (int d = 0; d < dims; d++) {
+                //scalar_t gCooD = (CHECK_BIT(i, d) ? +1 : -1) * gOut * inp_val * ((__popc(i & (~(1 << d))) & 1) ? static_cast<scalar_t>(-1) : static_cast<scalar_t>(+1));
+                scalar_t gCooD = ((__popc(i) & 1) ? static_cast<scalar_t>(1) : static_cast<scalar_t>(-1)) * gOut * inp_val;
+                #pragma unroll dims
+                for (int d2 = 0; d2 < dims; d2++) {
+                  if (d2 == d) continue;
+                  //gCooD *= (CHECK_BIT(i, d2) ? -1 : +1) * (static_cast<scalar_t>((c0[d2] + CHECK_BIT(~i, d2))) - coo[d2]);
+                  gCooD *= static_cast<scalar_t>((c0[d2] + CHECK_BIT(~i, d2))) - coo[d2];
+                }
+                gcoo[d] += gCooD;
               }
-              gcoo[d] += gCooD;
             }
-            iloop_continue:
           }
         }
         // assuming grad_grid is contiguous
