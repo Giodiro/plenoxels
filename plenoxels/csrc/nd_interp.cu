@@ -143,8 +143,6 @@ namespace {
     index_t inp_sN = input.strides[0];
     index_t inp_sC = input.strides[1];
     index_t grid_sN = grid.strides[0];
-    index_t out_sN = output.strides[0];
-    index_t out_sC = output.strides[1];
     index_t grid_sCoor = grid.strides[dims + 1];
     index_t gOut_sN = grad_output.strides[0];
     index_t gOut_sC = grad_output.strides[1];
@@ -167,12 +165,12 @@ namespace {
       for (int d = 0; d < dims; d++) {
         const index_t gridcoo_d = (index / mul) % grid.sizes[dims - d];
         grid_ptr += gridcoo_d * grid.strides[dims - d];
-        gout_ptr += gridcoo_d * output.strides[dims - d + 1];
+        gout_ptr += gridcoo_d * grad_output.strides[dims - d + 1];
         mul *= grid.sizes[dims - d];
       }
       const index_t n = index / mul;
       grid_ptr += n * grid_sN;
-      gout_ptr += n * out_sN;
+      gout_ptr += n * gOut_sN;
       index_t gInpNC_offset;
       index_t inpNC_offset = n * inp_sN;
       if (input_requires_grad) {
@@ -207,7 +205,7 @@ namespace {
         }
 
         scalar_t gcoo[dims] = { static_cast<scalar_t>(0) };
-        for (index_t c = 0; c < C; ++c, gout_ptr += out_sC, gInpNC_offset += gInp_sC, inpNC_offset += inp_sC) {
+        for (index_t c = 0; c < C; ++c, gout_ptr += gOut_sC, gInpNC_offset += gInp_sC, inpNC_offset += inp_sC) {
           scalar_t gOut = *gout_ptr;
           for (int i = 0; i < N_COMBOS; i++) {
             // calculate the pointer to grad-input, then if in-bounds do atomic-add.
@@ -226,7 +224,7 @@ namespace {
               }
               inp_ptr_offset += coo_i_d * input.strides[dims + 1 - d];
             }
-            // input-grid
+            // input-grad
             if (input_requires_grad && in_bounds) {
               at::native::fastAtomicAdd(grad_input.data,
                                         ginp_ptr_offset,
@@ -234,15 +232,15 @@ namespace {
                                         gOut * neighbor_weights[i],
                                         true);
             }
-            // grad-grid
+            // grid-grad
             if (in_bounds) {
               scalar_t inp_val = input.data[inp_ptr_offset];
               for (int d = 0; d < dims; d++) {
                 scalar_t gCooD = (CHECK_BIT(i, d) ? +1 : -1) * gOut * inp_val;
                 #pragma unroll dims
-                for (int d2 = 0; d2 < dims; d++) {
+                for (int d2 = 0; d2 < dims; d2++) {
                   if (d2 == d) continue;
-                  gCooD *= static_cast<scalar_t>((c0[d2] + CHECK_BIT(~i, d2))) - coo[d2];
+                  gCooD *= (CHECK_BIT(i, d2) ? -1 : +1) * (static_cast<scalar_t>((c0[d2] + CHECK_BIT(~i, d2))) - coo[d2]);
                 }
                 gcoo[d] += gCooD;
               }
@@ -277,12 +275,14 @@ void call_fwd_kernel(
       bool align_corners) {
   void (*fs[])(const index_t, TensorInfo<scalar_t, index_t>, TensorInfo<scalar_t, index_t>, TensorInfo<scalar_t, index_t>, const GridSamplerInterpolation, const GridSamplerPadding, bool) = {&grid_sampler_nd_kernel<scalar_t, index_t, Ds>...};
   fs[d]<<<GET_BLOCKS(nthreads, 512), 512, 0, at::cuda::getCurrentCUDAStream()>>>(nthreads, input, grid, output, interpolation_mode, padding_mode, align_corners);
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
 
 template<typename scalar_t, typename index_t, int ... Ds>
 void call_bwd_kernel(
     std::integer_sequence<int, Ds...>,
+    const index_t d,
     const index_t nthreads,
     TensorInfo<scalar_t, index_t> grad_output,
     TensorInfo<scalar_t, index_t> input,
@@ -299,6 +299,7 @@ void call_bwd_kernel(
                const GridSamplerInterpolation, const GridSamplerPadding, bool, const index_t, const bool) = {&grid_sampler_nd_backward_kernel<scalar_t, index_t, Ds>...};
   fs[d]<<<GET_BLOCKS(nthreads, 256), 256, 0, at::cuda::getCurrentCUDAStream()>>>(
     nthreads, grad_output, input, grid, grad_input, grad_grid, interpolation_mode, padding_mode, align_corners, grad_input_memory_span, input_requires_grad);
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
 
@@ -329,7 +330,6 @@ void launch_grid_sampler_nd_forward_kernel(
             static_cast<GridSamplerInterpolation>(interpolation_mode),
             static_cast<GridSamplerPadding>(padding_mode),
             align_corners);
-        C10_CUDA_KERNEL_LAUNCH_CHECK();
       } else {
         call_fwd_kernel<scalar_t>(
             std::integer_sequence<int, 1, 2, 3, 4, 5, 6, 7>{}, 
@@ -341,7 +341,6 @@ void launch_grid_sampler_nd_forward_kernel(
             static_cast<GridSamplerInterpolation>(interpolation_mode),
             static_cast<GridSamplerPadding>(padding_mode),
             align_corners);
-        C10_CUDA_KERNEL_LAUNCH_CHECK();
       }
     });
   }
@@ -351,7 +350,7 @@ void launch_grid_sampler_nd_backward_kernel(
     const TensorBase &grad_input, const TensorBase &grad_grid,
     const TensorBase& grad_output, const TensorBase& input,
     const TensorBase& grid, int64_t interpolation_mode, int64_t padding_mode,
-    bool align_corners, std::array<bool,2> output_mask)
+    bool align_corners, std::array<bool,2> output_mask) {
   // See NOTE [ grid_sampler Native Functions ].
   // Add checks here in case this is called instead of grid_sampler.
 
@@ -361,10 +360,11 @@ void launch_grid_sampler_nd_backward_kernel(
   for (int d = 1; d < grid.dim() - 1; d++) {
     count *= grid.size(d);
   }
+  auto input_requires_grad = output_mask[0];
 
   if (count > 0) {
     AT_DISPATCH_FLOATING_TYPES_AND_HALF(input.scalar_type(), "grid_sampler_nd_backward_cuda", [&] {
-      if (canUse32BitIndexMath(input) && canUse32BitIndexMath(grid) && canUse32BitIndexMath(output)) {
+      if (canUse32BitIndexMath(input) && canUse32BitIndexMath(grid) && canUse32BitIndexMath(grad_output)) {
         call_bwd_kernel<scalar_t>(
             std::integer_sequence<int, 1, 2, 3, 4, 5, 6, 7>{},
             static_cast<int>(dims) - 1,
@@ -379,7 +379,6 @@ void launch_grid_sampler_nd_backward_kernel(
             align_corners,
             /*grad_input_memory_span =*/input_requires_grad ? static_cast<int>(grad_input.numel()) : 0,
             input_requires_grad);
-        C10_CUDA_KERNEL_LAUNCH_CHECK();
       } else {
         call_bwd_kernel<scalar_t>(
             std::integer_sequence<int, 1, 2, 3, 4, 5, 6, 7>{},
@@ -395,7 +394,6 @@ void launch_grid_sampler_nd_backward_kernel(
             align_corners,
             /*grad_input_memory_span =*/input_requires_grad ? grad_input.numel() : 0,
             input_requires_grad);
-        C10_CUDA_KERNEL_LAUNCH_CHECK();
       }
     });
   }
@@ -413,8 +411,6 @@ class GridSampleNd : public Function<GridSampleNd> {
     ) {
       auto in_size = input.sizes();
       auto grid_size = grid.sizes();
-      |    output = torch.empty([input.shape[0], input.shape[1]] + list(grid.shape[1:-1]),
--                         dtype=input.dtype, device=input.device)
       std::vector<int64_t> out_shape = grid.sizes().vec();
       out_shape.erase(out_shape.begin());
       out_shape.erase(out_shape.end() - 1);

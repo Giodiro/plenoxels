@@ -61,10 +61,7 @@ def grid_sample_nd(
     padding_mode_ = get_padding_mode(padding_mode)
     if align_corners is None:
         align_corners = False
-    output = torch.empty([input.shape[0], input.shape[1]] + grid.shape[1:-1],
-                         dtype=input.dtype, device=input.device)
     return torch.ops.plenoxels.grid_sample_nd(
-        output,
         input,
         grid,
         interpolation_mode,
