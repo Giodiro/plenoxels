@@ -48,7 +48,7 @@ class RayMarcher():
         else:
             step_size = (radius * 2) / (self.sampling_resolution * self.num_sample_multiplier)
             # step-size and n-intersections are scaled to artificially increment resolution of model
-            n_intersections = math.sqrt(3.) * (self.sampling_resolution * self.num_sample_multiplier)
+            n_intersections = int(math.sqrt(3.) * self.sampling_resolution * self.num_sample_multiplier)
             steps = torch.arange(n_intersections, dtype=dt, device=dev)[None]  # [1, num_samples]
             steps = steps.expand((n_rays, n_intersections))  # [num_rays, num_samples]
             intersections = start + steps * step_size  # [batch, n_intrs]

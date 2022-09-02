@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from plenoxels.nerf_rendering import shrgb2rgb, depth_map, sigma2alpha
-from plenoxels.models.utils import ensure_list, positional_encoding, get_intersections
+from plenoxels.models.utils import ensure_list, positional_encoding
 
 try:
     spec = PathFinder().find_spec("c_ext", [str(Path(__file__).resolve().parents[1])])
