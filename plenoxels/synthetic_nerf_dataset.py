@@ -114,7 +114,7 @@ class SyntheticNerfDataset(TensorDataset):
         tot_frames = len(frames)
 
         num_frames = min(tot_frames, self.max_frames or tot_frames)
-        if self.split == 'train':
+        if self.split == 'train' or self.split == 'test':
             subsample = int(round(tot_frames / num_frames))
             frame_ids = np.arange(tot_frames)[::subsample]
             if subsample > 1:
