@@ -319,7 +319,7 @@ class Trainer():
         if self.model_type == "learnable_hash":
             model = LowrankLearnableHash(
                 num_scenes=self.num_dsets,
-                grid_config=kwargs.get("grid_config"),
+                grid_config=kwargs.pop("grid_config"),
                 radi=radi,
                 **kwargs)
         else:
