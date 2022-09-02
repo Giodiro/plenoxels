@@ -28,6 +28,28 @@ using at::TensorBase;
 #define CHECK_BIT(var,pos) (((var)>>(pos)) & 1)
 
 namespace {
+
+  constexpr auto ALLOWED_DIMS = std::integer_sequence<int, 1, 2, 3, 4, 5, 6, 7>{};
+
+  void check_grid_sampler_nd(
+    const TensorBase& input,
+    const TensorBase& grid,
+    int64_t interpolation_mode
+  ) {
+    TORCH_CHECK(
+      input.dim() == grid.dim(),
+      "grid_sampler(): expected input and grid with the same number of "
+      "dimensions, but got input with sizes ", input.sizes(),
+      " and grid with sizes ", grid.sizes());
+    TORCH_CHECK(  // TODO: check using ALLOWED_DIMS
+      input.dim() >= 3 && input.dim() <= 9,
+      "grid_sampler(): Nd sampler expects inputs between 3D and 9D, but "
+      "input has sizes ", input.sizes());
+    TORCH_CHECK(
+      static_cast<GridSamplerInterpolation>(interpolation_mode) == GridSamplerInterpolation::Bilinear,
+      "grid_sampler(): N-d sampling only supports bilinear interpolation");
+  }
+
   template <typename scalar_t, typename index_t, int dims>
   C10_LAUNCH_BOUNDS_1(512)
   __global__ void grid_sampler_nd_kernel(
@@ -236,11 +258,13 @@ namespace {
             if (in_bounds) {
               scalar_t inp_val = input.data[inp_ptr_offset];
               for (int d = 0; d < dims; d++) {
-                scalar_t gCooD = (CHECK_BIT(i, d) ? +1 : -1) * gOut * inp_val;
+                //scalar_t gCooD = (CHECK_BIT(i, d) ? +1 : -1) * gOut * inp_val * ((__popc(i & (~(1 << d))) & 1) ? static_cast<scalar_t>(-1) : static_cast<scalar_t>(+1));
+                scalar_t gCooD = ((__popc(i) & 1) ? static_cast<scalar_t>(1) : static_cast<scalar_t>(-1)) * gOut * inp_val;
                 #pragma unroll dims
                 for (int d2 = 0; d2 < dims; d2++) {
                   if (d2 == d) continue;
-                  gCooD *= (CHECK_BIT(i, d2) ? -1 : +1) * (static_cast<scalar_t>((c0[d2] + CHECK_BIT(~i, d2))) - coo[d2]);
+                  //gCooD *= (CHECK_BIT(i, d2) ? -1 : +1) * (static_cast<scalar_t>((c0[d2] + CHECK_BIT(~i, d2))) - coo[d2]);
+                  gCooD *= static_cast<scalar_t>((c0[d2] + CHECK_BIT(~i, d2))) - coo[d2];
                 }
                 gcoo[d] += gCooD;
               }
@@ -259,47 +283,66 @@ namespace {
       }
     }
   }
-}
 
+  template<typename scalar_t, typename index_t>
+  using grid_sampler_nd_kernel_t = void(*) (const index_t, 
+                                            TensorInfo<scalar_t, index_t>, 
+                                            TensorInfo<scalar_t, index_t>, 
+                                            TensorInfo<scalar_t, index_t>, 
+                                            const GridSamplerInterpolation, 
+                                            const GridSamplerPadding, 
+                                            bool);
+  template<typename scalar_t, typename index_t>
+  using grid_sampler_nd_backward_kernel_t = void(*) (const index_t, 
+                                                    TensorInfo<scalar_t, index_t>, 
+                                                    TensorInfo<scalar_t, index_t>,
+                                                    TensorInfo<scalar_t, index_t>, 
+                                                    TensorInfo<scalar_t, index_t>, 
+                                                    TensorInfo<scalar_t, index_t>,
+                                                    const GridSamplerInterpolation, 
+                                                    const GridSamplerPadding, 
+                                                    bool, 
+                                                    const index_t, 
+                                                    const bool);
 
-template<typename scalar_t, typename index_t, int ... Ds>
-void call_fwd_kernel(
-      std::integer_sequence<int, Ds...>, 
+  template<typename scalar_t, typename index_t, int ... Ds>
+  void call_fwd_kernel(
+        std::integer_sequence<int, Ds...>, 
+        const index_t d,
+        const index_t nthreads,
+        TensorInfo<scalar_t, index_t> input,   // [N, C, Hi, Wi, ...]
+        TensorInfo<scalar_t, index_t> grid,    // [N, Ho, Wo, ..., dims]
+        TensorInfo<scalar_t, index_t> output,  // [N, C, Ho, Wo, ...]
+        const GridSamplerInterpolation interpolation_mode,
+        const GridSamplerPadding padding_mode,
+        bool align_corners) {
+    grid_sampler_nd_kernel_t<scalar_t, index_t> fs[] = {&grid_sampler_nd_kernel<scalar_t, index_t, Ds>...};
+    fs[d]<<<GET_BLOCKS(nthreads, 512), 512, 0, at::cuda::getCurrentCUDAStream()>>>(
+            nthreads, input, grid, output, interpolation_mode, padding_mode, align_corners);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+  }
+
+  template<typename scalar_t, typename index_t, int ... Ds>
+  void call_bwd_kernel(
+      std::integer_sequence<int, Ds...>,
       const index_t d,
       const index_t nthreads,
-      TensorInfo<scalar_t, index_t> input,   // [N, C, Hi, Wi, ...]
-      TensorInfo<scalar_t, index_t> grid,    // [N, Ho, Wo, O]
-      TensorInfo<scalar_t, index_t> output,  // [N, C, Ho, Wo]
+      TensorInfo<scalar_t, index_t> grad_output,
+      TensorInfo<scalar_t, index_t> input,
+      TensorInfo<scalar_t, index_t> grid,
+      TensorInfo<scalar_t, index_t> grad_input,  // initialized to zeros (or unused if input_requires_grad is false)
+      TensorInfo<scalar_t, index_t> grad_grid,   // initialized to empty
       const GridSamplerInterpolation interpolation_mode,
       const GridSamplerPadding padding_mode,
-      bool align_corners) {
-  void (*fs[])(const index_t, TensorInfo<scalar_t, index_t>, TensorInfo<scalar_t, index_t>, TensorInfo<scalar_t, index_t>, const GridSamplerInterpolation, const GridSamplerPadding, bool) = {&grid_sampler_nd_kernel<scalar_t, index_t, Ds>...};
-  fs[d]<<<GET_BLOCKS(nthreads, 512), 512, 0, at::cuda::getCurrentCUDAStream()>>>(nthreads, input, grid, output, interpolation_mode, padding_mode, align_corners);
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
-}
-
-
-template<typename scalar_t, typename index_t, int ... Ds>
-void call_bwd_kernel(
-    std::integer_sequence<int, Ds...>,
-    const index_t d,
-    const index_t nthreads,
-    TensorInfo<scalar_t, index_t> grad_output,
-    TensorInfo<scalar_t, index_t> input,
-    TensorInfo<scalar_t, index_t> grid,
-    TensorInfo<scalar_t, index_t> grad_input,  // initialized to zeros (or unused if input_requires_grad is false)
-    TensorInfo<scalar_t, index_t> grad_grid,   // initialized to empty
-    const GridSamplerInterpolation interpolation_mode,
-    const GridSamplerPadding padding_mode,
-    bool align_corners,
-    const index_t grad_input_memory_span,
-    const bool input_requires_grad) {
-  void (*fs[])(const index_t, TensorInfo<scalar_t, index_t>, TensorInfo<scalar_t, index_t>,
-               TensorInfo<scalar_t, index_t>, TensorInfo<scalar_t, index_t>, TensorInfo<scalar_t, index_t>,
-               const GridSamplerInterpolation, const GridSamplerPadding, bool, const index_t, const bool) = {&grid_sampler_nd_backward_kernel<scalar_t, index_t, Ds>...};
-  fs[d]<<<GET_BLOCKS(nthreads, 256), 256, 0, at::cuda::getCurrentCUDAStream()>>>(
-    nthreads, grad_output, input, grid, grad_input, grad_grid, interpolation_mode, padding_mode, align_corners, grad_input_memory_span, input_requires_grad);
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
+      bool align_corners,
+      const index_t grad_input_memory_span,
+      const bool input_requires_grad) {
+    grid_sampler_nd_backward_kernel_t<scalar_t, index_t> fs[] = {&grid_sampler_nd_backward_kernel<scalar_t, index_t, Ds>...};
+    fs[d]<<<GET_BLOCKS(nthreads, 256), 256, 0, at::cuda::getCurrentCUDAStream()>>>(
+             nthreads, grad_output, input, grid, grad_input, grad_grid, interpolation_mode, 
+             padding_mode, align_corners, grad_input_memory_span, input_requires_grad);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+  }
 }
 
 
@@ -308,6 +351,8 @@ void launch_grid_sampler_nd_forward_kernel(
     int64_t interpolation_mode, int64_t padding_mode, bool align_corners) {
   // See NOTE [ grid_sampler Native Functions ].
   // Add checks here in case this is called instead of grid_sampler.
+  at::native::check_grid_sampler_common(input, grid);
+  check_grid_sampler_nd(input, grid, interpolation_mode);
 
   auto N = input.size(0);
   auto dims = grid.dim() - 2;
@@ -321,7 +366,7 @@ void launch_grid_sampler_nd_forward_kernel(
       if (canUse32BitIndexMath(input) && canUse32BitIndexMath(grid) &&
           canUse32BitIndexMath(output)) {
         call_fwd_kernel<scalar_t>(
-            std::integer_sequence<int, 1, 2, 3, 4, 5, 6, 7>{}, 
+            ALLOWED_DIMS,
             static_cast<int>(dims) - 1,
             static_cast<int>(count),
             getTensorInfo<scalar_t, int>(input),
@@ -332,7 +377,7 @@ void launch_grid_sampler_nd_forward_kernel(
             align_corners);
       } else {
         call_fwd_kernel<scalar_t>(
-            std::integer_sequence<int, 1, 2, 3, 4, 5, 6, 7>{}, 
+            ALLOWED_DIMS,
             dims - 1,
             count,
             getTensorInfo<scalar_t, int64_t>(input),
@@ -353,6 +398,8 @@ void launch_grid_sampler_nd_backward_kernel(
     bool align_corners, std::array<bool,2> output_mask) {
   // See NOTE [ grid_sampler Native Functions ].
   // Add checks here in case this is called instead of grid_sampler.
+  at::native::check_grid_sampler_common(input, grid);
+  check_grid_sampler_nd(input, grid, interpolation_mode);
 
   auto N = input.size(0);
   auto dims = grid.dim() - 2;
@@ -366,7 +413,7 @@ void launch_grid_sampler_nd_backward_kernel(
     AT_DISPATCH_FLOATING_TYPES_AND_HALF(input.scalar_type(), "grid_sampler_nd_backward_cuda", [&] {
       if (canUse32BitIndexMath(input) && canUse32BitIndexMath(grid) && canUse32BitIndexMath(grad_output)) {
         call_bwd_kernel<scalar_t>(
-            std::integer_sequence<int, 1, 2, 3, 4, 5, 6, 7>{},
+            ALLOWED_DIMS,
             static_cast<int>(dims) - 1,
             static_cast<int>(count),
             getTensorInfo<scalar_t, int>(grad_output),
@@ -381,7 +428,7 @@ void launch_grid_sampler_nd_backward_kernel(
             input_requires_grad);
       } else {
         call_bwd_kernel<scalar_t>(
-            std::integer_sequence<int, 1, 2, 3, 4, 5, 6, 7>{},
+            ALLOWED_DIMS,
             dims - 1,
             count,
             getTensorInfo<scalar_t, int64_t>(grad_output),

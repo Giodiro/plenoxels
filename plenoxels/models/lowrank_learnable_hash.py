@@ -51,7 +51,7 @@ class LowrankLearnableHash(nn.Module):
                     # Configuration correctness checks
                     if li == 0:
                         assert in_dim == 3
-                    assert out_dim in {1, 2, 3, 4}
+                    assert out_dim in {1, 2, 3, 4, 5, 6, 7}
                     assert grid_nd <= in_dim
                     if grid_nd == in_dim:
                         assert rank == 1
