@@ -16,7 +16,8 @@ from ..raymarching.raymarching import RayMarcher
 class LowrankVideo(nn.Module):
     def __init__(self,
                  grid_config: Union[str, List[Dict]],
-                 radi: List[float],
+                 radi: float,
+                 len_time: int,
                  **kwargs):
         super().__init__()
         if isinstance(grid_config, str):
@@ -24,6 +25,7 @@ class LowrankVideo(nn.Module):
         else:
             self.config: List[Dict] = grid_config
         self.radi = radi
+        self.len_time = len_time
         self.extra_args = kwargs
         self.raymarcher = RayMarcher(**kwargs)
 
@@ -80,12 +82,11 @@ class LowrankVideo(nn.Module):
         coo_combs = list(itertools.combinations(range(coords.shape[-1]), dim))
         return coords[..., coo_combs].transpose(0, 1)
 
-    def compute_features(self, pts):
+    def compute_features(self, pts, timestamps):
         [grid_space, grid_time] = self.grids  # space: [3, rank * F_dim * time_rank, reso, reso], time: [time_rank*F_dim, time_reso]
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
 
-        interp = torch.cat([pts, torch.zeros(len(pts), 1).to(pts.device)], dim=-1)  # [n, 4] xyzt
-        # TODO: have real time instead of just zeros
+        interp = torch.cat([pts, timestamps[:,None]], dim=-1)  # [n, 4] xyzt
         # Interpolate in time
         interp_time = grid_sample_wrapper(grid_time.unsqueeze(0), interp[:,-1].unsqueeze(0).unsqueeze(-1))  # [n, F_dim * time_rank]
         interp_time = interp_time.view(len(interp), -1, level_info['time_rank'])  # [n, F_dim, time_rank]
@@ -101,13 +102,15 @@ class LowrankVideo(nn.Module):
         interp = (interp_space * interp_time).sum(dim=-1)  # [n, F_dim]
         return grid_sample_wrapper(self.features, interp)
 
-    def forward(self, rays_o, rays_d, bg_color):
+    def forward(self, rays_o, rays_d, timestamps, bg_color):
         """
         rays_o : [batch, 3]
         rays_d : [batch, 3]
+        timestamps : [batch]
         """
-        intersection_pts, ridx, boundary, deltas = self.raymarcher.get_intersections(
-            rays_o, rays_d, self.radi, perturb=self.training)
+
+        intersection_pts, ridx, boundary, deltas, times = self.raymarcher.get_intersections(
+            rays_o, rays_d, self.radi, perturb=self.training, timestamps=timestamps)
         n_rays = rays_o.shape[0]
         dev = rays_o.device
 
@@ -116,12 +119,13 @@ class LowrankVideo(nn.Module):
 
         # Normalization (between [-1, 1])
         intersection_pts = intersection_pts / self.radi
+        times = (times * 2 / self.len_time) - 1
         rays_d = rays_d / torch.linalg.norm(rays_d, dim=-1, keepdim=True)
         # rays_d in the packed format (essentially repeated a number of times)
         rays_d_rep = rays_d.index_select(0, ridx)
 
         # compute features and render
-        features = self.compute_features(intersection_pts)
+        features = self.compute_features(intersection_pts, times)
         density_masked = trunc_exp(self.decoder.compute_density(features, rays_d=rays_d_rep))
         rgb_masked = torch.sigmoid(self.decoder.compute_color(features, rays_d=rays_d_rep))
 

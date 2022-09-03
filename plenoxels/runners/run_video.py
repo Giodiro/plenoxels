@@ -22,13 +22,9 @@ from plenoxels.models.lowrank_video import LowrankVideo
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_exr, write_png
 from plenoxels.runners.utils import *
-from plenoxels.synthetic_nerf_dataset import SyntheticNerfDataset
+from plenoxels.video_dataset import VideoDataset
 
-'''
-TODOs
-- load the video data. Pass in xyzt for each point to lowrank_video.
-- test it. always treat cam00.mp4 as test data and all other views as training, to match https://github.com/facebookresearch/Neural_3D_Video/releases/tag/v1.0
-'''
+
 
 class Trainer():
     def __init__(self,
@@ -87,18 +83,21 @@ class Trainer():
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             rays_o = data[0]
             rays_d = data[1]
+            timestamps = data[2]
             preds = []
             for b in range(math.ceil(rays_o.shape[0] / self.batch_size)):
                 rays_o_b = rays_o[b * self.batch_size: (b + 1) * self.batch_size].cuda()
                 rays_d_b = rays_d[b * self.batch_size: (b + 1) * self.batch_size].cuda()
-                preds.append(self.model(rays_o_b, rays_d_b, bg_color=1))
+                timestamps_d_b = timestamps[b * self.batch_size: (b + 1) * self.batch_size].cuda()
+                preds.append(self.model(rays_o_b, rays_d_b, timestamps_d_b, bg_color=1))
             preds = torch.cat(preds, 0)
         return preds
 
     def step(self, data):
         rays_o = data[0].cuda()
         rays_d = data[1].cuda()
-        imgs = data[2].cuda()
+        timestamps = data[2].cuda()
+        imgs = data[3].cuda()
         self.optimizer.zero_grad(set_to_none=True)
 
         C = imgs.shape[-1]
@@ -110,7 +109,7 @@ class Trainer():
             imgs = imgs[..., :3] * imgs[..., 3:] + bg_color * (1.0 - imgs[..., 3:])
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            rgb_preds = self.model(rays_o, rays_d, bg_color=bg_color)
+            rgb_preds = self.model(rays_o, rays_d, timestamps, bg_color=bg_color)
             loss = self.criterion(rgb_preds, imgs)
 
         self.gscaler.scale(loss).backward()
@@ -299,9 +298,11 @@ class Trainer():
 
     def init_model(self, **kwargs) -> torch.nn.Module:
         radi = self.train_data_loader.dataset.radius
+        len_time = self.train_data_loader.dataset.len_time
         if self.model_type == "learnable_hash":
             model = LowrankVideo(
                 radi=radi,
+                len_time=len_time,
                 **kwargs)
         else:
             raise ValueError(f"Model type {self.model_type} invalid")
@@ -328,21 +329,21 @@ def setup_logging(log_level=logging.INFO):
                         handlers=handlers)
 
 
-def load_data(data_resolution, data_downsample, data_dir, max_tr_frames, max_ts_frames, batch_size, **kwargs):
+def load_data(data_downsample, data_dir, subsample_time_train, batch_size, **kwargs):
     if data_downsample is None:
         data_downsample = 1.0
     # Training datasets are lists of lists, where each inner list is different resolutions for the same scene
     # Test datasets are a single list over the different scenes, all at full resolution
-    logging.info(f"About to load data at reso={data_resolution}, downsample={data_downsample}")
-    tr_dset = SyntheticNerfDataset(
-        data_dir, split='train', downsample=data_downsample, resolution=data_resolution,
-        max_frames=max_tr_frames)
+    logging.info(f"About to load data with downsample={data_downsample} and using {subsample_time_train * 100}% of the video frames")
+    tr_dset = VideoDataset(
+        data_dir, split='train', downsample=data_downsample, 
+        subsample_time=subsample_time_train)
     tr_loader = torch.utils.data.DataLoader(
         tr_dset, batch_size=batch_size, shuffle=True, num_workers=3,
         prefetch_factor=4, pin_memory=True)
-    ts_dset = SyntheticNerfDataset(
-        data_dir, split='test', downsample=1, resolution=800,
-        max_frames=max_ts_frames)
+    ts_dset = VideoDataset(
+        data_dir, split='test', downsample=1,
+        subsample_time=1)
     return tr_loader, ts_dset
 
 

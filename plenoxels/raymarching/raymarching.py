@@ -28,7 +28,7 @@ class RayMarcher():
         self.num_sample_multiplier = num_sample_multiplier
 
     @torch.autograd.no_grad()
-    def get_intersections(self, rays_o, rays_d, radius: float, perturb: bool = False,
+    def get_intersections(self, rays_o, rays_d, radius: float, perturb: bool = False, timestamps=None
                           ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         dev, dt = rays_o.device, rays_o.dtype
         n_rays = rays_o.shape[0]
@@ -61,11 +61,17 @@ class RayMarcher():
 
         intrs_pts = rays_o[..., None, :] + rays_d[..., None, :] * intersections[..., None]  # [batch, n_intrs, 3]
         mask = ((-radius <= intrs_pts) & (intrs_pts <= radius)).all(dim=-1)
-
+        
         ridx = torch.arange(0, n_rays, device=dev)
         ridx = ridx[..., None].repeat(1, n_intersections)[mask]
         boundary = spc_render.mark_pack_boundaries(ridx)
         deltas = deltas[mask]
         intrs_pts = intrs_pts[mask]
+
+        # Apply mask to timestamps as well
+        if timestamps is not None:
+            assert len(timestamps) == len(rays_o)
+            timestamps = timestamps[:,None].repeat(1, mask.shape[1])[mask]
+            return intrs_pts, ridx, boundary, deltas, timestamps
 
         return intrs_pts, ridx, boundary, deltas

@@ -1,17 +1,12 @@
-# configuration file to be used with `run_multi_scene.py`
-# the configuration must be specified in a dictionary called `config`.
-import numpy as np
-
+# configuration file to be used with `run_video.py`
 samples_per_voxel = 2
 resolution = 128
 config = {
     "expname": "test",
-    "data_resolution": None,
-    "data_downsample": 1.562,
-    "data_dir": "/data/datasets/nerf/data/nerf_synthetic/lego",
+    "data_downsample": 2.0,
+    "data_dir": "/data/datasets/3DVideo/coffee_martini",
 
-    "max_tr_frames": None,
-    "max_ts_frames": 10,
+    "subsample_time_train": 0.2,
     "batch_size": 1000,
     "num_batches_per_dset": 1,
     "num_epochs": 10,
