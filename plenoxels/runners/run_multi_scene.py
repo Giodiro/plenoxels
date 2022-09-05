@@ -9,6 +9,9 @@ from typing import Dict, List, Optional
 import pprint
 
 import numpy as np
+
+from plenoxels.datasets.llff_dataset import LLFFDataset
+
 np.random.seed(0)
 import pandas as pd
 import torch
@@ -314,12 +317,13 @@ class Trainer():
         return optim
 
     def init_model(self, **kwargs) -> torch.nn.Module:
-        radi = [dl.dataset.radius for dl in self.train_data_loaders]
+        aabbs = [dl.dataset.scene_bbox for dl in self.train_data_loaders]
         if self.model_type == "learnable_hash":
             model = LowrankLearnableHash(
                 num_scenes=self.num_dsets,
                 grid_config=kwargs.pop("grid_config"),
-                radi=radi,
+                aabb=aabbs,
+                is_ndc=self.train_data_loaders[0].dataset.is_ndc,  # TODO: This should also be per-scene
                 **kwargs)
         else:
             raise ValueError(f"Model type {self.model_type} invalid")
@@ -354,7 +358,16 @@ def setup_logging(log_level=logging.INFO):
                         handlers=handlers)
 
 
-def load_data(data_resolution, data_downsample, data_dirs, max_tr_frames, max_ts_frames, batch_size, **kwargs):
+def decide_dset_type(data_dir) -> str:
+    if ("chair" in data_dir or "drums" in data_dir or "ficus" in data_dir or "hotdog" in data_dir
+            or "lego" in data_dir or "materials" in data_dir or "mic" in data_dir
+            or "ship" in data_dir):
+        return "synthetic"
+    else:
+        return "llff"
+
+
+def load_data(data_resolution, data_downsample, data_dirs, max_tr_frames, max_ts_frames, hold_every, batch_size, **kwargs):
     if data_downsample is None:
         data_downsample = 1.0
     # Training datasets are lists of lists, where each inner list is different resolutions for the same scene
@@ -362,19 +375,22 @@ def load_data(data_resolution, data_downsample, data_dirs, max_tr_frames, max_ts
     logging.info(f"About to load data at reso={data_resolution}, downsample={data_downsample}")
     tr_dsets, tr_loaders, ts_dsets = [], [], []
     for data_dir in data_dirs:
-        tr_dsets.append(SyntheticNerfDataset(
-            data_dir, split='train', downsample=data_downsample, resolution=data_resolution,
-            max_frames=max_tr_frames))
+        dset_type = decide_dset_type(data_dir)
+        if dset_type == "synthetic":
+            tr_dsets.append(SyntheticNerfDataset(
+                data_dir, split='train', downsample=data_downsample, resolution=data_resolution,
+                max_frames=max_tr_frames))
+            ts_dsets.append(SyntheticNerfDataset(
+                data_dir, split='test', downsample=1, resolution=800, max_frames=max_ts_frames))
+        elif dset_type == "llff":
+            tr_dsets.append(LLFFDataset(
+                data_dir, split='train', downsample=data_downsample, resolution=data_resolution,
+                hold_every=hold_every))
+            ts_dsets.append(LLFFDataset(
+                data_dir, split='test', downsample=1, resolution=None, hold_every=hold_every))
         tr_loaders.append(torch.utils.data.DataLoader(
-            tr_dsets[-1],
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=3,
-            prefetch_factor=4,
+            tr_dsets[-1], batch_size=batch_size, shuffle=True, num_workers=3, prefetch_factor=4,
             pin_memory=True))
-        ts_dsets.append(SyntheticNerfDataset(
-            data_dir, split='test', downsample=1, resolution=800,
-            max_frames=max_ts_frames))
     return tr_loaders, ts_dsets
 
 

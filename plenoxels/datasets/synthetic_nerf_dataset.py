@@ -1,79 +1,17 @@
 import json
 import logging as log
 import os
-from typing import Optional, Tuple
+from typing import Optional
 
 import numpy as np
 import torch
-import torchvision.transforms
 from torch.utils.data import TensorDataset
 
 from .data_loading import parallel_load_images
-
-
-def create_meshgrid(height: int, width: int, normalized_coordinates: bool = True) -> torch.Tensor:
-    xs = torch.linspace(0, width - 1, width)
-    ys = torch.linspace(0, height - 1, height)
-    if normalized_coordinates:
-        xs = (xs / (width - 1) - 0.5) * 2
-        ys = (ys / (height - 1) - 0.5) * 2
-    # generate grid by stacking coordinates
-    base_grid = torch.stack(torch.meshgrid([xs, ys], indexing="ij"), dim=-1)  # WxHx2
-    return base_grid.permute(1, 0, 2).unsqueeze(0)  # 1xHxWx2
-
-
-def get_ray_directions(height: int, width: int, focal: Tuple[float, float], center=None):
-    """
-    Get ray directions for all pixels in camera coordinate.
-    Reference: https://www.scratchapixel.com/lessons/3d-basic-rendering/
-               ray-tracing-generating-camera-rays/standard-coordinate-systems
-    Inputs:
-        height, width, focal: image height, width and focal length
-    Outputs:
-        directions: (height, width, 3), the direction of the rays in camera coordinate
-    """
-    grid = create_meshgrid(height, width, normalized_coordinates=False)[0] + 0.5
-
-    i, j = grid.unbind(-1)  # both 1xHxW
-    # the direction here is without +0.5 pixel centering as calibration is not so accurate
-    # see https://github.com/bmild/nerf/issues/24
-    cent = center if center is not None else [width / 2, height / 2]
-    directions = torch.stack([
-        (i - cent[0]) / focal[0],
-        (j - cent[1]) / focal[1],
-        torch.ones_like(i)
-    ], -1)  # (H, W, 3)
-
-    return directions
-
-
-def get_rays(directions, c2w):
-    """
-    Get ray origin and normalized directions in world coordinate for all pixels in one image.
-    Reference: https://www.scratchapixel.com/lessons/3d-basic-rendering/
-               ray-tracing-generating-camera-rays/standard-coordinate-systems
-    Inputs:
-        directions: (H, W, 3) precomputed ray directions in camera coordinate
-        c2w: (3, 4) transformation matrix from camera coordinate to world coordinate
-    Outputs:
-        rays_o: (H*W, 3), the origin of the rays in world coordinate
-        rays_d: (H*W, 3), the normalized direction of the rays in world coordinate
-    """
-    # Rotate ray directions from camera coordinate to the world coordinate
-    rays_d = directions @ c2w[:3, :3].T  # (H, W, 3)
-    # The origin of all rays is the camera origin in world coordinate
-    rays_o = c2w[:3, 3].expand(rays_d.shape)  # (H, W, 3)
-
-    rays_d = rays_d.view(-1, 3)
-    rays_o = rays_o.view(-1, 3)
-
-    return rays_o, rays_d
+from .ray_utils import get_rays, get_ray_directions
 
 
 class SyntheticNerfDataset(TensorDataset):
-    pil2tensor = torchvision.transforms.ToTensor()
-    tensor2pil = torchvision.transforms.ToPILImage()
-
     def __init__(self, datadir, split='train', downsample=1.0, resolution=512, max_frames=None):
         self.datadir = datadir
         self.split = split
@@ -82,6 +20,7 @@ class SyntheticNerfDataset(TensorDataset):
         self.img_h: Optional[int] = None
         self.resolution = (resolution, resolution)
         self.max_frames = max_frames
+        self.is_ndc = False
 
         self.near_far = [2.0, 6.0]
         # y indexes from top to bottom so flip it
@@ -90,9 +29,10 @@ class SyntheticNerfDataset(TensorDataset):
             [1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]], dtype=torch.float32)
 
         if "ship" in datadir:
-            self.radius = 1.5
+            radius = 1.5
         else:
-            self.radius = 1.3
+            radius = 1.3
+        self.scene_bbox = torch.tensor([[-radius, -radius, -radius], [radius, radius, radius]])
 
         imgs, self.poses, self.intrinsics = self.load_from_disk()
         self.imgs, self.rays_o, self.rays_d = self.init_rays(imgs)
@@ -135,15 +75,16 @@ class SyntheticNerfDataset(TensorDataset):
         with open(os.path.join(self.datadir, f"transforms_{self.split}.json"), 'r') as f:
             meta = json.load(f)
             frames = self.subsample_dataset(meta['frames'])
-            imgs, poses = parallel_load_images(
-                frames=frames, data_dir=self.datadir, out_h=self.img_h, out_w=self.img_w,
-                downsample=self.downsample, resolution=self.resolution,
-                tqdm_title=f'Loading {self.split} data')
+            img_poses = parallel_load_images(
+                image_iter=frames, dset_type="synthetic", data_dir=self.datadir,
+                out_h=self.img_h, out_w=self.img_w, downsample=self.downsample,
+                resolution=self.resolution, tqdm_title=f'Loading {self.split} data')
+            imgs, poses = zip(*img_poses)
             self.img_h, self.img_w = imgs[0].shape[:2]
             intrinsics = self.load_intrinsics(meta)
         imgs = torch.stack(imgs, 0)  # [N, H, W, 3/4]
         poses = torch.stack(poses, 0)  # [N, ????]
-        log.info(f"Loaded {self.split} set from {self.datadir}: {imgs.shape[0]} images of size "
+        log.info(f"SyntheticNerfDataset - Loaded {self.split} set from {self.datadir}: {imgs.shape[0]} images of size "
                  f"{imgs.shape[1]}x{imgs.shape[2]} and {imgs.shape[3]} channels. "
                  f"Focal length {intrinsics[0]:.2f}, {intrinsics[1]:.2f}. "
                  f"Center {intrinsics[2]:.2f}, {intrinsics[3]:.2f}")
