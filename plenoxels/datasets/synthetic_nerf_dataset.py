@@ -1,40 +1,73 @@
 import json
 import logging as log
 import os
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
 import torchvision.transforms
-from PIL import Image
 from torch.utils.data import TensorDataset
-from tqdm import tqdm
+
+from .data_loading import parallel_load_images
 
 
-def get_rays(H: int, W: int, focal_x, focal_y, c2w) -> torch.Tensor:
+def create_meshgrid(height: int, width: int, normalized_coordinates: bool = True) -> torch.Tensor:
+    xs = torch.linspace(0, width - 1, width)
+    ys = torch.linspace(0, height - 1, height)
+    if normalized_coordinates:
+        xs = (xs / (width - 1) - 0.5) * 2
+        ys = (ys / (height - 1) - 0.5) * 2
+    # generate grid by stacking coordinates
+    base_grid = torch.stack(torch.meshgrid([xs, ys], indexing="ij"), dim=-1)  # WxHx2
+    return base_grid.permute(1, 0, 2).unsqueeze(0)  # 1xHxWx2
+
+
+def get_ray_directions(height: int, width: int, focal: Tuple[float, float], center=None):
     """
-
-    :param H:
-    :param W:
-    :param focal:
-    :param c2w:
-    :return:
-        Tensor of size [2, W, H, 3] where the first dimension indexes origin and direction
-        of rays
+    Get ray directions for all pixels in camera coordinate.
+    Reference: https://www.scratchapixel.com/lessons/3d-basic-rendering/
+               ray-tracing-generating-camera-rays/standard-coordinate-systems
+    Inputs:
+        height, width, focal: image height, width and focal length
+    Outputs:
+        directions: (height, width, 3), the direction of the rays in camera coordinate
     """
-    i, j = torch.meshgrid(torch.arange(W) + 0.5, torch.arange(H) + 0.5, indexing='xy')
+    grid = create_meshgrid(height, width, normalized_coordinates=False)[0] + 0.5
 
-    dirs = torch.stack([
-        (i - W * 0.5) / focal_x,
-        -(j - H * 0.5) / focal_y,
-        -torch.ones_like(i)
-    ], dim=-1)
-    # Rotate ray directions from camera frame to the world frame
-    # dot product, equals to: [c2w.dot(dir) for dir in dirs]
-    rays_d = torch.sum(dirs.unsqueeze(-2) * c2w[:3, :3], dim=-1)
-    # Translate camera frame's origin to the world frame. It is the origin of all rays.
-    rays_o = torch.broadcast_to(c2w[:3, -1], rays_d.shape)
-    return torch.stack((rays_o, rays_d), dim=0)
+    i, j = grid.unbind(-1)  # both 1xHxW
+    # the direction here is without +0.5 pixel centering as calibration is not so accurate
+    # see https://github.com/bmild/nerf/issues/24
+    cent = center if center is not None else [width / 2, height / 2]
+    directions = torch.stack([
+        (i - cent[0]) / focal[0],
+        (j - cent[1]) / focal[1],
+        torch.ones_like(i)
+    ], -1)  # (H, W, 3)
+
+    return directions
+
+
+def get_rays(directions, c2w):
+    """
+    Get ray origin and normalized directions in world coordinate for all pixels in one image.
+    Reference: https://www.scratchapixel.com/lessons/3d-basic-rendering/
+               ray-tracing-generating-camera-rays/standard-coordinate-systems
+    Inputs:
+        directions: (H, W, 3) precomputed ray directions in camera coordinate
+        c2w: (3, 4) transformation matrix from camera coordinate to world coordinate
+    Outputs:
+        rays_o: (H*W, 3), the origin of the rays in world coordinate
+        rays_d: (H*W, 3), the normalized direction of the rays in world coordinate
+    """
+    # Rotate ray directions from camera coordinate to the world coordinate
+    rays_d = directions @ c2w[:3, :3].T  # (H, W, 3)
+    # The origin of all rays is the camera origin in world coordinate
+    rays_o = c2w[:3, 3].expand(rays_d.shape)  # (H, W, 3)
+
+    rays_d = rays_d.view(-1, 3)
+    rays_o = rays_o.view(-1, 3)
+
+    return rays_o, rays_d
 
 
 class SyntheticNerfDataset(TensorDataset):
@@ -51,6 +84,10 @@ class SyntheticNerfDataset(TensorDataset):
         self.max_frames = max_frames
 
         self.near_far = [2.0, 6.0]
+        # y indexes from top to bottom so flip it
+        # camera looks along negative z axis so flip that also
+        self.blender2opencv = torch.tensor([
+            [1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]], dtype=torch.float32)
 
         if "ship" in datadir:
             self.radius = 1.5
@@ -61,35 +98,6 @@ class SyntheticNerfDataset(TensorDataset):
         self.imgs, self.rays_o, self.rays_d = self.init_rays(imgs)
 
         super().__init__(self.rays_o, self.rays_d, self.imgs)
-
-    def load_image_pose(self, frame, out_h, out_w):
-        # Fix file-path
-        f_path = os.path.join(self.datadir, frame['file_path'])
-        if '.' not in os.path.basename(f_path):
-            f_path += '.png'  # so silly...
-        if not os.path.exists(f_path):  # there are non-exist paths in fox...
-            return (None, None)
-        img = Image.open(f_path)
-        if out_h is None:
-            out_h = int(img.size[0] / self.downsample)
-        if out_w is None:
-            out_w = int(img.size[1] / self.downsample)
-        # Now we should downsample to out_h, out_w and low-pass filter to resolution * 2.
-        # We only do the low-pass filtering if resolution * 2 is lower-res than out_h, out_w
-        if out_h != out_w:
-            log.warning("")
-        if self.resolution[0] is not None and self.resolution[1] is not None and \
-                (self.resolution[0] * 2 < out_h or self.resolution[1] * 2 < out_w):
-            img = img.resize((self.resolution[0] * 2, self.resolution[1] * 2), Image.LANCZOS)
-            img = img.resize((out_h, out_w), Image.LANCZOS)
-        else:
-            img = img.resize((out_h, out_w), Image.LANCZOS)
-        img = self.pil2tensor(img)  # [C, H, W]
-        img = img.permute(1, 2, 0)  # [H, W, C]
-
-        pose = torch.tensor(frame['transform_matrix'], dtype=torch.float32)
-
-        return (img, pose)
 
     def load_intrinsics(self, transform):
         # load intrinsics
@@ -126,17 +134,16 @@ class SyntheticNerfDataset(TensorDataset):
     def load_from_disk(self):
         with open(os.path.join(self.datadir, f"transforms_{self.split}.json"), 'r') as f:
             meta = json.load(f)
-            poses, imgs = [], []
             frames = self.subsample_dataset(meta['frames'])
-            for frame in tqdm(frames, desc=f'Loading {self.split} data'):
-                img, pose = self.load_image_pose(frame, self.img_h, self.img_w)
-                imgs.append(img)
-                poses.append(pose)
+            imgs, poses = parallel_load_images(
+                frames=frames, data_dir=self.datadir, out_h=self.img_h, out_w=self.img_w,
+                downsample=self.downsample, resolution=self.resolution,
+                tqdm_title=f'Loading {self.split} data')
             self.img_h, self.img_w = imgs[0].shape[:2]
             intrinsics = self.load_intrinsics(meta)
         imgs = torch.stack(imgs, 0)  # [N, H, W, 3/4]
         poses = torch.stack(poses, 0)  # [N, ????]
-        log.info(f"Loaded {self.split}-set from {self.datadir}: {imgs.shape[0]} images of size "
+        log.info(f"Loaded {self.split} set from {self.datadir}: {imgs.shape[0]} images of size "
                  f"{imgs.shape[1]}x{imgs.shape[2]} and {imgs.shape[3]} channels. "
                  f"Focal length {intrinsics[0]:.2f}, {intrinsics[1]:.2f}. "
                  f"Center {intrinsics[2]:.2f}, {intrinsics[3]:.2f}")
@@ -148,14 +155,20 @@ class SyntheticNerfDataset(TensorDataset):
         num_frames = imgs.shape[0]
         imgs = imgs.view(-1, imgs.shape[-1])  # [N*H*W, 3]
 
-        # Rays
-        rays = torch.stack(
-            [get_rays(self.img_h, self.img_w, focal_x=self.intrinsics[0], focal_y=self.intrinsics[1], c2w=p)
-             for p in self.poses[:, :3, :4]], 0)  # [N, ro+rd, H, W, 3]
+        directions = get_ray_directions(
+            height=self.img_h, width=self.img_w, focal=(self.intrinsics[0], self.intrinsics[1]))  # (h, w, 3)
+        directions = directions / torch.norm(directions, dim=-1, keepdim=True)
+
+        rays = []
+        for i in range(self.poses.shape[0]):
+            pose = self.poses[i]
+            pose_opencv = pose @ self.blender2opencv
+            rays.append(torch.stack(get_rays(directions, pose_opencv), 1))  # h*w, 2, 3
+        rays = torch.stack(rays)  # n, h*w, 2, 3
         # Merge N, H, W dimensions
-        rays_o = rays[:, 0, ...].reshape(-1, 3)  # [N*H*W, 3]
+        rays_o = rays[:, :, 0, :].reshape(-1, 3)  # [N*H*W, 3]
         rays_o = rays_o.to(dtype=torch.float32).contiguous()
-        rays_d = rays[:, 1, ...].reshape(-1, 3)  # [N*H*W, 3]
+        rays_d = rays[:, :, 1, :].reshape(-1, 3)  # [N*H*W, 3]
         rays_d = rays_d.to(dtype=torch.float32).contiguous()
 
         if self.split != "train":

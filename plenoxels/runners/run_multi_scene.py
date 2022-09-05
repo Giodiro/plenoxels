@@ -22,7 +22,7 @@ from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_exr, write_png
 from plenoxels.runners.utils import *
-from plenoxels.synthetic_nerf_dataset import SyntheticNerfDataset
+from plenoxels.datasets.synthetic_nerf_dataset import SyntheticNerfDataset
 
 
 class Trainer():
