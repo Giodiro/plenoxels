@@ -27,6 +27,7 @@ class LowrankLearnableHash(nn.Module):
         self.radi = radi
         self.extra_args = kwargs
 
+        self.transfer_learning = self.extra_args["transfer_learning"]
         self.scene_grids = nn.ModuleList()
         self.features = None
         feature_dim = None
@@ -138,9 +139,14 @@ class LowrankLearnableHash(nn.Module):
         return rgb
 
     def get_params(self, lr):
-        params = [
-            {"params": self.decoder.parameters(), "lr": lr},
-            {"params": self.scene_grids.parameters(), "lr": lr},
-            {"params": self.features, "lr": lr},
-        ]
+        if self.transfer_learning:
+            params = [
+                {"params": self.scene_grids.parameters(), "lr": lr},
+            ]
+        else:
+            params = [
+                {"params": self.scene_grids.parameters(), "lr": lr},
+                {"params": self.decoder.parameters(), "lr": lr},
+                {"params": self.features, "lr": lr},
+            ]
         return params
