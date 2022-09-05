@@ -39,7 +39,6 @@ class Trainer():
                  train_fp16: bool,
                  save_every: int,
                  valid_every: int,
-                 transfer_learning: bool = False,
                  **kwargs
                  ):
         self.train_data_loaders = tr_loaders
@@ -59,7 +58,7 @@ class Trainer():
         self.scheduler_type = scheduler_type
         self.model_type = model_type
         self.optim_type = optim_type
-        self.transfer_learning = transfer_learning
+        self.transfer_learning = kwargs.get('transfer_learning')
         self.train_fp16 = train_fp16
         self.save_every = save_every
         self.valid_every = valid_every
@@ -309,7 +308,7 @@ class Trainer():
 
     def init_optim(self, **kwargs) -> torch.optim.Optimizer:
         if self.optim_type == 'adam':
-            optim = torch.optim.Adam(params=self.model.get_params())
+            optim = torch.optim.Adam(params=self.model.get_params(kwargs['lr']))
         else:
             raise NotImplementedError()
         return optim
