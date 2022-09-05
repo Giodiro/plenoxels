@@ -1,6 +1,6 @@
 import os
 import math
-from typing import Tuple, Union, Optional
+from typing import Tuple, Optional
 import logging as log
 
 import imageio
@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 from plenoxels.nerf_rendering import sigma2alpha, shrgb2rgb
-from plenoxels.synthetic_nerf_dataset import SyntheticNerfDataset, get_rays
+from plenoxels.datasets.synthetic_nerf_dataset import SyntheticNerfDataset, get_rays
 
 __all__ = (
     "get_freer_gpu",
@@ -25,8 +25,6 @@ __all__ = (
     "render_patches",
     "user_ask_options",
 )
-
-from plenoxels.tc_harmonics import plenoxel_sh_encoder
 
 
 def get_freer_gpu():
