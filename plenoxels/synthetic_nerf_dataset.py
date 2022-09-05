@@ -123,7 +123,6 @@ class SyntheticNerfDataset(TensorDataset):
             frame_ids = np.arange(num_frames)
         return np.take(frames, frame_ids).tolist()
 
-
     def load_from_disk(self):
         with open(os.path.join(self.datadir, f"transforms_{self.split}.json"), 'r') as f:
             meta = json.load(f)

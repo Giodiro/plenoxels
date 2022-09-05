@@ -6,7 +6,6 @@ import torch.nn.functional as F
 from plenoxels.ops.interpolation import grid_sample_4d, grid_sample_1d, grid_sample_nd
 
 
-
 def interp_regular(grid, pts, align_corners=True, padding_mode='border'):
     """Interpolate data on a regular grid at the given points.
 
@@ -71,35 +70,18 @@ def grid_sample_wrapper(grid: torch.Tensor, coords: torch.Tensor, align_corners:
         coords = coords.unsqueeze(0)
 
     if grid_dim == 1:
-        interp = grid_sample_1d(
-            grid,  # [B, feature_dim, reso]
-            coords,  # [B, n, 1]
-            align_corners=align_corners,
-            mode='bilinear', padding_mode='border').squeeze().transpose(-1, -2)  # [B?, n, feature_dim]
-    elif grid_dim == 2:
-        interp = F.grid_sample(
-            grid,  # [B, feature_dim, reso, reso]
-            coords[:, None, ...],  # [B, 1, n, 2]
-            align_corners=align_corners,
-            mode='bilinear', padding_mode='border').squeeze().transpose(-1, -2)  # [B?, n, feature_dim]
-    elif grid_dim == 3:
-        interp = F.grid_sample(
-            grid,  # [B, feature_dim, reso, reso, reso]
-            coords[:, None, None, ...],  # [B, 1, 1, n, 3]
-            align_corners=align_corners,
-            mode='bilinear', padding_mode='border').squeeze().transpose(-1, -2)  # [B?, n, feature_dim]
+        grid_sampler = grid_sample_1d
+    elif grid_dim == 2 or grid == 3:
+        grid_sampler = F.grid_sample
     elif grid_dim == 4:
-        interp = grid_sample_4d(
-            grid,  # [B, feature_dim, reso, reso, reso, reso]
-            coords[:, None, None, None, ...],  # [B, 1, 1, 1, n, 4]
-            align_corners=align_corners,
-            mode='bilinear', padding_mode='border').squeeze().transpose(-1, -2)  # [B?, n, feature_dim]
+        grid_sampler = grid_sample_4d
     else:
-        dims = coords.shape[-1]
-        coords = coords.view([coords.shape[0]] + [1] * (dims - 1) + list(coords.shape[1:]))
-        interp = grid_sample_nd(
-            grid,  # [B, feature_dim, reso, ...]
-            coords,  # [B, 1, ..., n, 4]
-            align_corners=align_corners,
-            mode='bilinear', padding_mode='border').squeeze().transpose(-1, -2)  # [B?, n, feature_dim]
+        grid_sampler = grid_sample_nd
+
+    coords = coords.view([coords.shape[0]] + [1] * (grid_dim - 1) + list(coords.shape[1:]))
+    interp = grid_sampler(
+        grid,  # [B, feature_dim, reso, ...]
+        coords,  # [B, 1, ..., n, 4]
+        align_corners=align_corners,
+        mode='bilinear', padding_mode='border').squeeze().transpose(-1, -2)  # [B?, n, feature_dim]
     return interp
