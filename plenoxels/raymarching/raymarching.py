@@ -28,17 +28,28 @@ class RayMarcher():
         self.num_sample_multiplier = num_sample_multiplier
 
     @torch.autograd.no_grad()
-    def get_intersections(self, rays_o, rays_d, radius: float, perturb: bool = False, timestamps=None
+    def get_intersections(self,
+                          rays_o,
+                          rays_d,
+                          aabb: torch.Tensor,
+                          perturb: bool = False,
+                          is_ndc: bool = False,
+                          timestamps=None
                           ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         dev, dt = rays_o.device, rays_o.dtype
         n_rays = rays_o.shape[0]
-        inv_rays_d = torch.reciprocal(torch.where(rays_d == 0, torch.full_like(rays_d, 1e-6), rays_d))
-        offsets_pos = (radius - rays_o) * inv_rays_d  # [batch, 3]
-        offsets_neg = (-radius - rays_o) * inv_rays_d  # [batch, 3]
-        offsets_in = torch.minimum(offsets_pos, offsets_neg)  # [batch, 3]
-        offsets_out = torch.maximum(offsets_pos, offsets_neg)
-        start = torch.amax(offsets_in, dim=-1, keepdim=True)  # [batch, 1]
-        end = torch.amin(offsets_out, dim=-1, keepdim=True)
+        if is_ndc:
+            # TODO: These are hardcoded here and in llff_dataset.
+            #       We should fetch them from llff_dataset to have a single source of truth
+            start, end = 0.0, 1.0
+        else:
+            inv_rays_d = torch.reciprocal(torch.where(rays_d == 0, torch.full_like(rays_d, 1e-6), rays_d))
+            offsets_pos = (aabb[1] - rays_o) * inv_rays_d  # [batch, 3]
+            offsets_neg = (aabb[0] - rays_o) * inv_rays_d  # [batch, 3]
+            offsets_in = torch.minimum(offsets_pos, offsets_neg)  # [batch, 3]
+            offsets_out = torch.maximum(offsets_pos, offsets_neg)
+            start = torch.amax(offsets_in, dim=-1, keepdim=True)  # [batch, 1]
+            end = torch.amin(offsets_out, dim=-1, keepdim=True)
 
         if self.raymarch_type == "fixed":
             steps = torch.linspace(0, 1.0, self.n_intersections, device=dev)[None]  # [1, num_samples]
@@ -46,7 +57,7 @@ class RayMarcher():
             intersections = start + (end - start) * steps
             n_intersections = self.n_intersections
         else:
-            step_size = (radius * 2) / (self.sampling_resolution * self.num_sample_multiplier)
+            step_size = torch.mean(aabb[1] - aabb[0]) / (self.sampling_resolution * self.num_sample_multiplier)
             # step-size and n-intersections are scaled to artificially increment resolution of model
             n_intersections = int(math.sqrt(3.) * self.sampling_resolution * self.num_sample_multiplier)
             steps = torch.arange(n_intersections, dtype=dt, device=dev)[None]  # [1, num_samples]
@@ -60,7 +71,7 @@ class RayMarcher():
             intersections += (torch.rand_like(intersections) - 0.5) * sample_dist
 
         intrs_pts = rays_o[..., None, :] + rays_d[..., None, :] * intersections[..., None]  # [batch, n_intrs, 3]
-        mask = ((-radius <= intrs_pts) & (intrs_pts <= radius)).all(dim=-1)
+        mask = ((aabb[0] <= intrs_pts) & (intrs_pts <= aabb[1])).all(dim=-1)  # noqa
         
         ridx = torch.arange(0, n_rays, device=dev)
         ridx = ridx[..., None].repeat(1, n_intersections)[mask]
@@ -68,7 +79,7 @@ class RayMarcher():
         deltas = deltas[mask]
         intrs_pts = intrs_pts[mask]
 
-        # Apply mask to timestamps as well
+        # Apply mask to timestamps as well TODO: better to return mask than to add other stuff in here.
         if timestamps is not None:
             assert len(timestamps) == len(rays_o)
             timestamps = timestamps[:,None].repeat(1, mask.shape[1])[mask]
