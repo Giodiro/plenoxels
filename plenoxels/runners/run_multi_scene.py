@@ -142,7 +142,7 @@ class Trainer():
                 self.epoch != 0:
             self.validate()
         if self.epoch >= self.num_epochs:
-            raise StopIteration(f"Finished after {self.num_epochs} epochs.")
+            raise StopIteration(f"Finished after {self.epoch} epochs.")
 
     def train_epoch(self):
         self.pre_epoch()
