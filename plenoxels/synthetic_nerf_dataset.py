@@ -118,11 +118,10 @@ class SyntheticNerfDataset(TensorDataset):
             subsample = int(round(tot_frames / num_frames))
             frame_ids = np.arange(tot_frames)[::subsample]
             if subsample > 1:
-                log.info(f"Subsampling training set to 1 every {subsample} images.")
+                log.info(f"Subsampling {self.split} set to 1 every {subsample} images.")
         else:
             frame_ids = np.arange(num_frames)
         return np.take(frames, frame_ids).tolist()
-
 
     def load_from_disk(self):
         with open(os.path.join(self.datadir, f"transforms_{self.split}.json"), 'r') as f:

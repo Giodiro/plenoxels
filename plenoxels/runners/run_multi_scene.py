@@ -39,7 +39,6 @@ class Trainer():
                  train_fp16: bool,
                  save_every: int,
                  valid_every: int,
-                 transfer_learning: bool = False,
                  **kwargs
                  ):
         self.train_data_loaders = tr_loaders
@@ -59,7 +58,7 @@ class Trainer():
         self.scheduler_type = scheduler_type
         self.model_type = model_type
         self.optim_type = optim_type
-        self.transfer_learning = transfer_learning
+        self.transfer_learning = kwargs.get('transfer_learning')
         self.train_fp16 = train_fp16
         self.save_every = save_every
         self.valid_every = valid_every
@@ -143,7 +142,7 @@ class Trainer():
                 self.epoch != 0:
             self.validate()
         if self.epoch >= self.num_epochs:
-            raise StopIteration(f"Finished after {self.num_epochs} epochs.")
+            raise StopIteration(f"Finished after {self.epoch} epochs.")
 
     def train_epoch(self):
         self.pre_epoch()
@@ -265,7 +264,7 @@ class Trainer():
                 #     if param.shape == checkpoint_data["model"][key].shape:
                 #         print(f'setting requires_grad false for param shape {param.shape}')
                 #         param.requires_grad = False
-                logging.info(f"=> Loaded model state key with shape {checkpoint_data['model'][key].shape} from checkpoint")
+                logging.info(f"=> Loaded model state {key} with shape {checkpoint_data['model'][key].shape} from checkpoint")
         else:
             self.model.load_state_dict(checkpoint_data["model"])
             logging.info("=> Loaded model state from checkpoint")
@@ -309,7 +308,7 @@ class Trainer():
 
     def init_optim(self, **kwargs) -> torch.optim.Optimizer:
         if self.optim_type == 'adam':
-            optim = torch.optim.Adam(filter(lambda p: p.requires_grad, self.model.parameters()), lr=kwargs.get("lr"))
+            optim = torch.optim.Adam(params=self.model.get_params(kwargs['lr']))
         else:
             raise NotImplementedError()
         return optim
@@ -367,8 +366,12 @@ def load_data(data_resolution, data_downsample, data_dirs, max_tr_frames, max_ts
             data_dir, split='train', downsample=data_downsample, resolution=data_resolution,
             max_frames=max_tr_frames))
         tr_loaders.append(torch.utils.data.DataLoader(
-            tr_dsets[-1], batch_size=batch_size, shuffle=True, num_workers=3,
-            prefetch_factor=4, pin_memory=True))
+            tr_dsets[-1],
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=3,
+            prefetch_factor=4,
+            pin_memory=True))
         ts_dsets.append(SyntheticNerfDataset(
             data_dir, split='test', downsample=1, resolution=800,
             max_frames=max_ts_frames))
