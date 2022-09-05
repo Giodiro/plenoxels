@@ -71,7 +71,7 @@ def grid_sample_wrapper(grid: torch.Tensor, coords: torch.Tensor, align_corners:
 
     if grid_dim == 1:
         grid_sampler = grid_sample_1d
-    elif grid_dim == 2 or grid == 3:
+    elif grid_dim == 2 or grid_dim == 3:
         grid_sampler = F.grid_sample
     elif grid_dim == 4:
         grid_sampler = grid_sample_4d
