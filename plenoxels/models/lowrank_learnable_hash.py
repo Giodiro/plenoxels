@@ -16,7 +16,8 @@ from ..raymarching.raymarching import RayMarcher
 class LowrankLearnableHash(nn.Module):
     def __init__(self,
                  grid_config: Union[str, List[Dict]],
-                 radi: List[float],
+                 aabb: List[torch.Tensor],
+                 is_ndc: bool,
                  num_scenes: int = 1,
                  **kwargs):
         super().__init__()
@@ -24,8 +25,11 @@ class LowrankLearnableHash(nn.Module):
             self.config: List[Dict] = eval(grid_config)
         else:
             self.config: List[Dict] = grid_config
-        self.radi = radi
+        # aabb needs to be BufferList (but BufferList doesn't exist so we emulate it)
+        for i, p in enumerate(aabb):
+            self.register_buffer(f'aabb{i}', p)
         self.extra_args = kwargs
+        self.is_ndc = is_ndc
 
         self.transfer_learning = self.extra_args["transfer_learning"]
         self.scene_grids = nn.ModuleList()
@@ -66,6 +70,9 @@ class LowrankLearnableHash(nn.Module):
         self.raymarcher = RayMarcher(**self.extra_args)
         log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes.")
 
+    def aabb(self, i):
+        return getattr(self, f'aabb{i}')
+
     @staticmethod
     def get_coo_plane(coords, dim):
         """
@@ -95,13 +102,23 @@ class LowrankLearnableHash(nn.Module):
             interp = interp.prod(dim=0).sum(dim=-1)
         return grid_sample_wrapper(self.features, interp)
 
+    def normalize_coord(self, pts, grid_id):
+        """
+        break-down of the normalization steps
+        1. pts - aabb[0] => [0, a1-a0]
+        2. / (a1 - a0) => [0, 1]
+        3. * 2 => [0, 2]
+        4. - 1 => [-1, 1]
+        """
+        return (pts - self.aabb(grid_id)[0]) * (2.0 / (self.aabb(grid_id)[1] - self.aabb(grid_id)[0])) - 1
+
     def forward(self, rays_o, rays_d, bg_color, grid_id=0):
         """
         rays_o : [batch, 3]
         rays_d : [batch, 3]
         """
         intersection_pts, ridx, boundary, deltas = self.raymarcher.get_intersections(
-            rays_o, rays_d, self.radi[grid_id], perturb=self.training)
+            rays_o, rays_d, self.aabb(grid_id), perturb=self.training, is_ndc=self.is_ndc)
         n_rays = rays_o.shape[0]
         dev = rays_o.device
 
@@ -109,7 +126,7 @@ class LowrankLearnableHash(nn.Module):
         # intersection_pts has shape [n_valid_intrs, 3]
 
         # Normalization (between [-1, 1])
-        intersection_pts = intersection_pts / self.radi[grid_id]
+        intersection_pts = self.normalize_coord(intersection_pts, grid_id)
         rays_d = rays_d / torch.linalg.norm(rays_d, dim=-1, keepdim=True)
         # rays_d in the packed format (essentially repeated a number of times)
         rays_d_rep = rays_d.index_select(0, ridx)
