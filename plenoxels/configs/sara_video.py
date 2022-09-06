@@ -7,9 +7,9 @@ config = {
     "data_dir": "/data/datasets/3DVideo/coffee_martini",
 
     "subsample_time_train": 0.2,
-    "batch_size": 1000,
+    "batch_size": 10000,
     "num_batches_per_dset": 1,
-    "num_epochs": 10,
+    "num_epochs": 3,
     "scheduler_type": None,
     "optim_type": "adam",
     "model_type": "learnable_hash",
