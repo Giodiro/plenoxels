@@ -363,8 +363,12 @@ def decide_dset_type(data_dir) -> str:
             or "lego" in data_dir or "materials" in data_dir or "mic" in data_dir
             or "ship" in data_dir):
         return "synthetic"
-    else:
+    elif ("fern" in data_dir or "flower" in data_dir or "fortress" in data_dir
+          or "horns" in data_dir or "leaves" in data_dir or "orchids" in data_dir
+          or "room" in data_dir or "trex" in data_dir):
         return "llff"
+    else:
+        raise RuntimeError(f"data_dir {data_dir} not recognized as LLFF or Synthetic dataset.")
 
 
 def load_data(data_resolution, data_downsample, data_dirs, max_tr_frames, max_ts_frames, hold_every, batch_size, **kwargs):
