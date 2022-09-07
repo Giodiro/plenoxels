@@ -10,7 +10,6 @@ import pprint
 
 import numpy as np
 
-from plenoxels.datasets.llff_dataset import LLFFDataset
 
 np.random.seed(0)
 import pandas as pd
@@ -26,6 +25,7 @@ from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_exr, write_png
 from plenoxels.runners.utils import *
 from plenoxels.datasets.synthetic_nerf_dataset import SyntheticNerfDataset
+from plenoxels.datasets.llff_dataset import LLFFDataset
 
 
 class Trainer():

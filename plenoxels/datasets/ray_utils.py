@@ -1,6 +1,8 @@
-from typing import Tuple
+from typing import Tuple, Optional
 
 import torch
+
+from .intrinsics import Intrinsics
 
 __all__ = (
     "get_ray_directions",
@@ -11,17 +13,14 @@ __all__ = (
 
 
 def create_meshgrid(height: int, width: int, normalized_coordinates: bool = True) -> torch.Tensor:
-    xs = torch.linspace(0, width - 1, width)
-    ys = torch.linspace(0, height - 1, height)
-    if normalized_coordinates:
-        xs = (xs / (width - 1) - 0.5) * 2
-        ys = (ys / (height - 1) - 0.5) * 2
+    xs = torch.arange(width, dtype=torch.float32) + 0.5
+    ys = torch.arange(height, dtype=torch.float32) + 0.5
     # generate grid by stacking coordinates
-    base_grid = torch.stack(torch.meshgrid([xs, ys], indexing="ij"), dim=-1)  # WxHx2
-    return base_grid.permute(1, 0, 2).unsqueeze(0)  # 1xHxWx2
+    yy, xx = torch.meshgrid([ys, xs], indexing="ij")  # both HxW
+    return xx, yy
 
 
-def get_ray_directions(height: int, width: int, focal: Tuple[float, float], center=None):
+def get_ray_directions(intrinsics: Intrinsics):
     """
     Get ray directions for all pixels in camera coordinate.
     Reference: https://www.scratchapixel.com/lessons/3d-basic-rendering/
@@ -31,22 +30,20 @@ def get_ray_directions(height: int, width: int, focal: Tuple[float, float], cent
     Outputs:
         directions: (height, width, 3), the direction of the rays in camera coordinate
     """
-    grid = create_meshgrid(height, width, normalized_coordinates=False)[0] + 0.5
+    xx, yy = create_meshgrid(intrinsics.height, intrinsics.width, normalized_coordinates=False)
 
-    i, j = grid.unbind(-1)  # both 1xHxW
     # the direction here is without +0.5 pixel centering as calibration is not so accurate
     # see https://github.com/bmild/nerf/issues/24
-    cent = center if center is not None else [height / 2, width / 2]
     directions = torch.stack([
-        (i - cent[0]) / focal[0],
-        (j - cent[1]) / focal[1],
-        torch.ones_like(i)
+        (xx - intrinsics.center_x) / intrinsics.focal_x,
+        (yy - intrinsics.center_y) / intrinsics.focal_y,
+        torch.ones_like(xx)
     ], -1)  # (H, W, 3)
 
     return directions
 
 
-def get_ray_directions_blender(height: int, width: int, focal: Tuple[float, float], center=None):
+def get_ray_directions_blender(intrinsics: Intrinsics):
     """
     Get ray directions for all pixels in camera coordinate.
     Reference: https://www.scratchapixel.com/lessons/3d-basic-rendering/
@@ -56,16 +53,12 @@ def get_ray_directions_blender(height: int, width: int, focal: Tuple[float, floa
     Outputs:
         directions: (height, width, 3), the direction of the rays in camera coordinate
     """
-    grid = create_meshgrid(height, width, normalized_coordinates=False)[0] + 0.5
+    xx, yy = create_meshgrid(intrinsics.height, intrinsics.width, normalized_coordinates=False)
 
-    i, j = grid.unbind(-1)  # both 1xHxW
-    # the direction here is without +0.5 pixel centering as calibration is not so accurate
-    # see https://github.com/bmild/nerf/issues/24
-    cent = center if center is not None else [height / 2, width / 2]
     directions = torch.stack([
-        (i - cent[0]) / focal[0],
-        -(j - cent[1]) / focal[1],
-        -torch.ones_like(i)
+        (xx - intrinsics.center_x) / intrinsics.focal_x,
+        -(yy - intrinsics.center_y) / intrinsics.focal_y,
+        -torch.ones_like(xx)
     ], -1)  # (H, W, 3)
 
     return directions
@@ -94,21 +87,24 @@ def get_rays(directions, c2w):
     return rays_o, rays_d
 
 
-def ndc_rays_blender(ndc_coefs, near, rays_o, rays_d):
+def ndc_rays_blender(intrinsics: Intrinsics, near: float, rays_o: torch.Tensor, rays_d: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     # Shift ray origins to near plane
     t = -(near + rays_o[..., 2]) / rays_d[..., 2]
     rays_o = rays_o + t[..., None] * rays_d
 
     # Projection
-    o0 = ndc_coefs[0] * (rays_o[..., 0] / rays_o[..., 2])
-    o1 = ndc_coefs[1] * (rays_o[..., 1] / rays_o[..., 2])
-    o2 = 1 - 2 * near / rays_o[..., 2]
+    ndc_coef_x = - (2 * intrinsics.focal_x) / intrinsics.width
+    ndc_coef_y = - (2 * intrinsics.focal_y) / intrinsics.height
+    o0 = ndc_coef_x * rays_o[..., 0] / rays_o[..., 2]
+    o1 = ndc_coef_y * rays_o[..., 1] / rays_o[..., 2]
+    o2 = 1. + 2. * near / rays_o[..., 2]
 
-    d0 = ndc_coefs[0] * (rays_d[..., 0] / rays_d[..., 2] - rays_o[..., 0] / rays_o[..., 2])
-    d1 = ndc_coefs[1] * (rays_d[..., 1] / rays_d[..., 2] - rays_o[..., 1] / rays_o[..., 2])
-    d2 = 2 * near / rays_o[..., 2]
+    d0 = ndc_coef_x * (rays_d[..., 0] / rays_d[..., 2] - rays_o[..., 0] / rays_o[..., 2])
+    d1 = ndc_coef_y * (rays_d[..., 1] / rays_d[..., 2] - rays_o[..., 1] / rays_o[..., 2])
+    d2 = -2. * near / rays_o[..., 2]
 
     rays_o = torch.stack([o0, o1, o2], -1)
     rays_d = torch.stack([d0, d1, d2], -1)
 
     return rays_o, rays_d
+

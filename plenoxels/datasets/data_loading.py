@@ -23,9 +23,9 @@ def _load_llff_image(data_dir: str,
     if resolution[0] is not None and resolution[1] is not None and \
             (resolution[0] * 2 < out_h or resolution[1] * 2 < out_w):
         img = img.resize((resolution[0] * 2, resolution[1] * 2), Image.LANCZOS)
-        img = img.resize((out_h, out_w), Image.LANCZOS)
+        img = img.resize((out_w, out_h), Image.LANCZOS)
     else:
-        img = img.resize((out_h, out_w), Image.LANCZOS)
+        img = img.resize((out_w, out_h), Image.LANCZOS)
     img = pil2tensor(img)  # [C, H, W]
     img = img.permute(1, 2, 0)  # [H, W, C]
     return img
@@ -61,9 +61,9 @@ def _load_nerf_image_pose(data_dir: str,
     if resolution[0] is not None and resolution[1] is not None and \
             (resolution[0] * 2 < out_h or resolution[1] * 2 < out_w):
         img = img.resize((resolution[0] * 2, resolution[1] * 2), Image.LANCZOS)
-        img = img.resize((out_h, out_w), Image.LANCZOS)
+        img = img.resize((out_w, out_h), Image.LANCZOS)
     else:
-        img = img.resize((out_h, out_w), Image.LANCZOS)
+        img = img.resize((out_w, out_h), Image.LANCZOS)
     img = pil2tensor(img)  # [C, H, W]
     img = img.permute(1, 2, 0)  # [H, W, C]
 
