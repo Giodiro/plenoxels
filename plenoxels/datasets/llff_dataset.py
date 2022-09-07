@@ -1,7 +1,6 @@
 import glob
 import os
 import logging as log
-from dataclasses import dataclass
 
 import numpy as np
 import torch
@@ -10,7 +9,6 @@ from torch.utils.data import TensorDataset
 from .data_loading import parallel_load_images
 from .ray_utils import get_ray_directions_blender, get_rays, ndc_rays_blender
 from .intrinsics import Intrinsics
-
 
 
 def normalize(v):
@@ -37,16 +35,12 @@ def average_poses(poses):
     """
     # 1. Compute the center
     center = poses[..., 3].mean(0)  # (3)
-
     # 2. Compute the z axis
     z = normalize(poses[..., 2].mean(0))  # (3)
-
     # 3. Compute axis y' (no need to normalize as it's not the final output)
     y_ = poses[..., 1].mean(0)  # (3)
-
     # 4. Compute the x axis
     x = normalize(np.cross(z, y_))  # (3)
-
     # 5. Compute the y axis (as z and x are normalized, y is already of norm 1)
     y = np.cross(x, z)  # (3)
 
@@ -78,7 +72,6 @@ def center_poses(poses):
     poses_centered = poses_centered[:, :3]  # (N_images, 3, 4)
 
     return poses_centered, pose_avg_homo
-
 
 
 class LLFFDataset(TensorDataset):
@@ -124,11 +117,11 @@ class LLFFDataset(TensorDataset):
 
         poses = poses_bounds[:, :15].reshape(-1, 3, 5)  # (N_images, 3, 5)
         self.near_fars = poses_bounds[:, -2:]  # (N_images, 2)
-        hwf = poses[:, :, -1]
 
         # Step 1: rescale focal length according to training resolution
         H, W, focal = poses[0, :, -1]  # original intrinsics, same for all images
-        intrinsics = Intrinsics(width=W, height=H, focal_x=focal, focal_y=focal, center_x=W / 2, center_y=H / 2)
+        intrinsics = Intrinsics(width=W, height=H, focal_x=focal, focal_y=focal, center_x=W / 2,
+                                center_y=H / 2)
         intrinsics.scale(1 / self.downsample)
 
         # Step 2: correct poses
@@ -146,10 +139,11 @@ class LLFFDataset(TensorDataset):
         self.near_fars /= scale_factor
         poses[..., 3] /= scale_factor
 
-        #average_pose = average_poses(self.poses)
-        #dists = np.sum(np.square(average_pose[:3, 3] - self.poses[:, :3, 3]), -1)
+        # average_pose = average_poses(self.poses)
+        # dists = np.sum(np.square(average_pose[:3, 3] - self.poses[:, :3, 3]), -1)
         i_test = np.arange(0, poses.shape[0], self.hold_every)  # [np.argmin(dists)]
-        img_list = i_test if self.split != 'train' else list(set(np.arange(len(poses))) - set(i_test))
+        img_list = i_test if self.split != 'train' else list(
+            set(np.arange(len(poses))) - set(i_test))
 
         # use first N_images-1 to train, the LAST is val
         all_rgbs = parallel_load_images(
@@ -168,7 +162,6 @@ class LLFFDataset(TensorDataset):
 
         return poses, all_rgbs, intrinsics
 
-
     def init_rays(self, imgs):
         # ray directions for all pixels, same for all images (same H, W, focal)
         directions = get_ray_directions_blender(self.intrinsics)  # H, W, 3
@@ -181,16 +174,15 @@ class LLFFDataset(TensorDataset):
             all_rays_o.append(rays_o)
             all_rays_d.append(rays_d)
 
-        all_rays_o = torch.cat(all_rays_o, 0).to(dtype=torch.float32)      # [n_frames * h * w, 3]
-        all_rays_d = torch.cat(all_rays_d, 0).to(dtype=torch.float32)      # [n_frames * h * w, 3]
+        all_rays_o = torch.cat(all_rays_o, 0).to(dtype=torch.float32)  # [n_frames * h * w, 3]
+        all_rays_d = torch.cat(all_rays_d, 0).to(dtype=torch.float32)  # [n_frames * h * w, 3]
         all_rgbs = (torch.cat(imgs, 0)
-                        .reshape(-1, imgs[0].shape[-1])
-                        .to(dtype=torch.float32))  # [n_frames * h * w, C]
+                    .reshape(-1, imgs[0].shape[-1])
+                    .to(dtype=torch.float32))  # [n_frames * h * w, C]
         if self.split != 'train':
             num_pixels = self.intrinsics.height * self.intrinsics.width
-            all_rays_o = all_rays_o.view(-1, num_pixels, 3)   # [n_frames, h * w, 3]
-            all_rays_d = all_rays_d.view(-1, num_pixels, 3)   # [n_frames, h * w, 3]
+            all_rays_o = all_rays_o.view(-1, num_pixels, 3)  # [n_frames, h * w, 3]
+            all_rays_d = all_rays_d.view(-1, num_pixels, 3)  # [n_frames, h * w, 3]
             all_rgbs = all_rgbs.view(-1, num_pixels, all_rgbs.shape[-1])
 
         return all_rays_o, all_rays_d, all_rgbs
-

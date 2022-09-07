@@ -1,7 +1,6 @@
 import json
 import logging as log
 import os
-from typing import Optional
 
 import numpy as np
 import torch
@@ -9,6 +8,7 @@ from torch.utils.data import TensorDataset
 
 from .data_loading import parallel_load_images
 from .ray_utils import get_rays, get_ray_directions
+from .intrinsics import Intrinsics
 
 
 class SyntheticNerfDataset(TensorDataset):
@@ -66,7 +66,7 @@ class SyntheticNerfDataset(TensorDataset):
         cx = (transform['cx'] / self.downscale) if 'cx' in transform else (width / 2)
         cy = (transform['cy'] / self.downscale) if 'cy' in transform else (height / 2)
 
-        return Intrinsics(height=height, width=width, focal_x=fl_x, focal_y=fl_y, cx=cx, cy=cy)
+        return Intrinsics(height=height, width=width, focal_x=fl_x, focal_y=fl_y, center_x=cx, center_y=cy)
 
     def subsample_dataset(self, frames):
         tot_frames = len(frames)

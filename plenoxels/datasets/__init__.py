@@ -1,24 +1,7 @@
-import collections
-
-from torch.utils.data.dataloader import default_collate
-
-from .transforms import SampleRays
-from .multiview_dataset import NerfDataset
-from ..core import Rays
+from .llff_dataset import LLFFDataset
+from .synthetic_nerf_dataset import SyntheticNerfDataset
 
 __all__ = (
-    "NerfDataset",
-    "SampleRays",
-    "ray_default_collate",
+    "LLFFDataset",
+    "SyntheticNerfDataset",
 )
-
-
-def ray_default_collate(batch):
-    elem = batch[0]
-
-    if isinstance(elem, Rays):
-        return Rays.stack(batch)
-    elif isinstance(elem, collections.abc.Mapping):  # noqa
-        return {key: ray_default_collate([d[key] for d in batch]) for key in elem}
-    else:
-        return default_collate(batch)
