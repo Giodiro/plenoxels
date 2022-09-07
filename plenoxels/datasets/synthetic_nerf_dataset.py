@@ -16,8 +16,6 @@ class SyntheticNerfDataset(TensorDataset):
         self.datadir = datadir
         self.split = split
         self.downsample = downsample
-        self.img_w: Optional[int] = None
-        self.img_h: Optional[int] = None
         self.resolution = (resolution, resolution)
         self.max_frames = max_frames
         self.is_ndc = False
@@ -39,24 +37,36 @@ class SyntheticNerfDataset(TensorDataset):
 
         super().__init__(self.rays_o, self.rays_d, self.imgs)
 
-    def load_intrinsics(self, transform):
+    @property
+    def img_h(self):
+        return self.intrinsics.height
+
+    @property
+    def img_w(self):
+        return self.intrinsics.width
+
+    @property
+    def num_frames(self):
+        return self.poses.shape[0]
+
+    def load_intrinsics(self, transform, height, width):
         # load intrinsics
         if 'fl_x' in transform or 'fl_y' in transform:
             fl_x = (transform['fl_x'] if 'fl_x' in transform else transform['fl_y']) / self.downscale
             fl_y = (transform['fl_y'] if 'fl_y' in transform else transform['fl_x']) / self.downscale
         elif 'camera_angle_x' in transform or 'camera_angle_y' in transform:
             # blender, assert in radians. already downscaled since we use H/W
-            fl_x = self.img_w / (2 * np.tan(transform['camera_angle_x'] / 2)) if 'camera_angle_x' in transform else None
-            fl_y = self.img_h / (2 * np.tan(transform['camera_angle_y'] / 2)) if 'camera_angle_y' in transform else None
+            fl_x = width / (2 * np.tan(transform['camera_angle_x'] / 2)) if 'camera_angle_x' in transform else None
+            fl_y = height / (2 * np.tan(transform['camera_angle_y'] / 2)) if 'camera_angle_y' in transform else None
             if fl_x is None: fl_x = fl_y
             if fl_y is None: fl_y = fl_x
         else:
             raise RuntimeError('Failed to load focal length, please check the transforms.json!')
 
-        cx = (transform['cx'] / self.downscale) if 'cx' in transform else (self.img_w / 2)
-        cy = (transform['cy'] / self.downscale) if 'cy' in transform else (self.img_h / 2)
+        cx = (transform['cx'] / self.downscale) if 'cx' in transform else (width / 2)
+        cy = (transform['cy'] / self.downscale) if 'cy' in transform else (height / 2)
 
-        return np.array([fl_x, fl_y, cx, cy])
+        return Intrinsics(height=height, width=width, focal_x=fl_x, focal_y=fl_y, cx=cx, cy=cy)
 
     def subsample_dataset(self, frames):
         tot_frames = len(frames)
@@ -77,27 +87,22 @@ class SyntheticNerfDataset(TensorDataset):
             frames = self.subsample_dataset(meta['frames'])
             img_poses = parallel_load_images(
                 image_iter=frames, dset_type="synthetic", data_dir=self.datadir,
-                out_h=self.img_h, out_w=self.img_w, downsample=self.downsample,
+                out_h=None, out_w=None, downsample=self.downsample,
                 resolution=self.resolution, tqdm_title=f'Loading {self.split} data')
             imgs, poses = zip(*img_poses)
-            self.img_h, self.img_w = imgs[0].shape[:2]
-            intrinsics = self.load_intrinsics(meta)
+            intrinsics = self.load_intrinsics(meta, height=imgs[0].shape[0], width=imgs[0].shape[1])
         imgs = torch.stack(imgs, 0)  # [N, H, W, 3/4]
         poses = torch.stack(poses, 0)  # [N, ????]
         log.info(f"SyntheticNerfDataset - Loaded {self.split} set from {self.datadir}: {imgs.shape[0]} images of size "
-                 f"{imgs.shape[1]}x{imgs.shape[2]} and {imgs.shape[3]} channels. "
-                 f"Focal length {intrinsics[0]:.2f}, {intrinsics[1]:.2f}. "
-                 f"Center {intrinsics[2]:.2f}, {intrinsics[3]:.2f}")
+                 f"{imgs.shape[1]}x{imgs.shape[2]} and {imgs.shape[3]} channels. {intrinsics}")
         return imgs, poses, intrinsics
 
     def init_rays(self, imgs):
         assert imgs is not None and self.poses is not None and self.intrinsics is not None
         # Low-pass the images at required resolution
-        num_frames = imgs.shape[0]
         imgs = imgs.view(-1, imgs.shape[-1])  # [N*H*W, 3]
 
-        directions = get_ray_directions(
-            height=self.img_h, width=self.img_w, focal=(self.intrinsics[0], self.intrinsics[1]))  # (h, w, 3)
+        directions = get_ray_directions(self.intrinsics)  # [H, W, 3]
         directions = directions / torch.norm(directions, dim=-1, keepdim=True)
 
         rays = []
@@ -113,7 +118,8 @@ class SyntheticNerfDataset(TensorDataset):
         rays_d = rays_d.to(dtype=torch.float32).contiguous()
 
         if self.split != "train":
-            imgs = imgs.view(num_frames, self.img_w * self.img_h, -1)  # [N, H*W, 3/4]
-            rays_o = rays_o.view(num_frames, self.img_w * self.img_h, 3)  # [N, H*W, 3]
-            rays_d = rays_d.view(num_frames, self.img_w * self.img_h, 3)  # [N, H*W, 3]
+            num_pixels = self.intrinsics.height * self.intrinsics.width
+            imgs = imgs.view(self.num_frames, num_pixels, -1)  # [N, H*W, 3/4]
+            rays_o = rays_o.view(self.num_frames, num_pixels, 3)  # [N, H*W, 3]
+            rays_d = rays_d.view(self.num_frames, num_pixels, 3)  # [N, H*W, 3]
         return imgs, rays_o, rays_d
