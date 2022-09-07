@@ -9,33 +9,33 @@ from torch.utils.data import TensorDataset
 from .data_loading import parallel_load_images
 from .ray_utils import get_rays, get_ray_directions
 from .intrinsics import Intrinsics
+from .base_dataset import BaseDataset
 
 
-class SyntheticNerfDataset(TensorDataset):
+class SyntheticNerfDataset(BaseDataset):
+    # y indexes from top to bottom so flip it
+    # camera looks along negative z axis so flip that also
+    blender2opencv = torch.tensor([
+        [1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]], dtype=torch.float32)
+
     def __init__(self, datadir, split='train', downsample=1.0, resolution=512, max_frames=None):
-        self.datadir = datadir
-        self.split = split
-        self.downsample = downsample
-        self.resolution = (resolution, resolution)
-        self.max_frames = max_frames
-        self.is_ndc = False
-
-        self.near_far = [2.0, 6.0]
-        # y indexes from top to bottom so flip it
-        # camera looks along negative z axis so flip that also
-        self.blender2opencv = torch.tensor([
-            [1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]], dtype=torch.float32)
-
         if "ship" in datadir:
             radius = 1.5
         else:
             radius = 1.3
-        self.scene_bbox = torch.tensor([[-radius, -radius, -radius], [radius, radius, radius]])
+        super().__init__(datadir=datadir,
+                         split=split,
+                         scene_bbox=torch.tensor([[-radius, -radius, -radius], [radius, radius, radius]]),
+                         is_ndc=False)
+        self.downsample = downsample
+        self.resolution = (resolution, resolution)
+        self.max_frames = max_frames
+        self.near_far = [2.0, 6.0]
 
         imgs, self.poses, self.intrinsics = self.load_from_disk()
         self.imgs, self.rays_o, self.rays_d = self.init_rays(imgs)
 
-        super().__init__(self.rays_o, self.rays_d, self.imgs)
+        self.set_tensors(self.rays_o, self.rays_d, self.imgs)
 
     @property
     def img_h(self):

@@ -153,6 +153,8 @@ class Trainer():
         ascene_idx = 0
         pb = tqdm(total=self.total_batches_per_epoch(), desc=f"E{self.epoch}")
         try:
+            # Whether the set of batches for one loop of num_batches_per_dset
+            # for every dataset, had any successful step
             step_successful = False
             while len(active_scenes) > 0:
                 try:
@@ -166,8 +168,11 @@ class Trainer():
                     # go to next scene
                     ascene_idx = (ascene_idx + 1) % len(active_scenes)
                     self.global_step += 1
-                if ascene_idx == 0 and step_successful and self.scheduler is not None:  # we went through all scenes
+                # If we've been through all scenes, and at least one successful step was
+                # done, we can update the scheduler.
+                if ascene_idx == 0 and step_successful and self.scheduler is not None:
                     self.scheduler.step()
+                    step_successful = False  # reset counter
         finally:
             pb.close()
         self.post_epoch()
@@ -189,7 +194,6 @@ class Trainer():
             self.writer.close()
 
     def validate(self):
-        logging.info("Beginning validation...")
         val_metrics = []
         with torch.no_grad():
             for dset_id, dataset in enumerate(self.test_datasets):
@@ -198,13 +202,17 @@ class Trainer():
                     "ssim": 0,
                     "dset_id": dset_id,
                 }
-                for img_idx, data in enumerate(tqdm(dataset, desc=f"Test({dset_id})")):
+                pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
+                for img_idx, data in enumerate(dataset):
                     preds = self.eval_step(data, dset_id=dset_id)
                     gt = data[2]
                     out_metrics = self.evaluate_metrics(
                         gt, preds, dset_id=dset_id, dset=dataset, img_idx=img_idx, name=None)
                     per_scene_metrics["psnr"] += out_metrics["psnr"]
                     per_scene_metrics["ssim"] += out_metrics["ssim"]
+                    pb.set_postfix_str(f"PSNR={out_metrics['psnr']:.2f}", refresh=False)
+                    pb.update(1)
+                pb.close()
                 per_scene_metrics["psnr"] /= len(dataset)  # noqa
                 per_scene_metrics["ssim"] /= len(dataset)  # noqa
                 log_text = f"EPOCH {self.epoch}/{self.num_epochs} | scene {dset_id}"
@@ -262,11 +270,6 @@ class Trainer():
                 if 'scene' in key:
                     continue
                 self.model.load_state_dict({key: checkpoint_data["model"][key]}, strict=False)
-                # Don't optimize parameters that are reloaded (this should be fine, but it doesn't train)
-                # for param in self.model.parameters():
-                #     if param.shape == checkpoint_data["model"][key].shape:
-                #         print(f'setting requires_grad false for param shape {param.shape}')
-                #         param.requires_grad = False
                 logging.info(f"=> Loaded model state {key} with shape {checkpoint_data['model'][key].shape} from checkpoint")
         else:
             self.model.load_state_dict(checkpoint_data["model"])
@@ -282,7 +285,7 @@ class Trainer():
 
     def total_batches_per_epoch(self):
         # noinspection PyTypeChecker
-        return sum(len(dl.dataset) // self.batch_size for dl in self.train_data_loaders)
+        return sum(math.ceil(len(dl.dataset) / self.batch_size) for dl in self.train_data_loaders)
 
     def reset_data_iterators(self, dataset_idx=None):
         """Rewind the iterator for the new epoch.

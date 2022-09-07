@@ -9,6 +9,7 @@ from torch.utils.data import TensorDataset
 from .data_loading import parallel_load_images
 from .ray_utils import get_ray_directions_blender, get_rays, ndc_rays_blender
 from .intrinsics import Intrinsics
+from .base_dataset import BaseDataset
 
 
 def normalize(v):
@@ -74,30 +75,28 @@ def center_poses(poses):
     return poses_centered, pose_avg_homo
 
 
-class LLFFDataset(TensorDataset):
+class LLFFDataset(BaseDataset):
     def __init__(self, datadir, split='train', downsample=4, hold_every=8, resolution=512):
         """
         spheric_poses: whether the images are taken in a spheric inward-facing manner
                        default: False (forward-facing)
         val_num: number of val images (used for multigpu training, validate same image for all gpus)
         """
-
-        self.is_ndc = True
-        self.datadir = datadir
-        self.split = split
+        super().__init__(datadir=datadir,
+                         scene_bbox=torch.tensor([[-1.5, -1.67, -1.0], [1.5, 1.67, 1.0]]),
+                         split=split,
+                         is_ndc=True)
         self.hold_every = hold_every
         self.downsample = 4
 
         self.near_fars = None
         self.near_far = [0.0, 1.0]
-        self.scene_bbox = torch.tensor([[-1.5, -1.67, -1.0], [1.5, 1.67, 1.0]])
 
         self.poses, rgbs, self.intrinsics = self.load_from_disk()
+        self.num_frames = len(self.poses)
         self.rays_o, self.rays_d, self.rgbs = self.init_rays(rgbs)
 
-        self.num_frames = len(self.poses)
-
-        super().__init__(self.rays_o, self.rays_d, self.rgbs)
+        self.set_tensors(self.rays_o, self.rays_d, self.rgbs)
 
     @property
     def img_w(self):
