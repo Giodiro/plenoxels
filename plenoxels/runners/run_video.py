@@ -83,12 +83,12 @@ class Trainer():
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             rays_o = data[0]
             rays_d = data[1]
-            timestamps = data[2]
+            timestamp = data[2]
             preds = []
             for b in range(math.ceil(rays_o.shape[0] / self.batch_size)):
                 rays_o_b = rays_o[b * self.batch_size: (b + 1) * self.batch_size].cuda()
                 rays_d_b = rays_d[b * self.batch_size: (b + 1) * self.batch_size].cuda()
-                timestamps_d_b = timestamps[b * self.batch_size: (b + 1) * self.batch_size].cuda()
+                timestamps_d_b = torch.ones(len(rays_o_b)).cuda() * timestamp
                 preds.append(self.model(rays_o_b, rays_d_b, timestamps_d_b, bg_color=1))
             preds = torch.cat(preds, 0)
         return preds
@@ -185,7 +185,7 @@ class Trainer():
             }
             for img_idx, data in enumerate(tqdm(dataset, desc=f"Test")):
                 preds = self.eval_step(data)
-                gt = data[2]
+                gt = data[3]
                 out_metrics = self.evaluate_metrics(
                     gt, preds, dset=dataset, img_idx=img_idx, name=None)
                 per_scene_metrics["psnr"] += out_metrics["psnr"]
@@ -201,10 +201,12 @@ class Trainer():
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_epoch{self.epoch}.csv"))
 
     def evaluate_metrics(self, gt, preds: torch.Tensor, dset, img_idx, name=None):
-        gt = gt.reshape(dset.img_h, dset.img_w, -1).cpu()
+        # gt = gt.reshape(dset.img_h, dset.img_w, -1).cpu()
+        gt = gt.reshape(dset.img_w, dset.img_h, -1).cpu()
         if gt.shape[-1] == 4:
             gt = gt[..., :3] * gt[..., 3:] + (1.0 - gt[..., 3:])
-        preds = preds.reshape(dset.img_h, dset.img_w, 3).cpu()
+        preds = torch.permute(preds.reshape(dset.img_h, dset.img_w, 3), (1, 0, 2)).cpu()
+        # preds = preds.reshape(dset.img_w, dset.img_h, 3).cpu()
         err = (gt - preds) ** 2
         exrdict = {
             "gt": gt.numpy(),
@@ -223,7 +225,7 @@ class Trainer():
             out_name += "-" + name
 
         write_exr(os.path.join(self.log_dir, out_name + ".exr"), exrdict)
-        write_png(os.path.join(self.log_dir, out_name + ".png"), (preds * 255.0).byte().numpy())
+        write_png(os.path.join(self.log_dir, out_name + ".png"), (torch.cat((preds, gt), dim=1) * 255.0).byte().numpy())
 
         return summary
 

@@ -53,12 +53,13 @@ class VideoDataset(TensorDataset):
         self.img_h: Optional[int] = None
         self.subsample_time = subsample_time
 
-        self.radius = 50  # TODO: this might need to change
+        self.radius = 10  # TODO: this might need to change
         self.len_time = None
 
         imgs, self.poses, self.timestamps, self.intrinsics = self.load_from_disk()
+        imageio.imwrite(f'split{split}gt.png', imgs[0])
         self.imgs, self.rays_o, self.rays_d = self.init_rays(imgs)
-        # Scale up timestamps to match rays
+        # Broadcast timestamps to match rays
         if split == 'train':
             self.timestamps = (torch.ones(len(self.timestamps), self.img_w, self.img_h) * self.timestamps[:,None,None]).reshape(-1)
         super().__init__(self.rays_o, self.rays_d, self.timestamps, self.imgs)
@@ -88,7 +89,8 @@ class VideoDataset(TensorDataset):
         focal = pose[14]
         assert self.img_h is not None
         assert self.img_w is not None
-        intrinsics = torch.from_numpy(np.array([focal, focal, self.img_w / 2, self.img_h / 2]))
+        # intrinsics = torch.from_numpy(np.array([focal, focal, self.img_w / 2, self.img_h / 2]))
+        intrinsics = torch.from_numpy(np.array([focal * 8 *self.img_w / self.img_h, focal * 8 * self.img_h / self.img_w, self.img_h / 2, self.img_w / 2]))
         return intrinsics
 
     def load_from_disk(self):
@@ -104,7 +106,7 @@ class VideoDataset(TensorDataset):
         else:
             poses_bounds = [poses_bounds[0]]
             videopaths = [videopaths[0]]
-        for camera_id in range(len(videopaths)):
+        for camera_id in tqdm(range(len(videopaths))): 
             cam_pose = poses_bounds[camera_id]
             # Get the pose
             pose = self.load_pose(cam_pose)
@@ -113,8 +115,12 @@ class VideoDataset(TensorDataset):
                 if frame_idx > len_time:
                     len_time = frame_idx
                 # Decide whether to keep this frame or not
-                if np.random.uniform() > self.subsample_time:
-                    continue
+                # if np.random.uniform() > self.subsample_time:
+                #     continue
+                # Only keep frame zero, for debugging
+                if frame_idx > 0:
+                    len_time = 300
+                    break
                 # Do any downsampling on the image
                 img = self.load_image(frame, self.img_h, self.img_w)
                 imgs.append(img)
