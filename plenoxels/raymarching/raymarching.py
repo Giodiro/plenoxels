@@ -54,25 +54,27 @@ class RayMarcher():
         if self.raymarch_type == "fixed":
             steps = torch.linspace(0, 1.0, self.n_intersections, device=dev)[None]  # [1, num_samples]
             steps = steps.expand((n_rays, self.n_intersections))  # [num_rays, num_samples]
-            intersections = start + (end - start) * steps
             n_intersections = self.n_intersections
+            intersections = start + (end - start) * steps
+            if perturb:
+                intersections += (torch.rand_like(intersections) - 0.5) * ((end - start) / n_intersections)
         else:
             step_size = torch.mean(aabb[1] - aabb[0]) / (self.sampling_resolution * self.num_sample_multiplier)
             # step-size and n-intersections are scaled to artificially increment resolution of model
             n_intersections = int(math.sqrt(3.) * self.sampling_resolution * self.num_sample_multiplier)
             steps = torch.arange(n_intersections, dtype=dt, device=dev)[None]  # [1, num_samples]
             steps = steps.expand((n_rays, n_intersections))  # [num_rays, num_samples]
+            if perturb:
+                # Apply the same random perturbation to each ray.
+                steps += torch.rand(n_rays, 1, dtype=dt, device=dev)
+
             intersections = start + steps * step_size  # [batch, n_intrs]
 
         deltas = intersections.diff(dim=-1, prepend=torch.zeros(intersections.shape[0], 1, device=dev) + start)
 
-        if perturb:
-            sample_dist = (end - start) / n_intersections
-            intersections += (torch.rand_like(intersections) - 0.5) * sample_dist
-
         intrs_pts = rays_o[..., None, :] + rays_d[..., None, :] * intersections[..., None]  # [batch, n_intrs, 3]
         mask = ((aabb[0] <= intrs_pts) & (intrs_pts <= aabb[1])).all(dim=-1)  # noqa
-        
+
         ridx = torch.arange(0, n_rays, device=dev)
         ridx = ridx[..., None].repeat(1, n_intersections)[mask]
         boundary = spc_render.mark_pack_boundaries(ridx)
@@ -86,3 +88,4 @@ class RayMarcher():
             return intrs_pts, ridx, boundary, deltas, timestamps
 
         return intrs_pts, ridx, boundary, deltas
+
