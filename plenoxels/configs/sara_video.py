@@ -3,14 +3,14 @@ samples_per_voxel = 2
 resolution = 128
 config = {
     "expname": "test",
-    "data_downsample": 2.0,
+    "data_downsample": 4.0,
     "data_dir": "/data/datasets/3DVideo/coffee_martini",
     # "data_dir": "/data/datasets/nerf/data/nerf_synthetic/lego",
 
     "subsample_time_train": 0.2,
-    "batch_size": 10000,  # 10000
+    "batch_size": 10000,  
     "num_batches_per_dset": 1,
-    "num_epochs": 2,
+    "num_epochs": 1,
     "scheduler_type": None,
     "optim_type": "adam",
     "model_type": "learnable_hash",

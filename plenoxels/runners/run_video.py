@@ -203,10 +203,10 @@ class Trainer():
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_epoch{self.epoch}.csv"))
 
     def evaluate_metrics(self, gt, preds: torch.Tensor, dset, img_idx, name=None):
-        gt = gt.reshape(dset.img_w, dset.img_h, -1).cpu()
+        gt = gt.reshape(dset.intrinsics.height, dset.intrinsics.width, -1).cpu()
         if gt.shape[-1] == 4:
             gt = gt[..., :3] * gt[..., 3:] + (1.0 - gt[..., 3:])
-        preds = preds.reshape(dset.img_w, dset.img_h, 3).cpu()
+        preds = preds.reshape(dset.intrinsics.height, dset.intrinsics.width, 3).cpu()
         err = (gt - preds) ** 2
         exrdict = {
             "gt": gt.numpy(),
