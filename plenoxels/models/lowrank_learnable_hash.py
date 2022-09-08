@@ -1,6 +1,7 @@
+import collections.abc
 import itertools
 import math
-from typing import Dict, List, Union
+from typing import Dict, List, Union, Optional, Sequence
 import logging as log
 
 import torch
@@ -36,41 +37,52 @@ class LowrankLearnableHash(nn.Module):
         self.features = None
         feature_dim = None
         for si in range(num_scenes):
-            grids = nn.ParameterList()
+            grids = nn.ModuleList()
             for li, grid_config in enumerate(self.config):
                 if "feature_dim" in grid_config:
                     if si == 0:  # Only make one set of features
-                        in_dim = grid_config["input_coordinate_dim"]
-                        reso = grid_config["resolution"]
+                        reso: List[int] = grid_config["resolution"]
+                        try:
+                            in_dim = len(reso)
+                        except AttributeError:
+                            raise ValueError("Configuration incorrect: resolution must be a list.")
+                        assert in_dim == grid_config["input_coordinate_dim"]
                         self.features = nn.Parameter(nn.init.normal_(
-                                torch.empty([grid_config["feature_dim"]] + [reso] * in_dim),
+                                torch.empty([grid_config["feature_dim"]] + reso),
                                 mean=0.0, std=grid_config["init_std"]))
                         feature_dim = grid_config["feature_dim"]
                 else:
-                    in_dim = grid_config["input_coordinate_dim"]
-                    out_dim = grid_config["output_coordinate_dim"]
-                    grid_nd = grid_config["grid_dimensions"]
-                    reso = grid_config["resolution"]
-                    rank = grid_config["rank"]
+                    out_dim: int = grid_config["output_coordinate_dim"]
+                    grid_nd: int = grid_config["grid_dimensions"]
+                    reso: List[int] = grid_config["resolution"]
+                    try:
+                        in_dim = len(reso)
+                    except AttributeError:
+                        raise ValueError("Configuration incorrect: resolution must be a list.")
                     num_comp = math.comb(in_dim, grid_nd)
+                    rank: Sequence[int] = to_list(grid_config["rank"], num_comp, "rank")
                     # Configuration correctness checks
+                    assert in_dim == grid_config["input_coordinate_dim"]
                     if li == 0:
                         assert in_dim == 3
                     assert out_dim in {1, 2, 3, 4, 5, 6, 7}
                     assert grid_nd <= in_dim
                     if grid_nd == in_dim:
-                        assert rank == 1
-                    grids.append(
-                        nn.Parameter(nn.init.normal_(
-                            torch.empty([num_comp, out_dim * rank] + [reso] * grid_nd),
-                            mean=0.0, std=grid_config["init_std"]))
-                    )
+                        assert all(r == 1 for r in rank)
+                    coo_combs = list(itertools.combinations(range(in_dim), grid_nd))
+                    grid_coefs = nn.ParameterList()
+                    for ci, coo_comb in enumerate(coo_combs):
+                        grid_coefs.append(
+                            torch.nn.Parameter(nn.init.normal_(torch.empty(
+                                [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb]
+                            ), mean=0.0, std=grid_config["init_std"])))
+                    grids.append(grid_coefs)
             self.scene_grids.append(grids)
         self.decoder = NNDecoder(feature_dim=feature_dim, sigma_net_width=64, sigma_net_layers=1)
         self.raymarcher = RayMarcher(**self.extra_args)
         log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes.")
 
-    def aabb(self, i):
+    def aabb(self, i: int) -> torch.Tensor:
         return getattr(self, f'aabb{i}')
 
     @staticmethod
@@ -85,11 +97,12 @@ class LowrankLearnableHash(nn.Module):
         coo_combs = list(itertools.combinations(range(coords.shape[-1]), dim))
         return coords[..., coo_combs].transpose(0, 1)
 
-    def compute_features(self, pts, grid_id):
-        grids = self.scene_grids[grid_id]
+    def compute_features(self, pts: torch.Tensor, grid_id: int) -> torch.Tensor:
+        grids: nn.ModuleList = self.scene_grids[grid_id]  # noqa
         grids_info = self.config
 
         interp = pts
+        grid: nn.ParameterList
         for level_info, grid in zip(grids_info, grids):
             if "feature_dim" in level_info:
                 continue
@@ -97,15 +110,25 @@ class LowrankLearnableHash(nn.Module):
                 interp,
                 level_info.get("grid_dimensions", level_info["input_coordinate_dim"])
             )
-            interp = grid_sample_wrapper(grid, coo_plane).view(
-                grid.shape[0], -1, level_info["output_coordinate_dim"], level_info["rank"])
-            interp = interp.prod(dim=0).sum(dim=-1)
+            coo_combs = list(itertools.combinations(range(interp.shape[-1]), level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
+            interp_out = None
+            for ci, coo_comb in enumerate(coo_combs):
+                if interp_out is None:
+                    interp_out = (
+                        grid_sample_wrapper(grid[ci], interp[..., coo_comb]).view(
+                            -1, level_info["output_coordinate_dim"], level_info["rank"]))
+                else:
+                    interp_out = interp_out * (
+                        grid_sample_wrapper(grid[ci], interp[..., coo_comb]).view(
+                            -1, level_info["output_coordinate_dim"], level_info["rank"]))
+            interp = interp_out.sum(dim=-1)
         return grid_sample_wrapper(self.features, interp)
 
-    def normalize_coord(self, pts, grid_id):
+    @torch.autograd.no_grad()
+    def normalize_coord(self, pts: torch.Tensor, grid_id: int) -> torch.Tensor:
         """
-        break-down of the normalization steps
-        1. pts - aabb[0] => [0, a1-a0]
+        break-down of the normalization steps. pts starts from [a0, a1]
+        1. pts - a0 => [0, a1-a0]
         2. / (a1 - a0) => [0, 1]
         3. * 2 => [0, 2]
         4. - 1 => [-1, 1]
@@ -167,3 +190,11 @@ class LowrankLearnableHash(nn.Module):
                 {"params": self.features, "lr": lr},
             ]
         return params
+
+
+def to_list(el, list_len, name: Optional[str] = None) -> Sequence:
+    if not isinstance(el, collections.abc.Sequence):
+        return [el] * list_len
+    if len(el) != list_len:
+        raise ValueError(f"Length of {name} is incorrect. Expected {list_len} but found {len(el)}")
+    return el
