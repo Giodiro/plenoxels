@@ -1,7 +1,7 @@
 # configuration file to be used with `run_multi_scene.py`
 # the configuration must be specified in a dictionary called `config`.
 config = {
-    "expname": "reso_256_lr1",
+    "expname": "reso_128_lego",
     "data_resolution": None,
     "data_downsample": 1.562,
     "data_dirs": ["/data/DATASETS/SyntheticNerf/lego"],
@@ -24,9 +24,9 @@ config = {
     "transfer_learning": False,
 
 
-    "raymarch_type": "fixed",
-    "sampling_resolution": 256,
-    "num_sample_multiplier": 1,
+    "raymarch_type": "voxel_size",
+    "sampling_resolution": 128,
+    "num_sample_multiplier": 4,
     "n_intersections": 400,
 
     "model_type": "learnable_hash",
@@ -34,15 +34,15 @@ config = {
 [
     {
         "input_coordinate_dim": 3,
-        "output_coordinate_dim": 4,
-        "grid_dimensions": 1,
-        "resolution": 256,
-        "rank": 10,
-        "init_std": 0.21,
+        "output_coordinate_dim": 3,
+        "grid_dimensions": 3,
+        "resolution": 128,
+        "rank": 1,
+        "init_std": 0.01,
     },
     {
-        "input_coordinate_dim": 4,
-        "resolution": 2,
+        "input_coordinate_dim": 3,
+        "resolution": 8,
         "feature_dim": 32,
         "init_std": 0.05
     }
