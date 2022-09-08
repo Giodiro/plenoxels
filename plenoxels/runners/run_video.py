@@ -25,7 +25,6 @@ from plenoxels.runners.utils import *
 from plenoxels.video_dataset import VideoDataset
 
 
-
 class Trainer():
     def __init__(self,
                  tr_loader: torch.utils.data.DataLoader,
@@ -83,12 +82,13 @@ class Trainer():
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             rays_o = data[0]
             rays_d = data[1]
-            timestamps = data[2]
+            timestamp = data[3]
+            # timestamp = 0
             preds = []
             for b in range(math.ceil(rays_o.shape[0] / self.batch_size)):
                 rays_o_b = rays_o[b * self.batch_size: (b + 1) * self.batch_size].cuda()
                 rays_d_b = rays_d[b * self.batch_size: (b + 1) * self.batch_size].cuda()
-                timestamps_d_b = timestamps[b * self.batch_size: (b + 1) * self.batch_size].cuda()
+                timestamps_d_b = torch.ones(len(rays_o_b)).cuda() * timestamp
                 preds.append(self.model(rays_o_b, rays_d_b, timestamps_d_b, bg_color=1))
             preds = torch.cat(preds, 0)
         return preds
@@ -96,8 +96,9 @@ class Trainer():
     def step(self, data):
         rays_o = data[0].cuda()
         rays_d = data[1].cuda()
-        timestamps = data[2].cuda()
-        imgs = data[3].cuda()
+        timestamps = data[3].cuda()
+        # timestamps = torch.zeros(len(rays_o)).cuda()
+        imgs = data[2].cuda()
         self.optimizer.zero_grad(set_to_none=True)
 
         C = imgs.shape[-1]
@@ -185,6 +186,7 @@ class Trainer():
             }
             for img_idx, data in enumerate(tqdm(dataset, desc=f"Test")):
                 preds = self.eval_step(data)
+                # gt = data[3]
                 gt = data[2]
                 out_metrics = self.evaluate_metrics(
                     gt, preds, dset=dataset, img_idx=img_idx, name=None)
@@ -201,10 +203,10 @@ class Trainer():
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_epoch{self.epoch}.csv"))
 
     def evaluate_metrics(self, gt, preds: torch.Tensor, dset, img_idx, name=None):
-        gt = gt.reshape(dset.img_h, dset.img_w, -1).cpu()
+        gt = gt.reshape(dset.img_w, dset.img_h, -1).cpu()
         if gt.shape[-1] == 4:
             gt = gt[..., :3] * gt[..., 3:] + (1.0 - gt[..., 3:])
-        preds = preds.reshape(dset.img_h, dset.img_w, 3).cpu()
+        preds = preds.reshape(dset.img_w, dset.img_h, 3).cpu()
         err = (gt - preds) ** 2
         exrdict = {
             "gt": gt.numpy(),
@@ -222,8 +224,8 @@ class Trainer():
         if name is not None and name != "":
             out_name += "-" + name
 
-        write_exr(os.path.join(self.log_dir, out_name + ".exr"), exrdict)
-        write_png(os.path.join(self.log_dir, out_name + ".png"), (preds * 255.0).byte().numpy())
+        # write_exr(os.path.join(self.log_dir, out_name + ".exr"), exrdict)
+        write_png(os.path.join(self.log_dir, out_name + ".png"), (torch.cat((preds, gt), dim=1) * 255.0).byte().numpy())
 
         return summary
 
@@ -297,11 +299,12 @@ class Trainer():
         return optim
 
     def init_model(self, **kwargs) -> torch.nn.Module:
-        radi = self.train_data_loader.dataset.radius
+        aabb = self.train_data_loader.dataset.aabb
         len_time = self.train_data_loader.dataset.len_time
+        # len_time = 100
         if self.model_type == "learnable_hash":
             model = LowrankVideo(
-                radi=radi,
+                aabb=aabb,
                 len_time=len_time,
                 **kwargs)
         else:
@@ -341,9 +344,19 @@ def load_data(data_downsample, data_dir, subsample_time_train, batch_size, **kwa
     tr_loader = torch.utils.data.DataLoader(
         tr_dset, batch_size=batch_size, shuffle=True, num_workers=3,
         prefetch_factor=4, pin_memory=True)
+    # ts_dset = VideoDataset(
+    #     data_dir, split='test', downsample=1,
+    #     subsample_time=1)
     ts_dset = VideoDataset(
-        data_dir, split='test', downsample=1,
-        subsample_time=1)
+        data_dir, split='test', downsample=data_downsample,
+        subsample_time=subsample_time_train)
+    # tr_dset = SyntheticNerfDataset(
+    #     data_dir, split='train', downsample=data_downsample)
+    # tr_loader = torch.utils.data.DataLoader(
+    #     tr_dset, batch_size=batch_size, shuffle=True, num_workers=3,
+    #     prefetch_factor=4, pin_memory=True)
+    # ts_dset = SyntheticNerfDataset(
+    #     data_dir, split='test', downsample=1)
     return tr_loader, ts_dset
 
 

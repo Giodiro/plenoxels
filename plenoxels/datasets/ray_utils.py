@@ -12,7 +12,7 @@ __all__ = (
 )
 
 
-def create_meshgrid(height: int, width: int, normalized_coordinates: bool = True) -> torch.Tensor:
+def create_meshgrid(height: int, width: int, normalized_coordinates: bool = True) -> Tuple[torch.Tensor, torch.Tensor]:
     xs = torch.arange(width, dtype=torch.float32) + 0.5
     ys = torch.arange(height, dtype=torch.float32) + 0.5
     # generate grid by stacking coordinates
@@ -107,4 +107,3 @@ def ndc_rays_blender(intrinsics: Intrinsics, near: float, rays_o: torch.Tensor, 
     rays_d = torch.stack([d0, d1, d2], -1)
 
     return rays_o, rays_d
-
