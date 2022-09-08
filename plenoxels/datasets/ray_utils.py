@@ -1,4 +1,4 @@
-from typing import Tuple, Optional
+from typing import Tuple
 
 import torch
 
@@ -12,7 +12,7 @@ __all__ = (
 )
 
 
-def create_meshgrid(height: int, width: int, normalized_coordinates: bool = True) -> Tuple[torch.Tensor, torch.Tensor]:
+def create_meshgrid(height: int, width: int) -> Tuple[torch.Tensor, torch.Tensor]:
     xs = torch.arange(width, dtype=torch.float32) + 0.5
     ys = torch.arange(height, dtype=torch.float32) + 0.5
     # generate grid by stacking coordinates
@@ -20,7 +20,7 @@ def create_meshgrid(height: int, width: int, normalized_coordinates: bool = True
     return xx, yy
 
 
-def get_ray_directions(intrinsics: Intrinsics):
+def get_ray_directions(intrinsics: Intrinsics) -> torch.Tensor:
     """
     Get ray directions for all pixels in camera coordinate.
     Reference: https://www.scratchapixel.com/lessons/3d-basic-rendering/
@@ -30,7 +30,7 @@ def get_ray_directions(intrinsics: Intrinsics):
     Outputs:
         directions: (height, width, 3), the direction of the rays in camera coordinate
     """
-    xx, yy = create_meshgrid(intrinsics.height, intrinsics.width, normalized_coordinates=False)
+    xx, yy = create_meshgrid(intrinsics.height, intrinsics.width)
 
     # the direction here is without +0.5 pixel centering as calibration is not so accurate
     # see https://github.com/bmild/nerf/issues/24
@@ -43,7 +43,7 @@ def get_ray_directions(intrinsics: Intrinsics):
     return directions
 
 
-def get_ray_directions_blender(intrinsics: Intrinsics):
+def get_ray_directions_blender(intrinsics: Intrinsics) -> torch.Tensor:
     """
     Get ray directions for all pixels in camera coordinate.
     Reference: https://www.scratchapixel.com/lessons/3d-basic-rendering/
@@ -53,7 +53,7 @@ def get_ray_directions_blender(intrinsics: Intrinsics):
     Outputs:
         directions: (height, width, 3), the direction of the rays in camera coordinate
     """
-    xx, yy = create_meshgrid(intrinsics.height, intrinsics.width, normalized_coordinates=False)
+    xx, yy = create_meshgrid(intrinsics.height, intrinsics.width)
 
     directions = torch.stack([
         (xx - intrinsics.center_x) / intrinsics.focal_x,
@@ -64,7 +64,7 @@ def get_ray_directions_blender(intrinsics: Intrinsics):
     return directions
 
 
-def get_rays(directions, c2w):
+def get_rays(directions: torch.Tensor, c2w: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Get ray origin and normalized directions in world coordinate for all pixels in one image.
     Reference: https://www.scratchapixel.com/lessons/3d-basic-rendering/

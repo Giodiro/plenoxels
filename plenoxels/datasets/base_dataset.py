@@ -1,8 +1,8 @@
+from typing import Optional, Tuple
 import os
 
 import torch
 from torch.utils.data import Dataset
-
 
 
 class BaseDataset(Dataset):
@@ -13,7 +13,7 @@ class BaseDataset(Dataset):
         self.split = split
         self.is_ndc = is_ndc
 
-        self.tensors: Optional[Tuple[Tensor, ...]] = None
+        self.tensors: Optional[Tuple[torch.Tensor, ...]] = None
 
     def set_tensors(self, *tensors: torch.Tensor) -> None:
         assert all(tensors[0].size(0) == tensor.size(0) for tensor in tensors), "Size mismatch between tensors"

@@ -8,11 +8,15 @@
 
 import os
 import glob
-import pyexr
+try:
+    import pyexr
+except ImportError:
+    pyexr = None
 import cv2
 import skimage
 import imageio
 from PIL import Image
+import logging as log
 import numpy as np
 import torch
 
@@ -31,11 +35,14 @@ def write_exr(path, data):
     Returns:
         (void): Writes to path.
     """
-    pyexr.write(path, data,
-                channel_names={'normal': ['X', 'Y', 'Z'],
-                               'x': ['X', 'Y', 'Z'],
-                               'view': ['X', 'Y', 'Z']},
-                precision=pyexr.HALF)
+    if pyexr is not None:
+        pyexr.write(path, data,
+                    channel_names={'normal': ['X', 'Y', 'Z'],
+                                   'x': ['X', 'Y', 'Z'],
+                                   'view': ['X', 'Y', 'Z']},
+                    precision=pyexr.HALF)
+    else:
+        log.warning("Will not save EXR output since pyexr is not available")
 
 
 def write_png(path, data):

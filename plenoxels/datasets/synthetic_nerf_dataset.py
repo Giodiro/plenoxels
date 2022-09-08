@@ -4,7 +4,6 @@ import os
 
 import numpy as np
 import torch
-from torch.utils.data import TensorDataset
 
 from .data_loading import parallel_load_images
 from .ray_utils import get_rays, get_ray_directions
