@@ -5,11 +5,12 @@ config = {
     "expname": "test",
     "data_downsample": 2.0,
     "data_dir": "/data/datasets/3DVideo/coffee_martini",
+    # "data_dir": "/data/datasets/nerf/data/nerf_synthetic/lego",
 
     "subsample_time_train": 0.2,
-    "batch_size": 10000,
+    "batch_size": 10000,  # 10000
     "num_batches_per_dset": 1,
-    "num_epochs": 3,
+    "num_epochs": 2,
     "scheduler_type": None,
     "optim_type": "adam",
     "model_type": "learnable_hash",
@@ -33,8 +34,8 @@ config = {
         "grid_dimensions": 2,
         "resolution": 128,
         "rank": 10,
-        "time_reso": 128,
-        "time_rank": 10,
+        "time_reso": 2,
+        "time_rank": 1,
         "init_std": 0.1,
     },
     {

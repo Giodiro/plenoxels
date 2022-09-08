@@ -27,14 +27,29 @@ class RayMarcher():
         self.sampling_resolution = sampling_resolution
         self.num_sample_multiplier = num_sample_multiplier
 
-    @torch.autograd.no_grad()
-    def get_intersections(self, rays_o, rays_d, radius: float, perturb: bool = False, timestamps=None
-                          ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def get_samples_ndc(self, rays_o, rays_d, perturb):
+        # TODO: These are hardcoded here and in llff_dataset.
+        #       We should fetch them from llff_dataset to have a single source of truth
+        start, end = 0.0, 1.0
+        dev, dt = rays_o.device, rays_o.dtype
+
+        steps = torch.linspace(0, 1.0, self.n_intersections, device=dev)[None]  # [1, num_samples]
+        if perturb:
+            steps += torch.rand_like(steps) / self.n_intersections
+        steps = steps.expand(rays_o.shape[0], self.n_intersections)
+
+        return steps, start
+
+    def get_samples(self, rays_o, rays_d, perturb, aabb):
         dev, dt = rays_o.device, rays_o.dtype
         n_rays = rays_o.shape[0]
+
+        # Handle the non-LLFF case, where aabb is just a scalar radius
+        if not hasattr(aabb, "__len__"):
+            aabb = torch.tensor([[-aabb, -aabb, -aabb], [aabb, aabb, aabb]]).cuda() 
         inv_rays_d = torch.reciprocal(torch.where(rays_d == 0, torch.full_like(rays_d, 1e-6), rays_d))
-        offsets_pos = (radius - rays_o) * inv_rays_d  # [batch, 3]
-        offsets_neg = (-radius - rays_o) * inv_rays_d  # [batch, 3]
+        offsets_pos = (aabb[1] - rays_o) * inv_rays_d  # [batch, 3]
+        offsets_neg = (aabb[0] - rays_o) * inv_rays_d  # [batch, 3]
         offsets_in = torch.minimum(offsets_pos, offsets_neg)  # [batch, 3]
         offsets_out = torch.maximum(offsets_pos, offsets_neg)
         start = torch.amax(offsets_in, dim=-1, keepdim=True)  # [batch, 1]
@@ -43,32 +58,59 @@ class RayMarcher():
         if self.raymarch_type == "fixed":
             steps = torch.linspace(0, 1.0, self.n_intersections, device=dev)[None]  # [1, num_samples]
             steps = steps.expand((n_rays, self.n_intersections))  # [num_rays, num_samples]
-            intersections = start + (end - start) * steps
             n_intersections = self.n_intersections
+            intersections = start + (end - start) * steps
+            if perturb:
+                intersections += (torch.rand_like(intersections) - 0.5) * ((end - start) / n_intersections)
         else:
-            step_size = (radius * 2) / (self.sampling_resolution * self.num_sample_multiplier)
+            step_size = torch.mean(aabb[1] - aabb[0]) / (self.sampling_resolution * self.num_sample_multiplier)
             # step-size and n-intersections are scaled to artificially increment resolution of model
             n_intersections = int(math.sqrt(3.) * self.sampling_resolution * self.num_sample_multiplier)
             steps = torch.arange(n_intersections, dtype=dt, device=dev)[None]  # [1, num_samples]
-            steps = steps.expand((n_rays, n_intersections))  # [num_rays, num_samples]
+            steps = steps.repeat(n_rays, 1)  # [num_rays, num_samples]
+            # steps = steps.expand((n_rays, n_intersections))  # [num_rays, num_samples]
+            if perturb:
+                # Apply the same random perturbation to each ray.
+                steps += torch.rand(n_rays, 1, dtype=dt, device=dev)
+
             intersections = start + steps * step_size  # [batch, n_intrs]
+
+        return intersections, start
+
+    @torch.autograd.no_grad()
+    def get_intersections(self,
+                          rays_o,
+                          rays_d,
+                          aabb,
+                          perturb: bool = False,
+                          is_ndc: bool = False,
+                          timestamps=None
+                          ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        dev, dt = rays_o.device, rays_o.dtype
+
+        # Handle the non-LLFF case, where aabb is just a scalar radius
+        if not hasattr(aabb, "__len__"):
+            aabb = torch.tensor([[-aabb, -aabb, -aabb], [aabb, aabb, aabb]]).cuda() 
+
+        if is_ndc:
+            intersections, start = self.get_samples_ndc(rays_o, rays_d, perturb)
+        else:
+            intersections, start = self.get_samples(rays_o, rays_d, perturb, aabb)
+        n_rays = rays_o.shape[0]
+        n_intersections = intersections.shape[1]
 
         deltas = intersections.diff(dim=-1, prepend=torch.zeros(intersections.shape[0], 1, device=dev) + start)
 
-        if perturb:
-            sample_dist = (end - start) / n_intersections
-            intersections += (torch.rand_like(intersections) - 0.5) * sample_dist
-
         intrs_pts = rays_o[..., None, :] + rays_d[..., None, :] * intersections[..., None]  # [batch, n_intrs, 3]
-        mask = ((-radius <= intrs_pts) & (intrs_pts <= radius)).all(dim=-1)
-        
+        mask = ((aabb[0] <= intrs_pts) & (intrs_pts <= aabb[1])).all(dim=-1)  # noqa
+
         ridx = torch.arange(0, n_rays, device=dev)
         ridx = ridx[..., None].repeat(1, n_intersections)[mask]
         boundary = spc_render.mark_pack_boundaries(ridx)
         deltas = deltas[mask]
         intrs_pts = intrs_pts[mask]
 
-        # Apply mask to timestamps as well
+        # Apply mask to timestamps as well TODO: better to return mask than to add other stuff in here.
         if timestamps is not None:
             assert len(timestamps) == len(rays_o)
             timestamps = timestamps[:,None].repeat(1, mask.shape[1])[mask]

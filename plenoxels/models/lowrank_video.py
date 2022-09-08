@@ -16,7 +16,7 @@ from ..raymarching.raymarching import RayMarcher
 class LowrankVideo(nn.Module):
     def __init__(self,
                  grid_config: Union[str, List[Dict]],
-                 radi: float,
+                 aabb: List[torch.Tensor],  # [[x_min, y_min, z_min], [x_max, y_max, z_max]]
                  len_time: int,
                  **kwargs):
         super().__init__()
@@ -24,7 +24,7 @@ class LowrankVideo(nn.Module):
             self.config: List[Dict] = eval(grid_config)
         else:
             self.config: List[Dict] = grid_config
-        self.radi = radi
+        self.aabb = aabb
         self.len_time = len_time
         self.extra_args = kwargs
         self.raymarcher = RayMarcher(**kwargs)
@@ -102,6 +102,16 @@ class LowrankVideo(nn.Module):
         interp = (interp_space * interp_time).sum(dim=-1)  # [n, F_dim]
         return grid_sample_wrapper(self.features, interp)
 
+    def normalize_coord(self, pts):
+        """
+        break-down of the normalization steps
+        1. pts - aabb[0] => [0, a1-a0]
+        2. / (a1 - a0) => [0, 1]
+        3. * 2 => [0, 2]
+        4. - 1 => [-1, 1]
+        """
+        return (pts - self.aabb[0]) * (2.0 / (self.aabb[1] - self.aabb[0])) - 1
+
     def forward(self, rays_o, rays_d, timestamps, bg_color):
         """
         rays_o : [batch, 3]
@@ -110,7 +120,7 @@ class LowrankVideo(nn.Module):
         """
 
         intersection_pts, ridx, boundary, deltas, times = self.raymarcher.get_intersections(
-            rays_o, rays_d, self.radi, perturb=self.training, timestamps=timestamps)
+            rays_o, rays_d, self.aabb, perturb=self.training, timestamps=timestamps)
         n_rays = rays_o.shape[0]
         dev = rays_o.device
 
@@ -118,7 +128,7 @@ class LowrankVideo(nn.Module):
         # intersection_pts has shape [n_valid_intrs, 3]
 
         # Normalization (between [-1, 1])
-        intersection_pts = intersection_pts / self.radi
+        intersection_pts = self.normalize_coord(intersection_pts)
         times = (times * 2 / self.len_time) - 1
         rays_d = rays_d / torch.linalg.norm(rays_d, dim=-1, keepdim=True)
         # rays_d in the packed format (essentially repeated a number of times)
