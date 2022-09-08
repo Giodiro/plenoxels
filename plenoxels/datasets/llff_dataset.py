@@ -4,75 +4,11 @@ import logging as log
 
 import numpy as np
 import torch
-from torch.utils.data import TensorDataset
 
 from .data_loading import parallel_load_images
 from .ray_utils import get_ray_directions_blender, get_rays, ndc_rays_blender
 from .intrinsics import Intrinsics
 from .base_dataset import BaseDataset
-
-
-def normalize(v):
-    """Normalize a vector."""
-    return v / np.linalg.norm(v)
-
-
-def average_poses(poses):
-    """
-    Calculate the average pose, which is then used to center all poses
-    using @center_poses. Its computation is as follows:
-    1. Compute the center: the average of pose centers.
-    2. Compute the z axis: the normalized average z axis.
-    3. Compute axis y': the average y axis.
-    4. Compute x' = y' cross product z, then normalize it as the x axis.
-    5. Compute the y axis: z cross product x.
-
-    Note that at step 3, we cannot directly use y' as y axis since it's
-    not necessarily orthogonal to z axis. We need to pass from x to y.
-    Inputs:
-        poses: (N_images, 3, 4)
-    Outputs:
-        pose_avg: (3, 4) the average pose
-    """
-    # 1. Compute the center
-    center = poses[..., 3].mean(0)  # (3)
-    # 2. Compute the z axis
-    z = normalize(poses[..., 2].mean(0))  # (3)
-    # 3. Compute axis y' (no need to normalize as it's not the final output)
-    y_ = poses[..., 1].mean(0)  # (3)
-    # 4. Compute the x axis
-    x = normalize(np.cross(z, y_))  # (3)
-    # 5. Compute the y axis (as z and x are normalized, y is already of norm 1)
-    y = np.cross(x, z)  # (3)
-
-    pose_avg = np.stack([x, y, z, center], 1)  # (3, 4)
-
-    return pose_avg
-
-
-def center_poses(poses):
-    """
-    Center the poses so that we can use NDC.
-    See https://github.com/bmild/nerf/issues/34
-    Inputs:
-        poses: (N_images, 3, 4)
-    Outputs:
-        poses_centered: (N_images, 3, 4) the centered poses
-        pose_avg: (3, 4) the average pose
-    """
-    pose_avg = average_poses(poses)  # (3, 4)
-    pose_avg_homo = np.eye(4)
-    pose_avg_homo[:3] = pose_avg  # convert to homogeneous coordinate for faster computation
-    pose_avg_homo = pose_avg_homo
-    # by simply adding 0, 0, 0, 1 as the last row
-    last_row = np.tile(np.array([0, 0, 0, 1]), (len(poses), 1, 1))  # (N_images, 1, 4)
-    poses_homo = \
-        np.concatenate([poses, last_row], 1)  # (N_images, 4, 4) homogeneous coordinate
-
-    poses_centered = np.linalg.inv(pose_avg_homo) @ poses_homo  # (N_images, 4, 4)
-    poses_centered = poses_centered[:, :3]  # (N_images, 3, 4)
-
-    return poses_centered, pose_avg_homo
 
 
 class LLFFDataset(BaseDataset):
@@ -185,3 +121,66 @@ class LLFFDataset(BaseDataset):
             all_rgbs = all_rgbs.view(-1, num_pixels, all_rgbs.shape[-1])
 
         return all_rays_o, all_rays_d, all_rgbs
+
+
+def normalize(v):
+    """Normalize a vector."""
+    return v / np.linalg.norm(v)
+
+
+def average_poses(poses):
+    """
+    Calculate the average pose, which is then used to center all poses
+    using @center_poses. Its computation is as follows:
+    1. Compute the center: the average of pose centers.
+    2. Compute the z axis: the normalized average z axis.
+    3. Compute axis y': the average y axis.
+    4. Compute x' = y' cross product z, then normalize it as the x axis.
+    5. Compute the y axis: z cross product x.
+
+    Note that at step 3, we cannot directly use y' as y axis since it's
+    not necessarily orthogonal to z axis. We need to pass from x to y.
+    Inputs:
+        poses: (N_images, 3, 4)
+    Outputs:
+        pose_avg: (3, 4) the average pose
+    """
+    # 1. Compute the center
+    center = poses[..., 3].mean(0)  # (3)
+    # 2. Compute the z axis
+    z = normalize(poses[..., 2].mean(0))  # (3)
+    # 3. Compute axis y' (no need to normalize as it's not the final output)
+    y_ = poses[..., 1].mean(0)  # (3)
+    # 4. Compute the x axis
+    x = normalize(np.cross(z, y_))  # (3)
+    # 5. Compute the y axis (as z and x are normalized, y is already of norm 1)
+    y = np.cross(x, z)  # (3)
+
+    pose_avg = np.stack([x, y, z, center], 1)  # (3, 4)
+
+    return pose_avg
+
+
+def center_poses(poses):
+    """
+    Center the poses so that we can use NDC.
+    See https://github.com/bmild/nerf/issues/34
+    Inputs:
+        poses: (N_images, 3, 4)
+    Outputs:
+        poses_centered: (N_images, 3, 4) the centered poses
+        pose_avg: (3, 4) the average pose
+    """
+    pose_avg = average_poses(poses)  # (3, 4)
+    pose_avg_homo = np.eye(4)
+    pose_avg_homo[:3] = pose_avg  # convert to homogeneous coordinate for faster computation
+    pose_avg_homo = pose_avg_homo
+    # by simply adding 0, 0, 0, 1 as the last row
+    last_row = np.tile(np.array([0, 0, 0, 1]), (len(poses), 1, 1))  # (N_images, 1, 4)
+    poses_homo = \
+        np.concatenate([poses, last_row], 1)  # (N_images, 4, 4) homogeneous coordinate
+
+    poses_centered = np.linalg.inv(pose_avg_homo) @ poses_homo  # (N_images, 4, 4)
+    poses_centered = poses_centered[:, :3]  # (N_images, 3, 4)
+
+    return poses_centered, pose_avg_homo

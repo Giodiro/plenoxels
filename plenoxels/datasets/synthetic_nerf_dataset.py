@@ -99,27 +99,23 @@ class SyntheticNerfDataset(BaseDataset):
 
     def init_rays(self, imgs):
         assert imgs is not None and self.poses is not None and self.intrinsics is not None
-        # Low-pass the images at required resolution
-        imgs = imgs.view(-1, imgs.shape[-1])  # [N*H*W, 3]
 
         directions = get_ray_directions(self.intrinsics)  # [H, W, 3]
         directions = directions / torch.norm(directions, dim=-1, keepdim=True)
 
-        rays = []
+        all_rays_o, all_rays_d = [], []
         for i in range(self.poses.shape[0]):
-            pose = self.poses[i]
-            pose_opencv = pose @ self.blender2opencv
-            rays.append(torch.stack(get_rays(directions, pose_opencv), 1))  # h*w, 2, 3
-        rays = torch.stack(rays)  # n, h*w, 2, 3
-        # Merge N, H, W dimensions
-        rays_o = rays[:, :, 0, :].reshape(-1, 3)  # [N*H*W, 3]
-        rays_o = rays_o.to(dtype=torch.float32).contiguous()
-        rays_d = rays[:, :, 1, :].reshape(-1, 3)  # [N*H*W, 3]
-        rays_d = rays_d.to(dtype=torch.float32).contiguous()
+            pose_opencv = self.poses[i] @ self.blender2opencv
+            rays_o, rays_d = get_rays(directions, pose_opencv)  # h*w, 3
+            all_rays_o.append(rays_o)
+            all_rays_d.append(rays_d)
 
+        all_rays_o = torch.cat(all_rays_o, 0).to(dtype=torch.float32)  # [n_frames * h * w, 3]
+        all_rays_d = torch.cat(all_rays_d, 0).to(dtype=torch.float32)  # [n_frames * h * w, 3]
+        imgs = imgs.view(-1, imgs.shape[-1]).to(dtype=torch.float32)   # [N*H*W, 3/4]
         if self.split != "train":
             num_pixels = self.intrinsics.height * self.intrinsics.width
             imgs = imgs.view(self.num_frames, num_pixels, -1)  # [N, H*W, 3/4]
-            rays_o = rays_o.view(self.num_frames, num_pixels, 3)  # [N, H*W, 3]
-            rays_d = rays_d.view(self.num_frames, num_pixels, 3)  # [N, H*W, 3]
-        return imgs, rays_o, rays_d
+            all_rays_o = all_rays_o.view(self.num_frames, num_pixels, 3)  # [N, H*W, 3]
+            all_rays_d = all_rays_d.view(self.num_frames, num_pixels, 3)  # [N, H*W, 3]
+        return imgs, all_rays_o, all_rays_d

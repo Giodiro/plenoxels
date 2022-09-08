@@ -108,4 +108,3 @@ class RayMarcher():
             return intrs_pts, ridx, boundary, deltas, timestamps
 
         return intrs_pts, ridx, boundary, deltas
-
