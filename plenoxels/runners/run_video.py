@@ -7,6 +7,7 @@ import sys
 from collections import defaultdict
 from typing import Dict, List, Optional
 import pprint
+import cv2
 
 import numpy as np
 np.random.seed(0)
@@ -40,10 +41,12 @@ class Trainer():
                  save_every: int,
                  valid_every: int,
                  transfer_learning: bool = False,
+                 save_video: bool = False,
                  **kwargs
                  ):
         self.train_data_loader = tr_loader
         self.test_dataset = ts_dset
+        self.save_video = save_video
         self.extra_args = kwargs
 
         self.num_batches_per_dset = num_batches_per_dset
@@ -184,14 +187,22 @@ class Trainer():
                 "psnr": 0,
                 "ssim": 0,
             }
+            if self.save_video:
+                print(f'saving video to {os.path.join(self.log_dir, f"epoch{self.epoch}.mp4")}')
+                video = cv2.VideoWriter(os.path.join(self.log_dir, f'epoch{self.epoch}.mp4'), cv2.VideoWriter_fourcc(*'mp4v'), 30, (2*self.test_dataset.intrinsics.width, self.test_dataset.intrinsics.height))
             for img_idx, data in enumerate(tqdm(dataset, desc=f"Test")):
                 preds = self.eval_step(data)
-                # gt = data[3]
                 gt = data[2]
-                out_metrics = self.evaluate_metrics(
+                out_metrics, out_img = self.evaluate_metrics(
                     gt, preds, dset=dataset, img_idx=img_idx, name=None)
+                if self.save_video:
+                    video.write(out_img[:, :, ::-1])  # opencv uses BGR instead of RGB
                 per_scene_metrics["psnr"] += out_metrics["psnr"]
                 per_scene_metrics["ssim"] += out_metrics["ssim"]
+            if self.save_video:
+                cv2.destroyAllWindows()
+                video.release()
+                print(f'done writing video')
             per_scene_metrics["psnr"] /= len(dataset)  # noqa
             per_scene_metrics["ssim"] /= len(dataset)  # noqa
             log_text = f"EPOCH {self.epoch}/{self.num_epochs}"
@@ -225,9 +236,11 @@ class Trainer():
             out_name += "-" + name
 
         # write_exr(os.path.join(self.log_dir, out_name + ".exr"), exrdict)
-        write_png(os.path.join(self.log_dir, out_name + ".png"), (torch.cat((preds, gt), dim=1) * 255.0).byte().numpy())
+        out_img = (torch.cat((preds, gt), dim=1) * 255.0).byte().numpy()
+        if not self.save_video:
+            write_png(os.path.join(self.log_dir, out_name + ".png"), out_img)
 
-        return summary
+        return summary, out_img
 
     def save_model(self):
         """Override this function to change model saving."""
@@ -344,12 +357,9 @@ def load_data(data_downsample, data_dir, subsample_time_train, batch_size, **kwa
     tr_loader = torch.utils.data.DataLoader(
         tr_dset, batch_size=batch_size, shuffle=True, num_workers=3,
         prefetch_factor=4, pin_memory=True)
-    # ts_dset = VideoDataset(
-    #     data_dir, split='test', downsample=1,
-    #     subsample_time=1)
     ts_dset = VideoDataset(
-        data_dir, split='test', downsample=data_downsample,
-        subsample_time=subsample_time_train)
+        data_dir, split='test', downsample=1,
+        subsample_time=1)
     # tr_dset = SyntheticNerfDataset(
     #     data_dir, split='train', downsample=data_downsample)
     # tr_loader = torch.utils.data.DataLoader(

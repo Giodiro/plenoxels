@@ -1,6 +1,6 @@
 # configuration file to be used with `run_video.py`
 samples_per_voxel = 2
-resolution = 128
+resolution = 256
 config = {
     "expname": "test",
     "data_downsample": 4.0,
@@ -10,7 +10,7 @@ config = {
     "subsample_time_train": 0.2,
     "batch_size": 10000,  
     "num_batches_per_dset": 1,
-    "num_epochs": 1,
+    "num_epochs": 3,
     "scheduler_type": None,
     "optim_type": "adam",
     "model_type": "learnable_hash",
@@ -19,6 +19,7 @@ config = {
     "save_every": 1,
     "valid_every": 1,
     "transfer_learning": False,
+    "save_video": True,
 
     "lr": 2e-3,
 
@@ -32,9 +33,9 @@ config = {
         "input_coordinate_dim": 3,
         "output_coordinate_dim": 4,
         "grid_dimensions": 2,
-        "resolution": 128,
+        "resolution": 256,
         "rank": 10,
-        "time_reso": 2,
+        "time_reso": 64,
         "time_rank": 1,
         "init_std": 0.1,
     },

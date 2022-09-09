@@ -93,9 +93,8 @@ class VideoDataset(TensorDataset):
         self.split = split
         self.downsample = downsample
         self.subsample_time = subsample_time
-
-        # self.aabb = torch.tensor([[-1.5, -1.5, -4], [1.5, 2.0, 1.0]]).cuda()  # This is made up...
-        self.aabb = torch.tensor([[-3.0, -3.0, -2.0], [3, 3, 100.0]]).cuda() 
+ 
+        self.aabb = torch.tensor([[-30.0, -3.0, -2.0], [3, 80, 100.0]]).cuda() # This is made up
         self.len_time = None
         self.near_fars = None
 
@@ -105,6 +104,7 @@ class VideoDataset(TensorDataset):
         # Broadcast timestamps to match rays
         if split == 'train':
             self.timestamps = (torch.ones(len(self.timestamps), self.intrinsics.height, self.intrinsics.width) * self.timestamps[:,None,None]).reshape(-1)
+        # print(f'rays_o has shape {self.rays_o.shape}, rays_d has shape {self.rays_d.shape}, rgbs has shape {self.rgbs.shape}, timestamps has shape {self.timestamps.shape}')
         super().__init__(self.rays_o, self.rays_d, self.rgbs, self.timestamps)
 
     def load_image(self, img, out_h, out_w):
@@ -126,13 +126,11 @@ class VideoDataset(TensorDataset):
         if self.split == 'train':
             poses_bounds = poses_bounds[1:]
             videopaths = videopaths[1:]
-        # else:
-            # poses_bounds = [poses_bounds[0]]
-            # videopaths = [videopaths[0]]
-            # Eval on all the views just so we can see more pictures
-            # keep_idx = (np.arange(len(videopaths)) != 1)
-            # poses_bounds = poses_bounds[keep_idx]
-            # videopaths = videopaths[keep_idx]
+        else:   
+            poses_bounds = poses_bounds[0].reshape(1, 17)
+            videopaths = [videopaths[0]]
+            # poses_bounds = poses_bounds[0:]
+            # videopaths = videopaths[0:]
 
         poses = poses_bounds[:, :15].reshape(-1, 3, 5)  # [N_cameras, 3, 5]
         self.near_fars = poses_bounds[:, -2:]  # [N_cameras, 2]
@@ -157,27 +155,28 @@ class VideoDataset(TensorDataset):
         # the nearest depth is at 1/0.75=1.33
         self.near_fars /= scale_factor
         poses[..., 3] /= scale_factor
-
+        all_poses = []
         for camera_id in tqdm(range(len(videopaths))): 
             cam_video = imageio.get_reader(videopaths[camera_id], 'ffmpeg')
             for frame_idx, frame in enumerate(cam_video):
                 if frame_idx > len_time:
-                    len_time = frame_idx
+                    len_time = frame_idx + 1
                 # Decide whether to keep this frame or not
-                # if np.random.uniform() > self.subsample_time:
-                #     continue
+                if np.random.uniform() > self.subsample_time:
+                    continue
                 # Only keep frame zero, for debugging
-                if frame_idx > 0:
-                    len_time = 300
-                    break
+                # if frame_idx > 0:
+                #     len_time = 300
+                #     break
                 # Do any downsampling on the image
                 img = self.load_image(frame, intrinsics.height, intrinsics.width)
                 imgs.append(img)
                 timestamps.append(frame_idx)
+                all_poses.append(torch.from_numpy(poses[camera_id]).float())
         self.len_time = len_time
         imgs = torch.stack(imgs, 0)  # [N, H, W, 3]
         timestamps = torch.from_numpy(np.array(timestamps))  # [N]
-        poses = [torch.from_numpy(pose).float() for pose in poses]  # [N, 3, 4]
+        poses = all_poses  # [N, 3, 4]
 
         log.info(f"LLFFDataset - Loaded {self.split} set from {self.datadir}: {len(imgs)} "
                  f"images of size {imgs[0].shape}. {intrinsics}")
