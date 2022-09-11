@@ -10,9 +10,7 @@ import numpy as np
 from plenoxels.runners.multiscene_trainer import Trainer
 from plenoxels.runners.video_trainer import VideoTrainer
 
-np.random.seed(0)
 import torch
-torch.manual_seed(0)
 import torch.utils.data
 
 from plenoxels.runners.utils import *
@@ -103,8 +101,14 @@ def main():
     p.add_argument('--validate-only', action='store_true')
     p.add_argument('--config-path', type=str, required=True)
     p.add_argument('--log-dir', type=str, default=None)
+    p.add_argument('--seed', type=int, default=0)
 
     args = p.parse_args()
+
+    # Set random seed
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+
     # Import config
     spec = importlib.util.spec_from_file_location(os.path.basename(args.config_path), args.config_path)
     cfg = importlib.util.module_from_spec(spec)
