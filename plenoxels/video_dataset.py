@@ -93,8 +93,8 @@ class VideoDataset(TensorDataset):
         self.split = split
         self.downsample = downsample
         self.subsample_time = subsample_time
- 
-        self.aabb = torch.tensor([[-30.0, -3.0, -2.0], [3, 80, 100.0]]).cuda() # This is made up
+
+        self.aabb = torch.tensor([[-2.0, -2.0, -1.0], [2, 2, 1.0]]).cuda() # This is made up
         self.len_time = None
         self.near_fars = None
 
