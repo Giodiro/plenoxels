@@ -9,7 +9,7 @@ import pandas as pd
 import torch
 import torch.utils.data
 from torch.utils.tensorboard import SummaryWriter
-from ..tqdm import tqdm
+from ..my_tqdm import tqdm
 
 from plenoxels.ema import EMA
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash

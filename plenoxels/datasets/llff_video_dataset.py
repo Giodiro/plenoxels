@@ -6,7 +6,7 @@ import numpy as np
 import torch
 import torchvision.transforms
 from PIL import Image
-from ..tqdm import tqdm
+from ..my_tqdm import tqdm
 import glob
 import imageio
 

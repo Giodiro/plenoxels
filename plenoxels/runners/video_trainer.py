@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.utils.data
-from ..tqdm import tqdm
+from ..my_tqdm import tqdm
 import cv2
 
 from plenoxels.ema import EMA

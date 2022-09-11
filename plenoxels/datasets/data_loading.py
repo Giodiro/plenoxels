@@ -7,7 +7,7 @@ from torch.multiprocessing import Pool
 import torchvision
 from PIL import Image
 
-from ..tqdm import tqdm
+from ..my_tqdm import tqdm
 
 
 pil2tensor = torchvision.transforms.ToTensor()
