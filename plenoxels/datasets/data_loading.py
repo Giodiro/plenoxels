@@ -2,11 +2,13 @@ from typing import Tuple, Optional, Dict, Any, List, Sequence
 import logging as log
 import os
 
-from tqdm import tqdm
 import torch
 from torch.multiprocessing import Pool
 import torchvision
 from PIL import Image
+
+from ..tqdm import tqdm
+
 
 pil2tensor = torchvision.transforms.ToTensor()
 
