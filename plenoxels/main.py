@@ -4,6 +4,7 @@ import logging
 import os
 import pprint
 import sys
+from typing import List, Dict, Any
 
 import numpy as np
 
@@ -102,6 +103,7 @@ def main():
     p.add_argument('--config-path', type=str, required=True)
     p.add_argument('--log-dir', type=str, default=None)
     p.add_argument('--seed', type=int, default=0)
+    p.add_argument('override', nargs=argparse.REMAINDER)
 
     args = p.parse_args()
 
@@ -113,10 +115,15 @@ def main():
     spec = importlib.util.spec_from_file_location(os.path.basename(args.config_path), args.config_path)
     cfg = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(cfg)
+    config: Dict[str, Any] = cfg.config
+    # Process overrides from argparse into config
+    overrides: List[str] = args.override
+    overrides_dict = {ovr.split("=")[0]: ovr.split("=")[1] for ovr in overrides}
+    config.update(overrides_dict)
 
-    pprint.pprint(cfg.config)
-    dset_type, tr_loaders, ts_dsets = load_data(**cfg.config)
-    trainer: Trainer = init_trainer(dset_type, tr_loaders, ts_dsets, **cfg.config)
+    pprint.pprint(config)
+    dset_type, tr_loaders, ts_dsets = load_data(**config)
+    trainer: Trainer = init_trainer(dset_type, tr_loaders, ts_dsets, **config)
     if trainer.transfer_learning:
         # We have reloaded the model learned from args.log_dir
         assert args.log_dir is not None and os.path.isdir(args.log_dir)
