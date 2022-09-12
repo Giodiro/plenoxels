@@ -8,6 +8,8 @@
 
 import os
 import glob
+import warnings
+
 try:
     import pyexr
 except ImportError:
@@ -42,7 +44,7 @@ def write_exr(path, data):
                                    'view': ['X', 'Y', 'Z']},
                     precision=pyexr.HALF)
     else:
-        log.warning("Will not save EXR output since pyexr is not available")
+        warnings.warn("Will not save EXR output since pyexr is not available")
 
 
 def write_png(path, data):
