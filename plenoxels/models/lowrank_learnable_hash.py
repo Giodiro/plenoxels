@@ -6,12 +6,23 @@ import logging as log
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import kaolin.render.spc as spc_render
 
 from plenoxels.models.utils import grid_sample_wrapper
 from .decoders import NNDecoder, SHDecoder
 from ..ops.activations import trunc_exp
 from ..raymarching.raymarching import RayMarcher
+
+
+class DensityMask(nn.Module):
+    def __init__(self, density_volume: torch.Tensor):
+        super().__init__()
+        self.register_buffer('density_volume', density_volume)
+
+    def sample_density(self, pts: torch.Tensor) -> torch.Tensor:
+        density_vals = grid_sample_wrapper(self.density_volume, pts, align_corners=True).view(-1)
+        return density_vals
 
 
 class LowrankLearnableHash(nn.Module):
@@ -26,9 +37,7 @@ class LowrankLearnableHash(nn.Module):
             self.config: List[Dict] = eval(grid_config)
         else:
             self.config: List[Dict] = grid_config
-        # aabb needs to be BufferList (but BufferList doesn't exist so we emulate it)
-        for i, p in enumerate(aabb):
-            self.register_buffer(f'aabb{i}', p)
+        self.set_aabb(aabb)
         self.extra_args = kwargs
         self.is_ndc = is_ndc
 
@@ -80,22 +89,26 @@ class LowrankLearnableHash(nn.Module):
             self.scene_grids.append(grids)
         self.decoder = NNDecoder(feature_dim=feature_dim, sigma_net_width=64, sigma_net_layers=1)
         self.raymarcher = RayMarcher(**self.extra_args)
+        self.density_mask = nn.ModuleList([None] * num_scenes)
         log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes.")
+
+    def set_aabb(self, aabb: Union[torch.Tensor, List[torch.Tensor]], grid_id: Optional[int] = None):
+        if grid_id is None:
+            # aabb needs to be BufferList (but BufferList doesn't exist so we emulate it)
+            for i, p in enumerate(aabb):
+                if hasattr(self, f'aabb{i}'):
+                    setattr(self, f'aabb{i}', p)
+                else:
+                    self.register_buffer(f'aabb{i}', p)
+        else:
+            assert isinstance(aabb, torch.Tensor)
+            if hasattr(self, f'aabb{grid_id}'):
+                setattr(self, f'aabb{grid_id}', aabb)
+            else:
+                self.register_buffer(f'aabb{grid_id}', aabb)
 
     def aabb(self, i: int) -> torch.Tensor:
         return getattr(self, f'aabb{i}')
-
-    @staticmethod
-    def get_coo_plane(coords, dim):
-        """
-        :param coords:
-            torch tensor [n, input d]
-        :param dim:
-        :return:
-            torch tensor [num_comp, n, dim]
-        """
-        coo_combs = list(itertools.combinations(range(coords.shape[-1]), dim))
-        return coords[..., coo_combs].transpose(0, 1)
 
     def compute_features(self, pts: torch.Tensor, grid_id: int) -> torch.Tensor:
         grids: nn.ModuleList = self.scene_grids[grid_id]  # noqa
@@ -106,11 +119,9 @@ class LowrankLearnableHash(nn.Module):
         for level_info, grid in zip(grids_info, grids):
             if "feature_dim" in level_info:
                 continue
-            coo_plane = self.get_coo_plane(
-                interp,
-                level_info.get("grid_dimensions", level_info["input_coordinate_dim"])
-            )
-            coo_combs = list(itertools.combinations(range(interp.shape[-1]), level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
+            coo_combs = list(itertools.combinations(
+                range(interp.shape[-1]),
+                level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
             interp_out = None
             for ci, coo_comb in enumerate(coo_combs):
                 if interp_out is None:
@@ -133,7 +144,53 @@ class LowrankLearnableHash(nn.Module):
         3. * 2 => [0, 2]
         4. - 1 => [-1, 1]
         """
-        return (pts - self.aabb(grid_id)[0]) * (2.0 / (self.aabb(grid_id)[1] - self.aabb(grid_id)[0])) - 1
+        aabb = self.aabb(grid_id)
+        return (pts - aabb[0]) * (2.0 / (aabb[1] - aabb[0])) - 1
+
+    def update_alpha_mask(self, step_size: float, grid_id: int = 0):
+        assert len(self.config) == 2, "Alpha-masking not supported for multiple layers of indirection."
+        grid_size = self.config[0]["resolution"]
+
+        # Generate points in regularly spaced grid (already normalized)
+        pts = torch.stack(torch.meshgrid(
+            torch.linspace(-1, 1, grid_size[0]),
+            torch.linspace(-1, 1, grid_size[1]),
+            torch.linspace(-1, 1, grid_size[2]), indexing='ij'
+        ), dim=-1).to(self.device)  # [gs0, gs1, gs2, 3]  TODO: self.device doesn't exist
+        pts = pts.view(-1, 3)  # [gs0*gs1*gs2, 3]
+
+        # Compute density on the grid at the regularly spaced points
+        if self.density_mask[grid_id] is not None:
+            alpha_mask = self.density_mask[grid_id].sample_alpha(pts) > 0.0
+        else:
+            alpha_mask = torch.ones(pts.shape[0], dtype=torch.bool, device=pts.device)
+
+        density = torch.zeros(pts.shape[0], dtype=torch.float32, device=pts.device)
+        if alpha_mask.any():
+            features = self.compute_features(pts[alpha_mask], grid_id)
+            density_masked = trunc_exp(
+                self.decoder.compute_density(features, rays_d=None, precompute_color=False))
+            density[alpha_mask] = density_masked
+
+        alpha = 1.0 - torch.exp(-density * step_size)
+        alpha = alpha.view(grid_size)  # [gs0, gs1, gs2]
+        pts = pts.view(grid_size[0], grid_size[1], grid_size[2], 3)
+
+        # Compute the mask (max-pooling) and the new aabb
+        pts = pts.transpose(0, 2).contiguous()
+        alpha = alpha.clamp(0, 1).transpose(0, 2).contiguous()
+
+        alpha = F.max_pool3d(alpha[None, None, ...], kernel_size=3, padding=1, stride=1).view(grid_size[::-1])
+        alpha = F.threshold(alpha, self.alpha_mask_threshold, 0.0)  # set to 0 if <= threshold
+
+        valid_pts = pts[alpha > 0]
+        pts_min = valid_pts.amin(0)
+        pts_max = valid_pts.amax(0)
+
+        new_aabb = torch.stack((pts_min, pts_max), 0)
+        self.density_mask[grid_id] = DensityMask(alpha)
+        self.set_aabb(new_aabb, grid_id=grid_id)
+        return alpha
 
     def forward(self, rays_o, rays_d, bg_color, grid_id=0):
         """
@@ -151,6 +208,15 @@ class LowrankLearnableHash(nn.Module):
         # Normalization (between [-1, 1])
         intersection_pts = self.normalize_coord(intersection_pts, grid_id)
         rays_d = rays_d / torch.linalg.norm(rays_d, dim=-1, keepdim=True)
+
+        # Filter intersections which have a low density according to the density mask
+        if self.density_mask[grid_id] is not None:
+            alpha_mask = self.density_mask[grid_id].sample_density(intersection_pts) > 0
+            intersection_pts = intersection_pts[alpha_mask]
+            deltas = deltas[alpha_mask]
+            ridx = ridx[alpha_mask]
+            boundary = spc_render.mark_pack_boundaries(ridx)
+
         # rays_d in the packed format (essentially repeated a number of times)
         rays_d_rep = rays_d.index_select(0, ridx)
 
