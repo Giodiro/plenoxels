@@ -27,10 +27,13 @@ config = {
     "save_outputs": True,
     "transfer_learning": False,
 
+    # Raymarching settings
     "raymarch_type": "voxel_size",
     "sampling_resolution": 128,
     "num_sample_multiplier": 2,
     "n_intersections": 400,
+    "spacing_fn": "linear",
+    "single_jitter": True,
 
     "model_type": "learnable_hash",
     "grid_config": """

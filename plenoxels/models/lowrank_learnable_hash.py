@@ -151,18 +151,18 @@ class LowrankLearnableHash(nn.Module):
 
     def update_alpha_mask(self, grid_id: int = 0):
         assert len(self.config) == 2, "Alpha-masking not supported for multiple layers of indirection."
-        aabb_size = self.aabb(grid_id)[1] - self.aabb(grid_id)[0]
+        aabb = self.aabb(grid_id)
+        dev = aabb.device
+
         grid_size_l = self.config[0]["resolution"]
-        grid_size = torch.tensor(grid_size_l, dtype=torch.long, device=aabb_size.device)
-        units = aabb_size / (grid_size - 1)
-        step_size = torch.mean(units) * 2  # TODO: This does not blend well. We should ask the raymarcher for a stepsize
+        step_size = self.raymarcher.get_step_size(aabb)
 
         # Generate points in regularly spaced grid (already normalized)
         pts = torch.stack(torch.meshgrid(
-            torch.linspace(-1, 1, grid_size[0]),
-            torch.linspace(-1, 1, grid_size[1]),
-            torch.linspace(-1, 1, grid_size[2]), indexing='ij'
-        ), dim=-1).to(aabb_size.device)  # [gs0, gs1, gs2, 3]
+            torch.linspace(-1, 1, grid_size_l[0]),
+            torch.linspace(-1, 1, grid_size_l[1]),
+            torch.linspace(-1, 1, grid_size_l[2]), indexing='ij'
+        ), dim=-1).to(dev)  # [gs0, gs1, gs2, 3]
         pts = pts.view(-1, 3)  # [gs0*gs1*gs2, 3]
 
         # Compute density on the grid at the regularly spaced points
@@ -177,10 +177,11 @@ class LowrankLearnableHash(nn.Module):
                 self.decoder.compute_density(features, rays_d=None, precompute_color=False))
             density = torch.zeros(pts.shape[0], dtype=density_masked.dtype, device=density_masked.device)
             density[alpha_mask] = density_masked.view(-1)
+        else:
+            density = torch.zeros(pts.shape[0], dtype=torch.float32, device=dev)
 
-        alpha = 1.0 - torch.exp(-density * step_size)
-        alpha = alpha.view(grid_size_l)  # [gs0, gs1, gs2]
-        pts = pts.view(grid_size_l[0], grid_size_l[1], grid_size_l[2], 3)
+        alpha = 1.0 - torch.exp(-density * step_size).view(grid_size_l)  # [gs0, gs1, gs2]
+        pts = pts.view(grid_size_l + [3])  # [gs0, gs1, gs2, 3]
 
         # Compute the mask (max-pooling) and the new aabb
         pts = pts.transpose(0, 2).contiguous()
