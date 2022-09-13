@@ -25,6 +25,10 @@ class DensityMask(nn.Module):
         density_vals = grid_sample_wrapper(self.density_volume[None, ...], pts, align_corners=True).view(-1)
         return density_vals
 
+    @property
+    def grid_size(self) -> torch.Tensor:
+        return torch.tensor(self.density_volume.shape)
+
 
 class LowrankLearnableHash(nn.Module):
     def __init__(self,
@@ -76,6 +80,7 @@ class LowrankLearnableHash(nn.Module):
                     assert in_dim == grid_config["input_coordinate_dim"]
                     if li == 0:
                         assert in_dim == 3
+                        self.set_resolution(torch.tensor(reso, dtype=torch.long), grid_id=si)
                     assert out_dim in {1, 2, 3, 4, 5, 6, 7}
                     assert grid_nd <= in_dim
                     if grid_nd == in_dim:
@@ -111,6 +116,24 @@ class LowrankLearnableHash(nn.Module):
 
     def aabb(self, i: int) -> torch.Tensor:
         return getattr(self, f'aabb{i}')
+
+    def set_resolution(self, resolution: Union[torch.Tensor, List[torch.Tensor]], grid_id: Optional[int] = None):
+        if grid_id is None:
+            # resolution needs to be BufferList (but BufferList doesn't exist so we emulate it)
+            for i, p in enumerate(resolution):
+                if hasattr(self, f'resolution{i}'):
+                    setattr(self, f'resolution{i}', p)
+                else:
+                    self.register_buffer(f'resolution{i}', p)
+        else:
+            assert isinstance(resolution, torch.Tensor)
+            if hasattr(self, f'resolution{grid_id}'):
+                setattr(self, f'resolution{grid_id}', resolution)
+            else:
+                self.register_buffer(f'resolution{grid_id}', resolution)
+
+    def resolution(self, i: int) -> torch.Tensor:
+        return getattr(self, f'resolution{i}')
 
     def compute_features(self, pts: torch.Tensor, grid_id: int) -> torch.Tensor:
         grids: nn.ModuleList = self.scene_grids[grid_id]  # noqa
@@ -152,10 +175,11 @@ class LowrankLearnableHash(nn.Module):
     def update_alpha_mask(self, grid_id: int = 0):
         assert len(self.config) == 2, "Alpha-masking not supported for multiple layers of indirection."
         aabb = self.aabb(grid_id)
+        grid_size = self.resolution(grid_id)
+        grid_size_l = self.config[0]["resolution"]
         dev = aabb.device
 
-        grid_size_l = self.config[0]["resolution"]
-        step_size = self.raymarcher.get_step_size(aabb)
+        step_size = self.raymarcher.get_step_size(aabb, grid_size)
 
         # Generate points in regularly spaced grid (already normalized)
         pts = torch.stack(torch.meshgrid(
@@ -202,7 +226,46 @@ class LowrankLearnableHash(nn.Module):
                  f"Remaining {alpha_mask.sum() / grid_size_l[0] / grid_size_l[1] / grid_size_l[2]:.2f}% voxels.")
         self.density_mask[grid_id] = DensityMask(alpha)
         #self.set_aabb(new_aabb, grid_id=grid_id)
-        return alpha
+        return new_aabb
+
+    @torch.no_grad()
+    def shrink(self, new_aabb, grid_id: int):
+        log.info(f"Shrinking grid {grid_id}...")
+
+        cur_aabb = self.aabb(grid_id)
+        cur_grid_size = self.resolution(grid_id)
+        dev = cur_aabb.device
+
+        cur_units = (cur_aabb[1] - cur_aabb[0]) / (cur_grid_size - 1)
+        t_l, b_r = (new_aabb[0] - cur_aabb[0]) / cur_units, (new_aabb[1] - cur_aabb[0]) / cur_units
+        t_l = torch.round(t_l).long()
+        b_r = torch.round(b_r).long() + 1
+        b_r = torch.minimum(b_r, cur_grid_size)  # don't exceed current grid dimensions
+
+        # Truncate the parameter grid to the new grid-size
+        # IMPORTANT: This will only work if input-dim is 3!
+        grid_info = self.config[0]
+        coo_combs = list(itertools.combinations(
+            range(grid_info["input_coordinate_dim"]),
+            grid_info.get("grid_dimensions", grid_info["input_coordinate_dim"])))
+        for ci, coo_comb in enumerate(coo_combs):
+            slices = [slice(None), slice(None)] + [slice(t_l[cc], b_r[cc]) for cc in coo_comb]
+            self.scene_grids[grid_id][0][ci] = torch.nn.Parameter(
+                self.scene_grids[grid_id][0][ci].data[slices]
+            )
+
+        # TODO: Why the correction? Check if this ever occurs
+        if not torch.all(self.density_mask[grid_id].grid_size.to(device=dev) == cur_grid_size):
+            t_l_r, b_r_r = t_l / (cur_grid_size - 1), (b_r - 1) / (cur_grid_size - 1)
+            correct_aabb = torch.zeros_like(new_aabb)
+            correct_aabb[0] = (1 - t_l_r) * cur_aabb[0] + t_l_r * cur_aabb[1]
+            correct_aabb[1] = (1 - b_r_r) * cur_aabb[0] + b_r_r * cur_aabb[1]
+            log.info(f"Corrected new AABB from {new_aabb} to {correct_aabb}")
+            new_aabb = correct_aabb
+
+        new_size = b_r - t_l
+        self.set_aabb(new_aabb, grid_id)
+        self.set_resolution(new_size, grid_id)
 
     def forward(self, rays_o, rays_d, bg_color, grid_id=0):
         """
@@ -210,7 +273,8 @@ class LowrankLearnableHash(nn.Module):
         rays_d : [batch, 3]
         """
         rm_out = self.raymarcher.get_intersections2(
-            rays_o, rays_d, self.aabb(grid_id), perturb=self.training, is_ndc=self.is_ndc)
+            rays_o, rays_d, self.aabb(grid_id), self.resolution(grid_id), perturb=self.training,
+            is_ndc=self.is_ndc)
         rays_d = rm_out["rays_d"]
         deltas = rm_out["deltas"]
         intersection_pts = rm_out["intersections"]
@@ -242,7 +306,7 @@ class LowrankLearnableHash(nn.Module):
         rgb_masked = torch.sigmoid(self.decoder.compute_color(features, rays_d=rays_d_rep))
 
         # Compute optical thickness
-        tau = density_masked.reshape(-1, 1) * deltas.reshape(-1, 1) #* 25
+        tau = density_masked.reshape(-1, 1) * deltas.reshape(-1, 1) * 25
         # ridx_hit are the ray-IDs at the first intersection (the boundary).
         ridx_hit = ridx[boundary]
         # Perform volumetric integration

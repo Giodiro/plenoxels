@@ -119,7 +119,8 @@ class Trainer():
         if self.global_step in self.density_mask_update_steps:
             logging.info(f"Updating alpha-mask for all datasets at step {self.global_step}.")
             for u_dset_id in range(self.num_dsets):
-                self.model.update_alpha_mask(grid_id=u_dset_id)
+                new_aabb = self.model.update_alpha_mask(grid_id=u_dset_id)
+                self.model.shrink(new_aabb, grid_id=u_dset_id)
 
         return scale <= self.gscaler.get_scale()
 
