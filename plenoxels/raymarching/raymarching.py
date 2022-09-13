@@ -63,8 +63,8 @@ class RayMarcher():
                      far: torch.Tensor,
                      n_samples: int,
                      perturb: bool) -> torch.Tensor:
-        steps = genspace(near[..., None],
-                         far[..., None],
+        steps = genspace(near,#[..., None],
+                         far,#[..., None],
                          n_samples + 1,
                          fn=self.spacing_fn,
                          inv_fn=self.inv_spacing_fn)  # [n_samples + 1]
@@ -73,13 +73,13 @@ class RayMarcher():
         if not perturb:
             steps = steps.expand(sample_shape)  # [n_rays, n_samples + 1]
         else:
-            mids = 0.5 * (steps[..., 1:] + steps[..., :-1])  # [n_samples]
-            upper = torch.cat((mids, steps[..., -1:]), dim=-1)  # [n_samples + 1]
-            lower = torch.cat((steps[..., :1], mids), dim=-1)  # [n_samples + 1]
+            mids = 0.5 * (steps[..., 1:] + steps[..., :-1])  # [n_rays?, n_samples]
+            upper = torch.cat((mids, steps[..., -1:]), dim=-1)  # [n_rays?, n_samples + 1]
+            lower = torch.cat((steps[..., :1], mids), dim=-1)  # [n_rays?, n_samples + 1]
             if self.single_jitter:  # each ray gets the same perturbation
-                step_rand = torch.rand(sample_shape[:-1])[..., None]  # [n_rays, 1]
+                step_rand = torch.rand(sample_shape[:-1], device=steps.device)[..., None]  # [n_rays, 1]
             else:
-                step_rand = torch.rand(sample_shape)  # [n_rays, n_samples + 1]
+                step_rand = torch.rand(sample_shape, device=steps.device)  # [n_rays, n_samples + 1]
             steps = lower + (upper - lower) * step_rand  # [n_rays, n_samples + 1]
         return steps
 
@@ -241,7 +241,7 @@ def genspace(start, stop, num, fn, inv_fn):
     A tensor of length `num` spanning [`start`, `stop`], according to `fn`.
     """
     # Linspace between the curved start and stop values.
-    t = torch.linspace(0., 1., num)
+    t = torch.linspace(0., 1., num, device=start.device)
     s = fn(start) * (1. - t) + fn(stop) * t
 
     # Apply `inv_fn` and clamp to the range of valid values.

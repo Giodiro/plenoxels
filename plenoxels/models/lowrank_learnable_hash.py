@@ -209,8 +209,13 @@ class LowrankLearnableHash(nn.Module):
         rays_o : [batch, 3]
         rays_d : [batch, 3]
         """
-        intersection_pts, ridx, boundary, deltas = self.raymarcher.get_intersections(
+        rm_out = self.raymarcher.get_intersections2(
             rays_o, rays_d, self.aabb(grid_id), perturb=self.training, is_ndc=self.is_ndc)
+        rays_d = rm_out["rays_d"]
+        deltas = rm_out["deltas"]
+        intersection_pts = rm_out["intersections"]
+        ridx = rm_out["ridx"]
+        boundary = rm_out["boundary"]
         n_rays = rays_o.shape[0]
         dev = rays_o.device
 
