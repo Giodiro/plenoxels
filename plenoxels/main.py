@@ -4,7 +4,7 @@ import logging
 import os
 import pprint
 import sys
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 import numpy as np
 
@@ -18,6 +18,18 @@ from plenoxels.runners.utils import *
 from plenoxels.datasets.synthetic_nerf_dataset import SyntheticNerfDataset
 from plenoxels.datasets.llff_dataset import LLFFDataset
 from plenoxels.datasets.llff_video_dataset import VideoDataset
+
+
+def parse_optfloat(val, default_val=None) -> Optional[float]:
+    if val == "None" or val is None:
+        return default_val
+    return float(val)
+
+
+def parse_optint(val, default_val=None) -> Optional[int]:
+    if val == "None" or val is None:
+        return default_val
+    return int(val)
 
 
 def setup_logging(log_level=logging.INFO):
@@ -43,8 +55,12 @@ def decide_dset_type(data_dir) -> str:
 
 
 def load_data(data_resolution, data_downsample, data_dirs, max_tr_frames, max_ts_frames, hold_every, batch_size, **kwargs):
-    if data_downsample is None:
-        data_downsample = 1.0
+    data_downsample = parse_optfloat(data_downsample, default_val=1.0)
+    data_resolution = parse_optint(data_resolution)
+    max_tr_frames = parse_optint(max_tr_frames)
+    max_ts_frames = parse_optint(max_ts_frames)
+    hold_every = parse_optint(hold_every)
+    batch_size = parse_optint(batch_size)
     # Training datasets are lists of lists, where each inner list is different resolutions for the same scene
     # Test datasets are a single list over the different scenes, all at full resolution
     tr_dsets, tr_loaders, ts_dsets = [], [], []
@@ -66,15 +82,16 @@ def load_data(data_resolution, data_downsample, data_dirs, max_tr_frames, max_ts
             ts_dsets.append(LLFFDataset(
                 data_dir, split='test', downsample=1, resolution=None, hold_every=hold_every))
         elif dset_type == "video":
+            subsample_time_train = float(kwargs.get('subsample_time_train'))
             assert len(data_dirs) == 1, "Video-datasets don't support multiple training-scenes"
             logging.info(f"About to load data with downsample={data_downsample} and using "
-                         f"{kwargs.get('subsample_time_train') * 100}% of the video frames")
+                         f"{subsample_time_train * 100}% of the video frames")
             tr_dsets.append(VideoDataset(
                 data_dir, split='train', downsample=data_downsample,
-                subsample_time=kwargs.get('subsample_time_train')))
+                subsample_time=subsample_time_train))
             ts_dsets.append(VideoDataset(
                 data_dir, split='test', downsample=data_downsample,
-                subsample_time=kwargs.get('subsample_time_train')))
+                subsample_time=subsample_time_train))
         else:
             raise ValueError(dset_type)
         tr_loaders.append(torch.utils.data.DataLoader(
@@ -117,6 +134,10 @@ def main():
     spec.loader.exec_module(cfg)
     config: Dict[str, Any] = cfg.config
     # Process overrides from argparse into config
+    # overrides can be passed from the command line as key=value pairs. E.g.
+    # python plenoxels/main.py --config-path plenoxels/config/cfg.py max_ts_frames=200
+    # note that all values are strings, so code should assume incorrect data-types for anything
+    # that's derived from config - and should not a string.
     overrides: List[str] = args.override
     overrides_dict = {ovr.split("=")[0]: ovr.split("=")[1] for ovr in overrides}
     config.update(overrides_dict)

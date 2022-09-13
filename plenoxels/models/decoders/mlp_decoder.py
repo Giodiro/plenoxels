@@ -44,13 +44,14 @@ class NNDecoder(BaseDecoder):
         )
         self.color = None
 
-    def compute_density(self, features, rays_d):
+    def compute_density(self, features, rays_d, precompute_color: bool = True):
         density_rgb = self.sigma_net(features)  # [batch, 16]
         density = density_rgb[:, :1]
 
-        enc_rays_d = self.direction_encoder((rays_d + 1) / 2)
-        color_features = torch.cat((density_rgb[:, 1:], enc_rays_d), dim=-1)
-        self.color = self.color_net(color_features)
+        if precompute_color:
+            enc_rays_d = self.direction_encoder((rays_d + 1) / 2)
+            color_features = torch.cat((density_rgb[:, 1:], enc_rays_d), dim=-1)
+            self.color = self.color_net(color_features)
 
         return density
 
