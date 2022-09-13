@@ -95,6 +95,11 @@ class RayMarcher():
         intrs_pts = rays_o[..., None, :] + rays_d[..., None, :] * intersections[..., None]  # [batch, n_intrs, 3]
         mask = ((aabb[0] <= intrs_pts) & (intrs_pts <= aabb[1])).all(dim=-1)  # noqa
 
+        # Normalize rays_d and deltas
+        dir_norm = torch.linalg.norm(rays_d, dim=1, keepdim=True)
+        rays_d = rays_d / dir_norm
+        deltas = deltas * dir_norm
+
         ridx = torch.arange(0, n_rays, device=dev)
         ridx = ridx[..., None].repeat(1, n_intersections)[mask]
         boundary = spc_render.mark_pack_boundaries(ridx)

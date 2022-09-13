@@ -150,7 +150,6 @@ class LowrankLearnableHash(nn.Module):
 
         # Normalization (between [-1, 1])
         intersection_pts = self.normalize_coord(intersection_pts, grid_id)
-        rays_d = rays_d / torch.linalg.norm(rays_d, dim=-1, keepdim=True)
         # rays_d in the packed format (essentially repeated a number of times)
         rays_d_rep = rays_d.index_select(0, ridx)
 
@@ -160,7 +159,7 @@ class LowrankLearnableHash(nn.Module):
         rgb_masked = torch.sigmoid(self.decoder.compute_color(features, rays_d=rays_d_rep))
 
         # Compute optical thickness
-        tau = density_masked.reshape(-1, 1) * deltas.reshape(-1, 1)
+        tau = density_masked.reshape(-1, 1) * deltas.reshape(-1, 1) * 25
         # ridx_hit are the ray-IDs at the first intersection (the boundary).
         ridx_hit = ridx[boundary]
         # Perform volumetric integration
