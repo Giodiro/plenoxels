@@ -1,10 +1,10 @@
 # configuration file to be used with `run_multi_scene.py`
 # the configuration must be specified in a dictionary called `config`.
 config = {
-    "expname": "fern_nonsquare",
+    "expname": "lego_test",
     "data_resolution": None,
-    "data_downsample": 4,
-    "data_dirs": ["/data/DATASETS/LLFF/fern"],
+    "data_downsample": 1.5625,
+    "data_dirs": ["/data/DATASETS/SyntheticNerf/lego"],#["/data/DATASETS/LLFF/fern"],
 
     "max_tr_frames": None,
     "max_ts_frames": 10,
@@ -13,6 +13,8 @@ config = {
     "batch_size": 4096,
     "num_batches_per_dset": 1,
     "num_epochs": 10,
+    "dmask_update": [4000, 12000],
+    "density_threshold": 1e-4,
 
     "scheduler_type": None,
     "optim_type": "adam",
@@ -22,11 +24,12 @@ config = {
     "train_fp16": True,
     "save_every": 10,
     "valid_every": 1,
+    "save_outputs": True,
     "transfer_learning": False,
 
-    "raymarch_type": "fixed",
-    "sampling_resolution": 256,
-    "num_sample_multiplier": 1,
+    "raymarch_type": "voxel_size",
+    "sampling_resolution": 128,
+    "num_sample_multiplier": 2,
     "n_intersections": 400,
 
     "model_type": "learnable_hash",
@@ -34,15 +37,15 @@ config = {
 [
     {
         "input_coordinate_dim": 3,
-        "output_coordinate_dim": 3,
+        "output_coordinate_dim": 4,
         "grid_dimensions": 3,
-        "resolution": [256, 256, 128],
+        "resolution": [128, 128, 128],
         "rank": 1,
         "init_std": 0.01,
     },
     {
-        "input_coordinate_dim": 3,
-        "resolution": [10, 10, 4],
+        "input_coordinate_dim": 4,
+        "resolution": [10, 10, 10, 10],
         "feature_dim": 32,
         "init_std": 0.05
     }

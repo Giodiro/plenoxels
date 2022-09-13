@@ -141,7 +141,7 @@ class Trainer():
         if self.valid_every > -1 and \
                 self.epoch % self.valid_every == 0 and \
                 self.epoch != 0:
-            self.validate(save_outputs=True)
+            self.validate()
         if self.epoch >= self.num_epochs:
             raise StopIteration(f"Finished after {self.epoch} epochs.")
 
