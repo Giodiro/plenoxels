@@ -9,12 +9,12 @@ import pandas as pd
 import torch
 import torch.utils.data
 from torch.utils.tensorboard import SummaryWriter
-from ..my_tqdm import tqdm
 
 from plenoxels.ema import EMA
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_exr, write_png
+from ..my_tqdm import tqdm
 
 
 class Trainer():
@@ -31,6 +31,7 @@ class Trainer():
                  train_fp16: bool,
                  save_every: int,
                  valid_every: int,
+                 save_outputs: bool,
                  **kwargs
                  ):
         self.train_data_loaders = tr_loaders
@@ -54,6 +55,8 @@ class Trainer():
         self.train_fp16 = train_fp16
         self.save_every = save_every
         self.valid_every = valid_every
+        self.save_outputs = save_outputs
+        self.density_mask_update_steps = set(kwargs.get('dmask_update'))
 
         self.log_dir = os.path.join(logdir, expname)
         os.makedirs(self.log_dir, exist_ok=True)
@@ -112,6 +115,12 @@ class Trainer():
         loss_val = loss.item()
         self.loss_info[dset_id]["mse"].update(loss_val)
         self.loss_info[dset_id]["psnr"].update(-10 * math.log10(loss_val))
+
+        if self.global_step in self.density_mask_update_steps:
+            logging.info(f"Updating alpha-mask for all datasets at step {self.global_step}.")
+            for u_dset_id in range(self.num_dsets):
+                self.model.update_alpha_mask(grid_id=u_dset_id)
+
         return scale <= self.gscaler.get_scale()
 
     def post_step(self, dset_id, progress_bar):
@@ -132,7 +141,7 @@ class Trainer():
         if self.valid_every > -1 and \
                 self.epoch % self.valid_every == 0 and \
                 self.epoch != 0:
-            self.validate()
+            self.validate(save_outputs=True)
         if self.epoch >= self.num_epochs:
             raise StopIteration(f"Finished after {self.epoch} epochs.")
 
@@ -196,7 +205,8 @@ class Trainer():
                     preds = self.eval_step(data, dset_id=dset_id)
                     gt = data[2]
                     out_metrics = self.evaluate_metrics(
-                        gt, preds, dset_id=dset_id, dset=dataset, img_idx=img_idx, name=None)
+                        gt, preds, dset_id=dset_id, dset=dataset, img_idx=img_idx, name=None,
+                        save_outputs=self.save_outputs)
                     per_scene_metrics["psnr"] += out_metrics["psnr"]
                     per_scene_metrics["ssim"] += out_metrics["ssim"]
                     pb.set_postfix_str(f"PSNR={out_metrics['psnr']:.2f}", refresh=False)
@@ -212,7 +222,8 @@ class Trainer():
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_epoch{self.epoch}.csv"))
 
-    def evaluate_metrics(self, gt, preds: torch.Tensor, dset, dset_id, img_idx, name=None):
+    def evaluate_metrics(self, gt, preds: torch.Tensor, dset, dset_id: int, img_idx: int,
+                         name: Optional[str] = None, save_outputs: bool = True):
         gt = gt.reshape(dset.img_h, dset.img_w, -1).cpu()
         if gt.shape[-1] == 4:
             gt = gt[..., :3] * gt[..., 3:] + (1.0 - gt[..., 3:])
@@ -230,12 +241,12 @@ class Trainer():
             "ssim": metrics.ssim(preds, gt),
         }
 
-        out_name = f"epoch{self.epoch}-D{dset_id}-{img_idx}"
-        if name is not None and name != "":
-            out_name += "-" + name
-
-        write_exr(os.path.join(self.log_dir, out_name + ".exr"), exrdict)
-        write_png(os.path.join(self.log_dir, out_name + ".png"), (preds * 255.0).byte().numpy())
+        if save_outputs:
+            out_name = f"epoch{self.epoch}-D{dset_id}-{img_idx}"
+            if name is not None and name != "":
+                out_name += "-" + name
+            write_exr(os.path.join(self.log_dir, out_name + ".exr"), exrdict)
+            write_png(os.path.join(self.log_dir, out_name + ".png"), (preds * 255.0).byte().numpy())
 
         return summary
 

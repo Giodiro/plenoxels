@@ -147,16 +147,19 @@ class LowrankLearnableHash(nn.Module):
         aabb = self.aabb(grid_id)
         return (pts - aabb[0]) * (2.0 / (aabb[1] - aabb[0])) - 1
 
-    def update_alpha_mask(self, step_size: float, grid_id: int = 0):
+    def update_alpha_mask(self, grid_id: int = 0):
         assert len(self.config) == 2, "Alpha-masking not supported for multiple layers of indirection."
-        grid_size = self.config[0]["resolution"]
+        aabb_size = self.aabb(grid_id)[1] - self.aabb(grid_id)[0]
+        grid_size = torch.tensor(self.config[0]["resolution"], dtype=torch.long, device=aabb_size.device)
+        units = aabb_size / (grid_size - 1)
+        step_size = torch.mean(units) * 2  # TODO: This does not blend well. We should ask the raymarcher for a stepsize
 
         # Generate points in regularly spaced grid (already normalized)
         pts = torch.stack(torch.meshgrid(
             torch.linspace(-1, 1, grid_size[0]),
             torch.linspace(-1, 1, grid_size[1]),
             torch.linspace(-1, 1, grid_size[2]), indexing='ij'
-        ), dim=-1).to(self.device)  # [gs0, gs1, gs2, 3]  TODO: self.device doesn't exist
+        ), dim=-1).to(aabb_size.device)  # [gs0, gs1, gs2, 3]
         pts = pts.view(-1, 3)  # [gs0*gs1*gs2, 3]
 
         # Compute density on the grid at the regularly spaced points
@@ -183,11 +186,15 @@ class LowrankLearnableHash(nn.Module):
         alpha = F.max_pool3d(alpha[None, None, ...], kernel_size=3, padding=1, stride=1).view(grid_size[::-1])
         alpha = F.threshold(alpha, self.alpha_mask_threshold, 0.0)  # set to 0 if <= threshold
 
-        valid_pts = pts[alpha > 0]
+        alpha_mask = alpha > 0
+        valid_pts = pts[alpha_mask]
         pts_min = valid_pts.amin(0)
         pts_max = valid_pts.amax(0)
 
         new_aabb = torch.stack((pts_min, pts_max), 0)
+        log.info(f"Updated alpha mask for grid {grid_id}. "
+                 f"Bounding box from {self.aabb(grid_id)} to {new_aabb}. "
+                 f"Remaining {alpha_mask.sum() / grid_size[0] / grid_size[1] / grid_size[2]:.2f}% voxels.")
         self.density_mask[grid_id] = DensityMask(alpha)
         self.set_aabb(new_aabb, grid_id=grid_id)
         return alpha
