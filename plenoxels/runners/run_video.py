@@ -345,28 +345,21 @@ def setup_logging(log_level=logging.INFO):
                         handlers=handlers)
 
 
-def load_data(data_downsample, data_dir, subsample_time_train, batch_size, **kwargs):
+def load_data(data_downsample, data_dir, subsample_train, max_test_cameras, batch_size, **kwargs):
     if data_downsample is None:
         data_downsample = 1.0
     # Training datasets are lists of lists, where each inner list is different resolutions for the same scene
     # Test datasets are a single list over the different scenes, all at full resolution
-    logging.info(f"About to load data with downsample={data_downsample} and using {subsample_time_train * 100}% of the video frames")
+    logging.info(f"About to load data with downsample={data_downsample} and using {subsample_train * 100}% of the frames")
     tr_dset = VideoDataset(
         data_dir, split='train', downsample=data_downsample, 
-        subsample_time=subsample_time_train)
+        subsample=subsample_train)
     tr_loader = torch.utils.data.DataLoader(
         tr_dset, batch_size=batch_size, shuffle=True, num_workers=3,
         prefetch_factor=4, pin_memory=True)
     ts_dset = VideoDataset(
         data_dir, split='test', downsample=1,
-        subsample_time=1)
-    # tr_dset = SyntheticNerfDataset(
-    #     data_dir, split='train', downsample=data_downsample)
-    # tr_loader = torch.utils.data.DataLoader(
-    #     tr_dset, batch_size=batch_size, shuffle=True, num_workers=3,
-    #     prefetch_factor=4, pin_memory=True)
-    # ts_dset = SyntheticNerfDataset(
-    #     data_dir, split='test', downsample=1)
+        subsample=1, max_test_cameras=max_test_cameras)
     return tr_loader, ts_dset
 
 

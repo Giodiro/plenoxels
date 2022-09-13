@@ -1,16 +1,18 @@
 # configuration file to be used with `run_video.py`
 samples_per_voxel = 2
-resolution = 256
+resolution = 128
 config = {
-    "expname": "test",
-    "data_downsample": 4.0,
-    "data_dir": "/data/datasets/3DVideo/coffee_martini",
+    "expname": "legovideo",
+    "data_downsample": 3.0,
+    "data_dir": "/data/datasets/3DVideo/lego_video",
+    # "data_dir": "/data/datasets/3DVideo/coffee_martini",
     # "data_dir": "/data/datasets/nerf/data/nerf_synthetic/lego",
 
-    "subsample_time_train": 0.2,
-    "batch_size": 10000,  
+    "subsample_train": 0.1,
+    "max_test_cameras": 1,
+    "batch_size": 2000,  
     "num_batches_per_dset": 1,
-    "num_epochs": 3,
+    "num_epochs": 1,
     "scheduler_type": None,
     "optim_type": "adam",
     "model_type": "learnable_hash",
@@ -33,10 +35,10 @@ config = {
         "input_coordinate_dim": 3,
         "output_coordinate_dim": 4,
         "grid_dimensions": 2,
-        "resolution": 256,
-        "rank": 10,
-        "time_reso": 64,
-        "time_rank": 1,
+        "resolution": 128,
+        "rank": 20,
+        "time_reso": 12,
+        "time_rank": 5,
         "init_std": 0.1,
     },
     {

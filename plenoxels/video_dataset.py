@@ -17,8 +17,12 @@ import imageio
 from plenoxels.datasets.intrinsics import Intrinsics
 from plenoxels.datasets.ray_utils import get_ray_directions_blender, get_rays, ndc_rays_blender
 
-
-# This version uses normalized device coordinates, as in LLFF, for forward-facing videos
+"""
+This version can use either regular or normalized device coordinates (NDC)
+NDC is as in LLFF, for forward-facing videos
+We assume that if pose information is provided as a .json, then the scene is 360
+and if pose is provided in a .npy, the scene is forward-facing
+"""
 
 
 def normalize(v):
@@ -87,34 +91,104 @@ class VideoDataset(TensorDataset):
     pil2tensor = torchvision.transforms.ToTensor()
     tensor2pil = torchvision.transforms.ToPILImage()
 
-    def __init__(self, datadir, split='train', downsample=1.0, subsample_time=1):
-        # subsample_time (in [0,1]) lets you use a random percentage of the frames from each video
+    def __init__(self, datadir, split='train', downsample=1.0, subsample=1, max_test_cameras=np.inf):
+        # subsample (in [0,1]) lets you use a random percentage of the frames from each video
         self.datadir = datadir
         self.split = split
         self.downsample = downsample
-        self.subsample_time = subsample_time
+        self.subsample = subsample
+        self.max_test_cameras = max_test_cameras
 
-        self.aabb = torch.tensor([[-2.0, -2.0, -1.0], [2, 2, 1.0]]).cuda() # This is made up
+        # Figure out if this is a forward-facing or 360 scene
+        self.ndc = False
+        self.aabb = torch.tensor([[-1.3, -1.3, -1.3], [1.3, 1.3, 1.3]]).cuda()
+        if "ship" in self.datadir:
+            self.aabb = torch.tensor([[-1.5, -1.5, -1.5], [1.5, 1.5, 1.5]]).cuda()
+        pose_files = glob.glob(os.path.join(self.datadir, '*.npy'))
+        if len(pose_files) > 0:
+            self.ndc = True
+            self.aabb = torch.tensor([[-2.0, -2.0, -1.0], [2, 2, 1.0]]).cuda() # This is made up
         self.len_time = None
         self.near_fars = None
 
-        self.poses, rgbs, self.intrinsics, self.timestamps = self.load_from_disk()
+        if self.ndc:
+            self.poses, rgbs, self.intrinsics, self.timestamps = self.load_from_disk_ndc()
+        else:
+            self.poses, rgbs, self.intrinsics, self.timestamps = self.load_from_disk()
         self.num_frames = len(self.poses)
         self.rays_o, self.rays_d, self.rgbs = self.init_rays(rgbs)
         # Broadcast timestamps to match rays
         if split == 'train':
             self.timestamps = (torch.ones(len(self.timestamps), self.intrinsics.height, self.intrinsics.width) * self.timestamps[:,None,None]).reshape(-1)
-        # print(f'rays_o has shape {self.rays_o.shape}, rays_d has shape {self.rays_d.shape}, rgbs has shape {self.rgbs.shape}, timestamps has shape {self.timestamps.shape}')
+        print(f'rays_o has shape {self.rays_o.shape}, rays_d has shape {self.rays_d.shape}, rgbs has shape {self.rgbs.shape}, timestamps has shape {self.timestamps.shape}')
         super().__init__(self.rays_o, self.rays_d, self.rgbs, self.timestamps)
 
-    def load_image(self, img, out_h, out_w):
-        img = self.tensor2pil(img)
+    def load_image(self, img, out_h, out_w, already_pil=False):
+        if not already_pil:
+            img = self.tensor2pil(img)
         img = img.resize((out_w, out_h), Image.LANCZOS)  # PIL has x and y reversed from torch
         img = self.pil2tensor(img)  # [C, H, W]
         img = img.permute(1, 2, 0)  # [H, W, C]
         return img
 
+    def load_intrinsics(self, transform):
+        # load intrinsics
+        if 'fl_x' in transform or 'fl_y' in transform:
+            fl_x = (transform['fl_x'] if 'fl_x' in transform else transform['fl_y']) / self.downsample
+            fl_y = (transform['fl_y'] if 'fl_y' in transform else transform['fl_x']) / self.downsample
+        elif 'camera_angle_x' in transform or 'camera_angle_y' in transform:
+            # blender, assert in radians. already downscaled since we use H/W
+            fl_x = self.img_w / (2 * np.tan(transform['camera_angle_x'] / 2)) if 'camera_angle_x' in transform else None
+            fl_y = self.img_h / (2 * np.tan(transform['camera_angle_y'] / 2)) if 'camera_angle_y' in transform else None
+            if fl_x is None: fl_x = fl_y
+            if fl_y is None: fl_y = fl_x
+        else:
+            raise RuntimeError('Failed to load focal length, please check the transforms.json!')
+
+        cx = (transform['cx'] / self.downsample) if 'cx' in transform else (self.img_w / 2)
+        cy = (transform['cy'] / self.downsample) if 'cy' in transform else (self.img_h / 2)
+
+        intrinsics = Intrinsics(width=self.img_w, height=self.img_h, focal_x=fl_x, focal_y=fl_y, center_x=cx,
+                                center_y=cy)
+
+        return intrinsics
+
     def load_from_disk(self):
+        with open(os.path.join(self.datadir, f"transforms_{self.split}.json"), 'r') as f:
+            meta = json.load(f)
+            poses, imgs, timestamps = [], [], []
+            len_time = 0
+            for frame in tqdm(meta['frames'], desc=f'Loading {self.split} data'):
+                timestamp = int(frame['file_path'].split('t')[-1].split('_')[0])
+                cam_id = int(frame['file_path'].split('r')[-1])
+                if timestamp > len_time:
+                    len_time = timestamp
+                # Decide whether to keep this frame or not
+                if np.random.uniform() > self.subsample:
+                    continue
+                if cam_id >= self.max_test_cameras:
+                    continue
+                pose = torch.tensor(frame['transform_matrix'], dtype=torch.float32)
+                # Fix file-path
+                f_path = os.path.join(self.datadir, frame['file_path'])
+                if '.' not in os.path.basename(f_path):
+                    f_path += '.png'  # so silly...
+                img = Image.open(os.path.join(self.datadir, f_path))
+                img = self.load_image(img, int(round(img.size[0] / self.downsample)), int(round(img.size[1] / self.downsample)), already_pil=True)
+                imgs.append(img)
+                poses.append(pose)
+                timestamps.append(timestamp)
+            self.img_h, self.img_w = imgs[0].shape[:2]
+            intrinsics = self.load_intrinsics(meta)
+        self.len_time = len_time
+        imgs = torch.stack(imgs, 0)  # [N, H, W, 3]
+        poses = torch.stack(poses, 0)  # [N, 4, 4]
+        timestamps = torch.from_numpy(np.array(timestamps))  # [N]
+        log.info(f"360Dataset - Loaded {self.split} set from {self.datadir}: {len(imgs)} "
+                 f"images of size {imgs[0].shape}. {intrinsics}")
+        return poses, imgs, intrinsics, timestamps
+
+    def load_from_disk_ndc(self):
         poses_bounds = np.load(os.path.join(self.datadir, 'poses_bounds.npy'))  # [n_cameras, 17]
         imgs, poses, timestamps = [], [], []
         videopaths = np.array(glob.glob(os.path.join(self.datadir, '*.mp4')))  # [n_cameras]
@@ -151,7 +225,7 @@ class VideoDataset(TensorDataset):
         # Step 3: correct scale so that the nearest depth is at a little more than 1.0
         # See https://github.com/bmild/nerf/issues/34
         near_original = self.near_fars.min()
-        scale_factor = near_original * 1.  # 0.75 is the default parameter
+        scale_factor = near_original * 0.75  # 0.75 is the default parameter, but 1 seems way better??
         # the nearest depth is at 1/0.75=1.33
         self.near_fars /= scale_factor
         poses[..., 3] /= scale_factor
@@ -162,7 +236,7 @@ class VideoDataset(TensorDataset):
                 if frame_idx > len_time:
                     len_time = frame_idx + 1
                 # Decide whether to keep this frame or not
-                if np.random.uniform() > self.subsample_time:
+                if np.random.uniform() > self.subsample:
                     continue
                 # Only keep frame zero, for debugging
                 # if frame_idx > 0:
@@ -183,18 +257,28 @@ class VideoDataset(TensorDataset):
 
         return poses, imgs, intrinsics, timestamps
 
+
+    # TODO: this should be refactored once I know the right thing to do for NDC vs 360
     def init_rays(self, imgs):
-        # ray directions for all pixels, same for all images (same H, W, focal)
-        directions = get_ray_directions_blender(self.intrinsics)  # H, W, 3
+        if self.ndc:
+            # ray directions for all pixels, same for all images (same H, W, focal)
+            directions = get_ray_directions_blender(self.intrinsics)  # H, W, 3
 
         all_rays_o, all_rays_d = [], []
         for i in range(len(self.poses)):
-            rays_o, rays_d = get_rays(directions, self.poses[i])  # both (h*w, 3)
-            rays_o, rays_d = ndc_rays_blender(
-                intrinsics=self.intrinsics, near=1.0, rays_o=rays_o, rays_d=rays_d)
+            if self.ndc:
+                rays_o, rays_d = get_rays(directions, self.poses[i])  # both (h*w, 3)
+                rays_o, rays_d = ndc_rays_blender(
+                    intrinsics=self.intrinsics, near=1.0, rays_o=rays_o, rays_d=rays_d)
+            else:
+                rays = synthetic_get_rays(self.intrinsics, self.poses[i])  # [ro+rd, H, W, 3]
+                # Merge N, H, W dimensions
+                rays_o = rays[0, ...].reshape(-1, 3)  # [H*W, 3]
+                rays_o = rays_o.to(dtype=torch.float32).contiguous()
+                rays_d = rays[1, ...].reshape(-1, 3)  # [H*W, 3]
+                rays_d = rays_d.to(dtype=torch.float32).contiguous()
             all_rays_o.append(rays_o)
             all_rays_d.append(rays_d)
-
         all_rays_o = torch.cat(all_rays_o, 0).to(dtype=torch.float32)  # [n_frames * h * w, 3]
         all_rays_d = torch.cat(all_rays_d, 0).to(dtype=torch.float32)  # [n_frames * h * w, 3]
         all_rgbs = (imgs
@@ -207,3 +291,27 @@ class VideoDataset(TensorDataset):
             all_rgbs = all_rgbs.view(-1, num_pixels, all_rgbs.shape[-1])
 
         return all_rays_o, all_rays_d, all_rgbs
+
+def synthetic_get_rays(intrinsics, c2w) -> torch.Tensor:
+    """
+
+    :param H:
+    :param W:
+    :param focal:
+    :param c2w:
+    :return:
+        Tensor of size [2, W, H, 3] where the first dimension indexes origin and direction
+        of rays
+    """
+    i, j = torch.meshgrid(torch.arange(intrinsics.width) + 0.5, torch.arange(intrinsics.height) + 0.5, indexing='xy')
+    dirs = torch.stack([
+        (i - intrinsics.width * 0.5) / intrinsics.focal_x,
+        -(j - intrinsics.height * 0.5) / intrinsics.focal_y,
+        -torch.ones_like(i)
+    ], dim=-1)
+    # Rotate ray directions from camera frame to the world frame
+    # dot product, equals to: [c2w.dot(dir) for dir in dirs]
+    rays_d = torch.sum(dirs.unsqueeze(-2) * c2w[:3, :3], dim=-1)
+    # Translate camera frame's origin to the world frame. It is the origin of all rays.
+    rays_o = torch.broadcast_to(c2w[:3, -1], rays_d.shape)
+    return torch.stack((rays_o, rays_d), dim=0)

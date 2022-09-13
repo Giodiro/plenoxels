@@ -10,6 +10,7 @@ from PIL import Image
 from torch.utils.data import TensorDataset
 from tqdm import tqdm
 
+# TODO: make the train downsampling behavior consistent with video. 
 
 def get_rays(H: int, W: int, focal_x, focal_y, c2w) -> torch.Tensor:
     """
