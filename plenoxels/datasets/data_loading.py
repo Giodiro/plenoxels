@@ -1,6 +1,7 @@
 from typing import Tuple, Optional, Dict, Any, List, Sequence
 import logging as log
 import os
+import resource
 
 import torch
 from torch.multiprocessing import Pool
@@ -11,6 +12,9 @@ from ..my_tqdm import tqdm
 
 
 pil2tensor = torchvision.transforms.ToTensor()
+# increase ulimit -n (number of open files) otherwise parallel loading might fail
+rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
+resource.setrlimit(resource.RLIMIT_NOFILE, (16192, rlimit[1]))
 
 
 def _load_llff_image(data_dir: str,
@@ -59,7 +63,7 @@ def _load_nerf_image_pose(data_dir: str,
     # Now we should downsample to out_h, out_w and low-pass filter to resolution * 2.
     # We only do the low-pass filtering if resolution * 2 is lower-res than out_h, out_w
     if out_h != out_w:
-        log.warning("")
+        log.warning("360 non-square")
     if resolution[0] is not None and resolution[1] is not None and \
             (resolution[0] * 2 < out_h or resolution[1] * 2 < out_w):
         img = img.resize((resolution[0] * 2, resolution[1] * 2), Image.LANCZOS)

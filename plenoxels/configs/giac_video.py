@@ -3,7 +3,7 @@ config = {
     "expname": "legovideo_reg0.1",
     # Data settings
     "data_downsample": 2.0,
-    "data_dirs": ["/home/sfk/data/3DVideo/lego_video"],
+    "data_dirs": ["/data/DATASETS/VidNerf/lego_video"],
     # Data settings for 360
     "max_train_cameras": 50,
     "max_test_cameras": 1,

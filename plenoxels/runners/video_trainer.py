@@ -112,8 +112,9 @@ class VideoTrainer(Trainer):
             rgb_preds, _ = self.model(rays_o, rays_d, timestamps, bg_color=bg_color)
             tv = 0
             if patch_rays_o is not None:
+                # Here we don't randomize bg-color since we're only interested in depth.
                 _, depths = self.model(patch_rays_o.reshape(-1, 3), patch_rays_d.reshape(-1, 3),
-                                       patch_timestamps.reshape(-1), bg_color=bg_color)
+                                       patch_timestamps.reshape(-1), bg_color=1)
                 depths = depths.reshape(patch_rays_o.shape[0], patch_rays_o.shape[1],
                                         patch_rays_o.shape[2])
                 tv = compute_tv_norm(depths)
@@ -306,4 +307,4 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
     if regnerf_weight > 0:
         patch_loader = PatchLoader(
             rays_o=tr_dset.extra_rays_o, rays_d=tr_dset.extra_rays_d, len_time=tr_dset.len_time)
-    return {"tr_loaders": [tr_loader], "ts_dsets": [ts_dset], "patch_loader": patch_loader}
+    return {"tr_loader": tr_loader, "ts_dset": ts_dset, "patch_loader": patch_loader}

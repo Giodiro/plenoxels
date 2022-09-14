@@ -37,7 +37,7 @@ def load_data(is_video: bool, data_downsample, data_dirs, batch_size, **kwargs):
 
 
 def init_trainer(is_video: bool, **kwargs):
-    if is_video == "video":
+    if is_video:
         return VideoTrainer(**kwargs)
     else:
         return Trainer(**kwargs)

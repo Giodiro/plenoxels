@@ -26,7 +26,7 @@ class LowrankVideo(nn.Module):
             self.config: List[Dict] = eval(grid_config)
         else:
             self.config: List[Dict] = grid_config
-        self.aabb = aabb
+        self.register_buffer("aabb", aabb)
         self.len_time = len_time
         self.extra_args = kwargs
         self.is_ndc = is_ndc
@@ -102,6 +102,7 @@ class LowrankVideo(nn.Module):
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
 
         # Interpolate in time
+        grid_time = grid_time[0]  # we need it to be a length-1 ParameterList
         interp_time = grid_sample_wrapper(grid_time.unsqueeze(0), timestamps[:, None])  # [n, F_dim * time_rank]
         interp_time = interp_time.view(-1, level_info["output_coordinate_dim"], level_info['time_rank'])  # [n, F_dim, time_rank]
         # Interpolate in space
