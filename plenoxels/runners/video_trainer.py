@@ -112,7 +112,7 @@ class VideoTrainer(Trainer):
             rgb_preds, _ = self.model(rays_o, rays_d, timestamps, bg_color=bg_color)
             tv = 0
             if patch_rays_o is not None:
-                # Here we don't randomize bg-color since we're only interested in depth.
+                # Don't randomize bg-color when only interested in depth.
                 _, depths = self.model(patch_rays_o.reshape(-1, 3), patch_rays_d.reshape(-1, 3),
                                        patch_timestamps.reshape(-1), bg_color=1)
                 depths = depths.reshape(patch_rays_o.shape[0], patch_rays_o.shape[1],

@@ -1,26 +1,28 @@
-# configuration file to be used with `run_multi_scene.py`
+# configuration file to be used with `main.py` for normal (or multiscene) training
 # the configuration must be specified in a dictionary called `config`.
 config = {
     "expname": "lego_test",
+    "logdir": "./logs",
+
+    # Data settings
     "data_resolution": None,
     "data_downsample": 1.5625,
     "data_dirs": ["/data/DATASETS/SyntheticNerf/lego"],#["/data/DATASETS/LLFF/fern"],
-
+    # Data settings for 360
     "max_tr_frames": None,
     "max_ts_frames": 10,
+    # Data settings for LLFF
     "hold_every": 8,
 
+    # Optimization settings
+    "num_epochs": 10,
     "batch_size": 4096,
     "num_batches_per_dset": 1,
-    "num_epochs": 10,
-    "dmask_update": [4000, 12000],
-    "density_threshold": 1e-4,
-
     "scheduler_type": None,
     "optim_type": "adam",
     "lr": 2e-3,
 
-    "logdir": "./logs",
+    # Training settings
     "train_fp16": True,
     "save_every": 10,
     "valid_every": 1,
@@ -29,13 +31,14 @@ config = {
 
     # Raymarching settings
     "raymarch_type": "voxel_size",
-    "sampling_resolution": 128,
-    "num_sample_multiplier": 2,
-    "n_intersections": 400,
+    "num_sample_multiplier": 2,  # Used when raymarch_type is 'voxel_size'
+    "n_intersections": 400,  # Used when raymarch_type is 'fixed'
     "spacing_fn": "linear",
     "single_jitter": True,
 
-    "model_type": "learnable_hash",
+    # Model settings
+    "density_threshold": 1e-4,
+    "dmask_update": [4000, 12000],
     "grid_config": """
 [
     {

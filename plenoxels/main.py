@@ -7,14 +7,10 @@ import sys
 from typing import List, Dict, Any
 
 import numpy as np
-
-from plenoxels.runners import video_trainer, multiscene_trainer
-from plenoxels.runners.multiscene_trainer import Trainer
-from plenoxels.runners.video_trainer import VideoTrainer
-
 import torch
 import torch.utils.data
 
+from plenoxels.runners import video_trainer, multiscene_trainer
 from plenoxels.runners.utils import get_freer_gpu
 from plenoxels.utils import parse_optfloat, parse_optint
 
@@ -38,9 +34,9 @@ def load_data(is_video: bool, data_downsample, data_dirs, batch_size, **kwargs):
 
 def init_trainer(is_video: bool, **kwargs):
     if is_video:
-        return VideoTrainer(**kwargs)
+        return video_trainer.VideoTrainer(**kwargs)
     else:
-        return Trainer(**kwargs)
+        return multiscene_trainer.Trainer(**kwargs)
 
 
 def main():
@@ -81,7 +77,7 @@ def main():
     pprint.pprint(config)
     data = load_data(is_video, **config)
     config.update(data)
-    trainer: Trainer = init_trainer(is_video, **config)
+    trainer: multiscene_trainer.Trainer = init_trainer(is_video, **config)
     if trainer.transfer_learning:
         # We have reloaded the model learned from args.log_dir
         assert args.log_dir is not None and os.path.isdir(args.log_dir)

@@ -1,6 +1,9 @@
-# configuration file to be used with `run_video.py`
+# configuration file to be used with `main.py` for video training
+# the configuration must be specified in a dictionary called `config`.
 config = {
     "expname": "legovideo_reg0.1",
+    "logdir": "./logs",
+
     # Data settings
     "data_downsample": 2.0,
     "data_dirs": ["/data/DATASETS/VidNerf/lego_video"],
@@ -27,13 +30,14 @@ config = {
     "save_video": True,
     "save_outputs": True,
 
-    "logdir": "./logs",
-
-    "model_type": "learnable_hash",
     # Raymarching settings
     "raymarch_type": "voxel_size",
     "num_sample_multiplier": 2,
     "n_intersections": 400,
+    "spacing_fn": "linear",
+    "single_jitter": True,
+
+    # Model settings
     "grid_config": """
 [
     {
