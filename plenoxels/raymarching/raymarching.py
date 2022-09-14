@@ -43,7 +43,8 @@ class RayMarcher():
             return self.n_intersections
         elif self.raymarch_type == "voxel_size":
             # step-size and n-intersections are scaled to artificially increment resolution of model
-            step_size = torch.mean((aabb[1] - aabb[0]) / resolution - 1) * self.num_sample_multiplier
+            step_size = torch.mean((aabb[1] - aabb[0]) / (resolution - 1)) / self.num_sample_multiplier
+
             n_intersections = int(((aabb[1] - aabb[0]).square().sum().sqrt() / step_size).item()) + 1
             return n_intersections
 
@@ -51,7 +52,7 @@ class RayMarcher():
         if self.raymarch_type == "fixed":
             return (aabb[1] - aabb[0]).square().sum().sqrt() / self.n_intersections
         elif self.raymarch_type == "voxel_size":
-            return torch.mean((aabb[1] - aabb[0]) / resolution - 1) * self.num_sample_multiplier
+            return torch.mean((aabb[1] - aabb[0]) / (resolution - 1)) / self.num_sample_multiplier
 
     def get_samples2(self,
                      rays_o: torch.Tensor,
