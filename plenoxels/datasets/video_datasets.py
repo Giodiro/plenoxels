@@ -155,7 +155,6 @@ class VideoLLFFDataset(LLFFDataset):
                 imgs=None, poses=self.extra_poses, merge_all=False)
             self.extra_rays_o = self.extra_rays_o.view(-1, self.img_h, self.img_w, 3)
             self.extra_rays_d = self.extra_rays_d.view(-1, self.img_h, self.img_w, 3)
-        self.set_tensors(self.rays_o, self.rays_d, self.rgbs, self.timestamps)
 
     def fetch_data(self) -> Tuple[torch.Tensor, ...]:
         self.poses, imgs, self.intrinsics, timestamps, self.near_fars = self.load_from_disk()
@@ -169,6 +168,7 @@ class VideoLLFFDataset(LLFFDataset):
         self.rays_o, self.rays_d, self.imgs = self.init_rays(
             imgs, self.poses, merge_all=self.split == 'train')
 
+        # The data returned from this function will be set as tensors of the class.
         return self.rays_o, self.rays_d, self.imgs, self.timestamps
 
     def init_bbox(self, datadir):
@@ -182,7 +182,7 @@ class VideoLLFFDataset(LLFFDataset):
         img = img.permute(1, 2, 0)  # [H, W, C]
         return img
 
-    def load_from_disk(self) -> Tuple[List[torch.Tensor], torch.Tensor, Intrinsics, torch.Tensor, np.ndarray]:
+    def load_from_disk(self) -> Tuple[List[torch.Tensor], List[torch.Tensor], Intrinsics, torch.Tensor, np.ndarray]:
         """
 
         :return:
@@ -202,7 +202,8 @@ class VideoLLFFDataset(LLFFDataset):
 
         # The first camera is reserved for testing, following https://github.com/facebookresearch/Neural_3D_Video/releases/tag/v1.0
         if self.split == 'train':
-            split_ids = np.arange(1, poses.shape[0])
+            #split_ids = np.arange(1, poses.shape[0])
+            split_ids = np.array([1])
         else:
             split_ids = np.array([0])
         poses, near_fars, videopaths = poses[split_ids], near_fars[split_ids], videopaths[split_ids]
@@ -216,17 +217,16 @@ class VideoLLFFDataset(LLFFDataset):
                 if np.random.uniform() > self.subsample_time:
                     continue
                 # Do any downsampling on the image
-                img = self.load_image(frame, self.intrinsics.height, self.intrinsics.width)
+                img = self.load_image(frame, intrinsics.height, intrinsics.width)
                 imgs.append(img)
                 timestamps.append(frame_idx)
                 all_poses.append(torch.from_numpy(poses[camera_id]).float())
-        imgs = torch.stack(imgs, 0)  # [N, H, W, 3]
         timestamps = torch.tensor(timestamps)  # [N]
         poses = all_poses  # [N, 3, 4]
 
         log.info(f"VideoLLFFDataset - Loaded {self.split} set from {self.datadir}: "
-                 f"{imgs.shape[0]} images of size {imgs.shape[1]}x{imgs.shape[2]} and "
-                 f"{imgs.shape[3]} channels. "
+                 f"{len(imgs)} images of size {imgs[0].shape[0]}x{imgs[0].shape[1]} and "
+                 f"{imgs[0].shape[2]} channels. "
                  f"{len(torch.unique(timestamps))} timestamps up to time={torch.max(timestamps)}. "
                  f"{intrinsics}")
 

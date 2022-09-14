@@ -29,7 +29,6 @@ class VideoTrainer(Trainer):
                  regnerf_weight: float,
                  num_epochs: int,
                  scheduler_type: Optional[str],
-                 model_type: str,
                  optim_type: str,
                  logdir: str,
                  expname: str,
@@ -48,7 +47,6 @@ class VideoTrainer(Trainer):
                          num_batches_per_dset=1,
                          num_epochs=num_epochs,
                          scheduler_type=scheduler_type,
-                         model_type=model_type,
                          optim_type=optim_type,
                          logdir=logdir,
                          expname=expname,
@@ -143,15 +141,12 @@ class VideoTrainer(Trainer):
 
     def init_model(self, **kwargs) -> torch.nn.Module:
         dset = self.train_data_loaders[0].dataset
-        if self.model_type == "learnable_hash":
-            model = LowrankVideo(
-                aabb=dset.scene_bbox,
-                len_time=dset.len_time,
-                is_ndc=dset.is_ndc,
-                **kwargs)
-        else:
-            raise ValueError(f"Model type {self.model_type} invalid")
-        logging.info(f"Initialized model of type {self.model_type} with "
+        model = LowrankVideo(
+            aabb=dset.scene_bbox,
+            len_time=dset.len_time,
+            is_ndc=dset.is_ndc,
+            **kwargs)
+        logging.info(f"Initialized LowrankVideo model with "
                      f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters.")
         model.cuda()
         return model

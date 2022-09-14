@@ -26,7 +26,6 @@ class Trainer():
                  num_batches_per_dset: int,
                  num_epochs: int,
                  scheduler_type: Optional[str],
-                 model_type: str,
                  optim_type: str,
                  logdir: str,
                  expname: str,
@@ -51,7 +50,6 @@ class Trainer():
         self.num_epochs = num_epochs
 
         self.scheduler_type = scheduler_type
-        self.model_type = model_type
         self.optim_type = optim_type
         self.transfer_learning = kwargs.get('transfer_learning')
         self.train_fp16 = train_fp16
@@ -324,16 +322,13 @@ class Trainer():
 
     def init_model(self, **kwargs) -> torch.nn.Module:
         aabbs = [dl.dataset.scene_bbox for dl in self.train_data_loaders]
-        if self.model_type == "learnable_hash":
-            model = LowrankLearnableHash(
-                num_scenes=self.num_dsets,
-                grid_config=kwargs.pop("grid_config"),
-                aabb=aabbs,
-                is_ndc=self.train_data_loaders[0].dataset.is_ndc,  # TODO: This should also be per-scene
-                **kwargs)
-        else:
-            raise ValueError(f"Model type {self.model_type} invalid")
-        logging.info(f"Initialized model of type {self.model_type} with "
+        model = LowrankLearnableHash(
+            num_scenes=self.num_dsets,
+            grid_config=kwargs.pop("grid_config"),
+            aabb=aabbs,
+            is_ndc=self.train_data_loaders[0].dataset.is_ndc,  # TODO: This should also be per-scene
+            **kwargs)
+        logging.info(f"Initialized LowrankLearnableHash model with "
                      f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters.")
         model.cuda()
         return model

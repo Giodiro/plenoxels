@@ -107,7 +107,7 @@ class LLFFDataset(BaseDataset):
         img_list = np.asarray(img_list)
 
         # use first N_images-1 to train, the LAST is val
-        all_rgbs = parallel_load_images(
+        all_rgbs: List[torch.Tensor] = parallel_load_images(
             [image_paths[i] for i in img_list],
             tqdm_title=f'Loading {self.split} data',
             dset_type='llff',
