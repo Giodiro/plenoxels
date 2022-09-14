@@ -56,7 +56,7 @@ class Trainer():
         self.save_every = save_every
         self.valid_every = valid_every
         self.save_outputs = save_outputs
-        self.density_mask_update_steps = set(kwargs.get('dmask_update'))
+        self.density_mask_update_steps = set(kwargs.get('dmask_update', []))
 
         self.log_dir = os.path.join(logdir, expname)
         os.makedirs(self.log_dir, exist_ok=True)
@@ -120,7 +120,7 @@ class Trainer():
             logging.info(f"Updating alpha-mask for all datasets at step {self.global_step}.")
             for u_dset_id in range(self.num_dsets):
                 new_aabb = self.model.update_alpha_mask(grid_id=u_dset_id)
-                self.model.shrink(new_aabb, grid_id=u_dset_id)
+                self.model.shrink(new_aabb, grid_id=u_dset_id)  # TODO: This doesn't actually work
 
         return scale <= self.gscaler.get_scale()
 

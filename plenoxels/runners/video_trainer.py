@@ -31,7 +31,7 @@ class VideoTrainer(Trainer):
                  train_fp16: bool,
                  save_every: int,
                  valid_every: int,
-                 save_video: bool,
+                 save_video: bool,  # TODO: Rationalize parameters for saving
                  save_outputs: bool,
                  **kwargs
                  ):
