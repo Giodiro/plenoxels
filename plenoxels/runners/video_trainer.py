@@ -32,6 +32,7 @@ class VideoTrainer(Trainer):
                  save_every: int,
                  valid_every: int,
                  save_video: bool,
+                 save_outputs: bool,
                  **kwargs
                  ):
         # Keys we wish to ignore
@@ -50,6 +51,7 @@ class VideoTrainer(Trainer):
                          save_every=save_every,
                          valid_every=valid_every,
                          transfer_learning=False,  # No transfer with video
+                         save_outputs=save_outputs,
                          **kwargs)
         self.save_video = save_video
 
@@ -169,7 +171,8 @@ class VideoTrainer(Trainer):
             cv2.destroyAllWindows()
             video.release()
 
-    def evaluate_metrics(self, gt, preds: torch.Tensor, dset, dset_id, img_idx, name=None):
+    def evaluate_metrics(self, gt, preds: torch.Tensor, dset, dset_id, img_idx, name=None,
+                         save_outputs: bool = True):
         gt = gt.reshape(dset.intrinsics.height, dset.intrinsics.width, -1).cpu()
         if gt.shape[-1] == 4:
             gt = gt[..., :3] * gt[..., 3:] + (1.0 - gt[..., 3:])
