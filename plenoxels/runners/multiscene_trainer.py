@@ -380,8 +380,10 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
             tr_dsets.append(LLFFDataset(
                 data_dir, split='train', downsample=data_downsample, resolution=data_resolution,
                 hold_every=hold_every))
+            # Note that LLFF has same downsampling applied to train and test datasets
             ts_dsets.append(LLFFDataset(
-                data_dir, split='test', downsample=1, resolution=None, hold_every=hold_every))
+                data_dir, split='test', downsample=data_downsample, resolution=None,
+                hold_every=hold_every))
         else:
             raise ValueError(dset_type)
         tr_loaders.append(torch.utils.data.DataLoader(
