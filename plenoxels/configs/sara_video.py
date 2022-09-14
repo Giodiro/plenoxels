@@ -2,15 +2,18 @@
 samples_per_voxel = 2
 resolution = 128
 config = {
-    "expname": "test",
-    "data_downsample": 2.0,
-    "data_dir": "/data/datasets/3DVideo/coffee_martini",
+    "expname": "legovideo_reg0.1",
+    "data_downsample": 3.0,
+    "data_dir": "/home/sfk/data/3DVideo/lego_video",
+    # "data_dir": "/data/datasets/3DVideo/coffee_martini",
     # "data_dir": "/data/datasets/nerf/data/nerf_synthetic/lego",
 
-    "subsample_time_train": 0.2,
-    "batch_size": 10000,  # 10000
+    "subsample_train": 0.1,
+    "max_test_cameras": 1,
+    "regnerf_weight": 0.1,
+    "batch_size": 4000,  
     "num_batches_per_dset": 1,
-    "num_epochs": 2,
+    "num_epochs": 1,
     "scheduler_type": None,
     "optim_type": "adam",
     "model_type": "learnable_hash",
@@ -19,6 +22,7 @@ config = {
     "save_every": 1,
     "valid_every": 1,
     "transfer_learning": False,
+    "save_video": True,
 
     "lr": 2e-3,
 
@@ -33,9 +37,9 @@ config = {
         "output_coordinate_dim": 4,
         "grid_dimensions": 2,
         "resolution": 128,
-        "rank": 10,
-        "time_reso": 2,
-        "time_rank": 1,
+        "rank": 20,
+        "time_reso": 12,
+        "time_rank": 5,
         "init_std": 0.1,
     },
     {

@@ -76,6 +76,7 @@ class LowrankLearnableHash(nn.Module):
                         raise ValueError("Configuration incorrect: resolution must be a list.")
                     num_comp = math.comb(in_dim, grid_nd)
                     rank: Sequence[int] = to_list(grid_config["rank"], num_comp, "rank")
+                    grid_config["rank"] = rank
                     # Configuration correctness checks
                     assert in_dim == grid_config["input_coordinate_dim"]
                     if li == 0:
@@ -152,11 +153,11 @@ class LowrankLearnableHash(nn.Module):
                 if interp_out is None:
                     interp_out = (
                         grid_sample_wrapper(grid[ci], interp[..., coo_comb]).view(
-                            -1, level_info["output_coordinate_dim"], level_info["rank"]))
+                            -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
                 else:
                     interp_out = interp_out * (
                         grid_sample_wrapper(grid[ci], interp[..., coo_comb]).view(
-                            -1, level_info["output_coordinate_dim"], level_info["rank"]))
+                            -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
             interp = interp_out.sum(dim=-1)
         return grid_sample_wrapper(self.features, interp)
 

@@ -14,7 +14,9 @@ from plenoxels.ema import EMA
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_exr, write_png
+from ..datasets import SyntheticNerfDataset, LLFFDataset
 from ..my_tqdm import tqdm
+from ..utils import parse_optint
 
 
 class Trainer():
@@ -347,3 +349,48 @@ def losses_to_postfix(losses: List[Dict[str, EMA]]) -> str:
         # pfix_inner = ", ".join(f"{lname}={lval}" for lname, lval in loss_dict.items())
         pfix_list.append(f"D{dset_id}({pfix_inner})")
     return '  '.join(pfix_list)
+
+
+def load_data(data_downsample, data_dirs, batch_size, **kwargs):
+    # TODO: multiple different dataset types are currently not supported well.
+    def decide_dset_type(data_dir) -> str:
+        if ("chair" in data_dir or "drums" in data_dir or "ficus" in data_dir or "hotdog" in data_dir
+                or "lego" in data_dir or "materials" in data_dir or "mic" in data_dir
+                or "ship" in data_dir):
+            return "synthetic"
+        elif ("fern" in data_dir or "flower" in data_dir or "fortress" in data_dir
+              or "horns" in data_dir or "leaves" in data_dir or "orchids" in data_dir
+              or "room" in data_dir or "trex" in data_dir):
+            return "llff"
+        else:
+            raise RuntimeError(f"data_dir {data_dir} not recognized as LLFF or Synthetic dataset.")
+
+    data_resolution = parse_optint(kwargs.get('data_resolution'))
+
+    tr_dsets, tr_loaders, ts_dsets = [], [], []
+    for data_dir in data_dirs:
+        dset_type = decide_dset_type(data_dir)
+        if dset_type == "synthetic":
+            max_tr_frames = parse_optint(kwargs.get('max_tr_frames'))
+            max_ts_frames = parse_optint(kwargs.get('max_ts_frames'))
+            logging.info(f"About to load data at reso={data_resolution}, downsample={data_downsample}")
+            tr_dsets.append(SyntheticNerfDataset(
+                data_dir, split='train', downsample=data_downsample, resolution=data_resolution,
+                max_frames=max_tr_frames))
+            ts_dsets.append(SyntheticNerfDataset(
+                data_dir, split='test', downsample=1, resolution=800, max_frames=max_ts_frames))
+        elif dset_type == "llff":
+            hold_every = parse_optint(kwargs.get('hold_every'))
+            logging.info(f"About to load data at reso={data_resolution}, downsample={data_downsample}")
+            tr_dsets.append(LLFFDataset(
+                data_dir, split='train', downsample=data_downsample, resolution=data_resolution,
+                hold_every=hold_every))
+            ts_dsets.append(LLFFDataset(
+                data_dir, split='test', downsample=1, resolution=None, hold_every=hold_every))
+        else:
+            raise ValueError(dset_type)
+        tr_loaders.append(torch.utils.data.DataLoader(
+            tr_dsets[-1], batch_size=batch_size, shuffle=True, num_workers=3, prefetch_factor=4,
+            pin_memory=True))
+
+    return {"ts_dsets": ts_dsets, "tr_loaders": tr_loaders}
