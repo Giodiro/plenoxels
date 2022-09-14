@@ -87,11 +87,80 @@ def center_poses(poses):
     return poses_centered, pose_avg_homo
 
 
+# From https://github.com/google-research/google-research/blob/342bfc150ef1155c5254c1e6bd0c912893273e8d/regnerf/internal/datasets.py
+def poses_avg(poses):
+  """New pose using average position, z-axis, and up vector of input poses."""
+  position = poses[:, :3, 3].mean(0)
+  z_axis = poses[:, :3, 2].mean(0)
+  up = poses[:, :3, 1].mean(0)
+  cam2world = viewmatrix(z_axis, up, position)
+  return cam2world
+
+
+# From https://github.com/google-research/google-research/blob/342bfc150ef1155c5254c1e6bd0c912893273e8d/regnerf/internal/datasets.py
+def viewmatrix(lookdir, up, position, subtract_position=False):
+  """Construct lookat view matrix."""
+  vec2 = normalize((lookdir - position) if subtract_position else lookdir)
+  vec0 = normalize(np.cross(up, vec2))
+  vec1 = normalize(np.cross(vec2, vec0))
+  m = np.stack([vec0, vec1, vec2, position], axis=1)
+  return m
+
+
+# From https://github.com/google-research/google-research/blob/342bfc150ef1155c5254c1e6bd0c912893273e8d/regnerf/internal/datasets.py
+def generate_spiral_path(poses, bounds, n_frames=120, n_rots=2, zrate=.5):
+  """Calculates a forward facing spiral path for rendering."""
+  # Find a reasonable 'focus depth' for this dataset as a weighted average
+  # of near and far bounds in disparity space.
+  close_depth, inf_depth = bounds.min() * .9, bounds.max() * 5.
+  dt = .75
+  focal = 1 / (((1 - dt) / close_depth + dt / inf_depth))
+
+  # Get radii for spiral path using 90th percentile of camera positions.
+  positions = poses[:, :3, 3]
+  radii = np.percentile(np.abs(positions), 90, 0)
+  radii = np.concatenate([radii, [1.]])
+
+  # Generate poses for spiral path.
+  render_poses = []
+  cam2world = poses_avg(poses)
+  up = poses[:, :3, 1].mean(0)
+  for theta in np.linspace(0., 2. * np.pi * n_rots, n_frames, endpoint=False):
+    t = radii * [np.cos(theta), -np.sin(theta), -np.sin(theta * zrate), 1.]
+    position = cam2world @ t
+    lookat = cam2world @ [0, 0, -focal, 1.]
+    z_axis = position - lookat
+    render_poses.append(viewmatrix(z_axis, up, position))
+  render_poses = np.stack(render_poses, axis=0)
+  return render_poses
+
+
+# Based on https://github.com/google-research/google-research/blob/342bfc150ef1155c5254c1e6bd0c912893273e8d/regnerf/internal/datasets.py
+def generate_hemispherical_orbit(poses, n_frames=120):
+  """Calculates a render path which orbits around the z-axis."""
+  origins = poses[:, :3, 3]
+  radius = torch.sqrt(torch.mean(torch.sum(origins**2, dim=-1)))
+
+  # Assume that z-axis points up towards approximate camera hemisphere
+  sin_phi = torch.mean(origins[:, 2], axis=0) / radius
+  cos_phi = torch.sqrt(1 - sin_phi**2)
+  render_poses = []
+
+  up = np.array([0., 0., 1.])
+  for theta in np.linspace(0., 2. * np.pi, n_frames, endpoint=False):
+    camorigin = radius * np.array(
+        [cos_phi * np.cos(theta), cos_phi * np.sin(theta), sin_phi])
+    render_poses.append(torch.from_numpy(viewmatrix(camorigin, up, camorigin)))
+
+  render_poses = torch.stack(render_poses, dim=0)
+  return render_poses
+
+
 class VideoDataset(TensorDataset):
     pil2tensor = torchvision.transforms.ToTensor()
     tensor2pil = torchvision.transforms.ToPILImage()
 
-    def __init__(self, datadir, split='train', downsample=1.0, subsample=1, max_test_cameras=np.inf):
+    def __init__(self, datadir, split='train', downsample=1.0, subsample=1, max_test_cameras=np.inf, extra_views=False):
         # subsample (in [0,1]) lets you use a random percentage of the frames from each video
         self.datadir = datadir
         self.split = split
@@ -119,7 +188,17 @@ class VideoDataset(TensorDataset):
         self.rays_o, self.rays_d, self.rgbs = self.init_rays(rgbs)
         # Broadcast timestamps to match rays
         if split == 'train':
-            self.timestamps = (torch.ones(len(self.timestamps), self.intrinsics.height, self.intrinsics.width) * self.timestamps[:,None,None]).reshape(-1)
+            self.timestamps = (torch.ones(len(self.timestamps), self.intrinsics.height, self.intrinsics.width) * self.timestamps[:,None,None]).reshape(-1)  # [n_frames * h * w]
+
+            if extra_views:
+                # Generate an extra set of unseen views, for regularization
+                if self.ndc:
+                    self.extra_poses = generate_spiral_path(self.poses, self.near_fars)
+                else:
+                    self.extra_poses = generate_hemispherical_orbit(self.poses)
+                self.extra_rays_o, self.extra_rays_d = self.init_extra_rays()
+                print(f'extra_rays_o has shape {self.extra_rays_o.shape}, extra_rays_d has shape {self.extra_rays_d.shape}')
+            
         print(f'rays_o has shape {self.rays_o.shape}, rays_d has shape {self.rays_d.shape}, rgbs has shape {self.rgbs.shape}, timestamps has shape {self.timestamps.shape}')
         super().__init__(self.rays_o, self.rays_d, self.rgbs, self.timestamps)
 
@@ -181,7 +260,7 @@ class VideoDataset(TensorDataset):
             self.img_h, self.img_w = imgs[0].shape[:2]
             intrinsics = self.load_intrinsics(meta)
         self.len_time = len_time
-        imgs = torch.stack(imgs, 0)  # [N, H, W, 3]
+        imgs = torch.stack(imgs, 0)[...,:3]  # [N, H, W, 3]
         poses = torch.stack(poses, 0)  # [N, 4, 4]
         timestamps = torch.from_numpy(np.array(timestamps))  # [N]
         log.info(f"360Dataset - Loaded {self.split} set from {self.datadir}: {len(imgs)} "
@@ -257,8 +336,7 @@ class VideoDataset(TensorDataset):
 
         return poses, imgs, intrinsics, timestamps
 
-
-    # TODO: this should be refactored once I know the right thing to do for NDC vs 360
+# TODO: this should be refactored once I know the right thing to do for NDC vs 360
     def init_rays(self, imgs):
         if self.ndc:
             # ray directions for all pixels, same for all images (same H, W, focal)
@@ -279,8 +357,8 @@ class VideoDataset(TensorDataset):
                 rays_d = rays_d.to(dtype=torch.float32).contiguous()
             all_rays_o.append(rays_o)
             all_rays_d.append(rays_d)
-        all_rays_o = torch.cat(all_rays_o, 0).to(dtype=torch.float32)  # [n_frames * h * w, 3]
-        all_rays_d = torch.cat(all_rays_d, 0).to(dtype=torch.float32)  # [n_frames * h * w, 3]
+        all_rays_o = torch.cat(all_rays_o, 0).to(dtype=torch.float32)  # [n_frames * h * w, 3] 
+        all_rays_d = torch.cat(all_rays_d, 0).to(dtype=torch.float32)  # [n_frames * h * w, 3] 
         all_rgbs = (imgs
                     .reshape(-1, imgs[0].shape[-1])
                     .to(dtype=torch.float32))  # [n_frames * h * w, C]
@@ -291,6 +369,31 @@ class VideoDataset(TensorDataset):
             all_rgbs = all_rgbs.view(-1, num_pixels, all_rgbs.shape[-1])
 
         return all_rays_o, all_rays_d, all_rgbs
+
+    # TODO: this should be refactored once I know the right thing to do for NDC vs 360
+    def init_extra_rays(self):
+        assert self.split == 'train'
+
+        if self.ndc:
+            # ray directions for all pixels, same for all images (same H, W, focal)
+            directions = get_ray_directions_blender(self.intrinsics)  # H, W, 3
+
+        all_rays_o, all_rays_d = [], []
+        for i in range(len(self.extra_poses)):
+            if self.ndc:
+                rays_o, rays_d = get_rays(directions, self.extra_poses[i])  # both (h*w, 3)
+                rays_o, rays_d = ndc_rays_blender(
+                    intrinsics=self.intrinsics, near=1.0, rays_o=rays_o, rays_d=rays_d)
+            else:
+                rays = synthetic_get_rays(self.intrinsics, self.extra_poses[i])  # [ro+rd, H, W, 3]
+                rays_o = rays[0, ...]  # [H, W, 3]
+                rays_d = rays[1, ...]  # [H, W, 3]
+            all_rays_o.append(rays_o)
+            all_rays_d.append(rays_d)
+        all_rays_o = torch.stack(all_rays_o, 0).to(dtype=torch.float32)  # [n_frames, h, w, 3]
+        all_rays_d = torch.stack(all_rays_d, 0).to(dtype=torch.float32)  # [n_frames, h, w, 3]
+
+        return all_rays_o, all_rays_d
 
 def synthetic_get_rays(intrinsics, c2w) -> torch.Tensor:
     """

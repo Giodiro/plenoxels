@@ -12,6 +12,16 @@ import cv2
 import numpy as np
 np.random.seed(0)
 import pandas as pd
+
+def get_freer_gpu():
+    os.system('nvidia-smi -q -d Memory |grep -A5 GPU|grep Free >tmp')
+    memory_available = [int(x.split()[2]) for x in open('tmp', 'r').readlines()]
+    return np.argmax(memory_available)
+
+gpu = get_freer_gpu()
+os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
+print(f'gpu is {gpu}')
+
 import torch
 torch.manual_seed(0)
 import torch.utils.data
@@ -24,12 +34,15 @@ from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_exr, write_png
 from plenoxels.runners.utils import *
 from plenoxels.video_dataset import VideoDataset
+from plenoxels.datasets.patchloader import PatchLoader
 
 
 class Trainer():
     def __init__(self,
                  tr_loader: torch.utils.data.DataLoader,
                  ts_dset: torch.utils.data.Dataset,
+                 patch_loader: PatchLoader,
+                 regnerf_weight: float,
                  num_batches_per_dset: int,
                  num_epochs: int,
                  scheduler_type: Optional[str],
@@ -46,6 +59,11 @@ class Trainer():
                  ):
         self.train_data_loader = tr_loader
         self.test_dataset = ts_dset
+        self.patch_loader = patch_loader
+        self.regnerf_weight = regnerf_weight
+        if self.regnerf_weight > 0:
+            assert self.patch_loader is not None
+
         self.save_video = save_video
         self.extra_args = kwargs
 
@@ -92,16 +110,24 @@ class Trainer():
                 rays_o_b = rays_o[b * self.batch_size: (b + 1) * self.batch_size].cuda()
                 rays_d_b = rays_d[b * self.batch_size: (b + 1) * self.batch_size].cuda()
                 timestamps_d_b = torch.ones(len(rays_o_b)).cuda() * timestamp
-                preds.append(self.model(rays_o_b, rays_d_b, timestamps_d_b, bg_color=1))
+                pred, depth = self.model(rays_o_b, rays_d_b, timestamps_d_b, bg_color=1)
+                preds.append(pred)
             preds = torch.cat(preds, 0)
         return preds
 
-    def step(self, data):
+    def step(self, data, patches):
         rays_o = data[0].cuda()
         rays_d = data[1].cuda()
-        timestamps = data[3].cuda()
-        # timestamps = torch.zeros(len(rays_o)).cuda()
         imgs = data[2].cuda()
+        timestamps = data[3].cuda()
+        if patches is not None:
+            patch_rays_o = patches[0].cuda()
+            patch_rays_d = patches[1].cuda()
+            patch_timestamps = patches[2]
+            # Broadcast timestamps to match rays
+            patch_timestamps = torch.ones(len(patch_timestamps), patch_rays_o.shape[1], patch_rays_o.shape[2]) * patch_timestamps[:,None,None] 
+            patch_timestamps = patch_timestamps.cuda()
+        
         self.optimizer.zero_grad(set_to_none=True)
 
         C = imgs.shape[-1]
@@ -113,10 +139,15 @@ class Trainer():
             imgs = imgs[..., :3] * imgs[..., 3:] + bg_color * (1.0 - imgs[..., 3:])
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            rgb_preds = self.model(rays_o, rays_d, timestamps, bg_color=bg_color)
+            rgb_preds, _ = self.model(rays_o, rays_d, timestamps, bg_color=bg_color)
+            tv = 0
+            if patches is not None:
+                _, depths = self.model(patch_rays_o.reshape(-1, 3), patch_rays_d.reshape(-1, 3), patch_timestamps.reshape(-1), bg_color=bg_color)
+                depths = depths.reshape(patch_rays_o.shape[0], patch_rays_o.shape[1], patch_rays_o.shape[2])
+                tv = compute_tv_norm(depths)
             loss = self.criterion(rgb_preds, imgs)
 
-        self.gscaler.scale(loss).backward()
+        self.gscaler.scale(loss + self.regnerf_weight * tv).backward()
         self.gscaler.step(self.optimizer)
         scale = self.gscaler.get_scale()
         self.gscaler.update()
@@ -155,7 +186,10 @@ class Trainer():
             step_successful = False
             while True:
                 data = next(self.train_iterator)
-                step_successful |= self.step(data)
+                patches = None
+                if self.patch_loader is not None:
+                    patches = self.patch_loader.next()
+                step_successful |= self.step(data, patches)
                 self.post_step(progress_bar=pb)
             self.scheduler.step()
         except StopIteration:
@@ -328,6 +362,23 @@ class Trainer():
         return model
 
 
+# Based on https://github.com/google-research/google-research/blob/342bfc150ef1155c5254c1e6bd0c912893273e8d/regnerf/internal/math.py#L237
+def compute_tv_norm(depths, losstype='l1'): 
+  # depths [n_patches, h, w]
+  v00 = depths[:, :-1, :-1]
+  v01 = depths[:, :-1, 1:]
+  v10 = depths[:, 1:, :-1]
+
+  if losstype == 'l2':
+    loss = torch.sqrt(((v00 - v01) ** 2) + ((v00 - v10) ** 2))
+  elif losstype == 'l1':
+    loss = torch.abs(v00 - v01) + torch.abs(v00 - v10)
+  else:
+    raise ValueError('Not supported losstype.')
+
+  return torch.mean(loss)
+
+
 def eval_render_fn(renderer):
     def render_fn(ro, rd):
         return renderer(ro, rd, bg_color=1.0)
@@ -345,7 +396,7 @@ def setup_logging(log_level=logging.INFO):
                         handlers=handlers)
 
 
-def load_data(data_downsample, data_dir, subsample_train, max_test_cameras, batch_size, **kwargs):
+def load_data(data_downsample, data_dir, subsample_train, max_test_cameras, batch_size, regnerf_weight, **kwargs):
     if data_downsample is None:
         data_downsample = 1.0
     # Training datasets are lists of lists, where each inner list is different resolutions for the same scene
@@ -353,14 +404,17 @@ def load_data(data_downsample, data_dir, subsample_train, max_test_cameras, batc
     logging.info(f"About to load data with downsample={data_downsample} and using {subsample_train * 100}% of the frames")
     tr_dset = VideoDataset(
         data_dir, split='train', downsample=data_downsample, 
-        subsample=subsample_train)
+        subsample=subsample_train, extra_views=(regnerf_weight > 0))
     tr_loader = torch.utils.data.DataLoader(
         tr_dset, batch_size=batch_size, shuffle=True, num_workers=3,
         prefetch_factor=4, pin_memory=True)
     ts_dset = VideoDataset(
         data_dir, split='test', downsample=1,
         subsample=1, max_test_cameras=max_test_cameras)
-    return tr_loader, ts_dset
+    patch_loader = None
+    if regnerf_weight > 0:
+        patch_loader = PatchLoader(rays_o=tr_dset.extra_rays_o, rays_d=tr_dset.extra_rays_d, len_time=tr_dset.len_time)
+    return tr_loader, ts_dset, patch_loader
 
 
 def main():
@@ -382,8 +436,8 @@ def main():
     spec.loader.exec_module(cfg)
 
     pprint.pprint(cfg.config)
-    tr_loader, ts_dset = load_data(**cfg.config)
-    trainer = Trainer(tr_loader=tr_loader, ts_dset=ts_dset, **cfg.config)
+    tr_loader, ts_dset, patch_loader = load_data(**cfg.config)
+    trainer = Trainer(tr_loader=tr_loader, ts_dset=ts_dset, patch_loader=patch_loader, **cfg.config)
     if trainer.transfer_learning:
         # We have reloaded the model learned from args.log_dir
         assert args.log_dir is not None and os.path.isdir(args.log_dir)

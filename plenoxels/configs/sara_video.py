@@ -2,15 +2,16 @@
 samples_per_voxel = 2
 resolution = 128
 config = {
-    "expname": "legovideo",
+    "expname": "legovideo_reg0.1",
     "data_downsample": 3.0,
-    "data_dir": "/data/datasets/3DVideo/lego_video",
+    "data_dir": "/home/sfk/data/3DVideo/lego_video",
     # "data_dir": "/data/datasets/3DVideo/coffee_martini",
     # "data_dir": "/data/datasets/nerf/data/nerf_synthetic/lego",
 
     "subsample_train": 0.1,
     "max_test_cameras": 1,
-    "batch_size": 2000,  
+    "regnerf_weight": 0.1,
+    "batch_size": 4000,  
     "num_batches_per_dset": 1,
     "num_epochs": 1,
     "scheduler_type": None,

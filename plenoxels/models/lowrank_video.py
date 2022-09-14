@@ -145,8 +145,11 @@ class LowrankVideo(nn.Module):
         ridx_hit = ridx[boundary]
         # Perform volumetric integration
         ray_colors, transmittance = spc_render.exponential_integration(
-            rgb_masked.reshape(-1, 3), tau, boundary, exclusive=True)
-        alpha = spc_render.sum_reduce(transmittance, boundary)
+            rgb_masked.reshape(-1, 3), tau, boundary, exclusive=True)  # transmittance is [n_intersections, 1]
+        alpha = spc_render.sum_reduce(transmittance, boundary)  # [n_valid_rays, 1]
+        # Compute depth as a weighted sum over z values according to absorption/transmission
+        z_vals = spc_render.cumsum(deltas[:,None], boundary)
+        real_depth = spc_render.sum_reduce(transmittance * z_vals, boundary)  # [n_valid_rays, 1]
         # Blend output color with background
         if isinstance(bg_color, torch.Tensor) and bg_color.shape == (n_rays, 3):
             rgb = bg_color
@@ -154,9 +157,11 @@ class LowrankVideo(nn.Module):
         else:
             rgb = torch.full((n_rays, 3), bg_color, dtype=ray_colors.dtype, device=dev)
             color = ray_colors + (1.0 - alpha) * bg_color
-        rgb[ridx_hit.long(), :] = color
+        rgb[ridx_hit.long(), :] = color  # [n_rays, 3]
+        depth = torch.full((n_rays, 1), 100, dtype=ray_colors.dtype, device=dev)
+        depth[ridx_hit.long()] = real_depth  # [n_rays, 1]
 
-        return rgb
+        return rgb, depth
 
     def get_params(self, lr):
         params = [
