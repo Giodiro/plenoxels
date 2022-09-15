@@ -1,19 +1,26 @@
 import glob
 import os
 import logging as log
-from typing import Tuple
+from typing import Tuple, Optional, List
 
 import numpy as np
 import torch
 
 from .data_loading import parallel_load_images
-from .ray_utils import get_ray_directions_blender, get_rays, ndc_rays_blender, center_poses
+from .ray_utils import get_ray_directions_blender, get_rays, ndc_rays_blender, center_poses, generate_spiral_path
 from .intrinsics import Intrinsics
 from .base_dataset import BaseDataset
 
 
 class LLFFDataset(BaseDataset):
-    def __init__(self, datadir, split='train', downsample=4, hold_every=8, resolution=512):
+    poses: Optional[List[torch.Tensor]]
+    intrinsics: Optional[Intrinsics]
+    near_fars: Optional[np.ndarray]
+    imgs: Optional[torch.Tensor]
+    rays_o: Optional[torch.Tensor]
+    rays_d: Optional[torch.Tensor]
+
+    def __init__(self, datadir, split='train', downsample=4, hold_every=8, extra_views: bool = False):
         """
         spheric_poses: whether the images are taken in a spheric inward-facing manner
                        default: False (forward-facing)
@@ -25,17 +32,17 @@ class LLFFDataset(BaseDataset):
                          is_ndc=True)
         self.hold_every = hold_every
         self.downsample = downsample
-
         self.near_far = [0.0, 1.0]
-
-        self.poses = None
-        self.intrinsics = None
-        self.near_fars = None
-        self.imgs = None
-        self.rays_o = None
-        self.rays_d = None
         tensors = self.fetch_data()
         self.set_tensors(*tensors)
+
+        if self.split == 'train' and extra_views:
+            self.extra_poses = generate_spiral_path(np.array(self.poses), self.near_fars)
+            self.extra_poses = torch.from_numpy(self.extra_poses)
+            self.extra_rays_o, self.extra_rays_d, _ = self.init_rays(
+                imgs=None, poses=self.extra_poses, merge_all=False)
+            self.extra_rays_o = self.extra_rays_o.view(-1, self.img_h, self.img_w, 3)
+            self.extra_rays_d = self.extra_rays_d.view(-1, self.img_h, self.img_w, 3)
 
     def init_bbox(self, datadir):
         return torch.tensor([[-1.5, -1.67, -1.0], [1.5, 1.67, 1.0]])
@@ -58,7 +65,7 @@ class LLFFDataset(BaseDataset):
     def num_frames(self):
         return len(self.poses)
 
-    def split_poses_bounds(self, poses_bounds):
+    def split_poses_bounds(self, poses_bounds: np.ndarray) -> Tuple[np.ndarray, np.ndarray, Intrinsics]:
         poses = poses_bounds[:, :15].reshape(-1, 3, 5)  # (N_images, 3, 5)
         near_fars = poses_bounds[:, -2:]  # (N_images, 2)
         H, W, focal = poses[0, :, -1]  # original intrinsics, same for all images
@@ -82,7 +89,7 @@ class LLFFDataset(BaseDataset):
 
         # Step 3: correct scale so that the nearest depth is at a little more than 1.0
         # See https://github.com/bmild/nerf/issues/34
-        near_original = near_fars.min()
+        near_original = np.min(near_fars)
         scale_factor = near_original * 1.  # 0.75 is the default parameter
         # the nearest depth is at 1/0.75=1.33
         near_fars /= scale_factor
@@ -90,7 +97,7 @@ class LLFFDataset(BaseDataset):
 
         return poses, near_fars, intrinsics
 
-    def load_from_disk(self):
+    def load_from_disk(self) -> Tuple[List[torch.Tensor], List[torch.Tensor], Intrinsics, np.ndarray]:
         poses, near_fars, intrinsics = self.load_all_poses()
         if self.downsample != 4:
             raise RuntimeError(f"LLFF dataset only works with donwsample=4 but found {self.downsample}.")
@@ -111,7 +118,7 @@ class LLFFDataset(BaseDataset):
             [image_paths[i] for i in img_list],
             tqdm_title=f'Loading {self.split} data',
             dset_type='llff',
-            data_dir='/',
+            data_dir='/',  # paths from glob are absolute
             out_h=intrinsics.height,
             out_w=intrinsics.width,
             resolution=(None, None)
@@ -120,7 +127,8 @@ class LLFFDataset(BaseDataset):
         near_fars = near_fars[img_list]
 
         log.info(f"LLFFDataset - Loaded {self.split} set from {self.datadir}: {len(all_rgbs)} "
-                 f"images of with {all_rgbs[0].shape[-1]} channels. {intrinsics}")
+                 f"images of shape {all_rgbs[0].shape[0]}x{all_rgbs[0].shape[1]} with "
+                 f"{all_rgbs[0].shape[-1]} channels. {intrinsics}")
 
         return poses, all_rgbs, intrinsics, near_fars
 

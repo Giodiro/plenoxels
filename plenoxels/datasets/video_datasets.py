@@ -13,7 +13,6 @@ from PIL import Image
 from .llff_dataset import LLFFDataset
 from .data_loading import parallel_load_images
 from .intrinsics import Intrinsics
-from .ray_utils import generate_spiral_path, generate_hemispherical_orbit
 from .synthetic_nerf_dataset import SyntheticNerfDataset
 from ..my_tqdm import tqdm
 
@@ -34,15 +33,9 @@ class Video360Dataset(SyntheticNerfDataset):
                          split=split,
                          downsample=downsample,
                          resolution=resolution,
-                         max_frames=None)
+                         max_frames=None,
+                         extra_views=extra_views)
         self.len_time = torch.amax(self.timestamps).item()
-
-        if self.split == 'train' and extra_views:
-            self.extra_poses = generate_hemispherical_orbit(self.poses, n_frames=30)
-            _, self.extra_rays_o, self.extra_rays_d = self.init_rays(
-                imgs=None, poses=self.extra_poses, merge_all=False, is_blender_format=False)
-            self.extra_rays_o = self.extra_rays_o.view(-1, self.img_h, self.img_w, 3)
-            self.extra_rays_d = self.extra_rays_d.view(-1, self.img_h, self.img_w, 3)
 
     def fetch_data(self) -> Tuple[torch.Tensor, ...]:
         imgs, self.poses, self.intrinsics, timestamps = self.load_from_disk()
@@ -94,7 +87,7 @@ class Video360Dataset(SyntheticNerfDataset):
                 sub_frames.append(frame)
         return sub_frames
 
-    def load_from_disk(self):
+    def load_from_disk(self) -> Tuple[torch.Tensor, torch.Tensor, Intrinsics, torch.Tensor]:
         """
         This si the same as the SyntheticNerf with added loading of timestamps
         """
@@ -145,16 +138,9 @@ class VideoLLFFDataset(LLFFDataset):
         self.timestamps: Optional[torch.Tensor] = None
         super().__init__(datadir=datadir,
                          split=split,
-                         downsample=downsample)
+                         downsample=downsample,
+                         extra_views=extra_views)
         self.len_time = torch.amax(self.timestamps).item()
-
-        if self.split == 'train' and extra_views:
-            self.extra_poses = generate_spiral_path(np.array(self.poses), self.near_fars)
-            self.extra_poses = torch.from_numpy(self.extra_poses)
-            self.extra_rays_o, self.extra_rays_d, _ = self.init_rays(
-                imgs=None, poses=self.extra_poses, merge_all=False)
-            self.extra_rays_o = self.extra_rays_o.view(-1, self.img_h, self.img_w, 3)
-            self.extra_rays_d = self.extra_rays_d.view(-1, self.img_h, self.img_w, 3)
 
     def fetch_data(self) -> Tuple[torch.Tensor, ...]:
         self.poses, imgs, self.intrinsics, timestamps, self.near_fars = self.load_from_disk()
@@ -202,8 +188,7 @@ class VideoLLFFDataset(LLFFDataset):
 
         # The first camera is reserved for testing, following https://github.com/facebookresearch/Neural_3D_Video/releases/tag/v1.0
         if self.split == 'train':
-            #split_ids = np.arange(1, poses.shape[0])
-            split_ids = np.array([1])
+            split_ids = np.arange(1, poses.shape[0])
         else:
             split_ids = np.array([0])
         poses, near_fars, videopaths = poses[split_ids], near_fars[split_ids], videopaths[split_ids]
