@@ -263,7 +263,7 @@ def compute_tv_norm(depths, losstype='l2'):
     v10 = depths[:, 1:, :-1]
 
     if losstype == 'l2':
-        loss = ((v00 - v01) ** 2) + ((v00 - v10) ** 2))  # In RegNerf it's actually square l2
+        loss = ((v00 - v01) ** 2) + ((v00 - v10) ** 2)  # In RegNerf it's actually square l2
     elif losstype == 'l1':
         loss = torch.abs(v00 - v01) + torch.abs(v00 - v10)
     else:
