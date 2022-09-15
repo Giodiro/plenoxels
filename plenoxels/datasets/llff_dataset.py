@@ -37,8 +37,9 @@ class LLFFDataset(BaseDataset):
         self.set_tensors(*tensors)
 
         if self.split == 'train' and extra_views:
-            self.extra_poses = generate_spiral_path(np.array(self.poses), self.near_fars)
-            self.extra_poses = torch.from_numpy(self.extra_poses)
+            all_poses = torch.stack(self.poses, 0)
+            self.extra_poses = generate_spiral_path(all_poses.numpy(), self.near_fars)
+            self.extra_poses = torch.from_numpy(self.extra_poses).float()
             self.extra_rays_o, self.extra_rays_d, _ = self.init_rays(
                 imgs=None, poses=self.extra_poses, merge_all=False)
             self.extra_rays_o = self.extra_rays_o.view(-1, self.img_h, self.img_w, 3)
@@ -124,7 +125,7 @@ class LLFFDataset(BaseDataset):
             resolution=(None, None)
         )
         poses = [torch.from_numpy(poses[i]).float() for i in img_list]
-        near_fars = near_fars[img_list]
+        near_fars = near_fars[img_list].astype(np.float32)
 
         log.info(f"LLFFDataset - Loaded {self.split} set from {self.datadir}: {len(all_rgbs)} "
                  f"images of shape {all_rgbs[0].shape[0]}x{all_rgbs[0].shape[1]} with "

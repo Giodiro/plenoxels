@@ -1,14 +1,16 @@
 import logging
+from contextlib import ExitStack
 import math
 import os
 from collections import defaultdict
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 import torch
 import torch.utils.data
 from torch.utils.tensorboard import SummaryWriter
+from torch.profiler import profile, record_function, ProfilerActivity, schedule
 
 from plenoxels.ema import EMA
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash
@@ -82,7 +84,7 @@ class Trainer():
         self.criterion = torch.nn.MSELoss(reduction='mean')
         self.gscaler = torch.cuda.amp.GradScaler(enabled=self.train_fp16)
 
-    def eval_step(self, data, dset_id) -> torch.Tensor:
+    def eval_step(self, data, dset_id) -> Tuple[torch.Tensor, ...]:
         """
         Note that here `data` contains a whole image. we need to split it up before tracing
         for memory constraints.
@@ -90,12 +92,15 @@ class Trainer():
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             rays_o = data[0]
             rays_d = data[1]
-            preds = []
+            preds = [[], []]
             for b in range(math.ceil(rays_o.shape[0] / self.batch_size)):
                 rays_o_b = rays_o[b * self.batch_size: (b + 1) * self.batch_size].cuda()
                 rays_d_b = rays_d[b * self.batch_size: (b + 1) * self.batch_size].cuda()
-                preds.append(self.model(rays_o_b, rays_d_b, grid_id=dset_id, bg_color=1, channels={"rgb"}))
-            preds = torch.cat(preds, 0)
+                outputs = self.model(rays_o_b, rays_d_b, grid_id=dset_id, bg_color=1, channels={"rgb", "depth"})
+                for i in range(len(outputs)):
+                    preds[i].append(outputs[i])
+            for i in range(len(preds)):
+                preds[i] = torch.cat(preds[i], 0)
         return preds
 
     def step(self, data, dset_id):
@@ -128,9 +133,9 @@ class Trainer():
                     channels={"depth"})
                 depths = depths.reshape(
                     patch_rays_o.shape[0], patch_rays_o.shape[1], patch_rays_o.shape[2])
-                tv = compute_tv_norm(depths)
+                tv = compute_tv_norm(depths) * self.regnerf_weight
             recon_loss = self.criterion(rgb_preds, imgs)
-            loss = recon_loss + tv * self.regnerf_weight
+            loss = recon_loss + tv
 
         self.gscaler.scale(loss).backward()
         self.gscaler.step(self.optimizer)
@@ -138,10 +143,10 @@ class Trainer():
         self.gscaler.update()
 
         recon_loss_val = recon_loss.item()
-        self.loss_info["mse"].update(recon_loss_val)
-        self.loss_info["psnr"].update(-10 * math.log10(recon_loss_val))
+        self.loss_info[dset_id]["mse"].update(recon_loss_val)
+        self.loss_info[dset_id]["psnr"].update(-10 * math.log10(recon_loss_val))
         if patch_rays_o is not None:
-            self.loss_info["tv"].update(tv.item())
+            self.loss_info[dset_id]["tv"].update(tv.item())
 
         if self.global_step in self.density_mask_update_steps:
             logging.info(f"Updating alpha-mask for all datasets at step {self.global_step}.")
@@ -179,26 +184,37 @@ class Trainer():
         ascene_idx = 0
         pb = tqdm(total=self.total_batches_per_epoch(), desc=f"E{self.epoch}")
         try:
-            # Whether the set of batches for one loop of num_batches_per_dset
-            # for every dataset, had any successful step
-            step_successful = False
-            while len(active_scenes) > 0:
-                try:
-                    for j in range(self.num_batches_per_dset):
-                        data = next(self.train_iterators[active_scenes[ascene_idx]])
-                        step_successful |= self.step(data, active_scenes[ascene_idx])
-                        self.post_step(dset_id=active_scenes[ascene_idx], progress_bar=pb)
-                except StopIteration:
-                    active_scenes.pop(ascene_idx)
-                else:
-                    # go to next scene
-                    ascene_idx = (ascene_idx + 1) % len(active_scenes)
-                    self.global_step += 1
-                # If we've been through all scenes, and at least one successful step was
-                # done, we can update the scheduler.
-                if ascene_idx == 0 and step_successful and self.scheduler is not None:
-                    self.scheduler.step()
-                    step_successful = False  # reset counter
+            with ExitStack() as stack:
+                p = None
+                if False:
+                    p = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                                schedule=schedule(wait=10, warmup=5, active=2),
+                                on_trace_ready=trace_handler,
+                                record_shapes=True,
+                                with_stack=True)
+                    stack.enter_context(p)
+                # Whether the set of batches for one loop of num_batches_per_dset
+                # for every dataset, had any successful step
+                step_successful = False
+                while len(active_scenes) > 0:
+                    try:
+                        for j in range(self.num_batches_per_dset):
+                            data = next(self.train_iterators[active_scenes[ascene_idx]])
+                            step_successful |= self.step(data, active_scenes[ascene_idx])
+                            self.post_step(dset_id=active_scenes[ascene_idx], progress_bar=pb)
+                            if p is not None:
+                                p.step()
+                    except StopIteration:
+                        active_scenes.pop(ascene_idx)
+                    else:
+                        # go to next scene
+                        ascene_idx = (ascene_idx + 1) % len(active_scenes)
+                        self.global_step += 1
+                    # If we've been through all scenes, and at least one successful step was
+                    # done, we can update the scheduler.
+                    if ascene_idx == 0 and step_successful and self.scheduler is not None:
+                        self.scheduler.step()
+                        step_successful = False  # reset counter
         finally:
             pb.close()
         self.post_epoch()
@@ -247,34 +263,50 @@ class Trainer():
                 log_text += f" | D{dset_id} SSIM: {per_scene_metrics['ssim']:.6f}"
                 logging.info(log_text)
                 val_metrics.append(per_scene_metrics)
+            if False:  # Render extra poses
+                dset = self.train_data_loaders[0].dataset
+                ro, rd = dset.extra_rays_o, dset.extra_rays_d
+                pb = tqdm(total=ro.shape[0], desc="Rendering extra poses")
+                for pose_idx in range(ro.shape[0]):
+                    data = [ro[pose_idx].view(-1, 3), rd[pose_idx].view(-1, 3)]
+                    preds = self.eval_step(data, dset_id=0)
+                    self.evaluate_metrics(None, preds, dset_id=0, dset=dset, img_idx=pose_idx, name="extra_pose",
+                                          save_outputs=True)
+                    pb.update(1)
+
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_epoch{self.epoch}.csv"))
 
-    def evaluate_metrics(self, gt, preds: torch.Tensor, dset, dset_id: int, img_idx: int,
+    def evaluate_metrics(self, gt, preds: Tuple[torch.Tensor, ...], dset, dset_id: int, img_idx: int,
                          name: Optional[str] = None, save_outputs: bool = True):
-        gt = gt.reshape(dset.img_h, dset.img_w, -1).cpu()
-        if gt.shape[-1] == 4:
-            gt = gt[..., :3] * gt[..., 3:] + (1.0 - gt[..., 3:])
-        preds = preds.reshape(dset.img_h, dset.img_w, 3).cpu()
-        err = (gt - preds) ** 2
+        preds_rgb = preds[0].reshape(dset.img_h, dset.img_w, 3).cpu()
         exrdict = {
-            "gt": gt.numpy(),
-            "preds": preds.numpy(),
-            "err": err.numpy(),
+            "preds": preds_rgb.numpy(),
         }
+        if gt is not None:
+            gt = gt.reshape(dset.img_h, dset.img_w, -1).cpu()
+            if gt.shape[-1] == 4:
+                gt = gt[..., :3] * gt[..., 3:] + (1.0 - gt[..., 3:])
+            exrdict["gt"] = gt.numpy()
 
-        summary = {
-            "mse": torch.mean(err),
-            "psnr": metrics.psnr(preds, gt),
-            "ssim": metrics.ssim(preds, gt),
-        }
+            err = (gt - preds_rgb) ** 2
+            exrdict["err"] = err.numpy()
+        if len(preds) > 1:
+            preds_depth = preds[1].reshape(dset.img_h, dset.img_w, 1).cpu()
+            exrdict["depth"] = preds_depth.numpy()
+
+        summary = dict()
+        if gt is not None:
+            summary["mse"] = torch.mean(err)
+            summary["psnr"] = metrics.psnr(preds_rgb, gt)
+            summary["ssim"] = metrics.ssim(preds_rgb, gt)
 
         if save_outputs:
             out_name = f"epoch{self.epoch}-D{dset_id}-{img_idx}"
             if name is not None and name != "":
                 out_name += "-" + name
             write_exr(os.path.join(self.log_dir, out_name + ".exr"), exrdict)
-            write_png(os.path.join(self.log_dir, out_name + ".png"), (preds * 255.0).byte().numpy())
+            write_png(os.path.join(self.log_dir, out_name + ".png"), (preds_rgb * 255.0).byte().numpy())
 
         return summary
 
@@ -383,8 +415,8 @@ def losses_to_postfix(losses: List[Dict[str, EMA]]) -> str:
     for dset_id, loss_dict in enumerate(losses):
         pfix_inner = []
         for lname, lval in loss_dict.items():
-            if lname == 'mse':
-                continue
+            #if lname == 'mse':
+            #    continue
             pfix_inner.append(f"{lname}={lval}")
         pfix_list.append(f"D{dset_id}({', '.join(pfix_inner)})")
     return '  '.join(pfix_list)
@@ -441,3 +473,15 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
         patch_loaders.append(patch_loader)
 
     return {"ts_dsets": ts_dsets, "tr_loaders": tr_loaders, "patch_loaders": patch_loaders}
+
+
+def trace_handler(p):
+    output = p.key_averages(group_by_input_shape=True).table(sort_by="self_cuda_time_total", row_limit=20)
+    print(output)
+    #output = p.key_averages(group_by_stack_n=5).table(sort_by="self_cuda_time_total", row_limit=7)
+    #print(output)
+    output = p.key_averages(group_by_input_shape=True).table(sort_by="self_cpu_time_total", row_limit=20)
+    print(output)
+    p.export_chrome_trace("./logs/trace_" + str(p.step_num) + ".json")
+
+
