@@ -16,6 +16,7 @@ import cv2
 
 from plenoxels.ema import EMA
 from plenoxels.models.lowrank_video import LowrankVideo
+from plenoxels.models.utils import compute_tv_norm
 from plenoxels.runners.multiscene_trainer import Trainer
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_png, write_exr
@@ -25,8 +26,8 @@ from plenoxels.datasets.patchloader import PatchLoader
 class VideoTrainer(Trainer):
     def __init__(self,
                  tr_loader: torch.utils.data.DataLoader,
-                 ts_dset: torch.utils.data.Dataset,
-                 patch_loader: PatchLoader,
+                 ts_dset: torch.utils.data.TensorDataset,
+                 patch_loader: Optional[PatchLoader],
                  regnerf_weight: float,
                  num_epochs: int,
                  scheduler_type: Optional[str],
@@ -45,6 +46,8 @@ class VideoTrainer(Trainer):
         kwargs.pop('num_batches_per_dset', None)
         super().__init__(tr_loaders=[tr_loader],
                          ts_dsets=[ts_dset],
+                         patch_loaders=[patch_loader],
+                         regnerf_weight=regnerf_weight,
                          num_batches_per_dset=1,
                          num_epochs=num_epochs,
                          scheduler_type=scheduler_type,
@@ -57,10 +60,6 @@ class VideoTrainer(Trainer):
                          transfer_learning=False,  # No transfer with video
                          save_outputs=save_outputs,
                          **kwargs)
-        self.patch_loader = patch_loader
-        self.regnerf_weight = regnerf_weight
-        if self.regnerf_weight > 0:
-            assert self.patch_loader is not None
         self.save_video = save_video
 
     def eval_step(self, data, dset_id) -> torch.Tensor:
@@ -225,51 +224,9 @@ class VideoTrainer(Trainer):
 
         return summary, out_img
 
-    def reset_data_iterators(self, dataset_idx=None):
-        """Rewind the iterator for the new epoch.
-        Since we have an infinite iterable for patches and a finite iterable for the
-        train-data-loader, we zip the two and give each a key ("train" or "patches")
-        """
-
-        def imerge_wkeys(patches, train):
-            if patches is None:
-                for i in train:
-                    yield {"train": i}
-            else:
-                for i, j in zip(train, patches):
-                    yield {"train": i, "patches": j}
-
-        if dataset_idx is None:
-            # We always have a single train_data_loader, hence this works!
-            patch_iter = iter(self.patch_loader) if self.patch_loader is not None else None
-            self.train_iterators = [
-                imerge_wkeys(patch_iter, iter(dloader)) for dloader in self.train_data_loaders
-            ]
-        else:
-            self.train_iterators[dataset_idx] = imerge_wkeys(
-                patches=iter(self.patch_loader) if self.patch_loader is not None else None,
-                train=iter(self.train_data_loaders[dataset_idx]))
-
 
 def losses_to_postfix(loss_dict: Dict[str, EMA]) -> str:
     return ", ".join(f"{lname}={lval}" for lname, lval in loss_dict.items())
-
-
-# Based on https://github.com/google-research/google-research/blob/342bfc150ef1155c5254c1e6bd0c912893273e8d/regnerf/internal/math.py#L237
-def compute_tv_norm(depths, losstype='l2'):
-    # depths [n_patches, h, w]
-    v00 = depths[:, :-1, :-1]
-    v01 = depths[:, :-1, 1:]
-    v10 = depths[:, 1:, :-1]
-
-    if losstype == 'l2':
-        loss = ((v00 - v01) ** 2) + ((v00 - v10) ** 2)  # In RegNerf it's actually square l2
-    elif losstype == 'l1':
-        loss = torch.abs(v00 - v01) + torch.abs(v00 - v10)
-    else:
-        raise ValueError('Not supported losstype.')
-
-    return torch.mean(loss)
 
 
 def load_data(data_downsample, data_dirs, batch_size, **kwargs):

@@ -273,7 +273,7 @@ class LowrankLearnableHash(nn.Module):
         self.set_aabb(new_aabb, grid_id)
         self.set_resolution(new_size, grid_id)
 
-    def forward(self, rays_o, rays_d, bg_color, grid_id=0):
+    def forward(self, rays_o, rays_d, bg_color, grid_id=0, channels: Sequence[str] = ("rgb", "depth")):
         """
         rays_o : [batch, 3]
         rays_d : [batch, 3]
@@ -286,6 +286,7 @@ class LowrankLearnableHash(nn.Module):
         intersection_pts = rm_out["intersections"]
         ridx = rm_out["ridx"]
         boundary = rm_out["boundary"]
+        z_vals = rm_out["z_vals"]
         n_rays = rays_o.shape[0]
         dev = rays_o.device
 
@@ -301,6 +302,7 @@ class LowrankLearnableHash(nn.Module):
             intersection_pts = intersection_pts[alpha_mask]
             deltas = deltas[alpha_mask]
             ridx = ridx[alpha_mask]
+            z_vals = z_vals[alpha_mask]
             boundary = spc_render.mark_pack_boundaries(ridx)
 
         # rays_d in the packed format (essentially repeated a number of times)
@@ -318,17 +320,28 @@ class LowrankLearnableHash(nn.Module):
         # Perform volumetric integration
         ray_colors, transmittance = spc_render.exponential_integration(
             rgb_masked.reshape(-1, 3), tau, boundary, exclusive=True)
-        alpha = spc_render.sum_reduce(transmittance, boundary)
-        # Blend output color with background
-        if isinstance(bg_color, torch.Tensor) and bg_color.shape == (n_rays, 3):
-            rgb = bg_color
-            color = ray_colors + (1.0 - alpha) * bg_color[ridx_hit.long(), :]
-        else:
-            rgb = torch.full((n_rays, 3), bg_color, dtype=ray_colors.dtype, device=dev)
-            color = ray_colors + (1.0 - alpha) * bg_color
-        rgb[ridx_hit.long(), :] = color
 
-        return rgb
+        outputs = []
+        if "rgb" in channels:
+            alpha = spc_render.sum_reduce(transmittance, boundary)
+            # Blend output color with background
+            if isinstance(bg_color, torch.Tensor) and bg_color.shape == (n_rays, 3):
+                rgb = bg_color
+                color = ray_colors + (1.0 - alpha) * bg_color[ridx_hit.long(), :]
+            else:
+                rgb = torch.full((n_rays, 3), bg_color, dtype=ray_colors.dtype, device=dev)
+                color = ray_colors + (1.0 - alpha) * bg_color
+            rgb[ridx_hit.long(), :] = color
+            outputs.append(rgb)
+
+        if "depth" in channels:
+            # Compute depth
+            depth_map = spc_render.sum_reduce(z_vals.view(-1, 1) * transmittance, boundary)
+            depth = torch.zeros(n_rays, 1, device=depth_map.device)
+            depth[ridx_hit.long(), :] = depth_map
+            outputs.append(depth)
+
+        return outputs
 
     def get_params(self, lr):
         if self.transfer_learning:

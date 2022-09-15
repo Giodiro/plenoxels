@@ -19,12 +19,12 @@ from ..my_tqdm import tqdm
 
 class Video360Dataset(SyntheticNerfDataset):
     def __init__(self,
-                 datadir,
-                 split='train',
-                 downsample=1.0,
-                 resolution=512,
-                 max_cameras=None,
-                 max_tsteps=None,
+                 datadir: str,
+                 split: str,
+                 downsample: float = 1.0,
+                 resolution: Optional[int] = 512,
+                 max_cameras: Optional[int] = None,
+                 max_tsteps: Optional[int] = None,
                  extra_views: bool = False):
         self.max_cameras = max_cameras
         self.max_tsteps = max_tsteps

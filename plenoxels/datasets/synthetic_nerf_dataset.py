@@ -27,7 +27,7 @@ class SyntheticNerfDataset(BaseDataset):
                  datadir,
                  split: str,
                  downsample: float = 1.0,
-                 resolution: int = 512,
+                 resolution: Optional[int] = 512,
                  max_frames: Optional[int] = None,
                  extra_views: bool = False):
         super().__init__(datadir=datadir,

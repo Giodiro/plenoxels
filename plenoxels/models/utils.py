@@ -85,7 +85,24 @@ def grid_sample_wrapper(grid: torch.Tensor, coords: torch.Tensor, align_corners:
         grid,  # [B, feature_dim, reso, ...]
         coords,  # [B, 1, ..., n, grid_dim]
         align_corners=align_corners,
-        mode='bilinear', padding_mode='border')  #.squeeze().transpose(-1, -2)  # [B?, n, feature_dim]
+        mode='bilinear', padding_mode='border')
     interp = interp.view(B, feature_dim, n).transpose(-1, -2)  # [B, n, feature_dim]
     interp = interp.squeeze()  # [B?, n, feature_dim?]
     return interp
+
+
+# Based on https://github.com/google-research/google-research/blob/342bfc150ef1155c5254c1e6bd0c912893273e8d/regnerf/internal/math.py#L237
+def compute_tv_norm(depths, losstype='l2'):
+    # depths [n_patches, h, w]
+    v00 = depths[:, :-1, :-1]
+    v01 = depths[:, :-1, 1:]
+    v10 = depths[:, 1:, :-1]
+
+    if losstype == 'l2':
+        loss = ((v00 - v01) ** 2) + ((v00 - v10) ** 2)  # In RegNerf it's actually square l2
+    elif losstype == 'l1':
+        loss = torch.abs(v00 - v01) + torch.abs(v00 - v10)
+    else:
+        raise ValueError('Not supported losstype.')
+
+    return torch.mean(loss)

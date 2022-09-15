@@ -12,9 +12,11 @@ from torch.utils.tensorboard import SummaryWriter
 
 from plenoxels.ema import EMA
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash
+from plenoxels.models.utils import compute_tv_norm
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_exr, write_png
 from ..datasets import SyntheticNerfDataset, LLFFDataset
+from ..datasets.patchloader import PatchLoader
 from ..my_tqdm import tqdm
 from ..utils import parse_optint
 
@@ -22,7 +24,9 @@ from ..utils import parse_optint
 class Trainer():
     def __init__(self,
                  tr_loaders: List[torch.utils.data.DataLoader],
-                 ts_dsets: List[torch.utils.data.Dataset],
+                 ts_dsets: List[torch.utils.data.TensorDataset],
+                 patch_loaders: List[Optional[PatchLoader]],
+                 regnerf_weight: float,
                  num_batches_per_dset: int,
                  num_epochs: int,
                  scheduler_type: Optional[str],
@@ -37,9 +41,14 @@ class Trainer():
                  ):
         self.train_data_loaders = tr_loaders
         self.test_datasets = ts_dsets
+        self.patch_loaders = patch_loaders
         self.extra_args = kwargs
         self.num_dsets = len(self.train_data_loaders)
         assert len(self.test_datasets) == self.num_dsets
+
+        self.regnerf_weight = regnerf_weight
+        if self.regnerf_weight > 0:
+            assert all(pl is not None for pl in self.patch_loaders)
 
         self.num_batches_per_dset = num_batches_per_dset
         if self.num_dsets == 1 and self.num_batches_per_dset != 1:
@@ -85,14 +94,19 @@ class Trainer():
             for b in range(math.ceil(rays_o.shape[0] / self.batch_size)):
                 rays_o_b = rays_o[b * self.batch_size: (b + 1) * self.batch_size].cuda()
                 rays_d_b = rays_d[b * self.batch_size: (b + 1) * self.batch_size].cuda()
-                preds.append(self.model(rays_o_b, rays_d_b, grid_id=dset_id, bg_color=1))
+                preds.append(self.model(rays_o_b, rays_d_b, grid_id=dset_id, bg_color=1, channels={"rgb"}))
             preds = torch.cat(preds, 0)
         return preds
 
     def step(self, data, dset_id):
-        rays_o = data[0].cuda()
-        rays_d = data[1].cuda()
-        imgs = data[2].cuda()
+        rays_o = data["train"][0].cuda()
+        rays_d = data["train"][1].cuda()
+        imgs = data["train"][2].cuda()
+        patch_rays_o, patch_rays_d = None, None
+        if "patches" in data:
+            patch_rays_o = data["patches"][0].cuda()
+            patch_rays_d = data["patches"][1].cuda()
+
         self.optimizer.zero_grad(set_to_none=True)
 
         C = imgs.shape[-1]
@@ -104,17 +118,30 @@ class Trainer():
             imgs = imgs[..., :3] * imgs[..., 3:] + bg_color * (1.0 - imgs[..., 3:])
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            rgb_preds = self.model(rays_o, rays_d, grid_id=dset_id, bg_color=bg_color)
-            loss = self.criterion(rgb_preds, imgs)
+            rgb_preds = self.model(rays_o, rays_d, grid_id=dset_id, bg_color=bg_color,
+                                   channels={"rgb"})
+            tv = 0
+            if patch_rays_o is not None:
+                # Don't randomize bg-color when only interested in depth.
+                depths = self.model(
+                    patch_rays_o.reshape(-1, 3), patch_rays_d.reshape(-1, 3), bg_color=1,
+                    channels={"depth"})
+                depths = depths.reshape(
+                    patch_rays_o.shape[0], patch_rays_o.shape[1], patch_rays_o.shape[2])
+                tv = compute_tv_norm(depths)
+            recon_loss = self.criterion(rgb_preds, imgs)
+            loss = recon_loss + tv * self.regnerf_weight
 
         self.gscaler.scale(loss).backward()
         self.gscaler.step(self.optimizer)
         scale = self.gscaler.get_scale()
         self.gscaler.update()
 
-        loss_val = loss.item()
-        self.loss_info[dset_id]["mse"].update(loss_val)
-        self.loss_info[dset_id]["psnr"].update(-10 * math.log10(loss_val))
+        recon_loss_val = recon_loss.item()
+        self.loss_info["mse"].update(recon_loss_val)
+        self.loss_info["psnr"].update(-10 * math.log10(recon_loss_val))
+        if patch_rays_o is not None:
+            self.loss_info["tv"].update(tv.item())
 
         if self.global_step in self.density_mask_update_steps:
             logging.info(f"Updating alpha-mask for all datasets at step {self.global_step}.")
@@ -290,13 +317,30 @@ class Trainer():
 
     def reset_data_iterators(self, dataset_idx=None):
         """Rewind the iterator for the new epoch.
+
+        Since we have an infinite iterable for patches and a finite iterable for the
+        train-data-loader, we zip the two and give each a key ("train" or "patches")
         """
+
+        def imerge_wkeys(patches, train):
+            if patches is None:
+                for i in train:
+                    yield {"train": i}
+            else:
+                for i, j in zip(train, patches):
+                    yield {"train": i, "patches": j}
+
         if dataset_idx is None:
             self.train_iterators = [
-                iter(dloader) for dloader in self.train_data_loaders
+                imerge_wkeys(
+                    patches=iter(self.patch_loaders[dset_idx]) if self.patch_loaders[dset_idx] is not None else None,
+                    train=iter(self.train_data_loaders[dset_idx])
+                ) for dset_idx in range(self.num_dsets)
             ]
         else:
-            self.train_iterators[dataset_idx] = iter(self.train_data_loaders[dataset_idx])
+            self.train_iterators[dataset_idx] = imerge_wkeys(
+                patches=iter(self.patch_loaders[dataset_idx]) if self.patch_loaders[dataset_idx] is not None else None,
+                train=iter(self.train_data_loaders[dataset_idx]))
 
     def init_epoch_info(self):
         ema_weight = 0.1
@@ -337,32 +381,34 @@ class Trainer():
 def losses_to_postfix(losses: List[Dict[str, EMA]]) -> str:
     pfix_list = []
     for dset_id, loss_dict in enumerate(losses):
+        pfix_inner = []
         for lname, lval in loss_dict.items():
-            if lname != 'psnr':
+            if lname == 'mse':
                 continue
-            pfix_inner = f"{lname}={lval}"
-        # pfix_inner = ", ".join(f"{lname}={lval}" for lname, lval in loss_dict.items())
-        pfix_list.append(f"D{dset_id}({pfix_inner})")
+            pfix_inner.append(f"{lname}={lval}")
+        pfix_list.append(f"D{dset_id}({', '.join(pfix_inner)})")
     return '  '.join(pfix_list)
 
 
 def load_data(data_downsample, data_dirs, batch_size, **kwargs):
     # TODO: multiple different dataset types are currently not supported well.
-    def decide_dset_type(data_dir) -> str:
-        if ("chair" in data_dir or "drums" in data_dir or "ficus" in data_dir or "hotdog" in data_dir
-                or "lego" in data_dir or "materials" in data_dir or "mic" in data_dir
-                or "ship" in data_dir):
+    def decide_dset_type(dd) -> str:
+        if ("chair" in dd or "drums" in dd or "ficus" in dd or "hotdog" in dd
+                or "lego" in dd or "materials" in dd or "mic" in dd
+                or "ship" in dd):
             return "synthetic"
-        elif ("fern" in data_dir or "flower" in data_dir or "fortress" in data_dir
-              or "horns" in data_dir or "leaves" in data_dir or "orchids" in data_dir
-              or "room" in data_dir or "trex" in data_dir):
+        elif ("fern" in dd or "flower" in dd or "fortress" in dd
+              or "horns" in dd or "leaves" in dd or "orchids" in dd
+              or "room" in dd or "trex" in dd):
             return "llff"
         else:
-            raise RuntimeError(f"data_dir {data_dir} not recognized as LLFF or Synthetic dataset.")
+            raise RuntimeError(f"data_dir {dd} not recognized as LLFF or Synthetic dataset.")
 
     data_resolution = parse_optint(kwargs.get('data_resolution'))
+    regnerf_weight = float(kwargs.get('regnerf_weight'))
+    extra_views = regnerf_weight > 0
 
-    tr_dsets, tr_loaders, ts_dsets = [], [], []
+    tr_dsets, tr_loaders, ts_dsets, patch_loaders = [], [], [], []
     for data_dir in data_dirs:
         dset_type = decide_dset_type(data_dir)
         if dset_type == "synthetic":
@@ -371,23 +417,27 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
             logging.info(f"About to load data at reso={data_resolution}, downsample={data_downsample}")
             tr_dsets.append(SyntheticNerfDataset(
                 data_dir, split='train', downsample=data_downsample, resolution=data_resolution,
-                max_frames=max_tr_frames))
+                max_frames=max_tr_frames, extra_views=extra_views))
             ts_dsets.append(SyntheticNerfDataset(
                 data_dir, split='test', downsample=1, resolution=800, max_frames=max_ts_frames))
         elif dset_type == "llff":
             hold_every = parse_optint(kwargs.get('hold_every'))
-            logging.info(f"About to load data at reso={data_resolution}, downsample={data_downsample}")
+            logging.info(f"About to load LLFF data downsampled by {data_downsample} times.")
             tr_dsets.append(LLFFDataset(
-                data_dir, split='train', downsample=data_downsample, resolution=data_resolution,
-                hold_every=hold_every))
+                data_dir, split='train', downsample=data_downsample, hold_every=hold_every,
+                extra_views=extra_views))
             # Note that LLFF has same downsampling applied to train and test datasets
             ts_dsets.append(LLFFDataset(
-                data_dir, split='test', downsample=data_downsample, resolution=None,
-                hold_every=hold_every))
+                data_dir, split='test', downsample=data_downsample, hold_every=hold_every))
         else:
             raise ValueError(dset_type)
         tr_loaders.append(torch.utils.data.DataLoader(
             tr_dsets[-1], batch_size=batch_size, shuffle=True, num_workers=3, prefetch_factor=4,
             pin_memory=True))
+        patch_loader = None
+        if extra_views:
+            patch_loader = PatchLoader(
+                rays_o=tr_dsets[-1].extra_rays_o, rays_d=tr_dsets[-1].extra_rays_d, len_time=None)
+        patch_loaders.append(patch_loader)
 
-    return {"ts_dsets": ts_dsets, "tr_loaders": tr_loaders}
+    return {"ts_dsets": ts_dsets, "tr_loaders": tr_loaders, "patch_loaders": patch_loaders}
