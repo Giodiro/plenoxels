@@ -1,50 +1,62 @@
-# configuration file to be used with `run_video.py`
-samples_per_voxel = 2
-resolution = 128
+# configuration file to be used with `main.py` for video training
 config = {
-    "expname": "legovideo_reg0.1",
+    "expname": "legovidoe_reg0",
+    "logdir": "./logs",
+
+    # Data settings
     "data_downsample": 3.0,
-    "data_dir": "/home/sfk/data/3DVideo/lego_video",
+    "data_dirs": ["/home/sfk/data/3DVideo/lego_video"],
     # "data_dir": "/data/datasets/3DVideo/coffee_martini",
     # "data_dir": "/data/datasets/nerf/data/nerf_synthetic/lego",
 
-    "subsample_train": 0.1,
+    # Data settings for 360
+    "max_train_cameras": 25,
     "max_test_cameras": 1,
-    "regnerf_weight": 0.1,
-    "batch_size": 4000,  
-    "num_batches_per_dset": 1,
+    "max_train_tsteps": 10,
+    "max_test_tsteps": None,
+    # Data settings for LLFF
+    "subsample_time": 0.1,
+
+
+    # Optimization settings
     "num_epochs": 1,
+    "regnerf_weight": 0,
     "scheduler_type": None,
+    "batch_size": 3500,  
     "optim_type": "adam",
-    "model_type": "learnable_hash",
-    "logdir": "./logs",
+    "lr": 2e-3,
+    
+    # Training settings
     "train_fp16": True,
     "save_every": 1,
     "valid_every": 1,
-    "transfer_learning": False,
     "save_video": True,
+    "save_outputs": True,
 
-    "lr": 2e-3,
-
+    # Raymarching settings
     "raymarch_type": "voxel_size",
-    "sampling_resolution": resolution,
-    "num_sample_multiplier": samples_per_voxel,
-    "n_intersections": resolution,
+    "num_sample_multiplier": 2,
+    "n_intersections": 128,
+    "spacing_fn": "linear",
+    "single_jitter": True,
+
+    # Model settings
+    # Giac has G init_std=0.01
     "grid_config": """
 [
     {
         "input_coordinate_dim": 3,
         "output_coordinate_dim": 4,
         "grid_dimensions": 2,
-        "resolution": 128,
+        "resolution": [128, 128, 128],
         "rank": 20,
-        "time_reso": 12,
+        "time_reso": 10,
         "time_rank": 5,
-        "init_std": 0.1,
+        "init_std": 0.1,  
     },
     {
         "input_coordinate_dim": 4,
-        "resolution": 8,
+        "resolution": [8, 8, 8, 8],
         "feature_dim": 32,
         "init_std": 0.05
     }

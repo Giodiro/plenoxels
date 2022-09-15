@@ -27,7 +27,7 @@ class DensityMask(nn.Module):
 
     @property
     def grid_size(self) -> torch.Tensor:
-        return torch.tensor(self.density_volume.shape)
+        return torch.tensor((self.density_volume.shape[-1], self.density_volume.shape[-2], self.density_volume.shape[-3]), dtype=torch.long)
 
 
 class LowrankLearnableHash(nn.Module):
@@ -173,6 +173,7 @@ class LowrankLearnableHash(nn.Module):
         aabb = self.aabb(grid_id)
         return (pts - aabb[0]) * (2.0 / (aabb[1] - aabb[0])) - 1
 
+    @torch.no_grad()
     def update_alpha_mask(self, grid_id: int = 0):
         assert len(self.config) == 2, "Alpha-masking not supported for multiple layers of indirection."
         aabb = self.aabb(grid_id)
@@ -220,11 +221,15 @@ class LowrankLearnableHash(nn.Module):
         valid_pts = pts[alpha_mask]
         pts_min = valid_pts.amin(0)
         pts_max = valid_pts.amax(0)
+        # pts_min, pts_max are normalized between -1, 1 so we need to denormalize them
+        # +1 => [0, 2]; / 2 => [0, 1]; * (a1 - a0) => [0, a1-a0]; + a0 => [a0, a1]
+        pts_min = ((pts_min + 1) / 2 * (aabb[1] - aabb[0])) + aabb[0]
+        pts_max = ((pts_max + 1) / 2 * (aabb[1] - aabb[0])) + aabb[0]
 
         new_aabb = torch.stack((pts_min, pts_max), 0)
         log.info(f"Updated alpha mask for grid {grid_id}. "
-                 f"Bounding box from {self.aabb(grid_id)} to {new_aabb}. "
-                 f"Remaining {alpha_mask.sum() / grid_size_l[0] / grid_size_l[1] / grid_size_l[2]:.2f}% voxels.")
+                 f"Bounding box from {aabb} to {new_aabb}. "
+                 f"Remaining {alpha_mask.sum() / grid_size_l[0] / grid_size_l[1] / grid_size_l[2] * 100:.2f}% voxels.")
         self.density_mask[grid_id] = DensityMask(alpha)
         #self.set_aabb(new_aabb, grid_id=grid_id)
         return new_aabb

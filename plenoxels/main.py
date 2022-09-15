@@ -7,6 +7,17 @@ import sys
 from typing import List, Dict, Any
 
 import numpy as np
+
+
+def get_freer_gpu():
+    os.system('nvidia-smi -q -d Memory |grep -A5 GPU|grep Free >tmp')
+    memory_available = [int(x.split()[2]) for x in open('tmp', 'r').readlines()]
+    return np.argmax(memory_available)
+
+gpu = get_freer_gpu()
+os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
+print(f'gpu is {gpu}')
+
 import torch
 import torch.utils.data
 
@@ -41,9 +52,6 @@ def init_trainer(is_video: bool, **kwargs):
 
 def main():
     setup_logging()
-    gpu = get_freer_gpu()
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
-    logging.info(f"Selected GPU {gpu}")
 
     p = argparse.ArgumentParser(description="")
 
