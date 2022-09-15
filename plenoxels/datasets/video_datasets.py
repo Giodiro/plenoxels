@@ -202,8 +202,8 @@ class VideoLLFFDataset(LLFFDataset):
 
         # The first camera is reserved for testing, following https://github.com/facebookresearch/Neural_3D_Video/releases/tag/v1.0
         if self.split == 'train':
-            #split_ids = np.arange(1, poses.shape[0])
-            split_ids = np.array([1])
+            split_ids = np.arange(1, poses.shape[0])
+            # split_ids = np.array([1])
         else:
             split_ids = np.array([0])
         poses, near_fars, videopaths = poses[split_ids], near_fars[split_ids], videopaths[split_ids]

@@ -6,18 +6,19 @@ from typing import Dict, Optional
 
 import numpy as np
 import pandas as pd
+
 import torch
 import torch.utils.data
 
-from ..datasets.video_datasets import Video360Dataset, VideoLLFFDataset
-from ..my_tqdm import tqdm
+from plenoxels.datasets.video_datasets import Video360Dataset, VideoLLFFDataset
+from plenoxels.my_tqdm import tqdm
 import cv2
 
 from plenoxels.ema import EMA
 from plenoxels.models.lowrank_video import LowrankVideo
-from .multiscene_trainer import Trainer
-from ..ops.image import metrics
-from ..ops.image.io import write_png, write_exr
+from plenoxels.runners.multiscene_trainer import Trainer
+from plenoxels.ops.image import metrics
+from plenoxels.ops.image.io import write_png, write_exr
 from plenoxels.datasets.patchloader import PatchLoader
 
 
@@ -217,7 +218,7 @@ class VideoTrainer(Trainer):
         if name is not None and name != "":
             out_name += "-" + name
 
-        out_img = (preds * 255.0).byte().numpy()
+        out_img = (torch.cat((preds, gt), dim=1) * 255.0).byte().numpy()
         if not self.save_video:
             write_exr(os.path.join(self.log_dir, out_name + ".exr"), exrdict)
             write_png(os.path.join(self.log_dir, out_name + ".png"), out_img)
@@ -234,8 +235,9 @@ class VideoTrainer(Trainer):
             if patches is None:
                 for i in train:
                     yield {"train": i}
-            for i, j in zip(train, patches):
-                yield {"train": i, "patches": j}
+            else:
+                for i, j in zip(train, patches):
+                    yield {"train": i, "patches": j}
 
         if dataset_idx is None:
             # We always have a single train_data_loader, hence this works!
@@ -254,14 +256,14 @@ def losses_to_postfix(loss_dict: Dict[str, EMA]) -> str:
 
 
 # Based on https://github.com/google-research/google-research/blob/342bfc150ef1155c5254c1e6bd0c912893273e8d/regnerf/internal/math.py#L237
-def compute_tv_norm(depths, losstype='l1'):
+def compute_tv_norm(depths, losstype='l2'):
     # depths [n_patches, h, w]
     v00 = depths[:, :-1, :-1]
     v01 = depths[:, :-1, 1:]
     v10 = depths[:, 1:, :-1]
 
     if losstype == 'l2':
-        loss = torch.sqrt(((v00 - v01) ** 2) + ((v00 - v10) ** 2))
+        loss = ((v00 - v01) ** 2) + ((v00 - v10) ** 2))  # In RegNerf it's actually square l2
     elif losstype == 'l1':
         loss = torch.abs(v00 - v01) + torch.abs(v00 - v10)
     else:
