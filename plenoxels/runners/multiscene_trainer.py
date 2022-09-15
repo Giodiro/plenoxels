@@ -1,51 +1,54 @@
-import argparse
-import importlib.util
 import logging
 import math
 import os
-import sys
 from collections import defaultdict
 from typing import Dict, List, Optional
-import pprint
 
 import numpy as np
-np.random.seed(0)
 import pandas as pd
 import torch
-torch.manual_seed(0)
 import torch.utils.data
 from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
 
 from plenoxels.ema import EMA
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash
+from plenoxels.models.utils import compute_tv_norm
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_exr, write_png
-from plenoxels.runners.utils import *
-from plenoxels.synthetic_nerf_dataset import SyntheticNerfDataset
+from ..datasets import SyntheticNerfDataset, LLFFDataset
+from ..datasets.patchloader import PatchLoader
+from ..my_tqdm import tqdm
+from ..utils import parse_optint
 
 
 class Trainer():
     def __init__(self,
                  tr_loaders: List[torch.utils.data.DataLoader],
-                 ts_dsets: List[torch.utils.data.Dataset],
+                 ts_dsets: List[torch.utils.data.TensorDataset],
+                 patch_loaders: List[Optional[PatchLoader]],
+                 regnerf_weight: float,
                  num_batches_per_dset: int,
                  num_epochs: int,
                  scheduler_type: Optional[str],
-                 model_type: str,
                  optim_type: str,
                  logdir: str,
                  expname: str,
                  train_fp16: bool,
                  save_every: int,
                  valid_every: int,
+                 save_outputs: bool,
                  **kwargs
                  ):
         self.train_data_loaders = tr_loaders
         self.test_datasets = ts_dsets
+        self.patch_loaders = patch_loaders
         self.extra_args = kwargs
         self.num_dsets = len(self.train_data_loaders)
         assert len(self.test_datasets) == self.num_dsets
+
+        self.regnerf_weight = regnerf_weight
+        if self.regnerf_weight > 0:
+            assert all(pl is not None for pl in self.patch_loaders)
 
         self.num_batches_per_dset = num_batches_per_dset
         if self.num_dsets == 1 and self.num_batches_per_dset != 1:
@@ -56,12 +59,13 @@ class Trainer():
         self.num_epochs = num_epochs
 
         self.scheduler_type = scheduler_type
-        self.model_type = model_type
         self.optim_type = optim_type
         self.transfer_learning = kwargs.get('transfer_learning')
         self.train_fp16 = train_fp16
         self.save_every = save_every
         self.valid_every = valid_every
+        self.save_outputs = save_outputs
+        self.density_mask_update_steps = set(kwargs.get('dmask_update', []))
 
         self.log_dir = os.path.join(logdir, expname)
         os.makedirs(self.log_dir, exist_ok=True)
@@ -90,14 +94,19 @@ class Trainer():
             for b in range(math.ceil(rays_o.shape[0] / self.batch_size)):
                 rays_o_b = rays_o[b * self.batch_size: (b + 1) * self.batch_size].cuda()
                 rays_d_b = rays_d[b * self.batch_size: (b + 1) * self.batch_size].cuda()
-                preds.append(self.model(rays_o_b, rays_d_b, grid_id=dset_id, bg_color=1))
+                preds.append(self.model(rays_o_b, rays_d_b, grid_id=dset_id, bg_color=1, channels={"rgb"}))
             preds = torch.cat(preds, 0)
         return preds
 
     def step(self, data, dset_id):
-        rays_o = data[0].cuda()
-        rays_d = data[1].cuda()
-        imgs = data[2].cuda()
+        rays_o = data["train"][0].cuda()
+        rays_d = data["train"][1].cuda()
+        imgs = data["train"][2].cuda()
+        patch_rays_o, patch_rays_d = None, None
+        if "patches" in data:
+            patch_rays_o = data["patches"][0].cuda()
+            patch_rays_d = data["patches"][1].cuda()
+
         self.optimizer.zero_grad(set_to_none=True)
 
         C = imgs.shape[-1]
@@ -109,17 +118,37 @@ class Trainer():
             imgs = imgs[..., :3] * imgs[..., 3:] + bg_color * (1.0 - imgs[..., 3:])
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            rgb_preds = self.model(rays_o, rays_d, grid_id=dset_id, bg_color=bg_color)
-            loss = self.criterion(rgb_preds, imgs)
+            rgb_preds = self.model(rays_o, rays_d, grid_id=dset_id, bg_color=bg_color,
+                                   channels={"rgb"})
+            tv = 0
+            if patch_rays_o is not None:
+                # Don't randomize bg-color when only interested in depth.
+                depths = self.model(
+                    patch_rays_o.reshape(-1, 3), patch_rays_d.reshape(-1, 3), bg_color=1,
+                    channels={"depth"})
+                depths = depths.reshape(
+                    patch_rays_o.shape[0], patch_rays_o.shape[1], patch_rays_o.shape[2])
+                tv = compute_tv_norm(depths)
+            recon_loss = self.criterion(rgb_preds, imgs)
+            loss = recon_loss + tv * self.regnerf_weight
 
         self.gscaler.scale(loss).backward()
         self.gscaler.step(self.optimizer)
         scale = self.gscaler.get_scale()
         self.gscaler.update()
 
-        loss_val = loss.item()
-        self.loss_info[dset_id]["mse"].update(loss_val)
-        self.loss_info[dset_id]["psnr"].update(-10 * math.log10(loss_val))
+        recon_loss_val = recon_loss.item()
+        self.loss_info["mse"].update(recon_loss_val)
+        self.loss_info["psnr"].update(-10 * math.log10(recon_loss_val))
+        if patch_rays_o is not None:
+            self.loss_info["tv"].update(tv.item())
+
+        if self.global_step in self.density_mask_update_steps:
+            logging.info(f"Updating alpha-mask for all datasets at step {self.global_step}.")
+            for u_dset_id in range(self.num_dsets):
+                new_aabb = self.model.update_alpha_mask(grid_id=u_dset_id)
+                #self.model.shrink(new_aabb, grid_id=u_dset_id)  # TODO: This doesn't actually work
+
         return scale <= self.gscaler.get_scale()
 
     def post_step(self, dset_id, progress_bar):
@@ -150,6 +179,8 @@ class Trainer():
         ascene_idx = 0
         pb = tqdm(total=self.total_batches_per_epoch(), desc=f"E{self.epoch}")
         try:
+            # Whether the set of batches for one loop of num_batches_per_dset
+            # for every dataset, had any successful step
             step_successful = False
             while len(active_scenes) > 0:
                 try:
@@ -163,8 +194,11 @@ class Trainer():
                     # go to next scene
                     ascene_idx = (ascene_idx + 1) % len(active_scenes)
                     self.global_step += 1
-                if ascene_idx == 0 and step_successful and self.scheduler is not None:  # we went through all scenes
+                # If we've been through all scenes, and at least one successful step was
+                # done, we can update the scheduler.
+                if ascene_idx == 0 and step_successful and self.scheduler is not None:
                     self.scheduler.step()
+                    step_successful = False  # reset counter
         finally:
             pb.close()
         self.post_epoch()
@@ -186,7 +220,6 @@ class Trainer():
             self.writer.close()
 
     def validate(self):
-        logging.info("Beginning validation...")
         val_metrics = []
         with torch.no_grad():
             for dset_id, dataset in enumerate(self.test_datasets):
@@ -195,13 +228,18 @@ class Trainer():
                     "ssim": 0,
                     "dset_id": dset_id,
                 }
-                for img_idx, data in enumerate(tqdm(dataset, desc=f"Test({dset_id})")):
+                pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
+                for img_idx, data in enumerate(dataset):
                     preds = self.eval_step(data, dset_id=dset_id)
                     gt = data[2]
                     out_metrics = self.evaluate_metrics(
-                        gt, preds, dset_id=dset_id, dset=dataset, img_idx=img_idx, name=None)
+                        gt, preds, dset_id=dset_id, dset=dataset, img_idx=img_idx, name=None,
+                        save_outputs=self.save_outputs)
                     per_scene_metrics["psnr"] += out_metrics["psnr"]
                     per_scene_metrics["ssim"] += out_metrics["ssim"]
+                    pb.set_postfix_str(f"PSNR={out_metrics['psnr']:.2f}", refresh=False)
+                    pb.update(1)
+                pb.close()
                 per_scene_metrics["psnr"] /= len(dataset)  # noqa
                 per_scene_metrics["ssim"] /= len(dataset)  # noqa
                 log_text = f"EPOCH {self.epoch}/{self.num_epochs} | scene {dset_id}"
@@ -212,7 +250,8 @@ class Trainer():
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_epoch{self.epoch}.csv"))
 
-    def evaluate_metrics(self, gt, preds: torch.Tensor, dset, dset_id, img_idx, name=None):
+    def evaluate_metrics(self, gt, preds: torch.Tensor, dset, dset_id: int, img_idx: int,
+                         name: Optional[str] = None, save_outputs: bool = True):
         gt = gt.reshape(dset.img_h, dset.img_w, -1).cpu()
         if gt.shape[-1] == 4:
             gt = gt[..., :3] * gt[..., 3:] + (1.0 - gt[..., 3:])
@@ -230,12 +269,12 @@ class Trainer():
             "ssim": metrics.ssim(preds, gt),
         }
 
-        out_name = f"epoch{self.epoch}-D{dset_id}-{img_idx}"
-        if name is not None and name != "":
-            out_name += "-" + name
-
-        write_exr(os.path.join(self.log_dir, out_name + ".exr"), exrdict)
-        write_png(os.path.join(self.log_dir, out_name + ".png"), (preds * 255.0).byte().numpy())
+        if save_outputs:
+            out_name = f"epoch{self.epoch}-D{dset_id}-{img_idx}"
+            if name is not None and name != "":
+                out_name += "-" + name
+            write_exr(os.path.join(self.log_dir, out_name + ".exr"), exrdict)
+            write_png(os.path.join(self.log_dir, out_name + ".png"), (preds * 255.0).byte().numpy())
 
         return summary
 
@@ -259,11 +298,6 @@ class Trainer():
                 if 'scene' in key:
                     continue
                 self.model.load_state_dict({key: checkpoint_data["model"][key]}, strict=False)
-                # Don't optimize parameters that are reloaded (this should be fine, but it doesn't train)
-                # for param in self.model.parameters():
-                #     if param.shape == checkpoint_data["model"][key].shape:
-                #         print(f'setting requires_grad false for param shape {param.shape}')
-                #         param.requires_grad = False
                 logging.info(f"=> Loaded model state {key} with shape {checkpoint_data['model'][key].shape} from checkpoint")
         else:
             self.model.load_state_dict(checkpoint_data["model"])
@@ -279,17 +313,34 @@ class Trainer():
 
     def total_batches_per_epoch(self):
         # noinspection PyTypeChecker
-        return sum(len(dl.dataset) // self.batch_size for dl in self.train_data_loaders)
+        return sum(math.ceil(len(dl.dataset) / self.batch_size) for dl in self.train_data_loaders)
 
     def reset_data_iterators(self, dataset_idx=None):
         """Rewind the iterator for the new epoch.
+
+        Since we have an infinite iterable for patches and a finite iterable for the
+        train-data-loader, we zip the two and give each a key ("train" or "patches")
         """
+
+        def imerge_wkeys(patches, train):
+            if patches is None:
+                for i in train:
+                    yield {"train": i}
+            else:
+                for i, j in zip(train, patches):
+                    yield {"train": i, "patches": j}
+
         if dataset_idx is None:
             self.train_iterators = [
-                iter(dloader) for dloader in self.train_data_loaders
+                imerge_wkeys(
+                    patches=iter(self.patch_loaders[dset_idx]) if self.patch_loaders[dset_idx] is not None else None,
+                    train=iter(self.train_data_loaders[dset_idx])
+                ) for dset_idx in range(self.num_dsets)
             ]
         else:
-            self.train_iterators[dataset_idx] = iter(self.train_data_loaders[dataset_idx])
+            self.train_iterators[dataset_idx] = imerge_wkeys(
+                patches=iter(self.patch_loaders[dataset_idx]) if self.patch_loaders[dataset_idx] is not None else None,
+                train=iter(self.train_data_loaders[dataset_idx]))
 
     def init_epoch_info(self):
         ema_weight = 0.1
@@ -314,105 +365,79 @@ class Trainer():
         return optim
 
     def init_model(self, **kwargs) -> torch.nn.Module:
-        radi = [dl.dataset.radius for dl in self.train_data_loaders]
-        if self.model_type == "learnable_hash":
-            model = LowrankLearnableHash(
-                num_scenes=self.num_dsets,
-                grid_config=kwargs.pop("grid_config"),
-                radi=radi,
-                **kwargs)
-        else:
-            raise ValueError(f"Model type {self.model_type} invalid")
-        logging.info(f"Initialized model of type {self.model_type} with "
+        aabbs = [dl.dataset.scene_bbox for dl in self.train_data_loaders]
+        model = LowrankLearnableHash(
+            num_scenes=self.num_dsets,
+            grid_config=kwargs.pop("grid_config"),
+            aabb=aabbs,
+            is_ndc=self.train_data_loaders[0].dataset.is_ndc,  # TODO: This should also be per-scene
+            **kwargs)
+        logging.info(f"Initialized LowrankLearnableHash model with "
                      f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters.")
         model.cuda()
         return model
 
 
-def eval_render_fn(renderer, dset_id):
-    def render_fn(ro, rd):
-        return renderer(ro, rd, grid_id=dset_id, bg_color=1.0)
-    return render_fn
-
-
 def losses_to_postfix(losses: List[Dict[str, EMA]]) -> str:
     pfix_list = []
     for dset_id, loss_dict in enumerate(losses):
+        pfix_inner = []
         for lname, lval in loss_dict.items():
-            if lname != 'psnr':
+            if lname == 'mse':
                 continue
-            pfix_inner = f"{lname}={lval}"
-        # pfix_inner = ", ".join(f"{lname}={lval}" for lname, lval in loss_dict.items())
-        pfix_list.append(f"D{dset_id}({pfix_inner})")
+            pfix_inner.append(f"{lname}={lval}")
+        pfix_list.append(f"D{dset_id}({', '.join(pfix_inner)})")
     return '  '.join(pfix_list)
 
 
-def setup_logging(log_level=logging.INFO):
-    handlers = [logging.StreamHandler(sys.stdout)]
-    logging.basicConfig(level=log_level,
-                        format='%(asctime)s|%(levelname)8s| %(message)s',
-                        handlers=handlers)
+def load_data(data_downsample, data_dirs, batch_size, **kwargs):
+    # TODO: multiple different dataset types are currently not supported well.
+    def decide_dset_type(dd) -> str:
+        if ("chair" in dd or "drums" in dd or "ficus" in dd or "hotdog" in dd
+                or "lego" in dd or "materials" in dd or "mic" in dd
+                or "ship" in dd):
+            return "synthetic"
+        elif ("fern" in dd or "flower" in dd or "fortress" in dd
+              or "horns" in dd or "leaves" in dd or "orchids" in dd
+              or "room" in dd or "trex" in dd):
+            return "llff"
+        else:
+            raise RuntimeError(f"data_dir {dd} not recognized as LLFF or Synthetic dataset.")
 
+    data_resolution = parse_optint(kwargs.get('data_resolution'))
+    regnerf_weight = float(kwargs.get('regnerf_weight'))
+    extra_views = regnerf_weight > 0
 
-def load_data(data_resolution, data_downsample, data_dirs, max_tr_frames, max_ts_frames, batch_size, **kwargs):
-    if data_downsample is None:
-        data_downsample = 1.0
-    # Training datasets are lists of lists, where each inner list is different resolutions for the same scene
-    # Test datasets are a single list over the different scenes, all at full resolution
-    logging.info(f"About to load data at reso={data_resolution}, downsample={data_downsample}")
-    tr_dsets, tr_loaders, ts_dsets = [], [], []
+    tr_dsets, tr_loaders, ts_dsets, patch_loaders = [], [], [], []
     for data_dir in data_dirs:
-        tr_dsets.append(SyntheticNerfDataset(
-            data_dir, split='train', downsample=data_downsample, resolution=data_resolution,
-            max_frames=max_tr_frames))
+        dset_type = decide_dset_type(data_dir)
+        if dset_type == "synthetic":
+            max_tr_frames = parse_optint(kwargs.get('max_tr_frames'))
+            max_ts_frames = parse_optint(kwargs.get('max_ts_frames'))
+            logging.info(f"About to load data at reso={data_resolution}, downsample={data_downsample}")
+            tr_dsets.append(SyntheticNerfDataset(
+                data_dir, split='train', downsample=data_downsample, resolution=data_resolution,
+                max_frames=max_tr_frames, extra_views=extra_views))
+            ts_dsets.append(SyntheticNerfDataset(
+                data_dir, split='test', downsample=1, resolution=800, max_frames=max_ts_frames))
+        elif dset_type == "llff":
+            hold_every = parse_optint(kwargs.get('hold_every'))
+            logging.info(f"About to load LLFF data downsampled by {data_downsample} times.")
+            tr_dsets.append(LLFFDataset(
+                data_dir, split='train', downsample=data_downsample, hold_every=hold_every,
+                extra_views=extra_views))
+            # Note that LLFF has same downsampling applied to train and test datasets
+            ts_dsets.append(LLFFDataset(
+                data_dir, split='test', downsample=data_downsample, hold_every=hold_every))
+        else:
+            raise ValueError(dset_type)
         tr_loaders.append(torch.utils.data.DataLoader(
-            tr_dsets[-1],
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=3,
-            prefetch_factor=4,
+            tr_dsets[-1], batch_size=batch_size, shuffle=True, num_workers=3, prefetch_factor=4,
             pin_memory=True))
-        ts_dsets.append(SyntheticNerfDataset(
-            data_dir, split='test', downsample=1, resolution=800,
-            max_frames=max_ts_frames))
-    return tr_loaders, ts_dsets
+        patch_loader = None
+        if extra_views:
+            patch_loader = PatchLoader(
+                rays_o=tr_dsets[-1].extra_rays_o, rays_d=tr_dsets[-1].extra_rays_d, len_time=None)
+        patch_loaders.append(patch_loader)
 
-
-def main():
-    setup_logging()
-    gpu = get_freer_gpu()
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
-    logging.info(f"Selected GPU {gpu}")
-
-    p = argparse.ArgumentParser(description="")
-
-    p.add_argument('--validate-only', action='store_true')
-    p.add_argument('--config-path', type=str, required=True)
-    p.add_argument('--log-dir', type=str, default=None)
-
-    args = p.parse_args()
-    # Import config
-    spec = importlib.util.spec_from_file_location(os.path.basename(args.config_path), args.config_path)
-    cfg = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(cfg)
-
-    pprint.pprint(cfg.config)
-    tr_loaders, ts_dsets = load_data(**cfg.config)
-    trainer = Trainer(tr_loaders=tr_loaders, ts_dsets=ts_dsets, **cfg.config)
-    if trainer.transfer_learning:
-        # We have reloaded the model learned from args.log_dir
-        assert args.log_dir is not None and os.path.isdir(args.log_dir)
-    if args.log_dir is not None:
-        trainer.log_dir = args.log_dir
-        checkpoint_path = os.path.join(trainer.log_dir, "model.pth")
-        trainer.load_model(torch.load(checkpoint_path))
-
-    if args.validate_only:
-        assert args.log_dir is not None and os.path.isdir(args.log_dir)
-        trainer.validate()
-    else:
-        trainer.train()
-
-
-if __name__ == "__main__":
-    main()
+    return {"ts_dsets": ts_dsets, "tr_loaders": tr_loaders, "patch_loaders": patch_loaders}
