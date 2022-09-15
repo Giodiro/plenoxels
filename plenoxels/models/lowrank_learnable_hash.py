@@ -341,6 +341,8 @@ class LowrankLearnableHash(nn.Module):
             depth[ridx_hit.long(), :] = depth_map
             outputs.append(depth)
 
+        if len(outputs) == 1:
+            return outputs[0]
         return outputs
 
     def get_params(self, lr):
