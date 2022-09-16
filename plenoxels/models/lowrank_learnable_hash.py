@@ -16,11 +16,14 @@ from ..raymarching.raymarching import RayMarcher
 
 
 class DensityMask(nn.Module):
-    def __init__(self, density_volume: torch.Tensor):
+    def __init__(self, density_volume: torch.Tensor, aabb: torch.Tensor):
         super().__init__()
         self.register_buffer('density_volume', density_volume)
+        self.register_buffer('aabb', aabb)
 
     def sample_density(self, pts: torch.Tensor) -> torch.Tensor:
+        # Normalize pts
+        pts = (pts - self.aabb[0]) * (2.0 / (self.aabb[1] - self.aabb[0])) - 1
         pts = pts.to(dtype=self.density_volume.dtype)
         density_vals = grid_sample_wrapper(self.density_volume[None, ...], pts, align_corners=True).view(-1)
         return density_vals
@@ -140,7 +143,7 @@ class LowrankLearnableHash(nn.Module):
         grids: nn.ModuleList = self.scene_grids[grid_id]  # noqa
         grids_info = self.config
 
-        interp = pts
+        interp = pts.half()
         grid: nn.ParameterList
         for level_info, grid in zip(grids_info, grids):
             if "feature_dim" in level_info:
@@ -152,14 +155,14 @@ class LowrankLearnableHash(nn.Module):
             for ci, coo_comb in enumerate(coo_combs):
                 if interp_out is None:
                     interp_out = (
-                        grid_sample_wrapper(grid[ci], interp[..., coo_comb]).view(
+                        grid_sample_wrapper(grid[ci].half(), interp[..., coo_comb]).view(
                             -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
                 else:
                     interp_out = interp_out * (
-                        grid_sample_wrapper(grid[ci], interp[..., coo_comb]).view(
+                        grid_sample_wrapper(grid[ci].half(), interp[..., coo_comb]).view(
                             -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
-            interp = interp_out.sum(dim=-1)
-        return grid_sample_wrapper(self.features, interp)
+            interp = interp_out.sum(dim=-1).half()
+        return grid_sample_wrapper(self.features.half(), interp)
 
     @torch.autograd.no_grad()
     def normalize_coord(self, pts: torch.Tensor, grid_id: int) -> torch.Tensor:
@@ -228,9 +231,9 @@ class LowrankLearnableHash(nn.Module):
 
         new_aabb = torch.stack((pts_min, pts_max), 0)
         log.info(f"Updated alpha mask for grid {grid_id}. "
-                 f"Bounding box from {aabb} to {new_aabb}. "
+                 f"Bounding box from {aabb.view(-1)} to {new_aabb.view(-1)}. "
                  f"Remaining {alpha_mask.sum() / grid_size_l[0] / grid_size_l[1] / grid_size_l[2] * 100:.2f}% voxels.")
-        self.density_mask[grid_id] = DensityMask(alpha)
+        self.density_mask[grid_id] = DensityMask(alpha, aabb=aabb)
         #self.set_aabb(new_aabb, grid_id=grid_id)
         return new_aabb
 
@@ -256,9 +259,11 @@ class LowrankLearnableHash(nn.Module):
             grid_info.get("grid_dimensions", grid_info["input_coordinate_dim"])))
         for ci, coo_comb in enumerate(coo_combs):
             slices = [slice(None), slice(None)] + [slice(t_l[cc], b_r[cc]) for cc in coo_comb]
+            print("Shrinking grid to ", slices[2:])
             self.scene_grids[grid_id][0][ci] = torch.nn.Parameter(
                 self.scene_grids[grid_id][0][ci].data[slices]
             )
+            print(self.scene_grids[grid_id][0][ci].shape)
 
         # TODO: Why the correction? Check if this ever occurs
         if not torch.all(self.density_mask[grid_id].grid_size.to(device=dev) == cur_grid_size):
@@ -272,6 +277,7 @@ class LowrankLearnableHash(nn.Module):
         new_size = b_r - t_l
         self.set_aabb(new_aabb, grid_id)
         self.set_resolution(new_size, grid_id)
+        log.info(f"Set new AABB to {self.aabb(grid_id).view(-1)}  -  new resolution to {self.resolution(grid_id).view(-1)}")
 
     def forward(self, rays_o, rays_d, bg_color, grid_id=0, channels: Sequence[str] = ("rgb", "depth")):
         """
@@ -293,17 +299,32 @@ class LowrankLearnableHash(nn.Module):
         # mask has shape [batch, n_intrs]
         # intersection_pts has shape [n_valid_intrs, 3]
 
-        # Normalization (between [-1, 1])
-        intersection_pts = self.normalize_coord(intersection_pts, grid_id)
-
         # Filter intersections which have a low density according to the density mask
         if self.density_mask[grid_id] is not None:
+            # density_mask needs unnormalized coordinates: normalization happens internally
+            # and can be with a different aabb than the current one.
             alpha_mask = self.density_mask[grid_id].sample_density(intersection_pts) > 0
             intersection_pts = intersection_pts[alpha_mask]
             deltas = deltas[alpha_mask]
             ridx = ridx[alpha_mask]
             z_vals = z_vals[alpha_mask]
             boundary = spc_render.mark_pack_boundaries(ridx)
+
+        # Normalization (between [-1, 1])
+        intersection_pts = self.normalize_coord(intersection_pts, grid_id)
+
+        if len(intersection_pts) == 0:
+            outputs = []
+            if "rgb" in channels:
+                if isinstance(bg_color, torch.Tensor) and bg_color.shape == (n_rays, 3):
+                    rgb = bg_color
+                else:
+                    rgb = torch.full((n_rays, 3), bg_color, dtype=rays_o.dtype, device=dev)
+                outputs.append(rgb)
+            if "depth" in channels:
+                depth = torch.zeros(n_rays, 1, device=dev, dtype=rays_o.dtype)
+                outputs.append(depth)
+            return outputs
 
         # rays_d in the packed format (essentially repeated a number of times)
         rays_d_rep = rays_d.index_select(0, ridx)

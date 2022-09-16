@@ -152,7 +152,10 @@ class Trainer():
             logging.info(f"Updating alpha-mask for all datasets at step {self.global_step}.")
             for u_dset_id in range(self.num_dsets):
                 new_aabb = self.model.update_alpha_mask(grid_id=u_dset_id)
-                #self.model.shrink(new_aabb, grid_id=u_dset_id)  # TODO: This doesn't actually work
+                self.model.shrink(new_aabb, grid_id=u_dset_id)  # TODO: This doesn't actually work
+            # We reset the optimizer in case some of the parameters in model were changed.
+            self.optimizer = self.init_optim(**self.extra_args)
+
 
         return scale <= self.gscaler.get_scale()
 
