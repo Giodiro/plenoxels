@@ -28,7 +28,10 @@ class Trainer():
                  tr_loaders: List[torch.utils.data.DataLoader],
                  ts_dsets: List[torch.utils.data.TensorDataset],
                  patch_loaders: List[Optional[PatchLoader]],
-                 regnerf_weight: float,
+                 regnerf_weight_start: float,
+                 regnerf_weight_end: float,
+                 regnerf_weight_max_step: int,
+                 plane_tv_weight: float,
                  num_batches_per_dset: int,
                  num_epochs: int,
                  scheduler_type: Optional[str],
@@ -48,9 +51,13 @@ class Trainer():
         self.num_dsets = len(self.train_data_loaders)
         assert len(self.test_datasets) == self.num_dsets
 
-        self.regnerf_weight = regnerf_weight
-        if self.regnerf_weight > 0:
+        self.regnerf_weight_start = regnerf_weight_start
+        self.regnerf_weight_end = regnerf_weight_end
+        self.regnerf_weight_max_step = regnerf_weight_max_step
+        self.cur_regnerf_weight = self.regnerf_weight_start
+        if self.cur_regnerf_weight > 0:
             assert all(pl is not None for pl in self.patch_loaders)
+        self.plane_tv_weight = plane_tv_weight
 
         self.num_batches_per_dset = num_batches_per_dset
         if self.num_dsets == 1 and self.num_batches_per_dset != 1:
@@ -92,15 +99,19 @@ class Trainer():
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             rays_o = data[0]
             rays_d = data[1]
-            preds = [[], []]
+            preds = defaultdict(list)
             for b in range(math.ceil(rays_o.shape[0] / self.batch_size)):
                 rays_o_b = rays_o[b * self.batch_size: (b + 1) * self.batch_size].cuda()
                 rays_d_b = rays_d[b * self.batch_size: (b + 1) * self.batch_size].cuda()
-                outputs = self.model(rays_o_b, rays_d_b, grid_id=dset_id, bg_color=1, channels={"rgb", "depth"})
-                for i in range(len(outputs)):
-                    preds[i].append(outputs[i])
-            for i in range(len(preds)):
-                preds[i] = torch.cat(preds[i], 0)
+                if self.train_data_loaders[0].dataset.is_ndc:
+                    bg_color = None
+                else:
+                    bg_color = 1
+                outputs = self.model(rays_o_b, rays_d_b, grid_id=dset_id, bg_color=bg_color, channels={"rgb", "depth"})
+                for k, v in outputs.items():
+                    preds[k].append(v)
+            for k, v in preds.items():
+                preds[k] = torch.cat(v, 0)
         return preds
 
     def step(self, data, dset_id):
@@ -116,26 +127,38 @@ class Trainer():
 
         C = imgs.shape[-1]
         # Random bg-color
-        if C == 3:
+        if self.train_data_loaders[0].dataset.is_ndc:
+            bg_color = None
+        elif C == 3:
             bg_color = 1
         else:
             bg_color = torch.rand_like(imgs[..., :3])
             imgs = imgs[..., :3] * imgs[..., 3:] + bg_color * (1.0 - imgs[..., 3:])
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            rgb_preds = self.model(rays_o, rays_d, grid_id=dset_id, bg_color=bg_color,
-                                   channels={"rgb"})
-            tv = 0
-            if patch_rays_o is not None:
-                # Don't randomize bg-color when only interested in depth.
-                depths = self.model(
-                    patch_rays_o.reshape(-1, 3), patch_rays_d.reshape(-1, 3), bg_color=1,
-                    channels={"depth"})
-                depths = depths.reshape(
-                    patch_rays_o.shape[0], patch_rays_o.shape[1], patch_rays_o.shape[2])
-                tv = compute_tv_norm(depths) * self.regnerf_weight
+            out = self.model(rays_o, rays_d, grid_id=dset_id, bg_color=bg_color,
+                             channels={"rgb"})
+            rgb_preds = out["rgb"]
             recon_loss = self.criterion(rgb_preds, imgs)
-            loss = recon_loss + tv
+            loss = recon_loss
+
+            depth_tv = None
+            if self.cur_regnerf_weight > 0:
+                ps = patch_rays_o.shape[1]  # patch-size
+                out = self.model(
+                    patch_rays_o.reshape(-1, 3), patch_rays_d.reshape(-1, 3), bg_color=None,
+                    channels={"depth"})
+                reshape_to_patch = lambda x, dim: x.reshape(-1, ps, ps, dim)
+                depths = reshape_to_patch(out["depth"], 1)
+                #with torch.autograd.no_grad():
+                #    weighting = reshape_to_patch(out["alpha"], 1)[:, :-1, :-1]
+                depth_tv = compute_tv_norm(depths, 'l2', None) * self.cur_regnerf_weight
+                loss += depth_tv
+
+            plane_tv = None
+            if self.plane_tv_weight > 0:
+                plane_tv = self.model.compute_plane_tv(dset_id) * self.plane_tv_weight
+                loss += plane_tv
 
         self.gscaler.scale(loss).backward()
         self.gscaler.step(self.optimizer)
@@ -145,8 +168,10 @@ class Trainer():
         recon_loss_val = recon_loss.item()
         self.loss_info[dset_id]["mse"].update(recon_loss_val)
         self.loss_info[dset_id]["psnr"].update(-10 * math.log10(recon_loss_val))
-        if patch_rays_o is not None:
-            self.loss_info[dset_id]["tv"].update(tv.item())
+        if depth_tv is not None:
+            self.loss_info[dset_id]["depth_tv"].update(depth_tv.item())
+        if plane_tv is not None:
+            self.loss_info[dset_id]["plane_tv"].update(plane_tv.item())
 
         if self.global_step in self.density_mask_update_steps:
             logging.info(f"Updating alpha-mask for all datasets at step {self.global_step}.")
@@ -157,6 +182,11 @@ class Trainer():
         return scale <= self.gscaler.get_scale()
 
     def post_step(self, dset_id, progress_bar):
+        # Anneal regularization weights
+        if self.regnerf_weight_start > 0:
+            w = np.clip(self.global_step / (1 if self.regnerf_weight_max_step < 1 else self.regnerf_weight_max_step), 0, 1)
+            self.cur_regnerf_weight = self.regnerf_weight_start * (1 - w) + w * self.regnerf_weight_end
+
         self.writer.add_scalar(f"mse/D{dset_id}", self.loss_info[dset_id]["mse"].value, self.global_step)
         progress_bar.set_postfix_str(losses_to_postfix(self.loss_info), refresh=False)
         progress_bar.update(1)
@@ -279,7 +309,7 @@ class Trainer():
 
     def evaluate_metrics(self, gt, preds: Tuple[torch.Tensor, ...], dset, dset_id: int, img_idx: int,
                          name: Optional[str] = None, save_outputs: bool = True):
-        preds_rgb = preds[0].reshape(dset.img_h, dset.img_w, 3).cpu()
+        preds_rgb = preds["rgb"].reshape(dset.img_h, dset.img_w, 3).cpu()
         exrdict = {
             "preds": preds_rgb.numpy(),
         }
@@ -291,9 +321,8 @@ class Trainer():
 
             err = (gt - preds_rgb) ** 2
             exrdict["err"] = err.numpy()
-        if len(preds) > 1:
-            preds_depth = preds[1].reshape(dset.img_h, dset.img_w, 1).cpu()
-            exrdict["depth"] = preds_depth.numpy()
+        if "depth" in preds:
+            exrdict["depth"] = preds["depth"].reshape(dset.img_h, dset.img_w, 1).cpu().numpy()
 
         summary = dict()
         if gt is not None:
@@ -437,7 +466,7 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
             raise RuntimeError(f"data_dir {dd} not recognized as LLFF or Synthetic dataset.")
 
     data_resolution = parse_optint(kwargs.get('data_resolution'))
-    regnerf_weight = float(kwargs.get('regnerf_weight'))
+    regnerf_weight = float(kwargs.get('regnerf_weight_start'))
     extra_views = regnerf_weight > 0
 
     tr_dsets, tr_loaders, ts_dsets, patch_loaders = [], [], [], []

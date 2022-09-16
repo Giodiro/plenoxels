@@ -6,8 +6,9 @@ config = {
 
     # Data settings
     "data_resolution": None,
-    "data_downsample": 1.5625,
-    "data_dirs": ["/data/DATASETS/SyntheticNerf/lego"],#["/data/DATASETS/LLFF/fern"],
+    "data_downsample": 8,
+    #"data_dirs": ["/data/DATASETS/SyntheticNerf/lego"],
+    "data_dirs": ["/data/DATASETS/LLFF/fern"],
     # Data settings for 360
     "max_tr_frames": None,
     "max_ts_frames": 10,
@@ -18,9 +19,14 @@ config = {
     "num_epochs": 10,
     "batch_size": 4096,
     "num_batches_per_dset": 1,
-    "scheduler_type": None,
+    "scheduler_type": "cosine",
     "optim_type": "adam",
-    "lr": 2e-3,
+    "lr": 2e-2,
+    "regnerf_weight_start": 0,
+    "regnerf_weight_end": 0,
+    "regnerf_weight_max_step": 512,
+
+    "plane_tv_weight": 0.0,
 
     # Training settings
     "train_fp16": True,
@@ -30,28 +36,28 @@ config = {
     "transfer_learning": False,
 
     # Raymarching settings
-    "raymarch_type": "voxel_size",
-    "num_sample_multiplier": 2,  # Used when raymarch_type is 'voxel_size'
-    "n_intersections": 400,  # Used when raymarch_type is 'fixed'
+    "raymarch_type": "fixed",
+    "num_sample_multiplier": 1,  # Used when raymarch_type is 'voxel_size'
+    "n_intersections": 440,  # Used when raymarch_type is 'fixed'
     "spacing_fn": "linear",
     "single_jitter": True,
 
     # Model settings
     "density_threshold": 1e-4,
-    "dmask_update": [4000, 12000],
+    "dmask_update": [800],
     "grid_config": """
 [
     {
         "input_coordinate_dim": 3,
-        "output_coordinate_dim": 4,
+        "output_coordinate_dim": 5,
         "grid_dimensions": 3,
-        "resolution": [128, 128, 128],
+        "resolution": [282, 314, 188],
         "rank": 1,
         "init_std": 0.01,
     },
     {
-        "input_coordinate_dim": 4,
-        "resolution": [10, 10, 10, 10],
+        "input_coordinate_dim": 5,
+        "resolution": [4, 4, 4, 4, 4],
         "feature_dim": 32,
         "init_std": 0.05
     }

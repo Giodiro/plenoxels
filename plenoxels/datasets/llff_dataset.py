@@ -100,9 +100,10 @@ class LLFFDataset(BaseDataset):
 
     def load_from_disk(self) -> Tuple[List[torch.Tensor], List[torch.Tensor], Intrinsics, np.ndarray]:
         poses, near_fars, intrinsics = self.load_all_poses()
-        if self.downsample != 4:
-            raise RuntimeError(f"LLFF dataset only works with donwsample=4 but found {self.downsample}.")
-        image_paths = sorted(glob.glob(os.path.join(self.datadir, 'images_4/*')))
+        int_dsample = int(self.downsample)
+        if int_dsample != self.downsample or int_dsample not in {4, 8}:
+            raise ValueError(f"Cannot downsample LLFF dataset by {self.downsample}.")
+        image_paths = sorted(glob.glob(os.path.join(self.datadir, f'images_{int_dsample}/*')))
         # load full resolution image then resize
         if self.split in ['train', 'test']:
             assert poses.shape[0] == len(image_paths), \

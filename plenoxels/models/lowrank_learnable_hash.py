@@ -9,7 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import kaolin.render.spc as spc_render
 
-from plenoxels.models.utils import grid_sample_wrapper
+from plenoxels.models.utils import grid_sample_wrapper, compute_plane_tv
 from .decoders import NNDecoder, SHDecoder
 from ..ops.activations import trunc_exp
 from ..raymarching.raymarching import RayMarcher
@@ -321,29 +321,44 @@ class LowrankLearnableHash(nn.Module):
         ray_colors, transmittance = spc_render.exponential_integration(
             rgb_masked.reshape(-1, 3), tau, boundary, exclusive=True)
 
-        outputs = []
+        alpha = spc_render.sum_reduce(transmittance, boundary)
+
+        outputs = {}
         if "rgb" in channels:
-            alpha = spc_render.sum_reduce(transmittance, boundary)
             # Blend output color with background
-            if isinstance(bg_color, torch.Tensor) and bg_color.shape == (n_rays, 3):
+            if bg_color is None:
+                rgb = torch.zeros((n_rays, 3), dtype=ray_colors.dtype, device=dev)
+                color = ray_colors
+            elif isinstance(bg_color, torch.Tensor) and bg_color.shape == (n_rays, 3):
                 rgb = bg_color
                 color = ray_colors + (1.0 - alpha) * bg_color[ridx_hit.long(), :]
             else:
                 rgb = torch.full((n_rays, 3), bg_color, dtype=ray_colors.dtype, device=dev)
                 color = ray_colors + (1.0 - alpha) * bg_color
             rgb[ridx_hit.long(), :] = color
-            outputs.append(rgb)
+            outputs["rgb"] = rgb
 
         if "depth" in channels:
             # Compute depth
             depth_map = spc_render.sum_reduce(z_vals.view(-1, 1) * transmittance, boundary)
-            depth = torch.zeros(n_rays, 1, device=depth_map.device)
+            depth = torch.zeros(n_rays, 1, device=depth_map.device, dtype=depth_map.dtype)
             depth[ridx_hit.long(), :] = depth_map
-            outputs.append(depth)
+            outputs["depth"] = depth
 
-        if len(outputs) == 1:
-            return outputs[0]
+        if "alpha" in channels:
+            alpha_out = torch.zeros(n_rays, 1, device=alpha.device, dtype=alpha.dtype)
+            alpha_out[ridx_hit.long(), :] = alpha
+            outputs["alpha"] = alpha_out
+
         return outputs
+
+    def compute_plane_tv(self, grid_id):
+        grids: nn.ModuleList = self.scene_grids[grid_id]
+        total = 0
+        for grid_ls in grids:
+            for grid in grid_ls:
+                total += compute_plane_tv(grid)
+        return total
 
     def get_params(self, lr):
         if self.transfer_learning:
