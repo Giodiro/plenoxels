@@ -180,10 +180,13 @@ class LowrankVideo(nn.Module):
             rgb_masked.reshape(-1, 3), tau, boundary, exclusive=True)  # transmittance is [n_intersections, 1]
         alpha = spc_render.sum_reduce(transmittance, boundary)  # [n_valid_rays, 1]
         # Compute depth as a weighted sum over z values according to absorption/transmission
-        z_vals = spc_render.cumsum(deltas[:, None], boundary)
-        real_depth = spc_render.sum_reduce(transmittance * z_vals, boundary)  # [n_valid_rays, 1]
-        depth = torch.full((n_rays, 1), 100, dtype=ray_colors.dtype, device=dev)
-        depth[ridx_hit.long()] = real_depth  # [n_rays, 1]
+        # z_vals = spc_render.cumsum(deltas[:, None], boundary)
+        # real_depth = spc_render.sum_reduce(transmittance * z_vals, boundary)  # [n_valid_rays, 1]
+        # depth = torch.full((n_rays, 1), 100, dtype=ray_colors.dtype, device=dev)
+        # depth[ridx_hit.long()] = real_depth  # [n_rays, 1]
+        # Try using acc instead, as in RegNerf
+        depth = torch.full((n_rays, 1), 0, dtype=ray_colors.dtype, device=dev)
+        depth[ridx_hit.long()] = alpha  # [n_rays, 1]
 
         # Blend output color with background
         if isinstance(bg_color, torch.Tensor) and bg_color.shape == (n_rays, 3):
