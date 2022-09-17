@@ -92,7 +92,7 @@ def grid_sample_wrapper(grid: torch.Tensor, coords: torch.Tensor, align_corners:
 
 
 # Based on https://github.com/google-research/google-research/blob/342bfc150ef1155c5254c1e6bd0c912893273e8d/regnerf/internal/math.py#L237
-def compute_tv_norm(depths, losstype='l2'):
+def compute_tv_norm(depths, losstype='l2', weighting=None):
     # depths [n_patches, h, w]
     v00 = depths[:, :-1, :-1]
     v01 = depths[:, :-1, 1:]
@@ -104,5 +104,8 @@ def compute_tv_norm(depths, losstype='l2'):
         loss = torch.abs(v00 - v01) + torch.abs(v00 - v10)
     else:
         raise ValueError('Not supported losstype.')
+
+    if weighting is not None:
+        loss = loss * weighting[:, :-1, :-1]
 
     return torch.mean(loss)

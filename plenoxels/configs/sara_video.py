@@ -1,6 +1,7 @@
 # configuration file to be used with `main.py` for video training
 config = {
-    "expname": "legovideo20views_regacc1_3framesrank3",
+    # "expname": "legovideo20views_regtaudepthweightedacc_1_3framesrank3",
+    "expname": "testrelu_reg10",
     "logdir": "./logs",
 
     # Data settings
@@ -20,7 +21,7 @@ config = {
 
     # Optimization settings
     "num_epochs": 5,
-    "regnerf_weight": 1.0,
+    "regnerf_weight": 10.0,
     "scheduler_type": None,
     "batch_size": 3500,  
     "optim_type": "adam",
