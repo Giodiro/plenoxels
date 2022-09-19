@@ -49,15 +49,15 @@ config = {
 [
     {
         "input_coordinate_dim": 3,
-        "output_coordinate_dim": 5,
+        "output_coordinate_dim": 3,
         "grid_dimensions": 3,
         "resolution": [282, 314, 188],
         "rank": 1,
         "init_std": 0.01,
     },
     {
-        "input_coordinate_dim": 5,
-        "resolution": [4, 4, 4, 4, 4],
+        "input_coordinate_dim": 3,
+        "resolution": [10, 10, 10],
         "feature_dim": 32,
         "init_std": 0.05
     }

@@ -68,16 +68,15 @@ class LowrankVideo(nn.Module):
                 if grid_nd == in_dim:
                     assert all(r == 1 for r in rank)
                 time_reso = grid_config["time_reso"]
-                time_rank = grid_config["time_rank"]
                 coo_combs = list(itertools.combinations(range(in_dim), grid_nd))
                 grid_coefs = nn.ParameterList()
                 for ci, coo_comb in enumerate(coo_combs):
                     grid_coefs.append(
                         torch.nn.Parameter(nn.init.normal_(torch.empty(
-                            [1, out_dim * rank[ci] * time_rank] + [reso[cc] for cc in coo_comb]
+                            [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb]
                         ), mean=0.0, std=grid_config["init_std"])))
                 time_coef = nn.Parameter(nn.init.normal_(
-                                torch.empty([out_dim * time_rank, time_reso]),
+                                torch.empty([out_dim * rank[0], time_reso]),
                                 mean=0.0, std=grid_config["init_std"]))
                 self.grids.append(grid_coefs)
                 self.grids.append(nn.ParameterList([time_coef]))
@@ -98,30 +97,29 @@ class LowrankVideo(nn.Module):
         return coords[..., coo_combs].transpose(0, 1)
 
     def compute_features(self, pts, timestamps):
-        grid_space, grid_time = self.grids  # space: [3, rank * F_dim * time_rank, reso, reso], time: [time_rank*F_dim, time_reso]
+        grid_space, grid_time = self.grids  # space: [3, rank * F_dim, reso, reso], time: [rank * F_dim, time_reso]
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
 
         # Interpolate in time
         grid_time = grid_time[0]  # we need it to be a length-1 ParameterList
-        interp_time = grid_sample_wrapper(grid_time.unsqueeze(0), timestamps[:, None])  # [n, F_dim * time_rank]
-        interp_time = interp_time.view(-1, level_info["output_coordinate_dim"], level_info['time_rank'])  # [n, F_dim, time_rank]
+        interp_time = grid_sample_wrapper(grid_time.unsqueeze(0), timestamps[:, None])  # [n, F_dim * rank]
+        interp_time = interp_time.view(-1, level_info["output_coordinate_dim"], level_info["rank"][0])  # [n, F_dim, rank]
         # Interpolate in space
         interp = pts
         coo_combs = list(itertools.combinations(
             range(interp.shape[-1]),
             level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
-        interp_space = None
+        interp_space = None  # [n, F_dim, rank]
         for ci, coo_comb in enumerate(coo_combs):
             if interp_space is None:
                 interp_space = (
                     grid_sample_wrapper(grid_space[ci], interp[..., coo_comb]).view(
-                        -1, level_info["output_coordinate_dim"], level_info["time_rank"], level_info["rank"][ci]))
+                        -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
             else:
                 interp_space = interp_space * (
                     grid_sample_wrapper(grid_space[ci], interp[..., coo_comb]).view(
-                        -1, level_info["output_coordinate_dim"], level_info["time_rank"], level_info["rank"][ci]))
-        interp_space = interp_space.sum(dim=-1)  # [N, F_dim, time_rank]
-        # Combine space and time
+                        -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
+        # Combine space and time over rank
         interp = (interp_space * interp_time).sum(dim=-1)  # [n, F_dim]
         return grid_sample_wrapper(self.features, interp)
 
@@ -168,7 +166,8 @@ class LowrankVideo(nn.Module):
 
         # compute features and render
         features = self.compute_features(intersection_pts, times)
-        density_masked = trunc_exp(self.decoder.compute_density(features, rays_d=rays_d_rep))
+        # density_masked = trunc_exp(self.decoder.compute_density(features, rays_d=rays_d_rep))  # why are we exponentiating here when we are going to exponentiate again later?
+        density_masked = nn.functional.relu(self.decoder.compute_density(features, rays_d=rays_d_rep)) # I think we should be doing relu instead
         rgb_masked = torch.sigmoid(self.decoder.compute_color(features, rays_d=rays_d_rep))
 
         # Compute optical thickness
@@ -184,6 +183,9 @@ class LowrankVideo(nn.Module):
         real_depth = spc_render.sum_reduce(transmittance * z_vals, boundary)  # [n_valid_rays, 1]
         depth = torch.full((n_rays, 1), 100, dtype=ray_colors.dtype, device=dev)
         depth[ridx_hit.long()] = real_depth  # [n_rays, 1]
+        # Try weighting by acc, as in RegNerf
+        acc = torch.full((n_rays, 1), 0, dtype=ray_colors.dtype, device=dev)
+        acc[ridx_hit.long()] = alpha
 
         # Blend output color with background
         if isinstance(bg_color, torch.Tensor) and bg_color.shape == (n_rays, 3):
@@ -194,7 +196,7 @@ class LowrankVideo(nn.Module):
             color = ray_colors + (1.0 - alpha) * bg_color
         rgb[ridx_hit.long(), :] = color  # [n_rays, 3]
 
-        return rgb, depth
+        return rgb, depth, acc
 
     def get_params(self, lr):
         params = [

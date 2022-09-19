@@ -106,7 +106,7 @@ def compute_tv_norm(depths, losstype='l2', weighting=None):
         raise ValueError('Not supported losstype.')
 
     if weighting is not None:
-        loss = loss * weighting
+        loss = loss * weighting[:, :-1, :-1]
 
     return torch.mean(loss)
 

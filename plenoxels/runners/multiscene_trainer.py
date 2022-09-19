@@ -126,12 +126,11 @@ class Trainer():
         self.optimizer.zero_grad(set_to_none=True)
 
         C = imgs.shape[-1]
-        # Random bg-color
         if self.train_data_loaders[0].dataset.is_ndc:
             bg_color = None
         elif C == 3:
             bg_color = 1
-        else:
+        else:  # Random bg-color
             bg_color = torch.rand_like(imgs[..., :3])
             imgs = imgs[..., :3] * imgs[..., 3:] + bg_color * (1.0 - imgs[..., 3:])
 
@@ -141,7 +140,7 @@ class Trainer():
             rgb_preds = out["rgb"]
             recon_loss = self.criterion(rgb_preds, imgs)
             loss = recon_loss
-
+            # Different regularizers
             depth_tv = None
             if self.cur_regnerf_weight > 0:
                 ps = patch_rays_o.shape[1]  # patch-size
@@ -150,8 +149,9 @@ class Trainer():
                     channels={"depth"})
                 reshape_to_patch = lambda x, dim: x.reshape(-1, ps, ps, dim)
                 depths = reshape_to_patch(out["depth"], 1)
-                #with torch.autograd.no_grad():
-                #    weighting = reshape_to_patch(out["alpha"], 1)[:, :-1, :-1]
+                # NOTE: the weighting below is never applied in RegNerf (the constant in front of it is set to 0)
+                # with torch.autograd.no_grad():
+                #     weighting = reshape_to_patch(out["alpha"], 1)[:, :-1, :-1]
                 depth_tv = compute_tv_norm(depths, 'l2', None) * self.cur_regnerf_weight
                 loss += depth_tv
 
@@ -176,8 +176,11 @@ class Trainer():
         if self.global_step in self.density_mask_update_steps:
             logging.info(f"Updating alpha-mask for all datasets at step {self.global_step}.")
             for u_dset_id in range(self.num_dsets):
-                new_aabb = self.model.update_alpha_mask(grid_id=u_dset_id)
-                #self.model.shrink(new_aabb, grid_id=u_dset_id)  # TODO: This doesn't actually work
+                self.new_aabb = self.model.update_alpha_mask(grid_id=u_dset_id)
+                if self.global_step == min(self.density_mask_update_steps):
+                    self.model.shrink(self.new_aabb, grid_id=u_dset_id)
+                    # We reset the optimizer in case some of the parameters in model were changed.
+                    self.optimizer = self.init_optim(**self.extra_args)
 
         return scale <= self.gscaler.get_scale()
 
@@ -215,13 +218,13 @@ class Trainer():
         pb = tqdm(total=self.total_batches_per_epoch(), desc=f"E{self.epoch}")
         try:
             with ExitStack() as stack:
-                p = None
+                prof = None
                 if False:  # TODO: Put this behind a flag
-                    p = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-                                schedule=schedule(wait=10, warmup=5, active=2),
-                                on_trace_ready=trace_handler,
-                                record_shapes=True,
-                                with_stack=True)
+                    prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                                   schedule=schedule(wait=10, warmup=5, active=2),
+                                   on_trace_ready=trace_handler,
+                                   record_shapes=True,
+                                   with_stack=True)
                     stack.enter_context(p)
                 # Whether the set of batches for one loop of num_batches_per_dset
                 # for every dataset, had any successful step
@@ -232,8 +235,8 @@ class Trainer():
                             data = next(self.train_iterators[active_scenes[ascene_idx]])
                             step_successful |= self.step(data, active_scenes[ascene_idx])
                             self.post_step(dset_id=active_scenes[ascene_idx], progress_bar=pb)
-                            if p is not None:
-                                p.step()
+                            if prof is not None:
+                                prof.step()
                     except StopIteration:
                         active_scenes.pop(ascene_idx)
                     else:

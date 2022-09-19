@@ -1,6 +1,7 @@
 # configuration file to be used with `main.py` for video training
 config = {
-    "expname": "legovidoe_reg0",
+    # "expname": "legovideo20views_regtaudepthweightedacc_1_3framesrank3",
+    "expname": "testrelu_samerank",
     "logdir": "./logs",
 
     # Data settings
@@ -10,17 +11,17 @@ config = {
     # "data_dir": "/data/datasets/nerf/data/nerf_synthetic/lego",
 
     # Data settings for 360
-    "max_train_cameras": 25,
+    "max_train_cameras": 20,
     "max_test_cameras": 1,
-    "max_train_tsteps": 10,
-    "max_test_tsteps": None,
+    "max_train_tsteps": 2,
+    "max_test_tsteps": 2,
     # Data settings for LLFF
     "subsample_time": 0.1,
 
 
     # Optimization settings
-    "num_epochs": 1,
-    "regnerf_weight": 0,
+    "num_epochs": 15,
+    "regnerf_weight": 0.0,
     "scheduler_type": None,
     "batch_size": 3500,  
     "optim_type": "adam",
@@ -50,8 +51,7 @@ config = {
         "grid_dimensions": 2,
         "resolution": [128, 128, 128],
         "rank": 20,
-        "time_reso": 10,
-        "time_rank": 5,
+        "time_reso": 3,
         "init_std": 0.1,  
     },
     {
