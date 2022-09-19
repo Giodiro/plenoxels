@@ -68,6 +68,9 @@ class Trainer():
         self.valid_every = valid_every
         self.save_outputs = save_outputs
         self.density_mask_update_steps = set(kwargs.get('dmask_update', []))
+        self.upsample_steps = set(kwargs.get('upsample_steps', []))
+        self.upsample_resolution_list = kwargs.get('upsample_resolution', [])
+        assert len(self.upsample_resolution_list) == len(self.upsample_steps)
 
         self.log_dir = os.path.join(logdir, expname)
         os.makedirs(self.log_dir, exist_ok=True)
@@ -148,14 +151,24 @@ class Trainer():
         if patch_rays_o is not None:
             self.loss_info[dset_id]["tv"].update(tv.item())
 
+        opt_reset_required = False
         if self.global_step in self.density_mask_update_steps:
             logging.info(f"Updating alpha-mask for all datasets at step {self.global_step}.")
             for u_dset_id in range(self.num_dsets):
-                self.new_aabb = self.model.update_alpha_mask(grid_id=u_dset_id)
+                new_aabb = self.model.update_alpha_mask(grid_id=u_dset_id)
                 if self.global_step == min(self.density_mask_update_steps):
-                    self.model.shrink(self.new_aabb, grid_id=u_dset_id)
-                    # We reset the optimizer in case some of the parameters in model were changed.
-                    self.optimizer = self.init_optim(**self.extra_args)
+                    self.model.shrink(new_aabb, grid_id=u_dset_id)
+                    opt_reset_required = True
+        if self.global_step in self.upsample_steps:
+            new_num_voxels = self.upsample_resolution_list.pop(0)
+            for u_dset_id in range(self.num_dsets):
+                new_reso = N_to_reso(new_num_voxels, self.model.aabb(u_dset_id))
+                self.model.upsample(new_reso, u_dset_id)
+            opt_reset_required = True
+
+        if opt_reset_required:
+            # We reset the optimizer in case some of the parameters in model were changed.
+            self.optimizer = self.init_optim(**self.extra_args)
 
         return scale <= self.gscaler.get_scale()
 
@@ -488,3 +501,6 @@ def trace_handler(p):
     p.export_chrome_trace("./logs/trace_" + str(p.step_num) + ".json")
 
 
+def N_to_reso(num_voxels, aabb):
+    voxel_size = ((aabb[1] - aabb[0]).prod() / num_voxels).pow(1 / 3)
+    return ((aabb[1] - aabb[0]) / voxel_size).long().cpu().tolist()
