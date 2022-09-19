@@ -107,15 +107,17 @@ class VideoTrainer(Trainer):
             imgs = imgs[..., :3] * imgs[..., 3:] + bg_color * (1.0 - imgs[..., 3:])
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            rgb_preds, _ = self.model(rays_o, rays_d, timestamps, bg_color=bg_color)
+            rgb_preds, _, _ = self.model(rays_o, rays_d, timestamps, bg_color=bg_color)
             tv = 0
             if patch_rays_o is not None:
                 # Don't randomize bg-color when only interested in depth.
-                _, depths = self.model(patch_rays_o.reshape(-1, 3), patch_rays_d.reshape(-1, 3),
+                _, depths, acc = self.model(patch_rays_o.reshape(-1, 3), patch_rays_d.reshape(-1, 3),
                                        patch_timestamps.reshape(-1), bg_color=1)
                 depths = depths.reshape(patch_rays_o.shape[0], patch_rays_o.shape[1],
                                         patch_rays_o.shape[2])
-                tv = compute_tv_norm(depths)
+                acc = acc.reshape(patch_rays_o.shape[0], patch_rays_o.shape[1],
+                                        patch_rays_o.shape[2])
+                tv = compute_tv_norm(depths, weighting=acc)
             recon_loss = self.criterion(rgb_preds, imgs)
             loss = recon_loss + tv * self.regnerf_weight
 
