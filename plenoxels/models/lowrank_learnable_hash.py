@@ -53,7 +53,7 @@ class LowrankLearnableHash(nn.Module):
         self.alpha_mask_threshold = self.extra_args["density_threshold"]
         self.scene_grids = nn.ModuleList()
         self.features = None
-        feature_dim = None
+        self.feature_dim = None
         for si in range(num_scenes):
             grids = nn.ModuleList()
             for li, grid_config in enumerate(self.config):
@@ -68,7 +68,7 @@ class LowrankLearnableHash(nn.Module):
                         self.features = nn.Parameter(nn.init.normal_(
                                 torch.empty([grid_config["feature_dim"]] + reso[::-1]),
                                 mean=0.0, std=grid_config["init_std"]))
-                        feature_dim = grid_config["feature_dim"]
+                        self.feature_dim = grid_config["feature_dim"]
                 else:
                     out_dim: int = grid_config["output_coordinate_dim"]
                     grid_nd: int = grid_config["grid_dimensions"]
@@ -98,7 +98,7 @@ class LowrankLearnableHash(nn.Module):
                             ), mean=0.0, std=grid_config["init_std"])))
                     grids.append(grid_coefs)
             self.scene_grids.append(grids)
-        self.decoder = NNDecoder(feature_dim=feature_dim, sigma_net_width=64, sigma_net_layers=1)
+        self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
         self.raymarcher = RayMarcher(**self.extra_args)
         self.density_mask = nn.ModuleList([None] * num_scenes)
         log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes.")
@@ -143,7 +143,7 @@ class LowrankLearnableHash(nn.Module):
         grids: nn.ModuleList = self.scene_grids[grid_id]  # noqa
         grids_info = self.config
 
-        interp = pts.half()
+        interp = pts
         grid: nn.ParameterList
         for level_info, grid in zip(grids_info, grids):
             if "feature_dim" in level_info:
@@ -155,13 +155,13 @@ class LowrankLearnableHash(nn.Module):
             for ci, coo_comb in enumerate(coo_combs):
                 if interp_out is None:
                     interp_out = (
-                        grid_sample_wrapper(grid[ci].half(), interp[..., coo_comb]).view(
+                        grid_sample_wrapper(grid[ci], interp[..., coo_comb]).view(
                             -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
                 else:
                     interp_out = interp_out * (
-                        grid_sample_wrapper(grid[ci].half(), interp[..., coo_comb]).view(
+                        grid_sample_wrapper(grid[ci], interp[..., coo_comb]).view(
                             -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
-            interp = interp_out.sum(dim=-1).half()
+            interp = interp_out.sum(dim=-1)
         return grid_sample_wrapper(self.features.to(dtype=interp.dtype), interp)
 
     @torch.autograd.no_grad()
@@ -276,6 +276,29 @@ class LowrankLearnableHash(nn.Module):
         self.set_resolution(new_size, grid_id)
         log.info(f"Set new AABB to {self.aabb(grid_id).view(-1)}  -  new resolution to {self.resolution(grid_id).view(-1)}")
 
+    @torch.no_grad()
+    def upsample(self, new_reso, grid_id: int):
+        grid_info = self.config[0]
+        coo_combs = list(itertools.combinations(
+            range(grid_info["input_coordinate_dim"]),
+            grid_info.get("grid_dimensions", grid_info["input_coordinate_dim"])))
+        for ci, coo_comb in enumerate(coo_combs):
+            new_size = [new_reso[cc] for cc in coo_comb]
+            if len(coo_comb) == 3:
+                mode = 'trilinear'
+            elif len(coo_comb) == 2:
+                mode = 'bilinear'
+            elif len(coo_comb) == 1:
+                mode = 'linear'
+            else:
+                raise RuntimeError()
+            grid_data = self.scene_grids[grid_id][0][ci].data
+            log.info(f"Upsampling grid {ci} from {grid_data.shape} to {new_size[::-1]}")
+            self.scene_grids[grid_id][0][ci] = torch.nn.Parameter(
+                F.interpolate(grid_data, size=new_size[::-1], mode=mode, align_corners=True))
+        self.set_resolution(
+            torch.tensor(new_reso, dtype=torch.long, device=grid_data.device), grid_id)
+
     def forward(self, rays_o, rays_d, bg_color, grid_id=0, channels: Sequence[str] = ("rgb", "depth")):
         """
         rays_o : [batch, 3]
@@ -339,7 +362,7 @@ class LowrankLearnableHash(nn.Module):
             raise
 
         # Compute optical thickness
-        tau = density_masked.reshape(-1, 1) * deltas.reshape(-1, 1) * 25
+        tau = density_masked.reshape(-1, 1) * deltas.reshape(-1, 1)# * 25
         # ridx_hit are the ray-IDs at the first intersection (the boundary).
         ridx_hit = ridx[boundary]
         # Perform volumetric integration
