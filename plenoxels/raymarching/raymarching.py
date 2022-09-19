@@ -104,6 +104,7 @@ class RayMarcher():
 
         n_samples = self.calc_n_samples(aabb, resolution)
         intersections = self.get_samples2(rays_o, near, far, n_samples, perturb)  # [n_rays, n_samples + 1]
+        intersection_mids = 0.5 * (intersections[..., :-1] + intersections[..., 1:])
         deltas = intersections.diff(dim=-1)    # [n_rays, n_samples]
         intersections = intersections[:, :-1]  # [n_rays, n_samples]
         intrs_pts = rays_o[..., None, :] + rays_d[..., None, :] * intersections[..., None]  # [n_rays, n_samples, 3]
@@ -125,6 +126,7 @@ class RayMarcher():
         return {
             "intersections": intrs_pts,
             "z_vals": intersections[mask],
+            "z_mids": intersection_mids[mask],
             "ridx": ridx,
             "boundary": boundary,
             "deltas": deltas,

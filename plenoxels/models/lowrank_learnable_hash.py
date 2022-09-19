@@ -159,7 +159,7 @@ class LowrankLearnableHash(nn.Module):
                         grid_sample_wrapper(grid[ci], interp[..., coo_comb]).view(
                             -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
             interp = interp_out.sum(dim=-1)
-        return grid_sample_wrapper(self.features, interp)
+        return grid_sample_wrapper(self.features.to(dtype=interp.dtype), interp)
 
     @torch.autograd.no_grad()
     def normalize_coord(self, pts: torch.Tensor, grid_id: int) -> torch.Tensor:
@@ -286,7 +286,7 @@ class LowrankLearnableHash(nn.Module):
         intersection_pts = rm_out["intersections"]
         ridx = rm_out["ridx"]
         boundary = rm_out["boundary"]
-        z_vals = rm_out["z_vals"]
+        z_mids = rm_out["z_mids"]
         n_rays = rays_o.shape[0]
         dev = rays_o.device
 
@@ -302,7 +302,7 @@ class LowrankLearnableHash(nn.Module):
             intersection_pts = intersection_pts[alpha_mask]
             deltas = deltas[alpha_mask]
             ridx = ridx[alpha_mask]
-            z_vals = z_vals[alpha_mask]
+            z_mids = z_mids[alpha_mask]
             boundary = spc_render.mark_pack_boundaries(ridx)
 
         # rays_d in the packed format (essentially repeated a number of times)
@@ -340,8 +340,8 @@ class LowrankLearnableHash(nn.Module):
 
         if "depth" in channels:
             # Compute depth
-            depth_map = spc_render.sum_reduce(z_vals.view(-1, 1) * transmittance, boundary)
-            depth = torch.zeros(n_rays, 1, device=depth_map.device, dtype=depth_map.dtype)
+            depth_map = spc_render.sum_reduce(z_mids.view(-1, 1) * transmittance, boundary) / torch.clip(alpha, 1e-5)
+            depth = torch.zeros(n_rays, 1, device=dev, dtype=depth_map.dtype)
             depth[ridx_hit.long(), :] = depth_map
             outputs["depth"] = depth
 

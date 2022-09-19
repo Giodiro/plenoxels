@@ -3,7 +3,7 @@ from contextlib import ExitStack
 import math
 import os
 from collections import defaultdict
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -91,7 +91,7 @@ class Trainer():
         self.criterion = torch.nn.MSELoss(reduction='mean')
         self.gscaler = torch.cuda.amp.GradScaler(enabled=self.train_fp16)
 
-    def eval_step(self, data, dset_id) -> Tuple[torch.Tensor, ...]:
+    def eval_step(self, data, dset_id) -> Dict[str, torch.Tensor]:
         """
         Note that here `data` contains a whole image. we need to split it up before tracing
         for memory constraints.
@@ -216,7 +216,7 @@ class Trainer():
         try:
             with ExitStack() as stack:
                 p = None
-                if False:
+                if False:  # TODO: Put this behind a flag
                     p = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
                                 schedule=schedule(wait=10, warmup=5, active=2),
                                 on_trace_ready=trace_handler,
@@ -307,7 +307,7 @@ class Trainer():
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_epoch{self.epoch}.csv"))
 
-    def evaluate_metrics(self, gt, preds: Tuple[torch.Tensor, ...], dset, dset_id: int, img_idx: int,
+    def evaluate_metrics(self, gt, preds: Dict[str, torch.Tensor], dset, dset_id: int, img_idx: int,
                          name: Optional[str] = None, save_outputs: bool = True):
         preds_rgb = preds["rgb"].reshape(dset.img_h, dset.img_w, 3).cpu()
         exrdict = {
@@ -444,8 +444,6 @@ def losses_to_postfix(losses: List[Dict[str, EMA]]) -> str:
     for dset_id, loss_dict in enumerate(losses):
         pfix_inner = []
         for lname, lval in loss_dict.items():
-            #if lname == 'mse':
-            #    continue
             pfix_inner.append(f"{lname}={lval}")
         pfix_list.append(f"D{dset_id}({', '.join(pfix_inner)})")
     return '  '.join(pfix_list)
@@ -512,5 +510,4 @@ def trace_handler(p):
     output = p.key_averages(group_by_input_shape=True).table(sort_by="self_cpu_time_total", row_limit=20)
     print(output)
     p.export_chrome_trace("./logs/trace_" + str(p.step_num) + ".json")
-
 
