@@ -151,11 +151,11 @@ class Trainer():
         if self.global_step in self.density_mask_update_steps:
             logging.info(f"Updating alpha-mask for all datasets at step {self.global_step}.")
             for u_dset_id in range(self.num_dsets):
-                new_aabb = self.model.update_alpha_mask(grid_id=u_dset_id)
-                self.model.shrink(new_aabb, grid_id=u_dset_id)  # TODO: This doesn't actually work
-            # We reset the optimizer in case some of the parameters in model were changed.
-            self.optimizer = self.init_optim(**self.extra_args)
-
+                self.new_aabb = self.model.update_alpha_mask(grid_id=u_dset_id)
+                if self.global_step == min(self.density_mask_update_steps):
+                    self.model.shrink(self.new_aabb, grid_id=u_dset_id)
+                    # We reset the optimizer in case some of the parameters in model were changed.
+                    self.optimizer = self.init_optim(**self.extra_args)
 
         return scale <= self.gscaler.get_scale()
 

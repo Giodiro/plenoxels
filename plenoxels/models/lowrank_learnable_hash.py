@@ -66,7 +66,7 @@ class LowrankLearnableHash(nn.Module):
                             raise ValueError("Configuration incorrect: resolution must be a list.")
                         assert in_dim == grid_config["input_coordinate_dim"]
                         self.features = nn.Parameter(nn.init.normal_(
-                                torch.empty([grid_config["feature_dim"]] + reso),
+                                torch.empty([grid_config["feature_dim"]] + reso[::-1]),
                                 mean=0.0, std=grid_config["init_std"]))
                         feature_dim = grid_config["feature_dim"]
                 else:
@@ -94,7 +94,7 @@ class LowrankLearnableHash(nn.Module):
                     for ci, coo_comb in enumerate(coo_combs):
                         grid_coefs.append(
                             torch.nn.Parameter(nn.init.normal_(torch.empty(
-                                [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb]
+                                [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb[::-1]]
                             ), mean=0.0, std=grid_config["init_std"])))
                     grids.append(grid_coefs)
             self.scene_grids.append(grids)
@@ -188,11 +188,13 @@ class LowrankLearnableHash(nn.Module):
 
         # Generate points in regularly spaced grid (already normalized)
         pts = torch.stack(torch.meshgrid(
-            torch.linspace(-1, 1, grid_size_l[0]),
-            torch.linspace(-1, 1, grid_size_l[1]),
-            torch.linspace(-1, 1, grid_size_l[2]), indexing='ij'
+            torch.linspace(0, 1, grid_size_l[0]),
+            torch.linspace(0, 1, grid_size_l[1]),
+            torch.linspace(0, 1, grid_size_l[2]), indexing='ij'
         ), dim=-1).to(dev)  # [gs0, gs1, gs2, 3]
         pts = pts.view(-1, 3)  # [gs0*gs1*gs2, 3]
+        # Normalize between [aabb0, aabb1]
+        pts = aabb[0] * (1 - pts) + aabb[1] * pts
 
         # Compute density on the grid at the regularly spaced points
         if self.density_mask[grid_id] is not None:
@@ -201,8 +203,9 @@ class LowrankLearnableHash(nn.Module):
             alpha_mask = torch.ones(pts.shape[0], dtype=torch.bool, device=pts.device)
 
         if alpha_mask.any():
-            features = self.compute_features(pts[alpha_mask], grid_id)
-            density_masked = trunc_exp(
+            pts_sampled = self.normalize_coord(pts[alpha_mask], grid_id)
+            features = self.compute_features(pts_sampled, grid_id)
+            density_masked = torch.relu(
                 self.decoder.compute_density(features, rays_d=None, precompute_color=False))
             density = torch.zeros(pts.shape[0], dtype=density_masked.dtype, device=density_masked.device)
             density[alpha_mask] = density_masked.view(-1)
@@ -224,17 +227,12 @@ class LowrankLearnableHash(nn.Module):
         valid_pts = pts[alpha_mask]
         pts_min = valid_pts.amin(0)
         pts_max = valid_pts.amax(0)
-        # pts_min, pts_max are normalized between -1, 1 so we need to denormalize them
-        # +1 => [0, 2]; / 2 => [0, 1]; * (a1 - a0) => [0, a1-a0]; + a0 => [a0, a1]
-        pts_min = ((pts_min + 1) / 2 * (aabb[1] - aabb[0])) + aabb[0]
-        pts_max = ((pts_max + 1) / 2 * (aabb[1] - aabb[0])) + aabb[0]
 
         new_aabb = torch.stack((pts_min, pts_max), 0)
         log.info(f"Updated alpha mask for grid {grid_id}. "
                  f"Bounding box from {aabb.view(-1)} to {new_aabb.view(-1)}. "
                  f"Remaining {alpha_mask.sum() / grid_size_l[0] / grid_size_l[1] / grid_size_l[2] * 100:.2f}% voxels.")
         self.density_mask[grid_id] = DensityMask(alpha, aabb=aabb)
-        #self.set_aabb(new_aabb, grid_id=grid_id)
         return new_aabb
 
     @torch.no_grad()
@@ -258,12 +256,11 @@ class LowrankLearnableHash(nn.Module):
             range(grid_info["input_coordinate_dim"]),
             grid_info.get("grid_dimensions", grid_info["input_coordinate_dim"])))
         for ci, coo_comb in enumerate(coo_combs):
-            slices = [slice(None), slice(None)] + [slice(t_l[cc], b_r[cc]) for cc in coo_comb]
-            print("Shrinking grid to ", slices[2:])
+            slices = [slice(None), slice(None)] + [slice(t_l[cc].item(), b_r[cc].item()) for cc in coo_comb[::-1]]
+            log.info(f"Shrinking grid {ci} to {slices[2:]}")
             self.scene_grids[grid_id][0][ci] = torch.nn.Parameter(
                 self.scene_grids[grid_id][0][ci].data[slices]
             )
-            print(self.scene_grids[grid_id][0][ci].shape)
 
         # TODO: Why the correction? Check if this ever occurs
         if not torch.all(self.density_mask[grid_id].grid_size.to(device=dev) == cur_grid_size):
@@ -271,7 +268,7 @@ class LowrankLearnableHash(nn.Module):
             correct_aabb = torch.zeros_like(new_aabb)
             correct_aabb[0] = (1 - t_l_r) * cur_aabb[0] + t_l_r * cur_aabb[1]
             correct_aabb[1] = (1 - b_r_r) * cur_aabb[0] + b_r_r * cur_aabb[1]
-            log.info(f"Corrected new AABB from {new_aabb} to {correct_aabb}")
+            log.info(f"Corrected new AABB from {new_aabb.view(-1)} to {correct_aabb.view(-1)}")
             new_aabb = correct_aabb
 
         new_size = b_r - t_l
@@ -331,8 +328,13 @@ class LowrankLearnableHash(nn.Module):
 
         # compute features and render
         features = self.compute_features(intersection_pts, grid_id)
-        density_masked = trunc_exp(self.decoder.compute_density(features, rays_d=rays_d_rep))
-        rgb_masked = torch.sigmoid(self.decoder.compute_color(features, rays_d=rays_d_rep))
+        try:
+            density_masked = torch.relu(self.decoder.compute_density(features, rays_d=rays_d_rep))
+            rgb_masked = torch.sigmoid(self.decoder.compute_color(features, rays_d=rays_d_rep))
+        except:
+            # An error occurs randomly. I suspect when features is empty. This is to check my hyp.
+            log.error(f"Error in decoding. number of features: {features.shape}")
+            raise
 
         # Compute optical thickness
         tau = density_masked.reshape(-1, 1) * deltas.reshape(-1, 1) * 25
