@@ -45,7 +45,7 @@ class SyntheticNerfDataset(BaseDataset):
         if self.split == 'train' and extra_views:
             self.extra_poses = generate_hemispherical_orbit(self.poses, n_frames=30)
             _, self.extra_rays_o, self.extra_rays_d = self.init_rays(
-                imgs=None, poses=self.extra_poses, merge_all=False, is_blender_format=False)
+                imgs=None, poses=self.extra_poses, merge_all=False, is_blender_format=True)
             self.extra_rays_o = self.extra_rays_o.view(-1, self.img_h, self.img_w, 3)
             self.extra_rays_d = self.extra_rays_d.view(-1, self.img_h, self.img_w, 3)
 
