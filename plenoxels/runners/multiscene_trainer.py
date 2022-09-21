@@ -76,9 +76,9 @@ class Trainer():
         self.save_every = save_every
         self.valid_every = valid_every
         self.save_outputs = save_outputs
-        self.density_mask_update_steps = set(kwargs.get('dmask_update', []))
-        self.upsample_steps = set(kwargs.get('upsample_steps', []))
-        self.upsample_resolution_list = kwargs.get('upsample_resolution', [])
+        self.density_mask_update_steps = list(kwargs.get('dmask_update', []))
+        self.upsample_steps = list(kwargs.get('upsample_steps', []))
+        self.upsample_resolution_list = list(kwargs.get('upsample_resolution', []))
         assert len(self.upsample_resolution_list) == len(self.upsample_steps)
 
         self.log_dir = os.path.join(logdir, expname)
@@ -197,12 +197,15 @@ class Trainer():
                 if self.global_step == min(self.density_mask_update_steps):
                     self.model.shrink(new_aabb, grid_id=u_dset_id)
                     opt_reset_required = True
-        if self.global_step in self.upsample_steps:
-            new_num_voxels = self.upsample_resolution_list.pop(0)
+        try:
+            upsample_step_idx = self.upsample_steps.index(self.global_step)
+            new_num_voxels = self.upsample_resolution_list[upsample_step_idx]
             for u_dset_id in range(self.num_dsets):
                 new_reso = N_to_reso(new_num_voxels, self.model.aabb(u_dset_id))
                 self.model.upsample(new_reso, u_dset_id)
             opt_reset_required = True
+        except ValueError:
+            pass
 
         if opt_reset_required:
             # We reset the optimizer in case some of the parameters in model were changed.
