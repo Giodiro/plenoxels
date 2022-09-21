@@ -1,4 +1,5 @@
 import torch
+import logging as log
 
 # Take extra rays (from unsupervised views) and produce random batches of patches, for regularization
 # PatchLoader should work for either static or dynamic scenes; for dynamic scenes each ray is associated with a timestamp
@@ -17,10 +18,12 @@ class PatchLoader():
         self.len_time = len_time
         self.n_patches = batch_size // (patch_size ** 2)
         self.patch_size = patch_size
+
         self.n_frames = self.rays_o.shape[0]
         self.height = self.rays_o.shape[1]
         self.width = self.rays_o.shape[2]
-        self.i_grid, self.j_grid = torch.meshgrid(torch.arange(self.patch_size), torch.arange(self.patch_size), indexing='xy')
+
+        log.info(f"Initialized PatchLoader with batch-size of {self.n_patches} patches of size {self.patch_size}")
 
     def __getitem__(self, item):
         """Get the next batch of patches randomly.
@@ -28,24 +31,22 @@ class PatchLoader():
         This generates an infinite iterator (`item` is ignored)
         """
         # Choose which frame to draw each patch from
-        frame_idxs = torch.randint(low=0, high=self.n_frames, size=(self.n_patches,))
+        frame_idxs = torch.randint(low=0, high=self.n_frames, size=(self.n_patches, 1))
 
-        # Choose a random i, j coordinate from each random frame
-        i_coords = torch.randint(low=0, high=self.height, size=(self.n_patches,))
-        j_coords = torch.randint(low=0, high=self.width, size=(self.n_patches,))
+        # Sample start locations
+        x0 = torch.randint(0, self.width - self.patch_size + 1, size=(self.n_patches, 1, 1))
+        y0 = torch.randint(0, self.height - self.patch_size + 1, size=(self.n_patches, 1, 1))
+        xy0 = torch.cat((x0, y0), dim=-1)  # [n_patches, 1, 2]
+        patch_ids = xy0 + torch.stack(
+            torch.meshgrid(torch.arange(self.patch_size), torch.arange(self.patch_size), indexing='xy'),
+            dim=-1).reshape(1, -1, 2)  # [n_patches, patch_size^2, 2]
 
-        # Get a patch-sized box around each random i, j coordinate
-        i_coords = torch.clamp(i_coords[:, None, None] + self.i_grid[None, ...], min=0, max=self.height - 1).long()
-        j_coords = torch.clamp(j_coords[:, None, None] + self.j_grid[None, ...], min=0, max=self.width - 1).long()
-        coords = torch.stack([i_coords, j_coords], dim=-1).reshape(self.n_patches, -1, 2)
+        # Extract the patches from rayso and raysd
+        patch_rays_o = self.rays_o[frame_idxs, patch_ids[..., 1], patch_ids[..., 0], :].view(-1, self.patch_size, self.patch_size, 3)
+        patch_rays_d = self.rays_d[frame_idxs, patch_ids[..., 1], patch_ids[..., 0], :].view(-1, self.patch_size, self.patch_size, 3)
 
-        # Extract the batch
-        rays_o = self.rays_o[frame_idxs[:,None], coords[...,0], coords[...,1]].reshape(self.n_patches, self.patch_size, self.patch_size, -1)
-        rays_d = self.rays_d[frame_idxs[:,None], coords[...,0], coords[...,1]].reshape(self.n_patches, self.patch_size, self.patch_size, -1)
-        
-        # Choose which timestep to draw each patch from
         if self.len_time is not None:
-            timestamps = torch.randint(low=0, high=self.len_time, size=(self.n_patches,))
-            return (rays_o, rays_d, timestamps)
-        return (rays_o, rays_d)
+            timestamps = torch.randint(0, self.len_time, size=(self.n_patches, ))
+            return patch_rays_o, patch_rays_d, timestamps
+        return patch_rays_o, patch_rays_d
 
