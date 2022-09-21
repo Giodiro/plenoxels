@@ -32,6 +32,7 @@ class Trainer():
                  regnerf_weight_end: float,
                  regnerf_weight_max_step: int,
                  plane_tv_weight: float,
+                 l1density_weight: float,
                  num_batches_per_dset: int,
                  num_epochs: int,
                  scheduler_type: Optional[str],
@@ -58,6 +59,7 @@ class Trainer():
         if self.cur_regnerf_weight > 0:
             assert all(pl is not None for pl in self.patch_loaders)
         self.plane_tv_weight = plane_tv_weight
+        self.l1density_weight = l1density_weight
 
         self.num_batches_per_dset = num_batches_per_dset
         if self.num_dsets == 1 and self.num_batches_per_dset != 1:
@@ -138,30 +140,39 @@ class Trainer():
             imgs = imgs[..., :3] * imgs[..., 3:] + bg_color * (1.0 - imgs[..., 3:])
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            out = self.model(rays_o, rays_d, grid_id=dset_id, bg_color=bg_color,
-                             channels={"rgb"})
-            rgb_preds = out["rgb"]
+            fwd_out = self.model(rays_o, rays_d, grid_id=dset_id, bg_color=bg_color, channels={"rgb"})
+            rgb_preds = fwd_out["rgb"]
+            # Reconstruction loss
             recon_loss = self.criterion(rgb_preds, imgs)
             loss = recon_loss
             # Different regularizers
+            l1density = None
+            if self.l1density_weight > 0:
+                l1density = self.model.compute_l1density(
+                    max_voxels=100_000, grid_id=dset_id) * self.l1density_weight
+                loss = loss + l1density
             depth_tv = None
             if self.cur_regnerf_weight > 0:
                 ps = patch_rays_o.shape[1]  # patch-size
                 out = self.model(
                     patch_rays_o.reshape(-1, 3), patch_rays_d.reshape(-1, 3), bg_color=None,
-                    channels={"depth"})
+                    channels={"depth", "rgb"}, grid_id=dset_id)
                 reshape_to_patch = lambda x, dim: x.reshape(-1, ps, ps, dim)
                 depths = reshape_to_patch(out["depth"], 1)
+                #if self.global_step > 2000:
+                #    torch.save(depths.detach().cpu(), "depths8.pt")
+                #    rgbs = reshape_to_patch(out["rgb"], 3)
+                #    torch.save(rgbs.detach().cpu(), "rgbs8.pt")
+                #    raise RuntimeError()
                 # NOTE: the weighting below is never applied in RegNerf (the constant in front of it is set to 0)
                 # with torch.autograd.no_grad():
                 #     weighting = reshape_to_patch(out["alpha"], 1)[:, :-1, :-1]
                 depth_tv = compute_tv_norm(depths, 'l2', None) * self.cur_regnerf_weight
-                loss += depth_tv
-
+                loss = loss + depth_tv
             plane_tv = None
             if self.plane_tv_weight > 0:
                 plane_tv = self.model.compute_plane_tv(dset_id) * self.plane_tv_weight
-                loss += plane_tv
+                loss = loss + plane_tv
 
         self.gscaler.scale(loss).backward()
         self.gscaler.step(self.optimizer)
@@ -171,6 +182,8 @@ class Trainer():
         recon_loss_val = recon_loss.item()
         self.loss_info[dset_id]["mse"].update(recon_loss_val)
         self.loss_info[dset_id]["psnr"].update(-10 * math.log10(recon_loss_val))
+        if l1density is not None:
+            self.loss_info[dset_id]["l1_density"].update(l1density.item())
         if depth_tv is not None:
             self.loss_info[dset_id]["depth_tv"].update(depth_tv.item())
         if plane_tv is not None:
@@ -301,6 +314,16 @@ class Trainer():
                     per_scene_metrics["ssim"] += out_metrics["ssim"]
                     pb.set_postfix_str(f"PSNR={out_metrics['psnr']:.2f}", refresh=False)
                     pb.update(1)
+                if False:  # Save a training image as well
+                    dset = self.train_data_loaders[0].dataset
+                    data = (dset.rays_o.view(-1, gt.shape[0], 3)[0],
+                            dset.rays_d.view(-1, gt.shape[0], 3)[0],
+                            dset.imgs.view(-1, gt.shape[0], gt.shape[1])[0])
+                    preds = self.eval_step(data, dset_id=dset_id)
+                    out_metrics = self.evaluate_metrics(
+                        data[2], preds, dset_id=dset_id, dset=dset, img_idx=0, name="train",
+                        save_outputs=True)
+                    print(f"train img 0 PSNR={out_metrics['psnr']}")
                 pb.close()
                 per_scene_metrics["psnr"] /= len(dataset)  # noqa
                 per_scene_metrics["ssim"] /= len(dataset)  # noqa
@@ -338,7 +361,11 @@ class Trainer():
             err = (gt - preds_rgb) ** 2
             exrdict["err"] = err.numpy()
         if "depth" in preds:
-            exrdict["depth"] = preds["depth"].reshape(dset.img_h, dset.img_w, 1).cpu().numpy()
+            # normalize depth and add to exrdict
+            preds["depth"] = ((preds["depth"] - preds["depth"].min()) / (preds["depth"].max() - preds["depth"].min())) \
+                                .cpu() \
+                                .reshape(dset.img_h, dset.img_w) \
+            exrdict["depth"] = preds["depth"][..., None].numpy()
 
         summary = dict()
         if gt is not None:
@@ -352,6 +379,10 @@ class Trainer():
                 out_name += "-" + name
             write_exr(os.path.join(self.log_dir, out_name + ".exr"), exrdict)
             write_png(os.path.join(self.log_dir, out_name + ".png"), (preds_rgb * 255.0).byte().numpy())
+            if "depth" in preds:
+                out_name = f"epoch{self.epoch}-D{dset_id}-{img_idx}-depth"
+                depth = preds["depth"][..., None].repeat(1, 1, 3)
+                write_png(os.path.join(self.log_dir, out_name + ".png"), (depth * 255.0).byte().numpy())
 
         return summary
 
@@ -512,7 +543,8 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
         patch_loader = None
         if extra_views:
             patch_loader = PatchLoader(
-                rays_o=tr_dsets[-1].extra_rays_o, rays_d=tr_dsets[-1].extra_rays_d, len_time=None)
+                rays_o=tr_dsets[-1].extra_rays_o, rays_d=tr_dsets[-1].extra_rays_d, len_time=None,
+                batch_size=batch_size, patch_size=8)
         patch_loaders.append(patch_loader)
 
     return {"ts_dsets": ts_dsets, "tr_loaders": tr_loaders, "patch_loaders": patch_loaders}
