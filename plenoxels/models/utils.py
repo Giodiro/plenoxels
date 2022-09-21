@@ -109,3 +109,14 @@ def compute_tv_norm(depths, losstype='l2', weighting=None):
         loss = loss * weighting[:, :-1, :-1]
 
     return torch.mean(loss)
+
+
+def compute_plane_tv(t):
+    batch_size, c, h, w = t.shape
+
+    count_h = batch_size * c * (h - 1) * w
+    count_w = batch_size * c * h * (w - 1)
+    h_tv = torch.square(t[..., 1:, :] - t[..., :h-1, :]).sum()
+    w_tv = torch.square(t[..., :, 1:] - t[..., :, :w-1]).sum()
+    return 2 * (h_tv / count_h + w_tv / count_w)
+
