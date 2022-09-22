@@ -3,15 +3,15 @@ from contextlib import ExitStack
 import math
 import os
 from collections import defaultdict
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, MutableMapping
 
 import numpy as np
 import pandas as pd
 import torch
 import torch.utils.data
 from torch.utils.tensorboard import SummaryWriter
-from torch.profiler import profile, record_function, ProfilerActivity, schedule
 
+from torch.profiler import profile, ProfilerActivity, schedule
 from plenoxels.ema import EMA
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash
 from plenoxels.models.utils import compute_tv_norm
@@ -19,7 +19,6 @@ from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_exr, write_png
 from ..datasets import SyntheticNerfDataset, LLFFDataset
 from ..datasets.multi_dataset_sampler import MultiSceneSampler
-from ..datasets.patchloader import PatchLoader
 from ..my_tqdm import tqdm
 from ..utils import parse_optint
 
@@ -29,13 +28,11 @@ class Trainer():
                  tr_loader: torch.utils.data.DataLoader,
                  ts_dsets: List[torch.utils.data.TensorDataset],
                  tr_dsets: List[torch.utils.data.TensorDataset],
-                 #patch_loaders: List[Optional[PatchLoader]],
                  regnerf_weight_start: float,
                  regnerf_weight_end: float,
                  regnerf_weight_max_step: int,
                  plane_tv_weight: float,
                  l1density_weight: float,
-                 #num_batches_per_dset: int,
                  num_epochs: int,
                  scheduler_type: Optional[str],
                  optim_type: str,
@@ -50,7 +47,6 @@ class Trainer():
         self.train_data_loader = tr_loader
         self.test_datasets = ts_dsets
         self.train_datasets = tr_dsets
-        #self.patch_loaders = patch_loaders
         self.is_ndc = self.test_datasets[0].is_ndc
 
         self.extra_args = kwargs
@@ -60,17 +56,9 @@ class Trainer():
         self.regnerf_weight_end = regnerf_weight_end
         self.regnerf_weight_max_step = regnerf_weight_max_step
         self.cur_regnerf_weight = self.regnerf_weight_start
-        #if self.cur_regnerf_weight > 0:
-        #    assert all(pl is not None for pl in self.patch_loaders)
         self.plane_tv_weight = plane_tv_weight
         self.l1density_weight = l1density_weight
 
-        #self.num_batches_per_dset = num_batches_per_dset
-        #if self.num_dsets == 1 and self.num_batches_per_dset != 1:
-        #    logging.warning("Changing 'batches_per_dset' to 1 since training with a single dataset.")
-        #    self.num_batches_per_dset = 1
-
-        #self.batch_size = tr_loaders[0].batch_size
         self.num_epochs = num_epochs
 
         self.scheduler_type = scheduler_type
@@ -100,18 +88,19 @@ class Trainer():
         self.criterion = torch.nn.MSELoss(reduction='mean')
         self.gscaler = torch.cuda.amp.GradScaler(enabled=self.train_fp16)
 
-    def eval_step(self, data, dset_id) -> Dict[str, torch.Tensor]:
+    def eval_step(self, data, dset_id) -> MutableMapping[str, torch.Tensor]:
         """
         Note that here `data` contains a whole image. we need to split it up before tracing
         for memory constraints.
         """
+        batch_size = self.train_datasets[dset_id].batch_size
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             rays_o = data["rays_o"]
             rays_d = data["rays_d"]
             preds = defaultdict(list)
-            for b in range(math.ceil(rays_o.shape[0] / self.batch_size)):
-                rays_o_b = rays_o[b * self.batch_size: (b + 1) * self.batch_size].cuda()
-                rays_d_b = rays_d[b * self.batch_size: (b + 1) * self.batch_size].cuda()
+            for b in range(math.ceil(rays_o.shape[0] / batch_size)):
+                rays_o_b = rays_o[b * batch_size: (b + 1) * batch_size].cuda()
+                rays_d_b = rays_d[b * batch_size: (b + 1) * batch_size].cuda()
                 if self.is_ndc:
                     bg_color = None
                 else:
@@ -119,18 +108,13 @@ class Trainer():
                 outputs = self.model(rays_o_b, rays_d_b, grid_id=dset_id, bg_color=bg_color, channels={"rgb", "depth"})
                 for k, v in outputs.items():
                     preds[k].append(v)
-            for k, v in preds.items():
-                preds[k] = torch.cat(v, 0)
-        return preds
+        return {k: torch.cat(v, 0) for k, v in preds.items()}
 
     def step(self, data):
         dset_id = data["dset_id"]
         rays_o = data["rays_o"].cuda()
         rays_d = data["rays_d"].cuda()
         imgs = data["imgs"].cuda()
-        #rays_o = data["train"][0].cuda()
-        #rays_d = data["train"][1].cuda()
-        #imgs = data["train"][2].cuda()
         patch_rays_o, patch_rays_d = None, None
         if "patch_rays_o" in data:
             patch_rays_o = data["patch_rays_o"].cuda()
@@ -154,12 +138,12 @@ class Trainer():
             recon_loss = self.criterion(rgb_preds, imgs)
             loss = recon_loss
             # Different regularizers
-            l1density = None
+            l1density: Optional[torch.Tensor] = None
             if self.l1density_weight > 0:
                 l1density = self.model.compute_l1density(
                     max_voxels=100_000, grid_id=dset_id) * self.l1density_weight
                 loss = loss + l1density
-            depth_tv = None
+            depth_tv: Optional[torch.Tensor] = None
             if self.cur_regnerf_weight > 0:
                 ps = patch_rays_o.shape[1]  # patch-size
                 out = self.model(
@@ -177,7 +161,7 @@ class Trainer():
                 #     weighting = reshape_to_patch(out["alpha"], 1)[:, :-1, :-1]
                 depth_tv = compute_tv_norm(depths, 'l2', None) * self.cur_regnerf_weight
                 loss = loss + depth_tv
-            plane_tv = None
+            plane_tv: Optional[torch.Tensor] = None
             if self.plane_tv_weight > 0:
                 plane_tv = self.model.compute_plane_tv(dset_id) * self.plane_tv_weight
                 loss = loss + plane_tv
@@ -234,7 +218,8 @@ class Trainer():
         progress_bar.update(1)
 
     def pre_epoch(self):
-        #self.reset_data_iterators()
+        for d in self.train_datasets:
+            d.reset
         self.init_epoch_info()
         self.model.train()
 
@@ -333,7 +318,7 @@ class Trainer():
                 ro, rd = dset.extra_rays_o, dset.extra_rays_d
                 pb = tqdm(total=ro.shape[0], desc="Rendering extra poses")
                 for pose_idx in range(ro.shape[0]):
-                    data = dict(rays_o=ro[pose_idx].view(-1, 3), rays_d=[pose_idx].view(-1, 3))
+                    data = dict(rays_o=ro[pose_idx].view(-1, 3), rays_d=rd[pose_idx].view(-1, 3))
                     preds = self.eval_step(data, dset_id=0)
                     self.evaluate_metrics(None, preds, dset_id=0, dset=dset, img_idx=pose_idx, name="extra_pose",
                                           save_outputs=True)
@@ -342,12 +327,23 @@ class Trainer():
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_epoch{self.epoch}.csv"))
 
-    def evaluate_metrics(self, gt, preds: Dict[str, torch.Tensor], dset, dset_id: int, img_idx: int,
+    def evaluate_metrics(self, gt, preds: MutableMapping[str, torch.Tensor], dset, dset_id: int, img_idx: int,
                          name: Optional[str] = None, save_outputs: bool = True):
         preds_rgb = preds["rgb"].reshape(dset.img_h, dset.img_w, 3).cpu()
         exrdict = {
             "preds": preds_rgb.numpy(),
         }
+        summary = dict()
+
+        if "depth" in preds:
+            # normalize depth and add to exrdict
+            depth = preds["depth"]
+            depth = depth - depth.min()
+            depth = depth / depth.max()
+            depth = depth.cpu().reshape(dset.img_h, dset.img_w)[..., None]
+            preds["depth"] = depth
+            exrdict["depth"] = preds["depth"].numpy()
+
         if gt is not None:
             gt = gt.reshape(dset.img_h, dset.img_w, -1).cpu()
             if gt.shape[-1] == 4:
@@ -356,15 +352,6 @@ class Trainer():
 
             err = (gt - preds_rgb) ** 2
             exrdict["err"] = err.numpy()
-        if "depth" in preds:
-            # normalize depth and add to exrdict
-            preds["depth"] = ((preds["depth"] - preds["depth"].min()) / (preds["depth"].max() - preds["depth"].min())) \
-                                .cpu() \
-                                .reshape(dset.img_h, dset.img_w)
-            exrdict["depth"] = preds["depth"][..., None].numpy()
-
-        summary = dict()
-        if gt is not None:
             summary["mse"] = torch.mean(err)
             summary["psnr"] = metrics.psnr(preds_rgb, gt)
             summary["ssim"] = metrics.ssim(preds_rgb, gt)
@@ -377,7 +364,7 @@ class Trainer():
             write_png(os.path.join(self.log_dir, out_name + ".png"), (preds_rgb * 255.0).byte().numpy())
             if "depth" in preds:
                 out_name = f"epoch{self.epoch}-D{dset_id}-{img_idx}-depth"
-                depth = preds["depth"][..., None].repeat(1, 1, 3)
+                depth = preds["depth"].repeat(1, 1, 3)
                 write_png(os.path.join(self.log_dir, out_name + ".png"), (depth * 255.0).byte().numpy())
 
         return summary
@@ -415,46 +402,21 @@ class Trainer():
             self.global_step = checkpoint_data["global_step"]
             logging.info(f"=> Loaded epoch-state {self.epoch}, step {self.global_step} from checkpoints")
 
-    def reset_data_iterators(self, dataset_idx=None):
-        """Rewind the iterator for the new epoch.
-
-        Since we have an infinite iterable for patches and a finite iterable for the
-        train-data-loader, we zip the two and give each a key ("train" or "patches")
-        """
-
-        def imerge_wkeys(patches, train):
-            if patches is None:
-                for i in train:
-                    yield {"train": i}
-            else:
-                for i, j in zip(train, patches):
-                    yield {"train": i, "patches": j}
-
-        if dataset_idx is None:
-            self.train_iterators = [
-                imerge_wkeys(
-                    patches=iter(self.patch_loaders[dset_idx]) if self.patch_loaders[dset_idx] is not None else None,
-                    train=iter(self.train_data_loaders[dset_idx])
-                ) for dset_idx in range(self.num_dsets)
-            ]
-        else:
-            self.train_iterators[dataset_idx] = imerge_wkeys(
-                patches=iter(self.patch_loaders[dataset_idx]) if self.patch_loaders[dataset_idx] is not None else None,
-                train=iter(self.train_data_loaders[dataset_idx]))
-
     def init_epoch_info(self):
         ema_weight = 0.1
         self.loss_info = [defaultdict(lambda: EMA(ema_weight)) for _ in range(self.num_dsets)]
 
     # noinspection PyUnresolvedReferences,PyProtectedMember
     def init_lr_scheduler(self, **kwargs) -> Optional[torch.optim.lr_scheduler._LRScheduler]:
-        eta_min = 1e-4
+        eta_min = 0
         lr_sched = None
         if self.scheduler_type == "cosine":
+            max_steps = int(self.num_epochs * len(self.train_data_loader))
             lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
                 self.optimizer,
-                T_max=int(self.num_epochs * len(self.train_data_loader)),
+                T_max=max_steps,
                 eta_min=eta_min)
+            log.info(f"Initialized CosineAnnealing LR Scheduler with {max_steps} maximum steps.")
         return lr_sched
 
     def init_optim(self, **kwargs) -> torch.optim.Optimizer:
@@ -549,8 +511,6 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
 def trace_handler(p):
     output = p.key_averages(group_by_input_shape=True).table(sort_by="self_cuda_time_total", row_limit=20)
     print(output)
-    #output = p.key_averages(group_by_stack_n=5).table(sort_by="self_cuda_time_total", row_limit=7)
-    #print(output)
     output = p.key_averages(group_by_input_shape=True).table(sort_by="self_cpu_time_total", row_limit=20)
     print(output)
     p.export_chrome_trace("./logs/trace_" + str(p.step_num) + ".json")
@@ -559,4 +519,3 @@ def trace_handler(p):
 def N_to_reso(num_voxels, aabb):
     voxel_size = ((aabb[1] - aabb[0]).prod() / num_voxels).pow(1 / 3)
     return ((aabb[1] - aabb[0]) / voxel_size).long().cpu().tolist()
-

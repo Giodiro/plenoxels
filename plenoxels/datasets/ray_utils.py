@@ -184,7 +184,7 @@ def viewmatrix(z, up, pos):
     return np.stack([-vec0, vec1, vec2, pos], axis=1)
 
 
-def generate_spiral_path(poses: np.ndarray, near_fars: np.ndarray, n_frames=120, n_rots=2, zrate=.5) -> np.ndarray:
+def generate_spiral_path(poses: np.ndarray, near_fars: np.ndarray, n_frames=120, n_rots=2, zrate=.5) -> torch.Tensor:
     """Calculates a forward facing spiral path for rendering.
     
     From https://github.com/google-research/google-research/blob/342bfc150ef1155c5254c1e6bd0c912893273e8d/regnerf/internal/datasets.py
@@ -223,7 +223,7 @@ def generate_spiral_path(poses: np.ndarray, near_fars: np.ndarray, n_frames=120,
         lookat = c2w @ np.array([0, 0, -focal, 1.0])
         z_axis = normalize(position - lookat)
         render_poses.append(viewmatrix(z_axis, up, position))
-    return np.stack(render_poses, axis=0)
+    return torch.from_numpy(np.stack(render_poses, axis=0)).float()
 
 
 def generate_hemispherical_orbit(poses: torch.Tensor, n_frames=120):  # TODO: Check this (mixed np, torch)
