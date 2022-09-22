@@ -163,7 +163,7 @@ class LowrankLearnableHash(nn.Module):
                         grid_sample_wrapper(grid[ci], interp[..., coo_comb]).view(
                             -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
             interp = interp_out.sum(dim=-1)
-        return grid_sample_wrapper(self.features.to(dtype=interp.dtype), interp)
+        return grid_sample_wrapper(self.features.to(dtype=interp.dtype), interp).view(-1, self.feature_dim)
 
     @torch.autograd.no_grad()
     def normalize_coord(self, pts: torch.Tensor, grid_id: int) -> torch.Tensor:

@@ -18,6 +18,7 @@ from plenoxels.models.utils import compute_tv_norm
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_exr, write_png
 from ..datasets import SyntheticNerfDataset, LLFFDataset
+from ..datasets.multi_dataset_sampler import MultiSceneSampler
 from ..datasets.patchloader import PatchLoader
 from ..my_tqdm import tqdm
 from ..utils import parse_optint
@@ -25,15 +26,16 @@ from ..utils import parse_optint
 
 class Trainer():
     def __init__(self,
-                 tr_loaders: List[torch.utils.data.DataLoader],
+                 tr_loader: torch.utils.data.DataLoader,
                  ts_dsets: List[torch.utils.data.TensorDataset],
-                 patch_loaders: List[Optional[PatchLoader]],
+                 tr_dsets: List[torch.utils.data.TensorDataset],
+                 #patch_loaders: List[Optional[PatchLoader]],
                  regnerf_weight_start: float,
                  regnerf_weight_end: float,
                  regnerf_weight_max_step: int,
                  plane_tv_weight: float,
                  l1density_weight: float,
-                 num_batches_per_dset: int,
+                 #num_batches_per_dset: int,
                  num_epochs: int,
                  scheduler_type: Optional[str],
                  optim_type: str,
@@ -45,28 +47,30 @@ class Trainer():
                  save_outputs: bool,
                  **kwargs
                  ):
-        self.train_data_loaders = tr_loaders
+        self.train_data_loader = tr_loader
         self.test_datasets = ts_dsets
-        self.patch_loaders = patch_loaders
+        self.train_datasets = tr_dsets
+        #self.patch_loaders = patch_loaders
+        self.is_ndc = self.test_datasets[0].is_ndc
+
         self.extra_args = kwargs
-        self.num_dsets = len(self.train_data_loaders)
-        assert len(self.test_datasets) == self.num_dsets
+        self.num_dsets = len(self.train_datasets)
 
         self.regnerf_weight_start = regnerf_weight_start
         self.regnerf_weight_end = regnerf_weight_end
         self.regnerf_weight_max_step = regnerf_weight_max_step
         self.cur_regnerf_weight = self.regnerf_weight_start
-        if self.cur_regnerf_weight > 0:
-            assert all(pl is not None for pl in self.patch_loaders)
+        #if self.cur_regnerf_weight > 0:
+        #    assert all(pl is not None for pl in self.patch_loaders)
         self.plane_tv_weight = plane_tv_weight
         self.l1density_weight = l1density_weight
 
-        self.num_batches_per_dset = num_batches_per_dset
-        if self.num_dsets == 1 and self.num_batches_per_dset != 1:
-            logging.warning("Changing 'batches_per_dset' to 1 since training with a single dataset.")
-            self.num_batches_per_dset = 1
+        #self.num_batches_per_dset = num_batches_per_dset
+        #if self.num_dsets == 1 and self.num_batches_per_dset != 1:
+        #    logging.warning("Changing 'batches_per_dset' to 1 since training with a single dataset.")
+        #    self.num_batches_per_dset = 1
 
-        self.batch_size = tr_loaders[0].batch_size
+        #self.batch_size = tr_loaders[0].batch_size
         self.num_epochs = num_epochs
 
         self.scheduler_type = scheduler_type
@@ -102,13 +106,13 @@ class Trainer():
         for memory constraints.
         """
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            rays_o = data[0]
-            rays_d = data[1]
+            rays_o = data["rays_o"]
+            rays_d = data["rays_d"]
             preds = defaultdict(list)
             for b in range(math.ceil(rays_o.shape[0] / self.batch_size)):
                 rays_o_b = rays_o[b * self.batch_size: (b + 1) * self.batch_size].cuda()
                 rays_d_b = rays_d[b * self.batch_size: (b + 1) * self.batch_size].cuda()
-                if self.train_data_loaders[0].dataset.is_ndc:
+                if self.is_ndc:
                     bg_color = None
                 else:
                     bg_color = 1
@@ -119,19 +123,23 @@ class Trainer():
                 preds[k] = torch.cat(v, 0)
         return preds
 
-    def step(self, data, dset_id):
-        rays_o = data["train"][0].cuda()
-        rays_d = data["train"][1].cuda()
-        imgs = data["train"][2].cuda()
+    def step(self, data):
+        dset_id = data["dset_id"]
+        rays_o = data["rays_o"].cuda()
+        rays_d = data["rays_d"].cuda()
+        imgs = data["imgs"].cuda()
+        #rays_o = data["train"][0].cuda()
+        #rays_d = data["train"][1].cuda()
+        #imgs = data["train"][2].cuda()
         patch_rays_o, patch_rays_d = None, None
-        if "patches" in data:
-            patch_rays_o = data["patches"][0].cuda()
-            patch_rays_d = data["patches"][1].cuda()
+        if "patch_rays_o" in data:
+            patch_rays_o = data["patch_rays_o"].cuda()
+            patch_rays_d = data["patch_rays_d"].cuda()
 
         self.optimizer.zero_grad(set_to_none=True)
 
         C = imgs.shape[-1]
-        if self.train_data_loaders[0].dataset.is_ndc:
+        if self.is_ndc:
             bg_color = None
         elif C == 3:
             bg_color = 1
@@ -214,18 +222,19 @@ class Trainer():
 
         return scale <= self.gscaler.get_scale()
 
-    def post_step(self, dset_id, progress_bar):
+    def post_step(self, data, progress_bar):
         # Anneal regularization weights
         if self.regnerf_weight_start > 0:
             w = np.clip(self.global_step / (1 if self.regnerf_weight_max_step < 1 else self.regnerf_weight_max_step), 0, 1)
             self.cur_regnerf_weight = self.regnerf_weight_start * (1 - w) + w * self.regnerf_weight_end
 
+        dset_id = data["dset_id"]
         self.writer.add_scalar(f"mse/D{dset_id}", self.loss_info[dset_id]["mse"].value, self.global_step)
         progress_bar.set_postfix_str(losses_to_postfix(self.loss_info), refresh=False)
         progress_bar.update(1)
 
     def pre_epoch(self):
-        self.reset_data_iterators()
+        #self.reset_data_iterators()
         self.init_epoch_info()
         self.model.train()
 
@@ -243,9 +252,7 @@ class Trainer():
 
     def train_epoch(self):
         self.pre_epoch()
-        active_scenes = list(range(self.num_dsets))
-        ascene_idx = 0
-        pb = tqdm(total=self.total_batches_per_epoch(), desc=f"E{self.epoch}")
+        pb = tqdm(total=len(self.train_data_loader), desc=f"E{self.epoch}")
         try:
             with ExitStack() as stack:
                 prof = None
@@ -256,28 +263,14 @@ class Trainer():
                                    record_shapes=True,
                                    with_stack=True)
                     stack.enter_context(p)
-                # Whether the set of batches for one loop of num_batches_per_dset
-                # for every dataset, had any successful step
-                step_successful = False
-                while len(active_scenes) > 0:
-                    try:
-                        for j in range(self.num_batches_per_dset):
-                            data = next(self.train_iterators[active_scenes[ascene_idx]])
-                            step_successful |= self.step(data, active_scenes[ascene_idx])
-                            self.post_step(dset_id=active_scenes[ascene_idx], progress_bar=pb)
-                            self.global_step += 1
-                            if prof is not None:
-                                prof.step()
-                    except StopIteration:
-                        active_scenes.pop(ascene_idx)
-                    else:
-                        # go to next scene
-                        ascene_idx = (ascene_idx + 1) % len(active_scenes)
-                    # If we've been through all scenes, and at least one successful step was
-                    # done, we can update the scheduler.
-                    if ascene_idx == 0 and step_successful and self.scheduler is not None:
+                for data in self.train_data_loader:
+                    step_successful = self.step(data)
+                    self.post_step(data=data, progress_bar=pb)
+                    self.global_step += 1
+                    if prof is not None:
+                        prof.step()
+                    if step_successful and self.scheduler is not None:
                         self.scheduler.step()
-                        step_successful = False  # reset counter
         finally:
             pb.close()
         self.post_epoch()
@@ -310,22 +303,21 @@ class Trainer():
                 pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
                 for img_idx, data in enumerate(dataset):
                     preds = self.eval_step(data, dset_id=dset_id)
-                    gt = data[2]
                     out_metrics = self.evaluate_metrics(
-                        gt, preds, dset_id=dset_id, dset=dataset, img_idx=img_idx, name=None,
+                        data["imgs"], preds, dset_id=dset_id, dset=dataset, img_idx=img_idx, name=None,
                         save_outputs=self.save_outputs)
                     per_scene_metrics["psnr"] += out_metrics["psnr"]
                     per_scene_metrics["ssim"] += out_metrics["ssim"]
                     pb.set_postfix_str(f"PSNR={out_metrics['psnr']:.2f}", refresh=False)
                     pb.update(1)
                 if False:  # Save a training image as well
-                    dset = self.train_data_loaders[0].dataset
-                    data = (dset.rays_o.view(-1, gt.shape[0], 3)[0],
-                            dset.rays_d.view(-1, gt.shape[0], 3)[0],
-                            dset.imgs.view(-1, gt.shape[0], gt.shape[1])[0])
+                    dset = self.train_datasets[0]
+                    data = dict(rays_o=dset.rays_o.view(-1, gt.shape[0], 3)[0],
+                                rays_d=dset.rays_d.view(-1, gt.shape[0], 3)[0],
+                                imgs=dset.imgs.view(-1, gt.shape[0], gt.shape[1])[0])
                     preds = self.eval_step(data, dset_id=dset_id)
                     out_metrics = self.evaluate_metrics(
-                        data[2], preds, dset_id=dset_id, dset=dset, img_idx=0, name="train",
+                        data["imgs"], preds, dset_id=dset_id, dset=dset, img_idx=0, name="train",
                         save_outputs=True)
                     print(f"train img 0 PSNR={out_metrics['psnr']}")
                 pb.close()
@@ -337,11 +329,11 @@ class Trainer():
                 logging.info(log_text)
                 val_metrics.append(per_scene_metrics)
             if False:  # Render extra poses
-                dset = self.train_data_loaders[0].dataset
+                dset = self.train_datasets[0]
                 ro, rd = dset.extra_rays_o, dset.extra_rays_d
                 pb = tqdm(total=ro.shape[0], desc="Rendering extra poses")
                 for pose_idx in range(ro.shape[0]):
-                    data = [ro[pose_idx].view(-1, 3), rd[pose_idx].view(-1, 3)]
+                    data = dict(rays_o=ro[pose_idx].view(-1, 3), rays_d=[pose_idx].view(-1, 3))
                     preds = self.eval_step(data, dset_id=0)
                     self.evaluate_metrics(None, preds, dset_id=0, dset=dset, img_idx=pose_idx, name="extra_pose",
                                           save_outputs=True)
@@ -368,7 +360,7 @@ class Trainer():
             # normalize depth and add to exrdict
             preds["depth"] = ((preds["depth"] - preds["depth"].min()) / (preds["depth"].max() - preds["depth"].min())) \
                                 .cpu() \
-                                .reshape(dset.img_h, dset.img_w) \
+                                .reshape(dset.img_h, dset.img_w)
             exrdict["depth"] = preds["depth"][..., None].numpy()
 
         summary = dict()
@@ -423,10 +415,6 @@ class Trainer():
             self.global_step = checkpoint_data["global_step"]
             logging.info(f"=> Loaded epoch-state {self.epoch}, step {self.global_step} from checkpoints")
 
-    def total_batches_per_epoch(self):
-        # noinspection PyTypeChecker
-        return sum(math.ceil(len(dl.dataset) / self.batch_size) for dl in self.train_data_loaders)
-
     def reset_data_iterators(self, dataset_idx=None):
         """Rewind the iterator for the new epoch.
 
@@ -465,7 +453,7 @@ class Trainer():
         if self.scheduler_type == "cosine":
             lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
                 self.optimizer,
-                T_max=int(self.num_epochs * self.total_batches_per_epoch() / self.num_batches_per_dset / self.num_dsets),
+                T_max=int(self.num_epochs * len(self.train_data_loader)),
                 eta_min=eta_min)
         return lr_sched
 
@@ -477,12 +465,12 @@ class Trainer():
         return optim
 
     def init_model(self, **kwargs) -> torch.nn.Module:
-        aabbs = [dl.dataset.scene_bbox for dl in self.train_data_loaders]
+        aabbs = [d.scene_bbox for d in self.train_datasets]
         model = LowrankLearnableHash(
             num_scenes=self.num_dsets,
             grid_config=kwargs.pop("grid_config"),
             aabb=aabbs,
-            is_ndc=self.train_data_loaders[0].dataset.is_ndc,  # TODO: This should also be per-scene
+            is_ndc=self.is_ndc,  # TODO: This should also be per-scene
             **kwargs)
         logging.info(f"Initialized LowrankLearnableHash model with "
                      f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters.")
@@ -516,10 +504,12 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
 
     data_resolution = parse_optint(kwargs.get('data_resolution'))
     regnerf_weight = float(kwargs.get('regnerf_weight_start'))
+    num_batches_per_dataset = int(kwargs['num_batches_per_dset'])
     extra_views = regnerf_weight > 0
+    patch_size = 8
 
-    tr_dsets, tr_loaders, ts_dsets, patch_loaders = [], [], [], []
-    for data_dir in data_dirs:
+    tr_dsets, ts_dsets = [], []
+    for i, data_dir in enumerate(data_dirs):
         dset_type = decide_dset_type(data_dir)
         if dset_type == "synthetic":
             max_tr_frames = parse_optint(kwargs.get('max_tr_frames'))
@@ -527,31 +517,33 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
             logging.info(f"About to load data at reso={data_resolution}, downsample={data_downsample}")
             tr_dsets.append(SyntheticNerfDataset(
                 data_dir, split='train', downsample=data_downsample, resolution=data_resolution,
-                max_frames=max_tr_frames, extra_views=extra_views))
+                max_frames=max_tr_frames, extra_views=extra_views, batch_size=batch_size,
+                patch_size=patch_size, dset_id=i))
             ts_dsets.append(SyntheticNerfDataset(
-                data_dir, split='test', downsample=1, resolution=800, max_frames=max_ts_frames))
+                data_dir, split='test', downsample=1, resolution=800, max_frames=max_ts_frames,
+                dset_id=i))
         elif dset_type == "llff":
             hold_every = parse_optint(kwargs.get('hold_every'))
             logging.info(f"About to load LLFF data downsampled by {data_downsample} times.")
             tr_dsets.append(LLFFDataset(
                 data_dir, split='train', downsample=data_downsample, hold_every=hold_every,
-                extra_views=extra_views))
+                extra_views=extra_views, batch_size=batch_size, patch_size=patch_size,
+                dset_id=i))
             # Note that LLFF has same downsampling applied to train and test datasets
             ts_dsets.append(LLFFDataset(
-                data_dir, split='test', downsample=data_downsample, hold_every=hold_every))
+                data_dir, split='test', downsample=data_downsample, hold_every=hold_every,
+                dset_id=i))
         else:
             raise ValueError(dset_type)
-        tr_loaders.append(torch.utils.data.DataLoader(
-            tr_dsets[-1], batch_size=batch_size, shuffle=True, num_workers=3, prefetch_factor=4,
-            pin_memory=True))
-        patch_loader = None
-        if extra_views:
-            patch_loader = PatchLoader(
-                rays_o=tr_dsets[-1].extra_rays_o, rays_d=tr_dsets[-1].extra_rays_d, len_time=None,
-                batch_size=batch_size, patch_size=8)
-        patch_loaders.append(patch_loader)
 
-    return {"ts_dsets": ts_dsets, "tr_loaders": tr_loaders, "patch_loaders": patch_loaders}
+    tr_sampler = MultiSceneSampler(
+        tr_dsets, num_samples_per_dataset=num_batches_per_dataset)
+    cat_tr_dset = torch.utils.data.ConcatDataset(tr_dsets)
+    tr_loader = torch.utils.data.DataLoader(
+        cat_tr_dset, num_workers=4, prefetch_factor=4, pin_memory=True,
+        batch_size=None, sampler=tr_sampler)
+
+    return {"ts_dsets": ts_dsets, "tr_dsets": tr_dsets, "tr_loader": tr_loader}
 
 
 def trace_handler(p):

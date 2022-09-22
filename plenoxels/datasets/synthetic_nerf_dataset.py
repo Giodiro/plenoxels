@@ -26,9 +26,13 @@ class SyntheticNerfDataset(BaseDataset):
     def __init__(self,
                  datadir,
                  split: str,
+                 dset_id: int,
+                 batch_size: Optional[int] = None,
+                 generator = None,
                  downsample: float = 1.0,
                  resolution: Optional[int] = 512,
                  max_frames: Optional[int] = None,
+                 patch_size: Optional[int] = 8,
                  extra_views: bool = False):
         super().__init__(datadir=datadir,
                          split=split,
@@ -37,23 +41,39 @@ class SyntheticNerfDataset(BaseDataset):
         self.downsample = downsample
         self.resolution = (resolution, resolution)
         self.max_frames = max_frames
+        self.batch_size = batch_size
+        self.patch_size = patch_size
+        self.dset_id = dset_id
+        if generator is None:
+            seed = int(torch.empty((), dtype=torch.int64).random_().item())
+            self.generator = torch.Generator()
+            self.generator.manual_seed(seed)
+        else:
+            self.generator = generator
         self.near_far = [2.0, 6.0]
+        self.extra_views = self.split == 'train' and extra_views
+        if self.split == 'train':
+            assert self.batch_size is not None
 
-        tensors = self.fetch_data()
-        self.set_tensors(*tensors)
+        self.init_data()
+        self.init_extra_views()
 
-        if self.split == 'train' and extra_views:
-            self.extra_poses = generate_hemispherical_orbit(self.poses, n_frames=30)
-            _, self.extra_rays_o, self.extra_rays_d = self.init_rays(
-                imgs=None, poses=self.extra_poses, merge_all=False, is_blender_format=True)
-            self.extra_rays_o = self.extra_rays_o.view(-1, self.img_h, self.img_w, 3)
-            self.extra_rays_d = self.extra_rays_d.view(-1, self.img_h, self.img_w, 3)
+    def init_extra_views(self):
+        if not self.extra_views:
+            return
+        self.extra_poses = generate_hemispherical_orbit(self.poses, n_frames=120)
+        _, extra_rays_o, extra_rays_d = self.init_rays(
+            imgs=None, poses=self.extra_poses, merge_all=False, is_blender_format=True)
+        self.extra_rays_o = extra_rays_o.view(-1, self.img_h, self.img_w, 3)
+        self.extra_rays_d = extra_rays_d.view(-1, self.img_h, self.img_w, 3)
+        self.patchloader = PatchLoader(self.extra_rays_o, self.extra_rays_d, len_time=None,
+                                       batch_size=self.batch_size, patch_size=self.patch_size,
+                                       generator=self.generator)
 
-    def fetch_data(self) -> Tuple[torch.Tensor, ...]:
+    def init_data(self) -> None:
         imgs, self.poses, self.intrinsics = self.load_from_disk()
         self.imgs, self.rays_o, self.rays_d = self.init_rays(
             imgs, self.poses, merge_all=self.split == 'train', is_blender_format=True)
-        return self.rays_o, self.rays_d, self.imgs
 
     def init_bbox(self, datadir):
         if "ship" in datadir:
@@ -153,3 +173,31 @@ class SyntheticNerfDataset(BaseDataset):
             all_rays_o = all_rays_o.view(num_frames, num_pixels, 3)  # [N, H*W, 3]
             all_rays_d = all_rays_d.view(num_frames, num_pixels, 3)  # [N, H*W, 3]
         return imgs, all_rays_o, all_rays_d
+
+    def __getitem__(self, index):
+        if self.split == 'train':
+            # We sample with replacement for efficiency reasons
+            idxs = torch.randint(high=self.rays_o.shape[0], size=(self.batch_size,),
+                                 dtype=torch.int64, generator=self.generator)
+            out = {
+                "rays_o": self.rays_o[idxs].contiguous(),
+                "rays_d": self.rays_d[idxs].contiguous(),
+                "imgs": self.imgs[idxs].contiguous(),
+                "dset_id": self.dset_id,
+            }
+            if self.extra_views:
+                out.update(self.patchloader[index])
+            return out
+        return {
+            "rays_o": self.rays_o[index],
+            "rays_d": self.rays_d[index],
+            "imgs": self.imgs[index],
+            "dset_id": self.dset_id,
+        }
+
+    def __len__(self):
+        if self.split == 'train':
+            return (self.rays_o.shape[0] + self.batch_size - 1) // self.batch_size
+        else:
+            return self.rays_o.shape[0]
+
