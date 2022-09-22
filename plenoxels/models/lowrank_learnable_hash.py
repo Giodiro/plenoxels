@@ -229,8 +229,8 @@ class LowrankLearnableHash(nn.Module):
         pts_max = valid_pts.amax(0)
 
         new_aabb = torch.stack((pts_min, pts_max), 0)
-        log.info(f"Updated alpha mask for grid {grid_id}. "
-                 f"Bounding box from {aabb.view(-1)} to {new_aabb.view(-1)}. "
+        log.info(f"Updated alpha mask for scene {grid_id}. "
+                 f"New bounding box={new_aabb.view(-1)}. "
                  f"Remaining {alpha_mask.sum() / grid_size_l[0] / grid_size_l[1] / grid_size_l[2] * 100:.2f}% voxels.")
         self.density_mask[grid_id] = DensityMask(alpha, aabb=aabb)
         return new_aabb
@@ -257,7 +257,6 @@ class LowrankLearnableHash(nn.Module):
             grid_info.get("grid_dimensions", grid_info["input_coordinate_dim"])))
         for ci, coo_comb in enumerate(coo_combs):
             slices = [slice(None), slice(None)] + [slice(t_l[cc].item(), b_r[cc].item()) for cc in coo_comb[::-1]]
-            log.info(f"Shrinking grid {ci} to {slices[2:]}")
             self.scene_grids[grid_id][0][ci] = torch.nn.Parameter(
                 self.scene_grids[grid_id][0][ci].data[slices]
             )
@@ -274,7 +273,7 @@ class LowrankLearnableHash(nn.Module):
         new_size = b_r - t_l
         self.set_aabb(new_aabb, grid_id)
         self.set_resolution(new_size, grid_id)
-        log.info(f"Set new AABB to {self.aabb(grid_id).view(-1)}  -  new resolution to {self.resolution(grid_id).view(-1)}")
+        log.info(f"Shrunk scene {grid_id}. New AABB={new_aabb.view(-1)} New resolution={new_size.view(-1)}")
 
     @torch.no_grad()
     def upsample(self, new_reso, grid_id: int):
@@ -293,11 +292,11 @@ class LowrankLearnableHash(nn.Module):
             else:
                 raise RuntimeError()
             grid_data = self.scene_grids[grid_id][0][ci].data
-            log.info(f"Upsampling grid {ci} from {grid_data.shape} to {new_size[::-1]}")
             self.scene_grids[grid_id][0][ci] = torch.nn.Parameter(
                 F.interpolate(grid_data, size=new_size[::-1], mode=mode, align_corners=True))
         self.set_resolution(
             torch.tensor(new_reso, dtype=torch.long, device=grid_data.device), grid_id)
+        log.info(f"Upsampled scene {grid_id} to resolution={new_reso}")
 
     def forward(self, rays_o, rays_d, bg_color, grid_id=0, channels: Sequence[str] = ("rgb", "depth")):
         """

@@ -187,6 +187,7 @@ class Trainer():
         try:
             upsample_step_idx = self.upsample_steps.index(self.global_step)
             new_num_voxels = self.upsample_resolution_list[upsample_step_idx]
+            logging.info(f"Upsampling all datasets at step {self.global_step} to {new_num_voxels} voxels.")
             for u_dset_id in range(self.num_dsets):
                 new_reso = N_to_reso(new_num_voxels, self.model.aabb(u_dset_id))
                 self.model.upsample(new_reso, u_dset_id)
@@ -251,6 +252,7 @@ class Trainer():
                             data = next(self.train_iterators[active_scenes[ascene_idx]])
                             step_successful |= self.step(data, active_scenes[ascene_idx])
                             self.post_step(dset_id=active_scenes[ascene_idx], progress_bar=pb)
+                            self.global_step += 1
                             if prof is not None:
                                 prof.step()
                     except StopIteration:
@@ -258,7 +260,6 @@ class Trainer():
                     else:
                         # go to next scene
                         ascene_idx = (ascene_idx + 1) % len(active_scenes)
-                        self.global_step += 1
                     # If we've been through all scenes, and at least one successful step was
                     # done, we can update the scheduler.
                     if ascene_idx == 0 and step_successful and self.scheduler is not None:
@@ -433,7 +434,7 @@ class Trainer():
         if self.scheduler_type == "cosine":
             lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
                 self.optimizer,
-                T_max=self.num_epochs * self.total_batches_per_epoch() // self.num_batches_per_dset,
+                T_max=int(self.num_epochs * self.total_batches_per_epoch() / self.num_batches_per_dset / self.num_dsets),
                 eta_min=eta_min)
         return lr_sched
 
