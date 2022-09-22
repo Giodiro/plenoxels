@@ -38,7 +38,7 @@ class LLFFDataset(BaseDataset):
 
         if self.split == 'train' and extra_views:
             all_poses = torch.stack(self.poses, 0)
-            self.extra_poses = generate_spiral_path(all_poses.numpy(), self.near_fars)
+            self.extra_poses = generate_spiral_path(all_poses.numpy(), self.near_fars, n_frames=120)
             self.extra_poses = torch.from_numpy(self.extra_poses).float()
             self.extra_rays_o, self.extra_rays_d, _ = self.init_rays(
                 imgs=None, poses=self.extra_poses, merge_all=False)

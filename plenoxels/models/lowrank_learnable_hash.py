@@ -48,6 +48,7 @@ class LowrankLearnableHash(nn.Module):
         self.set_aabb(aabb)
         self.extra_args = kwargs
         self.is_ndc = is_ndc
+        self.density_multiplier = self.extra_args.get("density_multiplier")
 
         self.transfer_learning = self.extra_args["transfer_learning"]
         self.alpha_mask_threshold = self.extra_args["density_threshold"]
@@ -183,42 +184,19 @@ class LowrankLearnableHash(nn.Module):
         grid_size = self.resolution(grid_id)
         grid_size_l = self.config[0]["resolution"]
         dev = aabb.device
-
         step_size = self.raymarcher.get_step_size(aabb, grid_size)
 
-        # Generate points in regularly spaced grid (already normalized)
-        pts = torch.stack(torch.meshgrid(
-            torch.linspace(0, 1, grid_size_l[0]),
-            torch.linspace(0, 1, grid_size_l[1]),
-            torch.linspace(0, 1, grid_size_l[2]), indexing='ij'
-        ), dim=-1).to(dev)  # [gs0, gs1, gs2, 3]
-        pts = pts.view(-1, 3)  # [gs0*gs1*gs2, 3]
-        # Normalize between [aabb0, aabb1]
-        pts = aabb[0] * (1 - pts) + aabb[1] * pts
+        # Compute density on a regular grid (of shape grid_size)
+        density, pts = self.compute_grid_density(grid_id, use_mask=True)
 
-        # Compute density on the grid at the regularly spaced points
-        if self.density_mask[grid_id] is not None:
-            alpha_mask = self.density_mask[grid_id].sample_density(pts) > 0.0
-        else:
-            alpha_mask = torch.ones(pts.shape[0], dtype=torch.bool, device=pts.device)
-
-        if alpha_mask.any():
-            pts_sampled = self.normalize_coord(pts[alpha_mask], grid_id)
-            features = self.compute_features(pts_sampled, grid_id)
-            density_masked = torch.relu(
-                self.decoder.compute_density(features, rays_d=None, precompute_color=False))
-            density = torch.zeros(pts.shape[0], dtype=density_masked.dtype, device=density_masked.device)
-            density[alpha_mask] = density_masked.view(-1)
-        else:
-            density = torch.zeros(pts.shape[0], dtype=torch.float32, device=dev)
-
-        alpha = 1.0 - torch.exp(-density * step_size).view(grid_size_l)  # [gs0, gs1, gs2]
+        alpha = 1.0 - torch.exp(-density * step_size * self.density_multiplier).view(grid_size_l)  # [gs0, gs1, gs2]
         pts = pts.view(grid_size_l + [3])  # [gs0, gs1, gs2, 3]
 
-        # Compute the mask (max-pooling) and the new aabb
+        # Transpose to get correct Depth, Height, Width format
         pts = pts.transpose(0, 2).contiguous()
         alpha = alpha.clamp(0, 1).transpose(0, 2).contiguous()
 
+        # Compute the mask (max-pooling) and the new aabb.
         alpha = F.max_pool3d(alpha[None, None, ...], kernel_size=3, padding=1, stride=1)
         alpha = alpha.view(grid_size_l[::-1])
         alpha = F.threshold(alpha, self.alpha_mask_threshold, 0.0)  # set to 0 if <= threshold
@@ -298,13 +276,54 @@ class LowrankLearnableHash(nn.Module):
             torch.tensor(new_reso, dtype=torch.long, device=grid_data.device), grid_id)
         log.info(f"Upsampled scene {grid_id} to resolution={new_reso}")
 
+    def compute_grid_density(self, grid_id, use_mask: bool, max_voxels: Optional[int] = None):
+        aabb = self.aabb(grid_id)
+        grid_size_l = self.config[0]["resolution"]
+        dev = aabb.device
+
+        # Generate points in regularly spaced grid
+        pts = torch.stack(torch.meshgrid(
+            torch.linspace(0, 1, grid_size_l[0]),
+            torch.linspace(0, 1, grid_size_l[1]),
+            torch.linspace(0, 1, grid_size_l[2]), indexing='ij'
+        ), dim=-1).to(dev)  # [gs0, gs1, gs2, 3]
+        pts = pts.view(-1, 3)  # [gs0*gs1*gs2, 3]
+        if max_voxels is not None:
+            # with replacement as it's faster?
+            pts = pts[torch.randint(pts.shape[0], (max_voxels, )), :]
+        # Normalize between [aabb0, aabb1]
+        pts = aabb[0] * (1 - pts) + aabb[1] * pts
+
+        # Compute density on the grid
+        return self.compute_density(pts, grid_id, use_mask), pts
+
+    def compute_density(self, pts, grid_id, use_mask):
+        dev = pts.device
+        alpha_mask = None
+        if self.density_mask[grid_id] is not None and use_mask:
+            alpha_mask = self.density_mask[grid_id].sample_density(pts) > 0.0
+
+        if alpha_mask is not None and alpha_mask.any():
+            pts_sampled = self.normalize_coord(pts[alpha_mask], grid_id)
+            features = self.compute_features(pts_sampled, grid_id)
+            density_masked = torch.relu(
+                self.decoder.compute_density(features, rays_d=None, precompute_color=False))
+            density = torch.zeros(pts.shape[0], dtype=density_masked.dtype, device=dev)
+            density[alpha_mask] = density_masked.view(-1)
+        elif alpha_mask is None:
+            features = self.compute_features(self.normalize_coord(pts, grid_id), grid_id)
+            density = torch.relu(self.decoder.compute_density(features, rays_d=None, precompute_color=False)).view(-1)
+        else:
+            density = torch.zeros(pts.shape[0], dtype=torch.float32, device=dev)
+        return density
+
     def forward(self, rays_o, rays_d, bg_color, grid_id=0, channels: Sequence[str] = ("rgb", "depth")):
         """
         rays_o : [batch, 3]
         rays_d : [batch, 3]
         """
         rm_out = self.raymarcher.get_intersections2(
-            rays_o, rays_d, self.aabb(grid_id), self.resolution(grid_id), perturb=self.training,
+            rays_o, rays_d, self.aabb(grid_id), self.resolution(grid_id), perturb=False,#self.training,
             is_ndc=self.is_ndc)
         rays_d = rm_out["rays_d"]
         deltas = rm_out["deltas"]
@@ -361,7 +380,7 @@ class LowrankLearnableHash(nn.Module):
             raise
 
         # Compute optical thickness
-        tau = density_masked.reshape(-1, 1) * deltas.reshape(-1, 1)# * 25
+        tau = density_masked.reshape(-1, 1) * deltas.reshape(-1, 1) * self.density_multiplier
         # ridx_hit are the ray-IDs at the first intersection (the boundary).
         ridx_hit = ridx[boundary]
         # Perform volumetric integration
@@ -406,6 +425,11 @@ class LowrankLearnableHash(nn.Module):
             for grid in grid_ls:
                 total += compute_plane_tv(grid)
         return total
+
+    def compute_l1density(self, max_voxels, grid_id):
+        density, _ = self.compute_grid_density(grid_id, use_mask=True, max_voxels=max_voxels)
+        return torch.mean(torch.abs(density))
+
 
     def get_params(self, lr):
         if self.transfer_learning:
