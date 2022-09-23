@@ -2,7 +2,7 @@
 # the configuration must be specified in a dictionary called `config`.
 import numpy as np
 config = {
-    "expname": "lego_test",
+    "expname": "lego_test0voltv",
     "logdir": "./logs",
 
     # Data settings
@@ -28,7 +28,7 @@ config = {
     "regnerf_weight_max_step": 512,
     "l1density_weight": 0,
     "plane_tv_weight": 0,
-    "volume_tv_weight": 0.01,
+    "volume_tv_weight": 0.0,
     "volume_tv_npts": 1024,
 
     # Training settings
@@ -53,15 +53,15 @@ config = {
 [
     {
         "input_coordinate_dim": 3,
-        "output_coordinate_dim": 4,
+        "output_coordinate_dim": 5,
         "grid_dimensions": 2,
         "resolution": [128, 128, 128],
-        "rank": 20,
+        "rank": 10,
         "init_std": 0.2,  
     },
     {
-        "input_coordinate_dim": 4,
-        "resolution": [8, 8, 8, 8],
+        "input_coordinate_dim": 5,
+        "resolution": [6, 6, 6, 6, 6],
         "feature_dim": 32,
         "init_std": 0.05
     }

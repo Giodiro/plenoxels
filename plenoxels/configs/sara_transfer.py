@@ -2,7 +2,7 @@
 # the configuration must be specified in a dictionary called `config`.
 import numpy as np
 config = {
-    "expname": "allbutlego128transfer",
+    "expname": "allbutship128transfer",
     "logdir": "./logs",
 
     # Data settings
@@ -13,10 +13,10 @@ config = {
         # "/home/sfk/data/nerf_synthetic/drums",
         # "/home/sfk/data/nerf_synthetic/ficus",
         # "/home/sfk/data/nerf_synthetic/hotdog",
-        "/home/sfk/data/nerf_synthetic/lego",
+        # "/home/sfk/data/nerf_synthetic/lego",
         # "/home/sfk/data/nerf_synthetic/materials",
         # "/home/sfk/data/nerf_synthetic/mic",
-        # "/home/sfk/data/nerf_synthetic/ship",
+        "/home/sfk/data/nerf_synthetic/ship",
         ],
     # Data settings for 360
     "max_tr_frames": None,
@@ -36,6 +36,8 @@ config = {
     "regnerf_weight_max_step": 512,
     "l1density_weight": 0,
     "plane_tv_weight": 0.0,
+    "volume_tv_weight": 0,
+    "volume_tv_npts": 0,
 
     # Training settings
     "train_fp16": True,
@@ -67,7 +69,7 @@ config = {
     },
     {
         "input_coordinate_dim": 5,
-        "resolution": [4, 4, 4, 4, 4],
+        "resolution": [6, 6, 6, 6, 6],
         "feature_dim": 32,
         "init_std": 0.05
     }
