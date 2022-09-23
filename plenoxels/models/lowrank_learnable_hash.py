@@ -73,9 +73,9 @@ class LowrankLearnableHash(nn.Module):
                 else:
                     out_dim: int = grid_config["output_coordinate_dim"]
                     grid_nd: int = grid_config["grid_dimensions"]
-                    reso: List[int] = grid_config["resolution"]
+                    self.reso: List[int] = grid_config["resolution"]
                     try:
-                        in_dim = len(reso)
+                        in_dim = len(self.reso)
                     except AttributeError:
                         raise ValueError("Configuration incorrect: resolution must be a list.")
                     num_comp = math.comb(in_dim, grid_nd)
@@ -85,7 +85,7 @@ class LowrankLearnableHash(nn.Module):
                     assert in_dim == grid_config["input_coordinate_dim"]
                     if li == 0:
                         assert in_dim == 3
-                        self.set_resolution(torch.tensor(reso, dtype=torch.long), grid_id=si)
+                        self.set_resolution(torch.tensor(self.reso, dtype=torch.long), grid_id=si)
                     assert out_dim in {1, 2, 3, 4, 5, 6, 7}
                     assert grid_nd <= in_dim
                     if grid_nd == in_dim:
@@ -95,7 +95,7 @@ class LowrankLearnableHash(nn.Module):
                     for ci, coo_comb in enumerate(coo_combs):
                         grid_coefs.append(
                             torch.nn.Parameter(nn.init.normal_(torch.empty(
-                                [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb[::-1]]
+                                [1, out_dim * rank[ci]] + [self.reso[cc] for cc in coo_comb[::-1]]
                             ), mean=0.0, std=grid_config["init_std"])))
                     grids.append(grid_coefs)
             self.scene_grids.append(grids)
@@ -432,6 +432,25 @@ class LowrankLearnableHash(nn.Module):
     def compute_l1density(self, max_voxels, grid_id):
         density, _ = self.compute_grid_density(grid_id, use_mask=True, max_voxels=max_voxels)
         return torch.mean(torch.abs(density))
+
+    def compute_3d_tv(self, npts):
+        # Draw random 3d points
+        pts = torch.rand(size=(npts, 3))
+        pts = aabb[0] * (1 - pts) + aabb[1] * pts  # Rescale to be in the volume bounds
+        # Get "neighbors" of each point
+        voxel_size = (aabb[1] - aabb[0]) / self.reso  # Vector of voxel size in each dimension
+        right = torch.tensor([1, 0, 0]) * voxel_size
+        left = torch.tensor([-1, 0, 0]) * voxel_size
+        up = torch.tensor([0, 1, 0]) * voxel_size
+        down = torch.tensor([0, -1, 0]) * voxel_size
+        front = torch.tensor([0, 0, 1]) * voxel_size
+        back = torch.tensor([0, 0, -1]) * voxel_size
+        
+        # TODO: continue here. get neighbors of all the points, then eval density, then tv. Then put it in the optimization with a weight.
+        # Compute density at these points
+        self.compute_density(pts, grid_id, use_mask)
+        # Compute tv on density
+
 
 
     def get_params(self, lr):

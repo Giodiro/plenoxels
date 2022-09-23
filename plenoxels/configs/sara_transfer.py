@@ -2,7 +2,7 @@
 # the configuration must be specified in a dictionary called `config`.
 import numpy as np
 config = {
-    "expname": "allbutficus128transfer",
+    "expname": "allbutlego128transfer",
     "logdir": "./logs",
 
     # Data settings
@@ -11,9 +11,9 @@ config = {
     "data_dirs": [
         # "/home/sfk/data/nerf_synthetic/chair",
         # "/home/sfk/data/nerf_synthetic/drums",
-        "/home/sfk/data/nerf_synthetic/ficus",
+        # "/home/sfk/data/nerf_synthetic/ficus",
         # "/home/sfk/data/nerf_synthetic/hotdog",
-        # "/home/sfk/data/nerf_synthetic/lego",
+        "/home/sfk/data/nerf_synthetic/lego",
         # "/home/sfk/data/nerf_synthetic/materials",
         # "/home/sfk/data/nerf_synthetic/mic",
         # "/home/sfk/data/nerf_synthetic/ship",
@@ -34,7 +34,7 @@ config = {
     "regnerf_weight_start": 0,
     "regnerf_weight_end": 0,
     "regnerf_weight_max_step": 512,
-
+    "l1density_weight": 0,
     "plane_tv_weight": 0.0,
 
     # Training settings
@@ -54,6 +54,7 @@ config = {
     # Model settings
     "density_threshold": 1e-4,
     "dmask_update": [np.inf],
+    "density_multiplier": 1,
     "grid_config": """
 [
     {
