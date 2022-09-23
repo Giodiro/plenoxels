@@ -90,8 +90,7 @@ def main():
         # We have reloaded the model learned from args.log_dir
         assert args.log_dir is not None and os.path.isdir(args.log_dir)
     if args.log_dir is not None:
-        trainer.log_dir = args.log_dir
-        checkpoint_path = os.path.join(trainer.log_dir, "model.pth")
+        checkpoint_path = os.path.join(args.log_dir, "model.pth")
         trainer.load_model(torch.load(checkpoint_path))
 
     if args.validate_only:
