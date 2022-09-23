@@ -33,6 +33,8 @@ class Trainer():
                  regnerf_weight_max_step: int,
                  plane_tv_weight: float,
                  l1density_weight: float,
+                 volume_tv_weight: float,
+                 volume_tv_npts: int,
                  num_batches_per_dset: int,
                  num_epochs: int,
                  scheduler_type: Optional[str],
@@ -60,6 +62,8 @@ class Trainer():
             assert all(pl is not None for pl in self.patch_loaders)
         self.plane_tv_weight = plane_tv_weight
         self.l1density_weight = l1density_weight
+        self.volume_tv_weight = volume_tv_weight
+        self.volume_tv_npts = volume_tv_npts
 
         self.num_batches_per_dset = num_batches_per_dset
         if self.num_dsets == 1 and self.num_batches_per_dset != 1:
@@ -173,6 +177,10 @@ class Trainer():
             if self.plane_tv_weight > 0:
                 plane_tv = self.model.compute_plane_tv(dset_id) * self.plane_tv_weight
                 loss = loss + plane_tv
+            volume_tv = None
+            if self.volume_tv_weight > 0:
+                volume_tv = self.model.compute_3d_tv(self.volume_tv_npts, dset_id) * self.volume_tv_weight
+                loss = loss + volume_tv
 
         self.gscaler.scale(loss).backward()
         self.gscaler.step(self.optimizer)

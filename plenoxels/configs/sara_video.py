@@ -46,7 +46,6 @@ config = {
     "single_jitter": True,
 
     # Model settings
-    # Giac has G init_std=0.01
     "grid_config": """
 [
     {
@@ -56,7 +55,7 @@ config = {
         "resolution": [128, 128, 128],
         "rank": 20,
         "time_reso": 3,
-        "init_std": 0.1,  
+        "init_std": 0.2,  
     },
     {
         "input_coordinate_dim": 4,

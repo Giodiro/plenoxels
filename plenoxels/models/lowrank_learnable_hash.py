@@ -433,25 +433,22 @@ class LowrankLearnableHash(nn.Module):
         density, _ = self.compute_grid_density(grid_id, use_mask=True, max_voxels=max_voxels)
         return torch.mean(torch.abs(density))
 
-    def compute_3d_tv(self, npts):
+    def compute_3d_tv(self, npts, grid_id):
         # Draw random 3d points
-        pts = torch.rand(size=(npts, 3))
-        pts = aabb[0] * (1 - pts) + aabb[1] * pts  # Rescale to be in the volume bounds
+        aabb = self.aabb(grid_id)
+        pts = torch.rand(size=(npts, 3)).to(aabb.device)
+        voxel_size = (aabb[1] - aabb[0]) / torch.tensor(self.reso).to(aabb.device)  # Vector of voxel size in each dimension
+        pts = (aabb[0] + voxel_size) * (1 - pts) + (aabb[1] - voxel_size) * pts  # Rescale to be in the volume bounds, with a voxel buffer
         # Get "neighbors" of each point
-        voxel_size = (aabb[1] - aabb[0]) / self.reso  # Vector of voxel size in each dimension
-        right = torch.tensor([1, 0, 0]) * voxel_size
-        left = torch.tensor([-1, 0, 0]) * voxel_size
-        up = torch.tensor([0, 1, 0]) * voxel_size
-        down = torch.tensor([0, -1, 0]) * voxel_size
-        front = torch.tensor([0, 0, 1]) * voxel_size
-        back = torch.tensor([0, 0, -1]) * voxel_size
-        
-        # TODO: continue here. get neighbors of all the points, then eval density, then tv. Then put it in the optimization with a weight.
-        # Compute density at these points
-        self.compute_density(pts, grid_id, use_mask)
-        # Compute tv on density
-
-
+        neighbors = [torch.tensor([1, 0, 0]).to(aabb.device), torch.tensor([-1, 0, 0]).to(aabb.device), 
+                    torch.tensor([0, 1, 0]).to(aabb.device), torch.tensor([0, -1, 0]).to(aabb.device), 
+                    torch.tensor([0, 0, 1]).to(aabb.device), torch.tensor([0, 0, -1]).to(aabb.device)]
+        tv = 0
+        for offset in neighbors:
+            neighbor = pts + offset * voxel_size
+            density = torch.relu(self.decoder.compute_density(self.compute_features(neighbor, grid_id), rays_d=None, precompute_color=False))  # [npts, 1]
+            tv = tv + (pts - neighbor)**2
+        return torch.mean(tv)
 
     def get_params(self, lr):
         if self.transfer_learning:

@@ -26,8 +26,10 @@ config = {
     "regnerf_weight_start": 0,
     "regnerf_weight_end": 0,
     "regnerf_weight_max_step": 512,
-
-    "plane_tv_weight": 0.0001,
+    "l1density_weight": 0,
+    "plane_tv_weight": 0,
+    "volume_tv_weight": 0.01,
+    "volume_tv_npts": 1024,
 
     # Training settings
     "train_fp16": True,
@@ -46,6 +48,7 @@ config = {
     # Model settings
     "density_threshold": 1e-4,
     "dmask_update": [np.inf],
+    "density_multiplier": 1,
     "grid_config": """
 [
     {
