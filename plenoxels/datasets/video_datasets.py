@@ -2,7 +2,7 @@ import glob
 import json
 import logging as log
 import os
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Any
 
 import imageio
 import numpy as np
@@ -10,62 +10,122 @@ import torch
 import torchvision.transforms
 from PIL import Image
 
-from .llff_dataset import LLFFDataset
-from .data_loading import parallel_load_images
+from .llff_dataset import load_llff_poses_helper, create_llff_rays
 from .intrinsics import Intrinsics
-from .synthetic_nerf_dataset import SyntheticNerfDataset
+from .ray_utils import generate_hemispherical_orbit, generate_spiral_path
+from .synthetic_nerf_dataset import create_360_rays, load_360_images, load_360_intrinsics, get_360_bbox
+from .patchloader import PatchLoader
 from ..my_tqdm import tqdm
+from .base_dataset import BaseDataset
 
 
-class Video360Dataset(SyntheticNerfDataset):
+pil2tensor = torchvision.transforms.ToTensor()
+tensor2pil = torchvision.transforms.ToPILImage()
+
+
+class Video360Dataset(BaseDataset):
+    len_time: int
+    max_cameras: Optional[int]
+    max_tsteps: Optional[int]
+    timestamps: Optional[torch.Tensor]
+
     def __init__(self,
                  datadir: str,
                  split: str,
+                 batch_size: Optional[int] = None,
+                 generator: Optional[torch.random.Generator] = None,
                  downsample: float = 1.0,
                  resolution: Optional[int] = 512,
                  max_cameras: Optional[int] = None,
                  max_tsteps: Optional[int] = None,
-                 extra_views: bool = False):
+                 extra_views: bool = False,
+                 patch_size: Optional[int] = 8):
+
         self.max_cameras = max_cameras
         self.max_tsteps = max_tsteps
-        self.timestamps: Optional[torch.Tensor] = None
+        self.downsample = downsample
+        self.resolution = (resolution, resolution)
+        self.patch_size = patch_size
+        self.near_far = [2.0, 6.0]
+        self.extra_views = split == 'train' and extra_views
+
+        frames, transform = load_360video_frames(datadir, split, self.max_cameras, self.max_tsteps)
+        imgs, poses = load_360_images(frames, datadir, split, self.downsample, self.resolution)
+        intrinsics = load_360_intrinsics(transform, imgs, self.downsample)
+        rays_o, rays_d, imgs = create_360_rays(
+            imgs, poses, merge_all=split == 'train', intrinsics=intrinsics, is_blender_format=True)
         super().__init__(datadir=datadir,
                          split=split,
-                         downsample=downsample,
-                         resolution=resolution,
-                         max_frames=None,
-                         extra_views=extra_views)
-        self.len_time = torch.amax(self.timestamps).item()
+                         batch_size=batch_size,
+                         is_ndc=False,
+                         scene_bbox=get_360_bbox(datadir),
+                         generator=generator,
+                         rays_o=rays_o,
+                         rays_d=rays_d,
+                         intrinsics=intrinsics,
+                         imgs=imgs)
 
-    def fetch_data(self) -> Tuple[torch.Tensor, ...]:
-        imgs, self.poses, self.intrinsics, timestamps = self.load_from_disk()
+        timestamps = [parse_360_file_path(frame['file_path'])[0] for frame in frames]
+        timestamps = torch.tensor(timestamps, dtype=torch.int32)
+        self.len_time = torch.amax(timestamps).item()
         if self.split == 'train':
             self.timestamps = timestamps[:, None, None].repeat(
-                1, self.intrinsics.height, self.intrinsics.width).reshape(-1)  # [n_frames * h * w]
+                1, intrinsics.height, intrinsics.width).reshape(-1)  # [n_frames * h * w]
         else:
-            self.timestamps = timestamps  # TODO: Why no repeat for test split?
+            self.timestamps = timestamps
 
-        self.imgs, self.rays_o, self.rays_d = self.init_rays(
-            imgs, self.poses, merge_all=self.split == 'train', is_blender_format=True)
-        return self.rays_o, self.rays_d, self.imgs, self.timestamps
+        if self.extra_views:
+            extra_poses = generate_hemispherical_orbit(poses, n_frames=120)
+            extra_rays_o, extra_rays_d, _ = create_360_rays(
+                imgs=None, poses=extra_poses, merge_all=False, intrinsics=intrinsics,
+                is_blender_format=True)
+            extra_rays_o = extra_rays_o.view(-1, self.img_h, self.img_w, 3)
+            extra_rays_d = extra_rays_d.view(-1, self.img_h, self.img_w, 3)
+            self.patchloader = PatchLoader(extra_rays_o, extra_rays_d, len_time=self.len_time,
+                                           batch_size=self.batch_size, patch_size=self.patch_size,
+                                           generator=self.generator)
 
-    def parse_file_path(self, fp):
-        timestamp = int(fp.split('t')[-1].split('_')[0])
-        pose_id = int(fp.split('r')[-1])
-        return timestamp, pose_id
+        log.info(f"Video360Dataset - Loaded {self.split} set from {self.datadir}: "
+                 f"{poses.shape[0]} images of size {self.img_h}x{self.img_w} and "
+                 f"{imgs.shape[-1]} channels. "
+                 f"{len(torch.unique(timestamps))} timestamps up to time={torch.max(timestamps)}. "
+                 f"{intrinsics}")
 
-    def subsample_dataset(self, frames):
+    def __getitem__(self, index):
+        out = super()[index]
+        if self.split == 'train':
+            idxs = self.get_rand_ids(index)
+            out["timestamps"] = self.timestamps[idxs]
+            if self.extra_views:
+                out.update(self.patchloader[index])
+        else:
+            out["timestamps"] = self.timestamps[index]
+
+        return out
+
+
+def parse_360_file_path(fp):
+    timestamp = int(fp.split('t')[-1].split('_')[0])
+    pose_id = int(fp.split('r')[-1])
+    return timestamp, pose_id
+
+
+def load_360video_frames(datadir, split, max_cameras: int, max_tsteps: int) -> Tuple[Any, Any]:
+    with open(os.path.join(datadir, f"transforms_{split}.json"), 'r') as f:
+        meta = json.load(f)
+        frames = meta['frames']
+
         timestamps = set()
         pose_ids = set()
         for frame in frames:
-            timestamp, pose_id = self.parse_file_path(frame['file_path'])
+            timestamp, pose_id = parse_360_file_path(frame['file_path'])
             timestamps.add(timestamp)
             pose_ids.add(pose_id)
         timestamps = sorted(timestamps)
         pose_ids = sorted(pose_ids)
 
-        num_poses = min(len(pose_ids), self.max_cameras or len(pose_ids))
-        num_timestamps = min(len(timestamps), self.max_tsteps or len(timestamps))
+        num_poses = min(len(pose_ids), max_cameras or len(pose_ids))
+        num_timestamps = min(len(timestamps), max_tsteps or len(timestamps))
         subsample_time = int(round(len(timestamps) / num_timestamps))
         subsample_poses = int(round(len(pose_ids) / num_poses))
         if subsample_time == 1 and subsample_poses == 1:
@@ -73,7 +133,7 @@ class Video360Dataset(SyntheticNerfDataset):
         timestamps = set(timestamps[::subsample_time])
         pose_ids = set(pose_ids[::subsample_poses])
 
-        log_txt = f"Subsampling {self.split}: "
+        log_txt = f"Subsampling {split}: "
         if subsample_time > 1:
             log_txt += f"time (1 every {subsample_time}) "
         if subsample_poses > 1:
@@ -82,49 +142,28 @@ class Video360Dataset(SyntheticNerfDataset):
 
         sub_frames = []
         for frame in frames:
-            timestamp, pose_id = self.parse_file_path(frame['file_path'])
+            timestamp, pose_id = parse_360_file_path(frame['file_path'])
             if timestamp in timestamps and pose_id in pose_ids:
                 sub_frames.append(frame)
-        return sub_frames
-
-    def load_from_disk(self) -> Tuple[torch.Tensor, torch.Tensor, Intrinsics, torch.Tensor]:
-        """
-        This si the same as the SyntheticNerf with added loading of timestamps
-        """
-        with open(os.path.join(self.datadir, f"transforms_{self.split}.json"), 'r') as f:
-            meta = json.load(f)
-            frames = self.subsample_dataset(meta['frames'])
-            img_poses = parallel_load_images(
-                image_iter=frames, dset_type="synthetic", data_dir=self.datadir,
-                out_h=None, out_w=None, downsample=self.downsample,
-                resolution=self.resolution, tqdm_title=f'Loading {self.split} data')
-            imgs, poses = zip(*img_poses)
-            intrinsics = self.load_intrinsics(meta, height=imgs[0].shape[0], width=imgs[0].shape[1])
-            # Get timestamps as well
-            timestamps = [self.parse_file_path(frame['file_path'])[0] for frame in frames]
-        imgs = torch.stack(imgs, 0)  # [N, H, W, 3/4]
-        poses = torch.stack(poses, 0)  # [N, ????]
-        timestamps = torch.tensor(timestamps)  # [N]
-        log.info(f"Video360Dataset - Loaded {self.split} set from {self.datadir}: "
-                 f"{imgs.shape[0]} images of size {imgs.shape[1]}x{imgs.shape[2]} and "
-                 f"{imgs.shape[3]} channels. "
-                 f"{len(torch.unique(timestamps))} timestamps up to time={torch.max(timestamps)}. "
-                 f"{intrinsics}")
-        return imgs, poses, intrinsics, timestamps
+        return sub_frames, meta
 
 
-class VideoLLFFDataset(LLFFDataset):
+class VideoLLFFDataset(BaseDataset):
     """This version uses normalized device coordinates, as in LLFF, for forward-facing videos
     """
-    pil2tensor = torchvision.transforms.ToTensor()
-    tensor2pil = torchvision.transforms.ToPILImage()
+    len_time: int
+    timestamps: Optional[torch.Tensor]
+    subsample_time: float
 
     def __init__(self,
                  datadir,
-                 split='train',
+                 split: str,
+                 batch_size: Optional[int] = None,
+                 generator: Optional[torch.random.Generator] = None,
                  downsample=1.0,
-                 subsample_time=1,
-                 extra_views: bool = False):
+                 subsample_time=1.0,
+                 extra_views: bool = False,
+                 patch_size: Optional[int] = 8,):
         """
 
         :param datadir:
@@ -134,85 +173,132 @@ class VideoLLFFDataset(LLFFDataset):
             in [0,1] lets you use a percentage of randomly selected frames from each video
         :param extra_views:
         """
+
         self.subsample_time = subsample_time
-        self.timestamps: Optional[torch.Tensor] = None
+        self.downsample = downsample
+        self.patch_size = patch_size
+        self.near_far = [0.0, 1.0]
+        self.extra_views = split == 'train' and extra_views
+        self.patchloader = None
+
+        per_cam_poses, per_cam_near_fars, intrinsics, videopaths = load_llffvideo_poses(
+            datadir, downsample=self.downsample, split=split, near_scaling=1.0)
+        poses, imgs, timestamps = load_llffvideo_data(
+            videopaths=videopaths, poses=per_cam_poses, intrinsics=intrinsics, split=split,
+            subsample_time=self.subsample_time)
+        rays_o, rays_d, imgs = create_llff_rays(
+            imgs=imgs, poses=poses, intrinsics=intrinsics, merge_all=split == 'train')
         super().__init__(datadir=datadir,
                          split=split,
-                         downsample=downsample,
-                         extra_views=extra_views)
-        self.len_time = torch.amax(self.timestamps).item()
-
-    def fetch_data(self) -> Tuple[torch.Tensor, ...]:
-        self.poses, imgs, self.intrinsics, timestamps, self.near_fars = self.load_from_disk()
-
+                         scene_bbox=self.init_bbox(),
+                         is_ndc=True,
+                         generator=generator,
+                         batch_size=batch_size,
+                         imgs=imgs,
+                         rays_o=rays_o,
+                         rays_d=rays_d,
+                         intrinsics=intrinsics)
+        self.len_time = torch.amax(timestamps).item()
         if self.split == 'train':
             self.timestamps = timestamps[:, None, None].repeat(
-                1, self.intrinsics.height, self.intrinsics.width).reshape(-1)  # [n_frames * h * w]
+                1, intrinsics.height, intrinsics.width).reshape(-1)  # [n_frames * h * w]
         else:
-            self.timestamps = timestamps  # TODO: Why no repeat for test split?
+            self.timestamps = timestamps
 
-        self.rays_o, self.rays_d, self.imgs = self.init_rays(
-            imgs, self.poses, merge_all=self.split == 'train')
-
-        # The data returned from this function will be set as tensors of the class.
-        return self.rays_o, self.rays_d, self.imgs, self.timestamps
-
-    def init_bbox(self, datadir):
-        return torch.tensor([[-2.0, -2.0, -1.0], [2.0, 2.0, 1.0]])
-
-    def load_image(self, img, out_h, out_w, already_pil=False):
-        if not already_pil:
-            img = self.tensor2pil(img)
-        img = img.resize((out_w, out_h), Image.LANCZOS)  # PIL has x and y reversed from torch
-        img = self.pil2tensor(img)  # [C, H, W]
-        img = img.permute(1, 2, 0)  # [H, W, C]
-        return img
-
-    def load_from_disk(self) -> Tuple[List[torch.Tensor], List[torch.Tensor], Intrinsics, torch.Tensor, np.ndarray]:
-        """
-
-        :return:
-         - poses: a list with one item per each timestamp, pose combination (note that the poses
-            are the same across timestamps).
-         - imgs: a tensor of shape [N, H, W, 3] where N=timestamps * num_cameras
-         - intrinsics
-         - timestamps: a tensor of shape [N] indicating which timestamp each frame belongs to.
-         - near_fars: a numpy array of shape [num_cameras, 2]
-        """
-
-        poses, near_fars, intrinsics = self.load_all_poses()
-        videopaths = np.array(glob.glob(os.path.join(self.datadir, '*.mp4')))  # [n_cameras]
-        assert poses.shape[0] == len(videopaths), \
-            'Mismatch between number of cameras and number of poses!'
-        videopaths.sort()
-
-        # The first camera is reserved for testing, following https://github.com/facebookresearch/Neural_3D_Video/releases/tag/v1.0
-        if self.split == 'train':
-            split_ids = np.arange(1, poses.shape[0])
-        else:
-            split_ids = np.array([0])
-        poses, near_fars, videopaths = poses[split_ids], near_fars[split_ids], videopaths[split_ids]
-
-        imgs, timestamps = [], []
-        all_poses = []
-        for camera_id in tqdm(range(len(videopaths)), desc=f"Loading {self.split} data"):
-            cam_video = imageio.get_reader(videopaths[camera_id], 'ffmpeg')
-            for frame_idx, frame in enumerate(cam_video):
-                # Decide whether to keep this frame or not
-                if np.random.uniform() > self.subsample_time:
-                    continue
-                # Do any downsampling on the image
-                img = self.load_image(frame, intrinsics.height, intrinsics.width)
-                imgs.append(img)
-                timestamps.append(frame_idx)
-                all_poses.append(torch.from_numpy(poses[camera_id]).float())
-        timestamps = torch.tensor(timestamps)  # [N]
-        poses = all_poses  # [N, 3, 4]
+        if self.extra_views:
+            extra_poses = generate_spiral_path(
+                per_cam_poses.numpy(), per_cam_near_fars.numpy(), n_frames=120)
+            extra_rays_o, extra_rays_d, _ = create_llff_rays(
+                imgs=None, poses=extra_poses, intrinsics=intrinsics, merge_all=False)
+            extra_rays_o = extra_rays_o.view(-1, self.img_h, self.img_w, 3)
+            extra_rays_d = extra_rays_d.view(-1, self.img_h, self.img_w, 3)
+            self.patchloader = PatchLoader(extra_rays_o, extra_rays_d, len_time=self.len_time,
+                                           batch_size=self.batch_size, patch_size=self.patch_size,
+                                           generator=self.generator)
 
         log.info(f"VideoLLFFDataset - Loaded {self.split} set from {self.datadir}: "
-                 f"{len(imgs)} images of size {imgs[0].shape[0]}x{imgs[0].shape[1]} and "
-                 f"{imgs[0].shape[2]} channels. "
-                 f"{len(torch.unique(timestamps))} timestamps up to time={torch.max(timestamps)}. "
-                 f"{intrinsics}")
+                 f"{len(poses)} images of shape {self.img_h}x{self.img_w} with {imgs.shape[-1]} "
+                 f"channels. {len(torch.unique(timestamps))} timestamps up to "
+                 f"time={torch.max(timestamps)}. {intrinsics}")
 
-        return poses, imgs, intrinsics, timestamps, near_fars
+    def init_bbox(self):
+        return torch.tensor([[-2.0, -2.0, -1.0], [2.0, 2.0, 1.0]])
+
+    def __getitem__(self, index):
+        out = super()[index]
+        if self.split == 'train':
+            idxs = self.get_rand_ids(index)
+            out["timestamps"] = self.timestamps[idxs]
+            if self.extra_views:
+                out.update(self.patchloader[index])
+        else:
+            out["timestamps"] = self.timestamps[index]
+
+        return out
+
+
+def load_llffvideo_poses(datadir: str,
+                         downsample: float,
+                         split: str,
+                         near_scaling: float) -> Tuple[torch.Tensor, torch.Tensor, Intrinsics, List[str]]:
+    """
+
+    :return:
+     - poses: a list with one item per each timestamp, pose combination (note that the poses
+        are the same across timestamps).
+     - imgs: a tensor of shape [N, H, W, 3] where N=timestamps * num_cameras
+     - intrinsics
+     - timestamps: a tensor of shape [N] indicating which timestamp each frame belongs to.
+     - near_fars: a numpy array of shape [num_cameras, 2]
+    """
+
+    poses, near_fars, intrinsics = load_llff_poses_helper(datadir, downsample, near_scaling)
+
+    videopaths = np.array(glob.glob(os.path.join(datadir, '*.mp4')))  # [n_cameras]
+    assert poses.shape[0] == len(videopaths), \
+        'Mismatch between number of cameras and number of poses!'
+    videopaths.sort()
+
+    # The first camera is reserved for testing, following https://github.com/facebookresearch/Neural_3D_Video/releases/tag/v1.0
+    if split == 'train':
+        split_ids = np.arange(1, poses.shape[0])
+    else:
+        split_ids = np.array([0])
+    poses = torch.from_numpy(poses[split_ids])
+    near_fars = torch.from_numpy(near_fars[split_ids])
+    videopaths = videopaths[split_ids].tolist()
+
+    return poses, near_fars, intrinsics, videopaths
+
+
+def load_llffvideo_data(videopaths: List[str],
+                        poses: torch.Tensor,
+                        intrinsics: Intrinsics,
+                        split: str,
+                        subsample_time: float) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def load_frame(f, out_h, out_w, already_pil=False):
+        if not already_pil:
+            f = tensor2pil(f)
+        f = f.resize((out_w, out_h), Image.LANCZOS)  # PIL has x and y reversed from torch
+        f = pil2tensor(f)  # [C, H, W]
+        f = f.permute(1, 2, 0)  # [H, W, C]
+        return f
+
+    imgs, timestamps = [], []
+    all_poses = []
+    for camera_id in tqdm(range(len(videopaths)), desc=f"Loading {split} data"):
+        cam_video = imageio.get_reader(videopaths[camera_id], 'ffmpeg')
+        for frame_idx, frame in enumerate(cam_video):
+            # Decide whether to keep this frame or not
+            if np.random.uniform() > subsample_time:
+                continue
+            # Do any downsampling on the image
+            img = load_frame(frame, intrinsics.height, intrinsics.width)
+            imgs.append(img)
+            timestamps.append(frame_idx)
+            all_poses.append(poses[camera_id])
+    timestamps = torch.tensor(timestamps, dtype=torch.int32)  # [N]
+    poses = torch.stack(all_poses, 0)  # [N, 3, 4]
+    imgs = torch.stack(imgs, 0)
+
+    return poses, imgs, timestamps

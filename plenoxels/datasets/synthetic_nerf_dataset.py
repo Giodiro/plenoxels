@@ -40,6 +40,7 @@ class SyntheticNerfDataset(BaseDataset):
         self.dset_id = dset_id
         self.near_far = [2.0, 6.0]
         self.extra_views = split == 'train' and extra_views
+        self.patchloader = None
 
         frames, transform = load_360_frames(datadir, split, self.max_frames)
         imgs, poses = load_360_images(frames, datadir, split, self.downsample, self.resolution)
