@@ -39,7 +39,7 @@ class SyntheticNerfDataset(BaseDataset):
         self.patch_size = patch_size
         self.dset_id = dset_id
         self.near_far = [2.0, 6.0]
-        self.extra_views = self.split == 'train' and extra_views
+        self.extra_views = split == 'train' and extra_views
 
         frames, transform = load_360_frames(datadir, split, self.max_frames)
         imgs, poses = load_360_images(frames, datadir, split, self.downsample, self.resolution)
@@ -67,9 +67,11 @@ class SyntheticNerfDataset(BaseDataset):
             self.patchloader = PatchLoader(extra_rays_o, extra_rays_d, len_time=None,
                                            batch_size=self.batch_size, patch_size=self.patch_size,
                                            generator=self.generator)
+        log.info(f"SyntheticNerfDataset - Loaded {split} set from {datadir}: {len(poses)} images of size "
+                 f"{self.img_h}x{self.img_w} and {imgs.shape[-1]} channels. {intrinsics}")
 
     def __getitem__(self, index):
-        out = super()[index]
+        out = super().__getitem__(index)
         out["dset_id"] = self.dset_id
         if self.split == 'train' and self.extra_views:
             out.update(self.patchloader[index])
@@ -143,8 +145,6 @@ def load_360_images(frames, datadir, split, downsample, resolution) -> Tuple[tor
     imgs, poses = zip(*img_poses)
     imgs = torch.stack(imgs, 0)  # [N, H, W, 3/4]
     poses = torch.stack(poses, 0)  # [N, ????]
-    # log.info(f"SyntheticNerfDataset - Loaded {self.split} set from {self.datadir}: {imgs.shape[0]} images of size "
-    #          f"{imgs.shape[1]}x{imgs.shape[2]} and {imgs.shape[3]} channels. {intrinsics}")
     return imgs, poses
 
 

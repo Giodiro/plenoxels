@@ -75,7 +75,7 @@ class BaseDataset(Dataset, ABC):
                 "rays_d": self.rays_d[idxs].contiguous(),
             }
             if self.imgs is not None:
-                out["imgs"] = self.imgs[idxs].contiguous(),
+                out["imgs"] = self.imgs[idxs].contiguous()
             return out
         else:
             out = {

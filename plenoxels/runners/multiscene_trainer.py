@@ -68,10 +68,13 @@ class Trainer():
         self.save_every = save_every
         self.valid_every = valid_every
         self.save_outputs = save_outputs
-        self.density_mask_update_steps = list(kwargs.get('dmask_update', []))
-        self.upsample_steps = list(kwargs.get('upsample_steps', []))
+        # All 'steps' things must be multiplied by the number of datasets
+        # to get consistent amount of training independently of how many dsets.
+        self.density_mask_update_steps = [s * self.num_dsets for s in kwargs.get('dmask_update', [])]
+        self.upsample_steps = [s * self.num_dsets for s in kwargs.get('upsample_steps', [])]
         self.upsample_resolution_list = list(kwargs.get('upsample_resolution', []))
-        assert len(self.upsample_resolution_list) == len(self.upsample_steps)
+        assert len(self.upsample_resolution_list) == len(self.upsample_steps), \
+            f"Got {len(self.upsample_steps)} upsample_steps and {len(self.upsample_resolution_list)} upsample_resolution."
 
         self.log_dir = os.path.join(logdir, expname)
         os.makedirs(self.log_dir, exist_ok=True)
@@ -186,7 +189,8 @@ class Trainer():
             logging.info(f"Updating alpha-mask for all datasets at step {self.global_step}.")
             for u_dset_id in range(self.num_dsets):
                 new_aabb = self.model.update_alpha_mask(grid_id=u_dset_id)
-                if self.global_step == min(self.density_mask_update_steps):
+                sorted_updates = sorted(self.density_mask_update_steps)
+                if self.global_step == sorted_updates[0] or self.global_step == sorted_updates[1]:#min(self.density_mask_update_steps):
                     self.model.shrink(new_aabb, grid_id=u_dset_id)
                     opt_reset_required = True
         try:
@@ -214,12 +218,12 @@ class Trainer():
 
         dset_id = data["dset_id"]
         self.writer.add_scalar(f"mse/D{dset_id}", self.loss_info[dset_id]["mse"].value, self.global_step)
-        progress_bar.set_postfix_str(losses_to_postfix(self.loss_info), refresh=False)
+        progress_bar.set_postfix_str(losses_to_postfix(self.loss_info, lr=self.cur_lr()), refresh=False)
         progress_bar.update(1)
 
     def pre_epoch(self):
         for d in self.train_datasets:
-            d.reset
+            d.reset_iter()
         self.init_epoch_info()
         self.model.train()
 
@@ -386,7 +390,7 @@ class Trainer():
         if self.transfer_learning:
             # Only reload model components that are not scene-specific, and don't reload the optimizer or scheduler
             for key in checkpoint_data["model"].keys():
-                if 'scene' in key:
+                if 'scene' in key or 'density' in key or 'aabb' in key or 'resolution' in key:
                     continue
                 self.model.load_state_dict({key: checkpoint_data["model"][key]}, strict=False)
                 logging.info(f"=> Loaded model state {key} with shape {checkpoint_data['model'][key].shape} from checkpoint")
@@ -416,7 +420,7 @@ class Trainer():
                 self.optimizer,
                 T_max=max_steps,
                 eta_min=eta_min)
-            log.info(f"Initialized CosineAnnealing LR Scheduler with {max_steps} maximum steps.")
+            logging.info(f"Initialized CosineAnnealing LR Scheduler with {max_steps} maximum steps.")
         return lr_sched
 
     def init_optim(self, **kwargs) -> torch.optim.Optimizer:
@@ -439,14 +443,21 @@ class Trainer():
         model.cuda()
         return model
 
+    def cur_lr(self):
+        if self.scheduler is not None:
+            return self.scheduler.get_last_lr()[0]
+        return None
 
-def losses_to_postfix(losses: List[Dict[str, EMA]]) -> str:
+
+def losses_to_postfix(losses: List[Dict[str, EMA]], lr: float) -> str:
     pfix_list = []
     for dset_id, loss_dict in enumerate(losses):
         pfix_inner = []
         for lname, lval in loss_dict.items():
             pfix_inner.append(f"{lname}={lval}")
         pfix_list.append(f"D{dset_id}({', '.join(pfix_inner)})")
+    if lr is not None:
+        pfix_list.append(f"lr={lr:.2e}")
     return '  '.join(pfix_list)
 
 
