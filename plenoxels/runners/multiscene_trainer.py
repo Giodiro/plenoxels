@@ -169,7 +169,8 @@ class Trainer():
         self.gscaler.update()
 
         recon_loss_val = recon_loss.item()
-        self.loss_info[dset_id]["mse"].update(recon_loss_val)
+        if len(self.ts_dsets) < 5:
+            self.loss_info[dset_id]["mse"].update(recon_loss_val)
         self.loss_info[dset_id]["psnr"].update(-10 * math.log10(recon_loss_val))
         if depth_tv is not None:
             self.loss_info[dset_id]["depth_tv"].update(depth_tv.item())
@@ -203,7 +204,8 @@ class Trainer():
             w = np.clip(self.global_step / (1 if self.regnerf_weight_max_step < 1 else self.regnerf_weight_max_step), 0, 1)
             self.cur_regnerf_weight = self.regnerf_weight_start * (1 - w) + w * self.regnerf_weight_end
 
-        self.writer.add_scalar(f"mse/D{dset_id}", self.loss_info[dset_id]["mse"].value, self.global_step)
+        if len(self.ts_dsets) < 5:
+            self.writer.add_scalar(f"mse/D{dset_id}", self.loss_info[dset_id]["mse"].value, self.global_step)
         progress_bar.set_postfix_str(losses_to_postfix(self.loss_info), refresh=False)
         progress_bar.update(1)
 

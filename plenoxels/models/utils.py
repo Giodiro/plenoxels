@@ -93,6 +93,11 @@ def grid_sample_wrapper(grid: torch.Tensor, coords: torch.Tensor, align_corners:
 
 # Based on https://github.com/google-research/google-research/blob/342bfc150ef1155c5254c1e6bd0c912893273e8d/regnerf/internal/math.py#L237
 def compute_tv_norm(depths, losstype='l2', weighting=None):
+
+    # Do the weighting before computing TV, because otherwise there are off-by-one issues that can cause large errors
+    if weighting is not None:
+        depths = depths * weighting
+
     # depths [n_patches, h, w]
     v00 = depths[:, :-1, :-1]
     v01 = depths[:, :-1, 1:]
@@ -105,18 +110,23 @@ def compute_tv_norm(depths, losstype='l2', weighting=None):
     else:
         raise ValueError('Not supported losstype.')
 
-    if weighting is not None:
-        loss = loss * weighting[:, :-1, :-1]
+    # if weighting is not None:
+    #     loss = loss * weighting[:, :-1, :-1]
 
     return torch.mean(loss)
 
 
 def compute_plane_tv(t):
     batch_size, c, h, w = t.shape
-
     count_h = batch_size * c * (h - 1) * w
     count_w = batch_size * c * h * (w - 1)
     h_tv = torch.square(t[..., 1:, :] - t[..., :h-1, :]).sum()
     w_tv = torch.square(t[..., :, 1:] - t[..., :, :w-1]).sum()
-    return 2 * (h_tv / count_h + w_tv / count_w)
+    return 2 * (h_tv / count_h + w_tv / count_w)  # This is summing over batch and c instead of avg
+
+    # v00 = t[..., :-1, :-1]
+    # v01 = t[..., :-1, 1:]
+    # v10 = t[..., 1:, :-1]
+    # loss = ((v00 - v01) ** 2) + ((v00 - v10) ** 2)
+    # return torch.mean(loss)
 

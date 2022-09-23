@@ -1,13 +1,14 @@
 # configuration file to be used with `main.py` for video training
 config = {
-    # "expname": "legovideo20views_regtaudepthweightedacc_1_3framesrank3",
-    "expname": "testrelu_samerank",
+    # "expname": "legovideo20views_regdepthweightedacc_400_0.1_512_3framesreso3rank20",
+    "expname": "test",
+    # "expname": "testrelu_sameranktimereso128_llff",
     "logdir": "./logs",
 
     # Data settings
     "data_downsample": 3.0,
     "data_dirs": ["/home/sfk/data/3DVideo/lego_video"],
-    # "data_dir": "/data/datasets/3DVideo/coffee_martini",
+    # "data_dirs": ["/home/sfk/data/3DVideo/coffee_martini"],
     # "data_dir": "/data/datasets/nerf/data/nerf_synthetic/lego",
 
     # Data settings for 360
@@ -20,8 +21,11 @@ config = {
 
 
     # Optimization settings
-    "num_epochs": 15,
-    "regnerf_weight": 0.0,
+    "num_epochs": 10,
+    "regnerf_weight_start": 10,
+    "regnerf_weight_end": 0.1,
+    "regnerf_weight_max_step": 512,
+    "plane_tv_weight": 0, # Not used for video yet
     "scheduler_type": None,
     "batch_size": 3500,  
     "optim_type": "adam",

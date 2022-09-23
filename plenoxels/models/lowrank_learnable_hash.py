@@ -405,7 +405,10 @@ class LowrankLearnableHash(nn.Module):
         total = 0
         for grid_ls in grids:
             for grid in grid_ls:
-                total += compute_plane_tv(grid)
+                # Look up the features so we do tv on features rather than coordinates
+                coords = grid.view(-1, len(self.features.shape)-1)
+                features = grid_sample_wrapper(self.features, coords).reshape(-1, self.feature_dim, grid.shape[-2], grid.shape[-1])
+                total += compute_plane_tv(features)
         return total
 
     def get_params(self, lr):
