@@ -120,12 +120,12 @@ class RayMarcher():
         ridx = ridx[..., None].repeat(1, n_intersections)[mask]
         boundary = spc_render.mark_pack_boundaries(ridx)
 
-        deltas = deltas[mask]
-        intrs_pts = intrs_pts[mask]
+        #deltas = deltas[mask]
+        #intrs_pts = intrs_pts[mask]
 
         return {
             "intersections": intrs_pts,
-            "z_vals": intersections[mask],
+            "z_vals": intersections,#[mask],
             "z_mids": intersection_mids[mask],
             "ridx": ridx,
             "boundary": boundary,

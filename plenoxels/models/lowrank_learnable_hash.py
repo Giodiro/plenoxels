@@ -331,8 +331,12 @@ class LowrankLearnableHash(nn.Module):
         ridx = rm_out["ridx"]
         boundary = rm_out["boundary"]
         z_mids = rm_out["z_mids"]
+        z_vals = rm_out["z_vals"]
+        mask = rm_out["mask"]
         n_rays = rays_o.shape[0]
         dev = rays_o.device
+
+        version = 2
 
         # mask has shape [batch, n_intrs]
         # intersection_pts has shape [n_valid_intrs, 3]
@@ -341,12 +345,17 @@ class LowrankLearnableHash(nn.Module):
         if self.density_mask[grid_id] is not None:
             # density_mask needs unnormalized coordinates: normalization happens internally
             # and can be with a different aabb than the current one.
-            alpha_mask = self.density_mask[grid_id].sample_density(intersection_pts) > 0
-            intersection_pts = intersection_pts[alpha_mask]
-            deltas = deltas[alpha_mask]
-            ridx = ridx[alpha_mask]
-            z_mids = z_mids[alpha_mask]
-            boundary = spc_render.mark_pack_boundaries(ridx)
+            alpha_mask = self.density_mask[grid_id].sample_density(intersection_pts[mask]) > 0
+            if version == 2:
+                invalid_mask = ~mask
+                invalid_mask[mask] |= (~alpha_mask)
+                mask = ~invalid_mask
+
+            #intersection_pts = intersection_pts[alpha_mask]
+            #deltas = deltas[alpha_mask]
+            #ridx = ridx[alpha_mask]
+            #z_mids = z_mids[alpha_mask]
+            #boundary = spc_render.mark_pack_boundaries(ridx)
 
         # Normalization (between [-1, 1])
         intersection_pts = self.normalize_coord(intersection_pts, grid_id)
@@ -366,55 +375,83 @@ class LowrankLearnableHash(nn.Module):
                 outputs["alpha"] = torch.zeros(n_rays, 1, device=dev, dtype=rays_o.dtype)
             return outputs
 
-        # rays_d in the packed format (essentially repeated a number of times)
-        rays_d_rep = rays_d.index_select(0, ridx)
-
         # compute features and render
-        features = self.compute_features(intersection_pts, grid_id)
-        try:
-            density_masked = torch.relu(self.decoder.compute_density(features, rays_d=rays_d_rep))
-            rgb_masked = torch.sigmoid(self.decoder.compute_color(features, rays_d=rays_d_rep))
-        except:
-            # An error occurs randomly. I suspect when features is empty. This is to check my hyp.
-            log.error(f"Error in decoding. number of features: {features.shape}")
-            raise
-
-        # Compute optical thickness
-        tau = density_masked.reshape(-1, 1) * deltas.reshape(-1, 1) * self.density_multiplier
-        # ridx_hit are the ray-IDs at the first intersection (the boundary).
-        ridx_hit = ridx[boundary]
-        # Perform volumetric integration
-        ray_colors, transmittance = spc_render.exponential_integration(
-            rgb_masked.reshape(-1, 3), tau, boundary, exclusive=True)
-
-        alpha = spc_render.sum_reduce(transmittance, boundary)
+        features = self.compute_features(intersection_pts[mask], grid_id)
 
         outputs = {}
-        if "rgb" in channels:
-            # Blend output color with background
-            if bg_color is None:
-                rgb = torch.zeros((n_rays, 3), dtype=ray_colors.dtype, device=dev)
-                color = ray_colors
-            elif isinstance(bg_color, torch.Tensor) and bg_color.shape == (n_rays, 3):
-                rgb = bg_color
-                color = ray_colors + (1.0 - alpha) * bg_color[ridx_hit.long(), :]
-            else:
-                rgb = torch.full((n_rays, 3), bg_color, dtype=ray_colors.dtype, device=dev)
-                color = ray_colors + (1.0 - alpha) * bg_color
-            rgb[ridx_hit.long(), :] = color
-            outputs["rgb"] = rgb
+        if version == 2:
+            rays_d_rep = rays_d.view(-1, 1, 3).expand(intersection_pts.shape)
+            masked_rays_d_rep = rays_d_rep[mask]
 
-        if "depth" in channels:
-            # Compute depth
-            depth_map = spc_render.sum_reduce(z_mids.view(-1, 1) * transmittance, boundary) / torch.clip(alpha, 1e-5)
-            depth = torch.zeros(n_rays, 1, device=dev, dtype=depth_map.dtype)
-            depth[ridx_hit.long(), :] = depth_map
-            outputs["depth"] = depth
+            density_masked = torch.relu(self.decoder.compute_density(features, rays_d=masked_rays_d_rep))
+            density = torch.zeros(intersection_pts.shape[:-1], device=intersection_pts.device, dtype=density_masked.dtype)
+            density[mask] = density_masked.view(-1)
 
-        if "alpha" in channels:
-            alpha_out = torch.zeros(n_rays, 1, device=alpha.device, dtype=alpha.dtype)
-            alpha_out[ridx_hit.long(), :] = alpha
-            outputs["alpha"] = alpha_out
+            alpha, weight, bg_weight = raw2alpha(density, z_vals * self.density_multiplier)
+
+            rgb_masked = torch.sigmoid(self.decoder.compute_color(features, rays_d=masked_rays_d_rep))
+            rgb = torch.zeros((*intersection_pts.shape[:2], 3), device=intersection_pts.device, dtype=rgb_masked.dtype)
+            rgb[mask] = rgb_masked
+
+            acc_map = torch.sum(weight, -1)
+
+            if "rgb" in channels:
+                rgb_map = torch.sum(weight[..., None] * rgb, -2)
+                if bg_color is None:
+                    pass
+                elif isinstance(bg_color, torch.Tensor) and bg_color.shape == (n_rays, 3):
+                    rgb_map = rgb_map + (1.0 - acc_map[..., None]) * bg_color
+                else:
+                    rgb_map = rgb_map + (1.0 - acc_map[..., None]) * bg_color
+                outputs["rgb"] = rgb_map
+
+            if "depth" in channels:
+                depth_map = torch.sum(weight * z_vals, -1)
+                depth_map = depth_map + (1.0 - acc_map) * rays_d[..., -1]
+                outputs["depth"] = depth_map
+        elif version == 1:
+            ridx = ridx[mask]
+            boundary = spc_render.mark_pack_boundaries(ridx)
+
+            # rays_d in the packed format (essentially repeated a number of times)
+            rays_d_rep = rays_d.index_select(0, ridx)
+
+            density_masked = torch.relu(self.decoder.compute_density(features, rays_d=rays_d_rep))
+            rgb_masked = torch.sigmoid(self.decoder.compute_color(features, rays_d=rays_d_rep))
+
+            # Compute optical thickness
+            tau = density_masked.reshape(-1, 1) * deltas.reshape(-1, 1) * self.density_multiplier
+            # ridx_hit are the ray-IDs at the first intersection (the boundary).
+            ridx_hit = ridx[boundary]
+            # Perform volumetric integration
+            ray_colors, transmittance = spc_render.exponential_integration(
+                rgb_masked.reshape(-1, 3), tau, boundary, exclusive=True)
+
+            alpha = spc_render.sum_reduce(transmittance, boundary)
+
+            if "rgb" in channels:
+                # Blend output color with background
+                if bg_color is None:
+                    rgb = torch.zeros((n_rays, 3), dtype=ray_colors.dtype, device=dev)
+                    color = ray_colors
+                elif isinstance(bg_color, torch.Tensor) and bg_color.shape == (n_rays, 3):
+                    rgb = bg_color
+                    color = ray_colors + (1.0 - alpha) * bg_color[ridx_hit.long(), :]
+                else:
+                    rgb = torch.full((n_rays, 3), bg_color, dtype=ray_colors.dtype, device=dev)
+                    color = ray_colors + (1.0 - alpha) * bg_color
+                rgb[ridx_hit.long(), :] = color
+                outputs["rgb"] = rgb
+            if "depth" in channels:
+                # Compute depth
+                depth_map = spc_render.sum_reduce(z_mids.view(-1, 1) * transmittance, boundary) / torch.clip(alpha, 1e-5)
+                depth = torch.zeros(n_rays, 1, device=dev, dtype=depth_map.dtype)
+                depth[ridx_hit.long(), :] = depth_map
+                outputs["depth"] = depth
+            if "alpha" in channels:
+                alpha_out = torch.zeros(n_rays, 1, device=alpha.device, dtype=alpha.dtype)
+                alpha_out[ridx_hit.long(), :] = alpha
+                outputs["alpha"] = alpha_out
 
         return outputs
 
@@ -441,6 +478,14 @@ class LowrankLearnableHash(nn.Module):
                 {"params": self.features, "lr": lr},
             ]
         return params
+
+
+def raw2alpha(sigma, dist):
+    alpha = 1 - torch.exp(-sigma * dist)
+    T = torch.cumprod(torch.cat([torch.ones(alpha.shape[0], 1, device=alpha.device), 1 - alpha + 1e-10], -1), -1)
+
+    weights = alpha * T[:, :-1]
+    return alpha, weights, T[:, -1:]
 
 
 def to_list(el, list_len, name: Optional[str] = None) -> Sequence:
