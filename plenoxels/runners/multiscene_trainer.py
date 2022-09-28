@@ -395,7 +395,13 @@ class Trainer():
                 self.model.load_state_dict({key: checkpoint_data["model"][key]}, strict=False)
                 logging.info(f"=> Loaded model state {key} with shape {checkpoint_data['model'][key].shape} from checkpoint")
         else:
+            # Loading model grids is complicated due to possible shrinkage.
+            for k, v in checkpoint_data['model'].items():
+                if 'scene_grids' in k:
+                    grid_id = int(k.split('.')[1])
+                    self.model.upsample(list(v.shape), grid_id)
             self.model.load_state_dict(checkpoint_data["model"])
+
             logging.info("=> Loaded model state from checkpoint")
             self.optimizer.load_state_dict(checkpoint_data["optimizer"])
             logging.info("=> Loaded optimizer state from checkpoint")
@@ -421,6 +427,15 @@ class Trainer():
                 T_max=max_steps,
                 eta_min=eta_min)
             logging.info(f"Initialized CosineAnnealing LR Scheduler with {max_steps} maximum steps.")
+        elif self.scheduler_type == "step":
+            lr_sched = torch.optim.lr_scheduler.LinearLR(
+                self.optimizer, total_iters=500, start_factor=0.2, end_factor=1.0)
+            max_steps = int(self.num_epochs * len(self.train_data_loader))
+            lr_sched2 = torch.optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer,
+                T_max=max_steps,
+                eta_min=eta_min)
+            lr_sched = torch.optim.lr_scheduler.ChainedScheduler([lr_sched, lr_sched2])
         return lr_sched
 
     def init_optim(self, **kwargs) -> torch.optim.Optimizer:

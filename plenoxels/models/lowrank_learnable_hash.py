@@ -182,7 +182,7 @@ class LowrankLearnableHash(nn.Module):
         assert len(self.config) == 2, "Alpha-masking not supported for multiple layers of indirection."
         aabb = self.aabb(grid_id)
         grid_size = self.resolution(grid_id)
-        grid_size_l = self.config[0]["resolution"]
+        grid_size_l = grid_size.cpu().tolist()
         dev = aabb.device
         step_size = self.raymarcher.get_step_size(aabb, grid_size)
 
@@ -278,15 +278,15 @@ class LowrankLearnableHash(nn.Module):
 
     def compute_grid_density(self, grid_id, use_mask: bool, max_voxels: Optional[int] = None):
         aabb = self.aabb(grid_id)
-        grid_size_l = self.config[0]["resolution"]
+        grid_size_l = self.resolution(grid_id)#.cpu().tolist()
         dev = aabb.device
 
         # Generate points in regularly spaced grid
         pts = torch.stack(torch.meshgrid(
-            torch.linspace(0, 1, grid_size_l[0]),
-            torch.linspace(0, 1, grid_size_l[1]),
-            torch.linspace(0, 1, grid_size_l[2]), indexing='ij'
-        ), dim=-1).to(dev)  # [gs0, gs1, gs2, 3]
+            torch.linspace(0, 1, grid_size_l[0], device=dev),
+            torch.linspace(0, 1, grid_size_l[1], device=dev),
+            torch.linspace(0, 1, grid_size_l[2], device=dev), indexing='ij'
+        ), dim=-1)  # [gs0, gs1, gs2, 3]
         pts = pts.view(-1, 3)  # [gs0*gs1*gs2, 3]
         if max_voxels is not None:
             # with replacement as it's faster?
@@ -323,7 +323,7 @@ class LowrankLearnableHash(nn.Module):
         rays_d : [batch, 3]
         """
         rm_out = self.raymarcher.get_intersections2(
-            rays_o, rays_d, self.aabb(grid_id), self.resolution(grid_id), perturb=False,#self.training,
+            rays_o, rays_d, self.aabb(grid_id), self.resolution(grid_id), perturb=self.training,
             is_ndc=self.is_ndc)
         rays_d = rm_out["rays_d"]
         deltas = rm_out["deltas"]
@@ -432,13 +432,11 @@ class LowrankLearnableHash(nn.Module):
 
 
     def get_params(self, lr):
-        if self.transfer_learning:
-            params = [
-                {"params": self.scene_grids.parameters(), "lr": lr},
-            ]
-        else:
-            params = [
-                {"params": self.scene_grids.parameters(), "lr": lr},
+        params = [
+            {"params": self.scene_grids.parameters(), "lr": lr},
+        ]
+        if not self.transfer_learning:
+            params += [
                 {"params": self.decoder.parameters(), "lr": lr},
                 {"params": self.features, "lr": lr},
             ]
