@@ -1,7 +1,7 @@
 import collections.abc
 import itertools
 import math
-from typing import Dict, List, Union, Optional, Sequence
+from typing import Dict, List, Union, Optional, Sequence, Tuple
 import logging as log
 
 import torch
@@ -49,9 +49,9 @@ class LowrankLearnableHash(nn.Module):
         self.extra_args = kwargs
         self.is_ndc = is_ndc
         self.density_multiplier = self.extra_args.get("density_multiplier")
-
         self.transfer_learning = self.extra_args["transfer_learning"]
         self.alpha_mask_threshold = self.extra_args["density_threshold"]
+
         self.scene_grids = nn.ModuleList()
         self.features = None
         self.feature_dim = None
@@ -100,7 +100,7 @@ class LowrankLearnableHash(nn.Module):
                     grids.append(grid_coefs)
             self.scene_grids.append(grids)
         self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
-        self.raymarcher = RayMarcher(**self.extra_args)
+        # self.raymarcher = RayMarcher(**self.extra_args)
         self.density_mask = nn.ModuleList([None] * num_scenes)
         log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes.")
 
@@ -140,7 +140,18 @@ class LowrankLearnableHash(nn.Module):
     def resolution(self, i: int) -> torch.Tensor:
         return getattr(self, f'resolution{i}')
 
-    def compute_features(self, pts: torch.Tensor, grid_id: int) -> torch.Tensor:
+    def compute_features(self,
+                         pts: torch.Tensor,
+                         grid_id: int,
+                         return_coords: bool = False
+                         ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        """
+        :param pts:
+            Coordinates normalized between -1, 1
+        :param grid_id:
+        :param return_coords:
+        :return:
+        """
         grids: nn.ModuleList = self.scene_grids[grid_id]  # noqa
         grids_info = self.config
 
@@ -163,10 +174,13 @@ class LowrankLearnableHash(nn.Module):
                         grid_sample_wrapper(grid[ci], interp[..., coo_comb]).view(
                             -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
             interp = interp_out.sum(dim=-1)
-        return grid_sample_wrapper(self.features.to(dtype=interp.dtype), interp).view(-1, self.feature_dim)
+        out = grid_sample_wrapper(self.features.to(dtype=interp.dtype), interp).view(-1, self.feature_dim)
+        if return_coords:
+            return out, interp
+        return out
 
     @torch.autograd.no_grad()
-    def normalize_coord(self, pts: torch.Tensor, grid_id: int) -> torch.Tensor:
+    def normalize_coords(self, pts: torch.Tensor, grid_id: int) -> torch.Tensor:
         """
         break-down of the normalization steps. pts starts from [a0, a1]
         1. pts - a0 => [0, a1-a0]
@@ -183,11 +197,11 @@ class LowrankLearnableHash(nn.Module):
         aabb = self.aabb(grid_id)
         grid_size = self.resolution(grid_id)
         grid_size_l = grid_size.cpu().tolist()
-        dev = aabb.device
         step_size = self.raymarcher.get_step_size(aabb, grid_size)
 
         # Compute density on a regular grid (of shape grid_size)
-        density, pts = self.compute_grid_density(grid_id, use_mask=True)
+        pts = self.get_points_on_grid(aabb, grid_size, max_voxels=None)
+        density = self.compute_density(pts, grid_id, use_mask=True)
 
         alpha = 1.0 - torch.exp(-density * step_size * self.density_multiplier).view(grid_size_l)  # [gs0, gs1, gs2]
         pts = pts.view(grid_size_l + [3])  # [gs0, gs1, gs2, 3]
@@ -276,16 +290,21 @@ class LowrankLearnableHash(nn.Module):
             torch.tensor(new_reso, dtype=torch.long, device=grid_data.device), grid_id)
         log.info(f"Upsampled scene {grid_id} to resolution={new_reso}")
 
-    def compute_grid_density(self, grid_id, use_mask: bool, max_voxels: Optional[int] = None):
-        aabb = self.aabb(grid_id)
-        grid_size_l = self.resolution(grid_id)#.cpu().tolist()
-        dev = aabb.device
+    def get_points_on_grid(self, aabb, grid_size, max_voxels: Optional[int] = None):
+        """
+        Returns points from a regularly spaced grids of size grid_size.
+        Coordinates normalized between [aabb0, aabb1]
 
-        # Generate points in regularly spaced grid
+        :param aabb:
+        :param grid_size:
+        :param max_voxels:
+        :return:
+        """
+        dev = self.features.device
         pts = torch.stack(torch.meshgrid(
-            torch.linspace(0, 1, grid_size_l[0], device=dev),
-            torch.linspace(0, 1, grid_size_l[1], device=dev),
-            torch.linspace(0, 1, grid_size_l[2], device=dev), indexing='ij'
+            torch.linspace(0, 1, grid_size[0], device=dev),
+            torch.linspace(0, 1, grid_size[1], device=dev),
+            torch.linspace(0, 1, grid_size[2], device=dev), indexing='ij'
         ), dim=-1)  # [gs0, gs1, gs2, 3]
         pts = pts.view(-1, 3)  # [gs0*gs1*gs2, 3]
         if max_voxels is not None:
@@ -293,25 +312,23 @@ class LowrankLearnableHash(nn.Module):
             pts = pts[torch.randint(pts.shape[0], (max_voxels, )), :]
         # Normalize between [aabb0, aabb1]
         pts = aabb[0] * (1 - pts) + aabb[1] * pts
+        return pts
 
-        # Compute density on the grid
-        return self.compute_density(pts, grid_id, use_mask), pts
-
-    def compute_density(self, pts, grid_id, use_mask):
+    def compute_density(self, pts: torch.Tensor, grid_id: int, use_mask: bool):
         dev = pts.device
         alpha_mask = None
         if self.density_mask[grid_id] is not None and use_mask:
-            alpha_mask = self.density_mask[grid_id].sample_density(pts) > 0.0
+            alpha_mask = self.density_mask[grid_id].sample_density(pts).gt(0.0)
 
         if alpha_mask is not None and alpha_mask.any():
-            pts_sampled = self.normalize_coord(pts[alpha_mask], grid_id)
+            pts_sampled = self.normalize_coords(pts[alpha_mask], grid_id)
             features = self.compute_features(pts_sampled, grid_id)
             density_masked = torch.relu(
                 self.decoder.compute_density(features, rays_d=None, precompute_color=False))
             density = torch.zeros(pts.shape[0], dtype=density_masked.dtype, device=dev)
             density[alpha_mask] = density_masked.view(-1)
         elif alpha_mask is None:
-            features = self.compute_features(self.normalize_coord(pts, grid_id), grid_id)
+            features = self.compute_features(self.normalize_coords(pts, grid_id), grid_id)
             density = torch.relu(self.decoder.compute_density(features, rays_d=None, precompute_color=False)).view(-1)
         else:
             density = torch.zeros(pts.shape[0], dtype=torch.float32, device=dev)
@@ -344,7 +361,7 @@ class LowrankLearnableHash(nn.Module):
                 mask = ~invalid_mask
 
         # Normalization (between [-1, 1])
-        intersection_pts = self.normalize_coord(intersection_pts, grid_id)
+        intersection_pts = self.normalize_coords(intersection_pts, grid_id)
 
         if len(intersection_pts) == 0:
             outputs = {}
@@ -450,9 +467,50 @@ class LowrankLearnableHash(nn.Module):
         return total
 
     def compute_l1density(self, max_voxels, grid_id):
-        density, _ = self.compute_grid_density(grid_id, use_mask=True, max_voxels=max_voxels)
+        pts = self.get_points_on_grid(
+            self.aabb(grid_id), self.resolution(grid_id), max_voxels=max_voxels)
+        # Compute density on the grid
+        density = self.compute_density(pts, grid_id, use_mask=True)
         return torch.mean(torch.abs(density))
 
+    def compute_3d_tv(self, grid_id, what, batch_size=100, patch_size=8):
+        aabb = self.aabb(grid_id)
+        grid_size_l = self.resolution(grid_id)
+        dev = aabb.device
+
+        pts = torch.stack(torch.meshgrid(
+            torch.linspace(0, 1, patch_size, device=dev),
+            torch.linspace(0, 1, patch_size, device=dev),
+            torch.linspace(0, 1, patch_size, device=dev), indexing='ij'
+        ), dim=-1)  # [gs0, gs1, gs2, 3]
+        pts = pts.view(-1, 3)
+
+        start = torch.rand(batch_size, 3, device=dev) * (1 - patch_size / grid_size_l[0])
+        end = start + (patch_size / grid_size_l[0])
+
+        # pts: [1, gs0, gs1, gs2, 3] * (bs, 1, 1, 1, 3) + (bs, 1, 1, 1, 3)
+        pts = pts[None, ...] * (end - start)[:, None, None, None, :] + start[:, None, None, None, :]
+        pts = pts.view(-1, 3)  # [bs*gs0*gs1*gs2, 3]
+
+        # Normalize between [aabb0, aabb1]
+        pts = aabb[0] * (1 - pts) + aabb[1] * pts
+
+        if what == 'density':
+            # Compute density on the grid
+            density = self.compute_density(pts, grid_id, use_mask=False)
+            patches = density.view(-1, patch_size, patch_size, patch_size)
+        elif what == 'Gcoords':
+            pts = self.normalize_coords(pts, grid_id)
+            _, coords = self.compute_features(pts, grid_id, return_coords=True)
+            patches = coords.view(-1, patch_size, patch_size, patch_size, coords.shape[-1])
+        else:
+            raise ValueError(what)
+
+        d0 = patches[:, 1:, :, :, :] - patches[:, :-1, :, :, :]
+        d1 = patches[:, :, 1:, :, :] - patches[:, :, :-1, :, :]
+        d2 = patches[:, :, :, 1:, :] - patches[:, :, :, :-1, :]
+
+        return (d0.square().mean() + d1.square().mean() + d2.square().mean())
 
     def get_params(self, lr):
         params = [

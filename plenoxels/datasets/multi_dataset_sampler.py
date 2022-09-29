@@ -1,4 +1,3 @@
-import torch
 from torch.utils.data import Sampler, RandomSampler
 
 
@@ -13,6 +12,7 @@ class MultiSceneSampler(Sampler[int]):
         return r
 
     def __init__(self, datasets, num_samples_per_dataset, generator=None):
+        super().__init__(datasets)
         self.datasets = list(datasets)
         self.num_samples_per_dataset = num_samples_per_dataset
 
@@ -58,6 +58,7 @@ class MultiSceneBatchSampler(Sampler[int]):
         return r
 
     def __init__(self, datasets, batch_size, num_batches_per_dataset, drop_last: bool, generator=None):
+        super().__init__(datasets)
         self.datasets = list(datasets)
         self.batch_size = batch_size
         self.num_batches_per_dataset = num_batches_per_dataset

@@ -4,8 +4,11 @@ from typing import Optional
 
 import torch
 
-spec = PathFinder().find_spec("c_ext", [str(Path(__file__).resolve().parents[1])])
-torch.ops.load_library(spec.origin)
+try:
+    spec = PathFinder().find_spec("c_ext", [str(Path(__file__).resolve().parents[1])])
+    torch.ops.load_library(spec.origin)
+except Exception:
+    print("Couldn't load c_ext")
 
 
 def get_interpolation_mode(mode: str) -> int:
