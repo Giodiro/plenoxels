@@ -355,10 +355,9 @@ class LowrankLearnableHash(nn.Module):
             # density_mask needs unnormalized coordinates: normalization happens internally
             # and can be with a different aabb than the current one.
             alpha_mask = self.density_mask[grid_id].sample_density(intersection_pts[mask]) > 0
-            if version == 2:
-                invalid_mask = ~mask
-                invalid_mask[mask] |= (~alpha_mask)
-                mask = ~invalid_mask
+            invalid_mask = ~mask
+            invalid_mask[mask] |= (~alpha_mask)
+            mask = ~invalid_mask
 
         # Normalization (between [-1, 1])
         intersection_pts = self.normalize_coords(intersection_pts, grid_id)
@@ -486,8 +485,8 @@ class LowrankLearnableHash(nn.Module):
         voxel_size = (aabb[1] - aabb[0]) / torch.tensor(self.reso).to(aabb.device)  # Vector of voxel size in each dimension
         pts = (aabb[0] + voxel_size) * (1 - pts) + (aabb[1] - voxel_size) * pts  # Rescale to be in the volume bounds, with a voxel buffer
         # Get "neighbors" of each point
-        neighbors = [torch.tensor([1, 0, 0]).to(aabb.device), torch.tensor([-1, 0, 0]).to(aabb.device), 
-                    torch.tensor([0, 1, 0]).to(aabb.device), torch.tensor([0, -1, 0]).to(aabb.device), 
+        neighbors = [torch.tensor([1, 0, 0]).to(aabb.device), torch.tensor([-1, 0, 0]).to(aabb.device),
+                    torch.tensor([0, 1, 0]).to(aabb.device), torch.tensor([0, -1, 0]).to(aabb.device),
                     torch.tensor([0, 0, 1]).to(aabb.device), torch.tensor([0, 0, -1]).to(aabb.device)]
         # Get the color and density at the original points
         pt_features = self.compute_features(pts, grid_id)

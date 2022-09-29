@@ -117,8 +117,7 @@ class RayMarcher():
 
         n_rays, n_intersections = intersections.shape[0:2]
         ridx = torch.arange(0, n_rays, device=dev)
-        ridx = ridx[..., None].repeat(1, n_intersections)[mask]
-        boundary = spc_render.mark_pack_boundaries(ridx)
+        ridx = ridx[..., None].repeat(1, n_intersections)#[mask]
 
         #deltas = deltas[mask]
         #intrs_pts = intrs_pts[mask]
@@ -128,7 +127,6 @@ class RayMarcher():
             "z_vals": intersections,
             "z_mids": intersection_mids,
             "ridx": ridx,
-            "boundary": boundary,
             "deltas": deltas,
             "rays_d": rays_d,
             "mask": mask,
