@@ -28,7 +28,9 @@ class VideoTrainer(Trainer):
                  tr_loader: torch.utils.data.DataLoader,
                  ts_dset: torch.utils.data.TensorDataset,
                  patch_loader: Optional[PatchLoader],
-                 regnerf_weight: float,
+                 regnerf_weight_start: float,
+                 regnerf_weight_end: float,
+                 regnerf_weight_max_step: int,
                  num_epochs: int,
                  scheduler_type: Optional[str],
                  optim_type: str,
@@ -47,7 +49,9 @@ class VideoTrainer(Trainer):
         super().__init__(tr_loaders=[tr_loader],
                          ts_dsets=[ts_dset],
                          patch_loaders=[patch_loader],
-                         regnerf_weight=regnerf_weight,
+                         regnerf_weight_start=regnerf_weight_start,
+                         regnerf_weight_end=regnerf_weight_end,
+                         regnerf_weight_max_step=regnerf_weight_max_step,
                          num_batches_per_dset=1,
                          num_epochs=num_epochs,
                          scheduler_type=scheduler_type,
@@ -117,9 +121,10 @@ class VideoTrainer(Trainer):
                                         patch_rays_o.shape[2])
                 acc = acc.reshape(patch_rays_o.shape[0], patch_rays_o.shape[1],
                                         patch_rays_o.shape[2])
+                # acc = torch.ones_like(acc)  # Don't weight for now
                 tv = compute_tv_norm(depths, weighting=acc)
             recon_loss = self.criterion(rgb_preds, imgs)
-            loss = recon_loss + tv * self.regnerf_weight
+            loss = recon_loss + tv * self.cur_regnerf_weight
 
         self.gscaler.scale(loss).backward()
         self.gscaler.step(self.optimizer)
@@ -133,6 +138,9 @@ class VideoTrainer(Trainer):
         return scale <= self.gscaler.get_scale()
 
     def post_step(self, dset_id, progress_bar):
+        if self.regnerf_weight_start > 0:
+            w = np.clip(self.global_step / (1 if self.regnerf_weight_max_step < 1 else self.regnerf_weight_max_step), 0, 1)
+            self.cur_regnerf_weight = self.regnerf_weight_start * (1 - w) + w * self.regnerf_weight_end
         self.writer.add_scalar(f"mse: ", self.loss_info["mse"].value, self.global_step)
         progress_bar.set_postfix_str(losses_to_postfix(self.loss_info), refresh=False)
         progress_bar.update(1)
@@ -234,7 +242,7 @@ def losses_to_postfix(loss_dict: Dict[str, EMA]) -> str:
 def load_data(data_downsample, data_dirs, batch_size, **kwargs):
     assert len(data_dirs) == 1
     data_dir = data_dirs[0]
-    regnerf_weight = kwargs.get('regnerf_weight')
+    regnerf_bool = kwargs.get('regnerf_weight_start') > 0
 
     if "lego" in data_dir:
         logging.info(f"Loading Video360Dataset with downsample={data_downsample}")
@@ -242,7 +250,7 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
             data_dir, split='train', downsample=data_downsample,
             resolution=None,  # Don't use resolution for low-pass filtering any more
             max_cameras=kwargs.get('max_train_cameras'), max_tsteps=kwargs.get('max_train_tsteps'),
-            extra_views=regnerf_weight > 0)
+            extra_views=regnerf_bool)
         ts_dset = Video360Dataset(
             data_dir, split='test', downsample=1, resolution=None,
             max_cameras=kwargs.get('max_test_cameras'), max_tsteps=kwargs.get('max_test_tsteps'),
@@ -253,14 +261,14 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
         logging.info(f"Loading VideoLLFFDataset with downsample={data_downsample}")
         tr_dset = VideoLLFFDataset(data_dir, split='train', downsample=data_downsample,
                                    subsample_time=kwargs.get('subsample_time'),
-                                   extra_views=regnerf_weight > 0)
+                                   extra_views=regnerf_bool)
         ts_dset = VideoLLFFDataset(data_dir, split='test', downsample=data_downsample,
                                    subsample_time=1.0, extra_views=False)
     tr_loader = torch.utils.data.DataLoader(
         tr_dset, batch_size=batch_size, shuffle=True, num_workers=3,
         prefetch_factor=4, pin_memory=True)
     patch_loader = None
-    if regnerf_weight > 0:
+    if regnerf_bool:
         patch_loader = PatchLoader(
             rays_o=tr_dset.extra_rays_o, rays_d=tr_dset.extra_rays_d, len_time=tr_dset.len_time)
     return {"tr_loader": tr_loader, "ts_dset": ts_dset, "patch_loader": patch_loader}

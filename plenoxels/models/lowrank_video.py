@@ -10,7 +10,6 @@ import kaolin.render.spc as spc_render
 
 from plenoxels.models.utils import grid_sample_wrapper
 from .decoders import NNDecoder, SHDecoder
-from ..ops.activations import trunc_exp
 from ..raymarching.raymarching import RayMarcher
 
 
@@ -166,8 +165,7 @@ class LowrankVideo(nn.Module):
 
         # compute features and render
         features = self.compute_features(intersection_pts, times)
-        # density_masked = trunc_exp(self.decoder.compute_density(features, rays_d=rays_d_rep))  # why are we exponentiating here when we are going to exponentiate again later?
-        density_masked = nn.functional.relu(self.decoder.compute_density(features, rays_d=rays_d_rep)) # I think we should be doing relu instead
+        density_masked = nn.functional.relu(self.decoder.compute_density(features, rays_d=rays_d_rep)) 
         rgb_masked = torch.sigmoid(self.decoder.compute_color(features, rays_d=rays_d_rep))
 
         # Compute optical thickness
@@ -196,6 +194,20 @@ class LowrankVideo(nn.Module):
             color = ray_colors + (1.0 - alpha) * bg_color
         rgb[ridx_hit.long(), :] = color  # [n_rays, 3]
 
+        # inspect(density_masked, "density_masked")
+        # inspect(rgb_masked, 'rgb_masked')
+        # inspect(tau, 'tau')
+        # inspect(ridx_hit, 'ridx_hit')
+        # inspect(ray_colors, 'ray_colors')
+        # inspect(transmittance, 'transmittance')
+        # inspect(alpha, 'alpha')
+        # inspect(z_vals, 'z_vals')
+        # inspect(real_depth, 'real_depth')
+        # inspect(depth, 'depth')
+        # inspect(acc, 'acc')
+        # inspect(rgb, 'rgb')
+        # inspect(acc*depth, 'acc*depth')
+
         return rgb, depth, acc
 
     def get_params(self, lr):
@@ -213,3 +225,6 @@ def to_list(el, list_len, name: Optional[str] = None) -> Sequence:
     if len(el) != list_len:
         raise ValueError(f"Length of {name} is incorrect. Expected {list_len} but found {len(el)}")
     return el
+
+def inspect(variable, name):
+    print(f'{name} has shape {variable.shape}, min {torch.min(variable)}, and max {torch.max(variable)}')

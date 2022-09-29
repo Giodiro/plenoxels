@@ -33,6 +33,8 @@ class Trainer():
                  regnerf_weight_max_step: int,
                  plane_tv_weight: float,
                  l1density_weight: float,
+                 volume_tv_weight: float,
+                 volume_tv_npts: int,
                  num_epochs: int,
                  scheduler_type: Optional[str],
                  optim_type: str,
@@ -58,6 +60,8 @@ class Trainer():
         self.cur_regnerf_weight = self.regnerf_weight_start
         self.plane_tv_weight = plane_tv_weight
         self.l1density_weight = l1density_weight
+        self.volume_tv_weight = volume_tv_weight
+        self.volume_tv_npts = volume_tv_npts
 
         self.num_epochs = num_epochs
 
@@ -168,6 +172,10 @@ class Trainer():
             if self.plane_tv_weight > 0:
                 plane_tv = self.model.compute_plane_tv(dset_id) * self.plane_tv_weight
                 loss = loss + plane_tv
+            volume_tv: Optional[torch.Tensor] = None
+            if self.volume_tv_weight > 0:
+                volume_tv = self.model.compute_3d_tv(self.volume_tv_npts, dset_id) * self.volume_tv_weight
+                loss = loss + volume_tv
 
         self.gscaler.scale(loss).backward()
         self.gscaler.step(self.optimizer)
@@ -175,7 +183,8 @@ class Trainer():
         self.gscaler.update()
 
         recon_loss_val = recon_loss.item()
-        self.loss_info[dset_id]["mse"].update(recon_loss_val)
+        if len(self.test_datasets) < 5:
+            self.loss_info[dset_id]["mse"].update(recon_loss_val)
         self.loss_info[dset_id]["psnr"].update(-10 * math.log10(recon_loss_val))
         if l1density is not None:
             self.loss_info[dset_id]["l1_density"].update(l1density.item())
@@ -183,6 +192,8 @@ class Trainer():
             self.loss_info[dset_id]["depth_tv"].update(depth_tv.item())
         if plane_tv is not None:
             self.loss_info[dset_id]["plane_tv"].update(plane_tv.item())
+        if volume_tv is not None:
+            self.loss_info[dset_id]["volume_tv"].update(volume_tv.item())
 
         opt_reset_required = False
         if self.global_step in self.density_mask_update_steps:

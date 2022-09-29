@@ -73,9 +73,9 @@ class LowrankLearnableHash(nn.Module):
                 else:
                     out_dim: int = grid_config["output_coordinate_dim"]
                     grid_nd: int = grid_config["grid_dimensions"]
-                    reso: List[int] = grid_config["resolution"]
+                    self.reso: List[int] = grid_config["resolution"]
                     try:
-                        in_dim = len(reso)
+                        in_dim = len(self.reso)
                     except AttributeError:
                         raise ValueError("Configuration incorrect: resolution must be a list.")
                     num_comp = math.comb(in_dim, grid_nd)
@@ -85,7 +85,7 @@ class LowrankLearnableHash(nn.Module):
                     assert in_dim == grid_config["input_coordinate_dim"]
                     if li == 0:
                         assert in_dim == 3
-                        self.set_resolution(torch.tensor(reso, dtype=torch.long), grid_id=si)
+                        self.set_resolution(torch.tensor(self.reso, dtype=torch.long), grid_id=si)
                     assert out_dim in {1, 2, 3, 4, 5, 6, 7}
                     assert grid_nd <= in_dim
                     if grid_nd == in_dim:
@@ -95,12 +95,12 @@ class LowrankLearnableHash(nn.Module):
                     for ci, coo_comb in enumerate(coo_combs):
                         grid_coefs.append(
                             torch.nn.Parameter(nn.init.normal_(torch.empty(
-                                [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb[::-1]]
+                                [1, out_dim * rank[ci]] + [self.reso[cc] for cc in coo_comb[::-1]]
                             ), mean=0.0, std=grid_config["init_std"])))
                     grids.append(grid_coefs)
             self.scene_grids.append(grids)
         self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
-        # self.raymarcher = RayMarcher(**self.extra_args)
+        self.raymarcher = RayMarcher(**self.extra_args)
         self.density_mask = nn.ModuleList([None] * num_scenes)
         log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes.")
 
@@ -463,7 +463,10 @@ class LowrankLearnableHash(nn.Module):
         total = 0
         for grid_ls in grids:
             for grid in grid_ls:
-                total += compute_plane_tv(grid)
+                # Look up the features so we do tv on features rather than coordinates
+                coords = grid.view(-1, len(self.features.shape)-1)
+                features = grid_sample_wrapper(self.features, coords).reshape(-1, self.feature_dim, grid.shape[-2], grid.shape[-1])
+                total += compute_plane_tv(features)
         return total
 
     def compute_l1density(self, max_voxels, grid_id):
@@ -473,11 +476,36 @@ class LowrankLearnableHash(nn.Module):
         density = self.compute_density(pts, grid_id, use_mask=True)
         return torch.mean(torch.abs(density))
 
-    def compute_3d_tv(self, grid_id, what, batch_size=100, patch_size=8):
+    def compute_3d_tv(self, npts, grid_id):
+        # Draw random 3d points and ray directions
+        aabb = self.aabb(grid_id)
+        pts = torch.rand(size=(npts, 3)).to(aabb.device)
+        rays_d = torch.normal(mean=0, std=1, size=(npts, 3)).to(aabb.device)
+        ray_norms = torch.sqrt(torch.sum(rays_d**2, dim=-1, keepdim=True))
+        rays_d = rays_d / ray_norms  # Normalize directions
+        voxel_size = (aabb[1] - aabb[0]) / torch.tensor(self.reso).to(aabb.device)  # Vector of voxel size in each dimension
+        pts = (aabb[0] + voxel_size) * (1 - pts) + (aabb[1] - voxel_size) * pts  # Rescale to be in the volume bounds, with a voxel buffer
+        # Get "neighbors" of each point
+        neighbors = [torch.tensor([1, 0, 0]).to(aabb.device), torch.tensor([-1, 0, 0]).to(aabb.device), 
+                    torch.tensor([0, 1, 0]).to(aabb.device), torch.tensor([0, -1, 0]).to(aabb.device), 
+                    torch.tensor([0, 0, 1]).to(aabb.device), torch.tensor([0, 0, -1]).to(aabb.device)]
+        # Get the color and density at the original points
+        pt_features = self.compute_features(pts, grid_id)
+        pt_density = torch.relu(self.decoder.compute_density(pt_features, rays_d=rays_d, precompute_color=True))  # [npts, 1]
+        pt_rgb = torch.sigmoid(self.decoder.compute_color(pt_features, rays_d=rays_d))  # [npts, 3]
+        tv = 0
+        for offset in neighbors:
+            neighbor = pts + offset * voxel_size
+            features = self.compute_features(neighbor, grid_id)
+            density = torch.relu(self.decoder.compute_density(features, rays_d=rays_d, precompute_color=True))  # [npts, 1]
+            rgb = torch.sigmoid(self.decoder.compute_color(features, rays_d=rays_d))  # [npts, 3]
+            tv = tv + (pt_density - density)**2 + torch.sum((pt_rgb - rgb)**2, dim=-1)  # [npts, 1]
+        return torch.mean(tv)
+
+    def compute_3d_tv_giac(self, grid_id, what, batch_size=100, patch_size=8):
         aabb = self.aabb(grid_id)
         grid_size_l = self.resolution(grid_id)
         dev = aabb.device
-
         pts = torch.stack(torch.meshgrid(
             torch.linspace(0, 1, patch_size, device=dev),
             torch.linspace(0, 1, patch_size, device=dev),
