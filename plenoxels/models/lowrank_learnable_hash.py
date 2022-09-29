@@ -383,6 +383,7 @@ class LowrankLearnableHash(nn.Module):
         outputs = {}
         if version == 2:
             z_vals = rm_out["z_vals"]
+            deltas = rm_out["deltas"]
             rays_d_rep = rays_d.view(-1, 1, 3).expand(intersection_pts.shape)
             masked_rays_d_rep = rays_d_rep[mask]
 
@@ -390,11 +391,12 @@ class LowrankLearnableHash(nn.Module):
             density = torch.zeros(n_rays, n_intrs, device=intersection_pts.device, dtype=density_masked.dtype)
             density[mask] = density_masked.view(-1)
 
-            alpha, weight, bg_weight = raw2alpha(density, z_vals * self.density_multiplier)
+            alpha, weight, bg_weight = raw2alpha(density, deltas * self.density_multiplier)
 
-            rgb_masked = torch.sigmoid(self.decoder.compute_color(features, rays_d=masked_rays_d_rep))
+            rgb_masked = self.decoder.compute_color(features, rays_d=masked_rays_d_rep)
             rgb = torch.zeros(n_rays, n_intrs, 3, device=intersection_pts.device, dtype=rgb_masked.dtype)
             rgb[mask] = rgb_masked
+            rgb = torch.sigmoid(rgb)
 
             acc_map = torch.sum(weight, -1)
 
@@ -553,10 +555,12 @@ class LowrankLearnableHash(nn.Module):
 
 def raw2alpha(sigma, dist):
     alpha = 1 - torch.exp(-sigma * dist)
-    T = torch.cumprod(torch.cat([torch.ones(alpha.shape[0], 1, device=alpha.device), 1 - alpha + 1e-10], -1), -1)
+    T = torch.cat((torch.ones(alpha.shape[0], 1, device=alpha.device),
+                   torch.cumprod(1.0 - alpha[:, :-1] + 1e-10, dim=-1)), dim=-1)
+    #T = torch.cumprod(torch.cat([torch.ones(alpha.shape[0], 1, device=alpha.device), 1 - alpha + 1e-10], -1), -1)
 
-    weights = alpha * T[:, :-1]
-    return alpha, weights, T[:, -1:]
+    weights = alpha * T#[:, :-1]
+    return alpha, weights, T#[:, -1:]
 
 
 def to_list(el, list_len, name: Optional[str] = None) -> Sequence:
