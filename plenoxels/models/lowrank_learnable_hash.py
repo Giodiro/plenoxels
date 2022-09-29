@@ -325,21 +325,13 @@ class LowrankLearnableHash(nn.Module):
         rm_out = self.raymarcher.get_intersections2(
             rays_o, rays_d, self.aabb(grid_id), self.resolution(grid_id), perturb=self.training,
             is_ndc=self.is_ndc)
-        rays_d = rm_out["rays_d"]
-        deltas = rm_out["deltas"]
-        intersection_pts = rm_out["intersections"]
-        ridx = rm_out["ridx"]
-        boundary = rm_out["boundary"]
-        z_mids = rm_out["z_mids"]
-        z_vals = rm_out["z_vals"]
-        mask = rm_out["mask"]
-        n_rays = rays_o.shape[0]
+        rays_d = rm_out["rays_d"]                   # [n_rays, 3]
+        intersection_pts = rm_out["intersections"]  # [n_rays, n_intrs, 3]
+        mask = rm_out["mask"]                       # [n_rays, n_intrs]
+        n_rays, n_intrs = intersection_pts.shape[:2]
         dev = rays_o.device
 
         version = 2
-
-        # mask has shape [batch, n_intrs]
-        # intersection_pts has shape [n_valid_intrs, 3]
 
         # Filter intersections which have a low density according to the density mask
         if self.density_mask[grid_id] is not None:
@@ -350,12 +342,6 @@ class LowrankLearnableHash(nn.Module):
                 invalid_mask = ~mask
                 invalid_mask[mask] |= (~alpha_mask)
                 mask = ~invalid_mask
-
-            #intersection_pts = intersection_pts[alpha_mask]
-            #deltas = deltas[alpha_mask]
-            #ridx = ridx[alpha_mask]
-            #z_mids = z_mids[alpha_mask]
-            #boundary = spc_render.mark_pack_boundaries(ridx)
 
         # Normalization (between [-1, 1])
         intersection_pts = self.normalize_coord(intersection_pts, grid_id)
@@ -380,17 +366,18 @@ class LowrankLearnableHash(nn.Module):
 
         outputs = {}
         if version == 2:
+            z_vals = rm_out["z_vals"]
             rays_d_rep = rays_d.view(-1, 1, 3).expand(intersection_pts.shape)
             masked_rays_d_rep = rays_d_rep[mask]
 
             density_masked = torch.relu(self.decoder.compute_density(features, rays_d=masked_rays_d_rep))
-            density = torch.zeros(intersection_pts.shape[:-1], device=intersection_pts.device, dtype=density_masked.dtype)
+            density = torch.zeros(n_rays, n_intrs, device=intersection_pts.device, dtype=density_masked.dtype)
             density[mask] = density_masked.view(-1)
 
             alpha, weight, bg_weight = raw2alpha(density, z_vals * self.density_multiplier)
 
             rgb_masked = torch.sigmoid(self.decoder.compute_color(features, rays_d=masked_rays_d_rep))
-            rgb = torch.zeros((*intersection_pts.shape[:2], 3), device=intersection_pts.device, dtype=rgb_masked.dtype)
+            rgb = torch.zeros(n_rays, n_intrs, 3, device=intersection_pts.device, dtype=rgb_masked.dtype)
             rgb[mask] = rgb_masked
 
             acc_map = torch.sum(weight, -1)
@@ -399,18 +386,16 @@ class LowrankLearnableHash(nn.Module):
                 rgb_map = torch.sum(weight[..., None] * rgb, -2)
                 if bg_color is None:
                     pass
-                elif isinstance(bg_color, torch.Tensor) and bg_color.shape == (n_rays, 3):
-                    rgb_map = rgb_map + (1.0 - acc_map[..., None]) * bg_color
                 else:
                     rgb_map = rgb_map + (1.0 - acc_map[..., None]) * bg_color
                 outputs["rgb"] = rgb_map
-
             if "depth" in channels:
                 depth_map = torch.sum(weight * z_vals, -1)
                 depth_map = depth_map + (1.0 - acc_map) * rays_d[..., -1]
                 outputs["depth"] = depth_map
-        elif version == 1:
-            ridx = ridx[mask]
+        elif version == 1:  # This uses kaolin. The depth could be wrong in mysterious ways.
+            ridx = rm_out["ridx"][mask]
+            deltas = rm_out["deltas"][mask]
             boundary = spc_render.mark_pack_boundaries(ridx)
 
             # rays_d in the packed format (essentially repeated a number of times)
@@ -443,6 +428,7 @@ class LowrankLearnableHash(nn.Module):
                 rgb[ridx_hit.long(), :] = color
                 outputs["rgb"] = rgb
             if "depth" in channels:
+                z_mids = rm_out["z_mids"][mask]
                 # Compute depth
                 depth_map = spc_render.sum_reduce(z_mids.view(-1, 1) * transmittance, boundary) / torch.clip(alpha, 1e-5)
                 depth = torch.zeros(n_rays, 1, device=dev, dtype=depth_map.dtype)

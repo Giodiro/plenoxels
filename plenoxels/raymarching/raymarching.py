@@ -125,8 +125,8 @@ class RayMarcher():
 
         return {
             "intersections": intrs_pts,
-            "z_vals": intersections,#[mask],
-            "z_mids": intersection_mids[mask],
+            "z_vals": intersections,
+            "z_mids": intersection_mids,
             "ridx": ridx,
             "boundary": boundary,
             "deltas": deltas,

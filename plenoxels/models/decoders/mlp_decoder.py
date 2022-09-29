@@ -42,23 +42,23 @@ class NNDecoder(BaseDecoder):
                 "n_hidden_layers": 2,
             },
         )
-        self.color = None
+        self.density_rgb = None  # output of the sigma-net
 
     def compute_density(self, features, rays_d, precompute_color: bool = True):
         density_rgb = self.sigma_net(features)  # [batch, 16]
         density = density_rgb[:, :1]
 
         if precompute_color:
-            enc_rays_d = self.direction_encoder((rays_d + 1) / 2)
-            color_features = torch.cat((density_rgb[:, 1:], enc_rays_d), dim=-1)
-            self.color = self.color_net(color_features)
+            self.density_rgb = density_rgb
 
         return density
 
     def compute_color(self, features, rays_d):
-        color = self.color
-        del self.color
-        return color  # noqa
+        enc_rays_d = self.direction_encoder((rays_d + 1) / 2)
+        color_features = torch.cat((self.density_rgb[:, 1:], enc_rays_d), dim=-1)
+        color = self.color_net(color_features)
+        del self.density_rgb  # delete to avoid surprises
+        return color
 
     def __repr__(self):
         return f"NNRender(feature_dim={self.feature_dim}, sigma_net_width={self.sigma_net_width}, sigma_net_layers={self.sigma_net_layers})"
