@@ -26,6 +26,8 @@ class RayMarcher():
         self.num_sample_multiplier = num_sample_multiplier
         self.single_jitter = single_jitter
 
+
+        # TODO: for NDC should we be warping eg reciprocal?
         if spacing_fn is None or spacing_fn == "linear":
             self.spacing_fn = lambda x: x
             self.inv_spacing_fn = self.spacing_fn
@@ -113,7 +115,10 @@ class RayMarcher():
         # Normalize rays_d and deltas
         dir_norm = torch.linalg.norm(rays_d, dim=1, keepdim=True)
         rays_d = rays_d / dir_norm
-        deltas = deltas * dir_norm
+        deltas = deltas * dir_norm  
+        # Also normalize z_vals and z_mids (tried, doesn't help)
+        # intersections = intersections * dir_norm
+        # intersection_mids = intersection_mids * dir_norm
 
         n_rays, n_intersections = intersections.shape[0:2]
         ridx = torch.arange(0, n_rays, device=dev)

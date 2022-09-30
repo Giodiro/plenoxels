@@ -2,7 +2,7 @@
 # the configuration must be specified in a dictionary called `config`.
 import numpy as np
 config = {
-    "expname": "lego_test0voltv",
+    "expname": "lego_3dtvl2gcoords0.01_fullrank",
     "logdir": "./logs",
 
     # Data settings
@@ -28,7 +28,7 @@ config = {
     "regnerf_weight_max_step": 512,
     "l1density_weight": 0,
     "plane_tv_weight": 0,
-    "volume_tv_weight": 0.0,
+    "volume_tv_weight": 0.01,
     "volume_tv_npts": 1024,
 
     # Training settings
@@ -47,17 +47,17 @@ config = {
 
     # Model settings
     "density_threshold": 1e-4,
-    "dmask_update": [np.inf],
+    "dmask_update": [800, 6000, 12000],
     "density_multiplier": 1,
     "grid_config": """
 [
     {
         "input_coordinate_dim": 3,
         "output_coordinate_dim": 5,
-        "grid_dimensions": 2,
+        "grid_dimensions": 3,
         "resolution": [128, 128, 128],
-        "rank": 10,
-        "init_std": 0.2,  
+        "rank": 1,
+        "init_std": 0.01,  
     },
     {
         "input_coordinate_dim": 5,
