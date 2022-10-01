@@ -392,12 +392,7 @@ class LowrankLearnableHash(nn.Module):
             density[mask] = density_masked.view(-1)
 
             # alpha, weight, bg_weight = raw2alpha(density, deltas * self.density_multiplier)
-            if self.is_ndc:
-                # tried deltas * z_vals, with z_vals between [0, 1] and deltas either normalized or not, to no avail
-                alpha, weight, transmission = raw2alpha(density, z_vals)  # Try the wrong thing that works. Maybe this is an NDC thing that it needs to be warped?
-            else:
-                alpha, weight, transmission = raw2alpha(density, deltas)  # Each is shape [batch_size, n_samples]
-            
+            alpha, weight, transmission = raw2alpha(density, deltas)  # Each is shape [batch_size, n_samples]
 
             rgb_masked = self.decoder.compute_color(features, rays_d=masked_rays_d_rep)
             rgb = torch.zeros(n_rays, n_intrs, 3, device=intersection_pts.device, dtype=rgb_masked.dtype)
@@ -416,8 +411,7 @@ class LowrankLearnableHash(nn.Module):
                 outputs["rgb"] = rgb_map
             if "depth" in channels:
                 depth_map = torch.sum(weight * z_vals, -1)  # [batch_size]
-                depth_map = depth_map + (1.0 - acc_map)  # max depth is normalized to 1 for NDC...not sure why rays_d was in there
-                # depth_map = depth_map + (1.0 - acc_map) * rays_d[..., -1]
+                depth_map = depth_map + (1.0 - acc_map) * rays_d[..., -1]  # Maybe the rays_d is to transform ray depth to absolute depth?
                 outputs["depth"] = depth_map
         elif version == 1:  # This uses kaolin. The depth could be wrong in mysterious ways.
             ridx = rm_out["ridx"][mask]

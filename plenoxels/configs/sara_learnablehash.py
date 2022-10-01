@@ -2,14 +2,15 @@
 # the configuration must be specified in a dictionary called `config`.
 import numpy as np
 config = {
-    "expname": "lego_3dtvl2gcoords0.01_fullrank",
+    # "expname": "lego_3dtvl2gcoords0.01_fullrank",
+    "expname": "fern_lowrank",
     "logdir": "./logs",
 
     # Data settings
     "data_resolution": None,
-    "data_downsample": 3,
-    "data_dirs": ["/home/sfk/data/nerf_synthetic/lego"],
-    # "data_dirs": ["/home/sfk/data/nerf_llff_data/fern"],
+    "data_downsample": 8,
+    # "data_dirs": ["/home/sfk/data/nerf_synthetic/lego"],
+    "data_dirs": ["/home/sfk/data/nerf_llff_data/fern"],
     # Data settings for 360
     "max_tr_frames": 20,
     "max_ts_frames": 10,
@@ -28,7 +29,7 @@ config = {
     "regnerf_weight_max_step": 512,
     "l1density_weight": 0,
     "plane_tv_weight": 0,
-    "volume_tv_weight": 0.01,
+    "volume_tv_weight": 0.0,
     "volume_tv_npts": 1024,
 
     # Training settings
@@ -54,10 +55,10 @@ config = {
     {
         "input_coordinate_dim": 3,
         "output_coordinate_dim": 5,
-        "grid_dimensions": 3,
-        "resolution": [128, 128, 128],
-        "rank": 1,
-        "init_std": 0.01,  
+        "grid_dimensions": 2,
+        "resolution": [141, 157, 94],
+        "rank": 10,
+        "init_std": 0.2,  
     },
     {
         "input_coordinate_dim": 5,
