@@ -174,7 +174,7 @@ class Trainer():
                 loss = loss + plane_tv
             volume_tv: Optional[torch.Tensor] = None
             if self.volume_tv_weight > 0:
-                volume_tv = self.model.compute_3d_tv(self.volume_tv_npts, dset_id) * self.volume_tv_weight
+                volume_tv = self.model.compute_3d_tv(dset_id, what='Gcoords') * self.volume_tv_weight
                 loss = loss + volume_tv
 
         self.gscaler.scale(loss).backward()
@@ -431,22 +431,23 @@ class Trainer():
     def init_lr_scheduler(self, **kwargs) -> Optional[torch.optim.lr_scheduler._LRScheduler]:
         eta_min = 0
         lr_sched = None
+        max_steps = int(self.num_epochs * len(self.train_data_loader))
         if self.scheduler_type == "cosine":
-            max_steps = int(self.num_epochs * len(self.train_data_loader))
             lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
                 self.optimizer,
                 T_max=max_steps,
                 eta_min=eta_min)
             logging.info(f"Initialized CosineAnnealing LR Scheduler with {max_steps} maximum steps.")
         elif self.scheduler_type == "step":
-            lr_sched = torch.optim.lr_scheduler.LinearLR(
-                self.optimizer, total_iters=500, start_factor=0.2, end_factor=1.0)
-            max_steps = int(self.num_epochs * len(self.train_data_loader))
-            lr_sched2 = torch.optim.lr_scheduler.CosineAnnealingLR(
+            lr_sched = torch.optim.lr_scheduler.MultiStepLR(
                 self.optimizer,
-                T_max=max_steps,
-                eta_min=eta_min)
-            lr_sched = torch.optim.lr_scheduler.ChainedScheduler([lr_sched, lr_sched2])
+                milestones=[
+                    max_steps // 2,
+                    max_steps * 3 // 4,
+                    max_steps * 5 // 6,
+                    max_steps * 9 // 10,
+                ],
+                gamma=0.33)
         return lr_sched
 
     def init_optim(self, **kwargs) -> torch.optim.Optimizer:

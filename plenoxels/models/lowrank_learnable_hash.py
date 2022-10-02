@@ -52,6 +52,8 @@ class LowrankLearnableHash(nn.Module):
         self.transfer_learning = self.extra_args["transfer_learning"]
         self.alpha_mask_threshold = self.extra_args["density_threshold"]
 
+        self.density_act = F.relu#trunc_exp
+
         self.scene_grids = nn.ModuleList()
         self.features = None
         self.feature_dim = None
@@ -323,13 +325,14 @@ class LowrankLearnableHash(nn.Module):
         if alpha_mask is not None and alpha_mask.any():
             pts_sampled = self.normalize_coords(pts[alpha_mask], grid_id)
             features = self.compute_features(pts_sampled, grid_id)
-            density_masked = torch.relu(
+            density_masked = self.density_act(
                 self.decoder.compute_density(features, rays_d=None, precompute_color=False))
             density = torch.zeros(pts.shape[0], dtype=density_masked.dtype, device=dev)
             density[alpha_mask] = density_masked.view(-1)
         elif alpha_mask is None:
             features = self.compute_features(self.normalize_coords(pts, grid_id), grid_id)
-            density = torch.relu(self.decoder.compute_density(features, rays_d=None, precompute_color=False)).view(-1)
+            density = self.density_act(
+                self.decoder.compute_density(features, rays_d=None, precompute_color=False)).view(-1)
         else:
             density = torch.zeros(pts.shape[0], dtype=torch.float32, device=dev)
         return density
@@ -387,11 +390,11 @@ class LowrankLearnableHash(nn.Module):
             rays_d_rep = rays_d.view(-1, 1, 3).expand(intersection_pts.shape)
             masked_rays_d_rep = rays_d_rep[mask]
 
-            density_masked = torch.relu(self.decoder.compute_density(features, rays_d=masked_rays_d_rep))
+            density_masked = self.density_act(self.decoder.compute_density(features, rays_d=masked_rays_d_rep))
             density = torch.zeros(n_rays, n_intrs, device=intersection_pts.device, dtype=density_masked.dtype)
             density[mask] = density_masked.view(-1)
 
-            alpha, weight, bg_weight = raw2alpha(density, deltas * self.density_multiplier)
+            alpha, weight, bg_weight = raw2alpha(density, z_vals * self.density_multiplier)
 
             rgb_masked = self.decoder.compute_color(features, rays_d=masked_rays_d_rep)
             rgb = torch.zeros(n_rays, n_intrs, 3, device=intersection_pts.device, dtype=rgb_masked.dtype)
@@ -419,7 +422,7 @@ class LowrankLearnableHash(nn.Module):
             # rays_d in the packed format (essentially repeated a number of times)
             rays_d_rep = rays_d.index_select(0, ridx)
 
-            density_masked = torch.relu(self.decoder.compute_density(features, rays_d=rays_d_rep))
+            density_masked = self.density_act(self.decoder.compute_density(features, rays_d=rays_d_rep))
             rgb_masked = torch.sigmoid(self.decoder.compute_color(features, rays_d=rays_d_rep))
 
             # Compute optical thickness
@@ -492,13 +495,13 @@ class LowrankLearnableHash(nn.Module):
                     torch.tensor([0, 0, 1]).to(aabb.device), torch.tensor([0, 0, -1]).to(aabb.device)]
         # Get the color and density at the original points
         pt_features = self.compute_features(pts, grid_id)
-        pt_density = torch.relu(self.decoder.compute_density(pt_features, rays_d=rays_d, precompute_color=True))  # [npts, 1]
+        pt_density = self.density_act(self.decoder.compute_density(pt_features, rays_d=rays_d, precompute_color=True))  # [npts, 1]
         pt_rgb = torch.sigmoid(self.decoder.compute_color(pt_features, rays_d=rays_d))  # [npts, 3]
         tv = 0
         for offset in neighbors:
             neighbor = pts + offset * voxel_size
             features = self.compute_features(neighbor, grid_id)
-            density = torch.relu(self.decoder.compute_density(features, rays_d=rays_d, precompute_color=True))  # [npts, 1]
+            density = self.density_act(self.decoder.compute_density(features, rays_d=rays_d, precompute_color=True))  # [npts, 1]
             rgb = torch.sigmoid(self.decoder.compute_color(features, rays_d=rays_d))  # [npts, 3]
             tv = tv + (pt_density - density)**2 + torch.sum((pt_rgb - rgb)**2, dim=-1)  # [npts, 1]
         return torch.mean(tv)
