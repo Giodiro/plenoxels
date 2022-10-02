@@ -531,7 +531,7 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
                 dset_id=i))
             # Note that LLFF has same downsampling applied to train and test datasets
             ts_dsets.append(LLFFDataset(
-                data_dir, split='test', downsample=data_downsample, hold_every=hold_every,
+                data_dir, split='test', downsample=4, hold_every=hold_every,
                 dset_id=i))
         else:
             raise ValueError(dset_type)
