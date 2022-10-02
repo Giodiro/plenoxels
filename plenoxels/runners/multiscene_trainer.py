@@ -174,7 +174,7 @@ class Trainer():
                 loss = loss + plane_tv
             volume_tv: Optional[torch.Tensor] = None
             if self.volume_tv_weight > 0:
-                volume_tv = self.model.compute_3d_tv(dset_id, what='Gcoords') * self.volume_tv_weight
+                volume_tv = self.model.compute_3d_tv(grid_id=dset_id, batch_size=self.volume_tv_npts) * self.volume_tv_weight
                 loss = loss + volume_tv
 
         self.gscaler.scale(loss).backward()

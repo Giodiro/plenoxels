@@ -385,8 +385,8 @@ class LowrankLearnableHash(nn.Module):
 
         outputs = {}
         if version == 2:
-            z_vals = rm_out["z_vals"]
-            deltas = rm_out["deltas"]
+            z_vals = rm_out["z_vals"]  # [batch_size, n_samples]
+            deltas = rm_out["deltas"]  # [batch_size, n_samples]
             rays_d_rep = rays_d.view(-1, 1, 3).expand(intersection_pts.shape)
             masked_rays_d_rep = rays_d_rep[mask]
 
@@ -394,14 +394,15 @@ class LowrankLearnableHash(nn.Module):
             density = torch.zeros(n_rays, n_intrs, device=intersection_pts.device, dtype=density_masked.dtype)
             density[mask] = density_masked.view(-1)
 
-            alpha, weight, bg_weight = raw2alpha(density, z_vals * self.density_multiplier)
+            alpha, weight, transmission = raw2alpha(density, deltas * self.density_multiplier)  # Each is shape [batch_size, n_samples]
 
             rgb_masked = self.decoder.compute_color(features, rays_d=masked_rays_d_rep)
             rgb = torch.zeros(n_rays, n_intrs, 3, device=intersection_pts.device, dtype=rgb_masked.dtype)
             rgb[mask] = rgb_masked
             rgb = torch.sigmoid(rgb)
 
-            acc_map = torch.sum(weight, -1)
+            # Confirmed that torch.sum(weight, -1) matches 1-transmission[:,-1]
+            acc_map = 1 - transmission[:,-1]
 
             if "rgb" in channels:
                 rgb_map = torch.sum(weight[..., None] * rgb, -2)
@@ -411,8 +412,8 @@ class LowrankLearnableHash(nn.Module):
                     rgb_map = rgb_map + (1.0 - acc_map[..., None]) * bg_color
                 outputs["rgb"] = rgb_map
             if "depth" in channels:
-                depth_map = torch.sum(weight * z_vals, -1)
-                depth_map = depth_map + (1.0 - acc_map) * rays_d[..., -1]
+                depth_map = torch.sum(weight * z_vals, -1)  # [batch_size]
+                depth_map = depth_map + (1.0 - acc_map) * rays_d[..., -1]  # Maybe the rays_d is to transform ray depth to absolute depth?
                 outputs["depth"] = depth_map
         elif version == 1:  # This uses kaolin. The depth could be wrong in mysterious ways.
             ridx = rm_out["ridx"][mask]
@@ -480,33 +481,7 @@ class LowrankLearnableHash(nn.Module):
         density = self.compute_density(pts, grid_id, use_mask=True)
         return torch.mean(torch.abs(density))
 
-    def compute_3d_tv(self, npts, grid_id):
-        # Draw random 3d points and ray directions
-        aabb = self.aabb(grid_id)
-        pts = torch.rand(size=(npts, 3)).to(aabb.device)
-        rays_d = torch.normal(mean=0, std=1, size=(npts, 3)).to(aabb.device)
-        ray_norms = torch.sqrt(torch.sum(rays_d**2, dim=-1, keepdim=True))
-        rays_d = rays_d / ray_norms  # Normalize directions
-        voxel_size = (aabb[1] - aabb[0]) / torch.tensor(self.reso).to(aabb.device)  # Vector of voxel size in each dimension
-        pts = (aabb[0] + voxel_size) * (1 - pts) + (aabb[1] - voxel_size) * pts  # Rescale to be in the volume bounds, with a voxel buffer
-        # Get "neighbors" of each point
-        neighbors = [torch.tensor([1, 0, 0]).to(aabb.device), torch.tensor([-1, 0, 0]).to(aabb.device),
-                    torch.tensor([0, 1, 0]).to(aabb.device), torch.tensor([0, -1, 0]).to(aabb.device),
-                    torch.tensor([0, 0, 1]).to(aabb.device), torch.tensor([0, 0, -1]).to(aabb.device)]
-        # Get the color and density at the original points
-        pt_features = self.compute_features(pts, grid_id)
-        pt_density = self.density_act(self.decoder.compute_density(pt_features, rays_d=rays_d, precompute_color=True))  # [npts, 1]
-        pt_rgb = torch.sigmoid(self.decoder.compute_color(pt_features, rays_d=rays_d))  # [npts, 3]
-        tv = 0
-        for offset in neighbors:
-            neighbor = pts + offset * voxel_size
-            features = self.compute_features(neighbor, grid_id)
-            density = self.density_act(self.decoder.compute_density(features, rays_d=rays_d, precompute_color=True))  # [npts, 1]
-            rgb = torch.sigmoid(self.decoder.compute_color(features, rays_d=rays_d))  # [npts, 3]
-            tv = tv + (pt_density - density)**2 + torch.sum((pt_rgb - rgb)**2, dim=-1)  # [npts, 1]
-        return torch.mean(tv)
-
-    def compute_3d_tv_giac(self, grid_id, what, batch_size=100, patch_size=8):
+    def compute_3d_tv(self, grid_id, what='Gcoords', batch_size=100, patch_size=3):
         aabb = self.aabb(grid_id)
         grid_size_l = self.resolution(grid_id)
         dev = aabb.device
@@ -542,7 +517,8 @@ class LowrankLearnableHash(nn.Module):
         d1 = patches[:, :, 1:, :, :] - patches[:, :, :-1, :, :]
         d2 = patches[:, :, :, 1:, :] - patches[:, :, :, :-1, :]
 
-        return (d0.square().mean() + d1.square().mean() + d2.square().mean())
+        return (d0.square().mean() + d1.square().mean() + d2.square().mean())  # l2
+        # return (d0.abs().mean() + d1.abs().mean() + d2.abs().mean())  # l1
 
     def get_params(self, lr):
         params = [
@@ -559,11 +535,13 @@ class LowrankLearnableHash(nn.Module):
 def raw2alpha(sigma, dist):
     alpha = 1 - torch.exp(-sigma * dist)
     T = torch.cat((torch.ones(alpha.shape[0], 1, device=alpha.device),
-                   torch.cumprod(1.0 - alpha[:, :-1] + 1e-10, dim=-1)), dim=-1)
+                   torch.cumprod(1.0 - alpha, dim=-1)), dim=-1)
+    # T = torch.cat((torch.ones(alpha.shape[0], 1, device=alpha.device),
+    #                torch.cumprod(1.0 - alpha[:, :-1] + 1e-10, dim=-1)), dim=-1)
     #T = torch.cumprod(torch.cat([torch.ones(alpha.shape[0], 1, device=alpha.device), 1 - alpha + 1e-10], -1), -1)
 
-    weights = alpha * T#[:, :-1]
-    return alpha, weights, T#[:, -1:]
+    weights = alpha * T[:, :-1]
+    return alpha, weights, T#[:, -1:]  # Return full-length T so we can use the last one for background
 
 
 def to_list(el, list_len, name: Optional[str] = None) -> Sequence:

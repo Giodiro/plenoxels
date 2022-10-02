@@ -2,14 +2,15 @@
 # the configuration must be specified in a dictionary called `config`.
 import numpy as np
 config = {
-    "expname": "lego_test0voltv",
+    # "expname": "lego_3dtvl2gcoords0.01_fullrank",
+    "expname": "fern_lowrank",
     "logdir": "./logs",
 
     # Data settings
     "data_resolution": None,
-    "data_downsample": 3,
-    "data_dirs": ["/home/sfk/data/nerf_synthetic/lego"],
-    # "data_dirs": ["/home/sfk/data/nerf_llff_data/fern"],
+    "data_downsample": 8,
+    # "data_dirs": ["/home/sfk/data/nerf_synthetic/lego"],
+    "data_dirs": ["/home/sfk/data/nerf_llff_data/fern"],
     # Data settings for 360
     "max_tr_frames": 20,
     "max_ts_frames": 10,
@@ -47,7 +48,7 @@ config = {
 
     # Model settings
     "density_threshold": 1e-4,
-    "dmask_update": [np.inf],
+    "dmask_update": [800, 6000, 12000],
     "density_multiplier": 1,
     "grid_config": """
 [
@@ -55,7 +56,7 @@ config = {
         "input_coordinate_dim": 3,
         "output_coordinate_dim": 5,
         "grid_dimensions": 2,
-        "resolution": [128, 128, 128],
+        "resolution": [141, 157, 94],
         "rank": 10,
         "init_std": 0.2,  
     },
