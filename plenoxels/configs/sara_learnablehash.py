@@ -3,8 +3,8 @@
 import numpy as np
 config = {
     # "expname": "lego_3dtvl2gcoords0.01_fullrank",
-    "expname": "fern_lowrank",
-    "logdir": "./logs",
+    "expname": "lowrank_noupsample_reg10_0",
+    "logdir": "./logs/fullresofern",
 
     # Data settings
     "data_resolution": None,
@@ -24,18 +24,18 @@ config = {
     "scheduler_type": None,
     "optim_type": "adam",
     "lr": 2e-3,
-    "regnerf_weight_start": 0,
-    "regnerf_weight_end": 0,
+    "regnerf_weight_start": 10.0,
+    "regnerf_weight_end": 0.0,
     "regnerf_weight_max_step": 512,
     "l1density_weight": 0,
-    "plane_tv_weight": 0,
+    "plane_tv_weight": 0.0,
     "volume_tv_weight": 0.0,
     "volume_tv_npts": 1024,
 
     # Training settings
     "train_fp16": True,
     "save_every": 10,
-    "valid_every": 1,
+    "valid_every": 10,
     "save_outputs": True,
     "transfer_learning": False,
 
@@ -48,7 +48,9 @@ config = {
 
     # Model settings
     "density_threshold": 1e-4,
-    "dmask_update": [800, 6000, 12000],
+    "dmask_update": [1000],
+    # "upsample_resolution": [3241792, 5832000, 11239424, 16777216],
+    # "upsample_steps": [500, 800, 1200, 1500],
     "density_multiplier": 1,
     "grid_config": """
 [

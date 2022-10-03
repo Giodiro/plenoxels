@@ -114,8 +114,7 @@ class RayMarcher():
         dir_norm = torch.linalg.norm(rays_d, dim=1, keepdim=True)
         rays_d = rays_d / dir_norm
         if is_ndc:
-            # deltas = deltas * dir_norm  
-            # try lindisp for deltas. This is based on the NeRF NDC math but not their code
+            # Make deltas linear in disparity, as in the NDC derivation (but not in the NeRF code)
             deltas = 1. / (1 - intersections) - 1. / (1 - intersections + deltas)
         else:
             deltas = deltas * dir_norm  
