@@ -3,7 +3,7 @@ from contextlib import ExitStack
 import math
 import os
 from collections import defaultdict
-from typing import Dict, List, Optional, MutableMapping
+from typing import Dict, List, Optional, MutableMapping, Union, Any
 
 import numpy as np
 import pandas as pd
@@ -13,7 +13,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from torch.profiler import profile, ProfilerActivity, schedule
 from plenoxels.ema import EMA
-from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash
+from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash, DensityMask
 from plenoxels.models.utils import compute_tv_norm
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_exr, write_png
@@ -72,10 +72,14 @@ class Trainer():
         self.save_every = save_every
         self.valid_every = valid_every
         self.save_outputs = save_outputs
+        self.gradient_acc = kwargs.get('gradient_acc', False)
         # All 'steps' things must be multiplied by the number of datasets
         # to get consistent amount of training independently of how many dsets.
-        self.density_mask_update_steps = [s * self.num_dsets for s in kwargs.get('dmask_update', [])]
-        self.upsample_steps = [s * self.num_dsets for s in kwargs.get('upsample_steps', [])]
+        # This is not needed if gradient_acc is set, since in that case the
+        # global_step is only updated once every time we cycle through each scene
+        step_multiplier = 1 if self.gradient_acc else self.num_dsets
+        self.density_mask_update_steps = [s * step_multiplier for s in kwargs.get('dmask_update', [])]
+        self.upsample_steps = [s * step_multiplier for s in kwargs.get('upsample_steps', [])]
         self.upsample_resolution_list = list(kwargs.get('upsample_resolution', []))
         assert len(self.upsample_resolution_list) == len(self.upsample_steps), \
             f"Got {len(self.upsample_steps)} upsample_steps and {len(self.upsample_resolution_list)} upsample_resolution."
@@ -117,7 +121,7 @@ class Trainer():
                     preds[k].append(v)
         return {k: torch.cat(v, 0) for k, v in preds.items()}
 
-    def step(self, data):
+    def step(self, data: Dict[str, Union[int, torch.Tensor]], do_update: bool):
         dset_id = data["dset_id"]
         rays_o = data["rays_o"].cuda()
         rays_d = data["rays_d"].cuda()
@@ -126,8 +130,6 @@ class Trainer():
         if "patch_rays_o" in data:
             patch_rays_o = data["patch_rays_o"].cuda()
             patch_rays_d = data["patch_rays_d"].cuda()
-
-        self.optimizer.zero_grad(set_to_none=True)
 
         C = imgs.shape[-1]
         if self.is_ndc:
@@ -178,10 +180,8 @@ class Trainer():
                 loss = loss + volume_tv
 
         self.gscaler.scale(loss).backward()
-        self.gscaler.step(self.optimizer)
-        scale = self.gscaler.get_scale()
-        self.gscaler.update()
 
+        # Report on losses
         recon_loss_val = recon_loss.item()
         if len(self.test_datasets) < 5:
             self.loss_info[dset_id]["mse"].update(recon_loss_val)
@@ -195,31 +195,40 @@ class Trainer():
         if volume_tv is not None:
             self.loss_info[dset_id]["volume_tv"].update(volume_tv.item())
 
-        opt_reset_required = False
-        if self.global_step in self.density_mask_update_steps:
-            logging.info(f"Updating alpha-mask for all datasets at step {self.global_step}.")
-            for u_dset_id in range(self.num_dsets):
-                new_aabb = self.model.update_alpha_mask(grid_id=u_dset_id)
-                sorted_updates = sorted(self.density_mask_update_steps)
-                if self.global_step == sorted_updates[0] or self.global_step == sorted_updates[1]:#min(self.density_mask_update_steps):
-                    self.model.shrink(new_aabb, grid_id=u_dset_id)
-                    opt_reset_required = True
-        try:
-            upsample_step_idx = self.upsample_steps.index(self.global_step)
-            new_num_voxels = self.upsample_resolution_list[upsample_step_idx]
-            logging.info(f"Upsampling all datasets at step {self.global_step} to {new_num_voxels} voxels.")
-            for u_dset_id in range(self.num_dsets):
-                new_reso = N_to_reso(new_num_voxels, self.model.aabb(u_dset_id))
-                self.model.upsample(new_reso, u_dset_id)
-            opt_reset_required = True
-        except ValueError:
-            pass
+        # Update weights
+        if do_update:
+            self.gscaler.step(self.optimizer)
+            scale = self.gscaler.get_scale()
+            self.gscaler.update()
+            self.optimizer.zero_grad(set_to_none=True)
 
-        if opt_reset_required:
+            # Run grid-update routines (masking, shrinking, upscaling)
+            opt_reset_required = False
+            if self.global_step in self.density_mask_update_steps:
+                logging.info(f"Updating alpha-mask for all datasets at step {self.global_step}.")
+                for u_dset_id in range(self.num_dsets):
+                    new_aabb = self.model.update_alpha_mask(grid_id=u_dset_id)
+                    sorted_updates = sorted(self.density_mask_update_steps)
+                    if self.global_step == sorted_updates[0] or self.global_step == sorted_updates[1]:#min(self.density_mask_update_steps):
+                        self.model.shrink(new_aabb, grid_id=u_dset_id)
+                        opt_reset_required = True
+            try:
+                upsample_step_idx = self.upsample_steps.index(self.global_step)  # if not an upsample step will raise
+                new_num_voxels = self.upsample_resolution_list[upsample_step_idx]
+                logging.info(f"Upsampling all datasets at step {self.global_step} to {new_num_voxels} voxels.")
+                for u_dset_id in range(self.num_dsets):
+                    new_reso = N_to_reso(new_num_voxels, self.model.aabb(u_dset_id))
+                    self.model.upsample(new_reso, u_dset_id)
+                opt_reset_required = True
+            except ValueError:
+                pass
+
             # We reset the optimizer in case some of the parameters in model were changed.
-            self.optimizer = self.init_optim(**self.extra_args)
+            if opt_reset_required:
+                self.optimizer = self.init_optim(**self.extra_args)
 
-        return scale <= self.gscaler.get_scale()
+            return scale <= self.gscaler.get_scale()
+        return True
 
     def post_step(self, data, progress_bar):
         # Anneal regularization weights
@@ -252,7 +261,11 @@ class Trainer():
 
     def train_epoch(self):
         self.pre_epoch()
-        pb = tqdm(total=len(self.train_data_loader), desc=f"E{self.epoch}")
+        eff_num_batches = len(self.train_data_loader)
+        if self.gradient_acc:
+            eff_num_batches //= self.num_dsets
+        pb = tqdm(total=eff_num_batches, desc=f"E{self.epoch}")
+
         try:
             with ExitStack() as stack:
                 prof = None
@@ -263,14 +276,23 @@ class Trainer():
                                    record_shapes=True,
                                    with_stack=True)
                     stack.enter_context(p)
-                for data in self.train_data_loader:
-                    step_successful = self.step(data)
-                    self.post_step(data=data, progress_bar=pb)
-                    self.global_step += 1
-                    if prof is not None:
-                        prof.step()
-                    if step_successful and self.scheduler is not None:
-                        self.scheduler.step()
+                for i, data in enumerate(self.train_data_loader):
+                    if self.gradient_acc:
+                        # NOTE: This only works if every scene has the same number of batches,
+                        #       and if the sampler associated to the data loader goes through
+                        #       the scenes cyclically.
+                        do_update = (i + 1) % self.num_dsets == 0
+                    else:
+                        do_update = True
+
+                    step_successful = self.step(data, do_update=do_update)
+                    if do_update:
+                        self.post_step(data=data, progress_bar=pb)
+                        self.global_step += 1
+                        if prof is not None:
+                            prof.step()
+                        if step_successful and self.scheduler is not None:
+                            self.scheduler.step()
         finally:
             pb.close()
         self.post_epoch()
@@ -408,9 +430,13 @@ class Trainer():
         else:
             # Loading model grids is complicated due to possible shrinkage.
             for k, v in checkpoint_data['model'].items():
-                if 'scene_grids' in k:
-                    grid_id = int(k.split('.')[1])
-                    self.model.upsample(list(v.shape), grid_id)
+                if 'resolution' in k:
+                    grid_id = int(k[-1])  # TODO: won't work with more than 10 scenes
+                    self.model.upsample(v.cpu().tolist(), grid_id)
+                if 'density_volume' in k:
+                    grid_id = int(k.split('.')[1])  # 'density_mask.0.density_volume'
+                    self.model.density_mask[grid_id] = DensityMask(
+                        density_volume=v, aabb=torch.empty(2, 3, dtype=torch.float32, device=v.device))
             self.model.load_state_dict(checkpoint_data["model"])
 
             logging.info("=> Loaded model state from checkpoint")
