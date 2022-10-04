@@ -59,9 +59,12 @@ class Trainer():
         self.regnerf_weight_max_step = regnerf_weight_max_step
         self.cur_regnerf_weight = self.regnerf_weight_start
         self.plane_tv_weight = plane_tv_weight
+        self.plane_tv_what = kwargs.get('plane_tv_what', 'features')
         self.l1density_weight = l1density_weight
         self.volume_tv_weight = volume_tv_weight
         self.volume_tv_npts = volume_tv_npts
+        self.volume_tv_what = kwargs.get('volume_tv_what', 'Gcoords')
+        self.volume_tv_patch_size = kwargs.get('volume_tv_patch_size', 3)
 
         self.num_epochs = num_epochs
 
@@ -172,11 +175,17 @@ class Trainer():
                 loss = loss + depth_tv
             plane_tv: Optional[torch.Tensor] = None
             if self.plane_tv_weight > 0:
-                plane_tv = self.model.compute_plane_tv(dset_id) * self.plane_tv_weight
+                plane_tv = self.model.compute_plane_tv(
+                    grid_id=dset_id,
+                    what=self.plane_tv_what) * self.plane_tv_weight
                 loss = loss + plane_tv
             volume_tv: Optional[torch.Tensor] = None
             if self.volume_tv_weight > 0:
-                volume_tv = self.model.compute_3d_tv(grid_id=dset_id, batch_size=self.volume_tv_npts) * self.volume_tv_weight
+                volume_tv = self.model.compute_3d_tv(
+                    grid_id=dset_id,
+                    what=self.volume_tv_what,
+                    batch_size=self.volume_tv_npts,
+                    patch_size=self.volume_tv_patch_size) * self.volume_tv_weight
                 loss = loss + volume_tv
 
         self.gscaler.scale(loss).backward()
