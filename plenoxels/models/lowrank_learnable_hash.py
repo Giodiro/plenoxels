@@ -101,7 +101,8 @@ class LowrankLearnableHash(nn.Module):
                             ), mean=0.0, std=grid_config["init_std"])))
                     grids.append(grid_coefs)
             self.scene_grids.append(grids)
-        self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
+        #self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
+        self.decoder = SHDecoder(feature_dim=self.feature_dim, sh_degree=3)
         self.raymarcher = RayMarcher(**self.extra_args)
         self.density_mask = nn.ModuleList([None] * num_scenes)
         log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes.")
@@ -463,15 +464,18 @@ class LowrankLearnableHash(nn.Module):
 
         return outputs
 
-    def compute_plane_tv(self, grid_id):
+    def compute_plane_tv(self, grid_id, what='Gcoords'):
         grids: nn.ModuleList = self.scene_grids[grid_id]
         total = 0
         for grid_ls in grids:
             for grid in grid_ls:
-                # Look up the features so we do tv on features rather than coordinates
-                coords = grid.view(-1, len(self.features.shape)-1)
-                features = grid_sample_wrapper(self.features, coords).reshape(-1, self.feature_dim, grid.shape[-2], grid.shape[-1])
-                total += compute_plane_tv(features)
+                if what == 'Gcoords':
+                    total += compute_plane_tv(grid)
+                elif what == 'features':
+                    # Look up the features so we do tv on features rather than coordinates
+                    coords = grid.view(-1, len(self.features.shape)-1)
+                    features = grid_sample_wrapper(self.features, coords).reshape(-1, self.feature_dim, grid.shape[-2], grid.shape[-1])
+                    total += compute_plane_tv(features)
         return total
 
     def compute_l1density(self, max_voxels, grid_id):
@@ -492,8 +496,8 @@ class LowrankLearnableHash(nn.Module):
         ), dim=-1)  # [gs0, gs1, gs2, 3]
         pts = pts.view(-1, 3)
 
-        start = torch.rand(batch_size, 3, device=dev) * (1 - patch_size / grid_size_l[0])
-        end = start + (patch_size / grid_size_l[0])
+        start = torch.rand(batch_size, 3, device=dev) * (1 - patch_size / grid_size_l[None, :])
+        end = start + (patch_size / grid_size_l[None, :])
 
         # pts: [1, gs0, gs1, gs2, 3] * (bs, 1, 1, 1, 3) + (bs, 1, 1, 1, 3)
         pts = pts[None, ...] * (end - start)[:, None, None, None, :] + start[:, None, None, None, :]
