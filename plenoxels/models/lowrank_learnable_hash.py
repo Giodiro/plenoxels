@@ -39,6 +39,7 @@ class LowrankLearnableHash(nn.Module):
                  aabb: List[torch.Tensor],
                  is_ndc: bool,
                  num_scenes: int = 1,
+                 sh: bool = False,
                  **kwargs):
         super().__init__()
         if isinstance(grid_config, str):
@@ -48,6 +49,7 @@ class LowrankLearnableHash(nn.Module):
         self.set_aabb(aabb)
         self.extra_args = kwargs
         self.is_ndc = is_ndc
+        self.sh = sh
         self.density_multiplier = self.extra_args.get("density_multiplier")
         self.transfer_learning = self.extra_args["transfer_learning"]
         self.alpha_mask_threshold = self.extra_args["density_threshold"]
@@ -101,7 +103,10 @@ class LowrankLearnableHash(nn.Module):
                             ), mean=0.0, std=grid_config["init_std"])))
                     grids.append(grid_coefs)
             self.scene_grids.append(grids)
-        self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
+        if self.sh:
+            self.decoder = SHDecoder(feature_dim=self.feature_dim)
+        else:
+            self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
         self.raymarcher = RayMarcher(**self.extra_args)
         self.density_mask = nn.ModuleList([None] * num_scenes)
         log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes.")
@@ -389,7 +394,6 @@ class LowrankLearnableHash(nn.Module):
             deltas = rm_out["deltas"]  # [batch_size, n_samples]
             rays_d_rep = rays_d.view(-1, 1, 3).expand(intersection_pts.shape)
             masked_rays_d_rep = rays_d_rep[mask]
-
             density_masked = self.density_act(self.decoder.compute_density(features, rays_d=masked_rays_d_rep))
             density = torch.zeros(n_rays, n_intrs, device=intersection_pts.device, dtype=density_masked.dtype)
             density[mask] = density_masked.view(-1)
@@ -470,8 +474,9 @@ class LowrankLearnableHash(nn.Module):
             for grid in grid_ls:
                 # Look up the features so we do tv on features rather than coordinates
                 coords = grid.view(-1, len(self.features.shape)-1)
-                features = grid_sample_wrapper(self.features, coords).reshape(-1, self.feature_dim, grid.shape[-2], grid.shape[-1])
-                total += compute_plane_tv(features)
+                coords = coords.reshape(-1, coords.shape[-1], grid.shape[-2], grid.shape[-1])
+                # features = grid_sample_wrapper(self.features, coords).reshape(-1, self.feature_dim, grid.shape[-2], grid.shape[-1])
+                total += compute_plane_tv(coords)  # TV on coords
         return total
 
     def compute_l1density(self, max_voxels, grid_id):
