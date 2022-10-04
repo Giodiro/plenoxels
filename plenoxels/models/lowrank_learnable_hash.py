@@ -70,9 +70,13 @@ class LowrankLearnableHash(nn.Module):
                         except AttributeError:
                             raise ValueError("Configuration incorrect: resolution must be a list.")
                         assert in_dim == grid_config["input_coordinate_dim"]
-                        self.features = nn.Parameter(nn.init.normal_(
-                                torch.empty([grid_config["feature_dim"]] + reso[::-1]),
-                                mean=0.0, std=grid_config["init_std"]))
+                        self.features = nn.Parameter(
+                            torch.empty([grid_config["feature_dim"]] + reso[::-1]))
+                        if self.sh:
+                            nn.init.zeros_(self.features)
+                            self.features[-1].data.fill_(grid_config["init_std"])  # here init_std is repurposed as the sigma initialization
+                        else:
+                            nn.init.normal_(self.features, mean=0.0, std=grid_config["init_std"])
                         self.feature_dim = grid_config["feature_dim"]
                 else:
                     out_dim: int = grid_config["output_coordinate_dim"]
@@ -109,7 +113,7 @@ class LowrankLearnableHash(nn.Module):
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
         self.raymarcher = RayMarcher(**self.extra_args)
         self.density_mask = nn.ModuleList([None] * num_scenes)
-        log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes.")
+        log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes, decoder: {self.decoder}.")
 
     def set_aabb(self, aabb: Union[torch.Tensor, List[torch.Tensor]], grid_id: Optional[int] = None):
         if grid_id is None:
