@@ -7,20 +7,19 @@ from .base_decoder import BaseDecoder
 class SHDecoder(BaseDecoder):
     def __init__(self, feature_dim: int, sh_degree: int):
         super().__init__()
-        if feature_dim != ((sh_degree + 1) ** 2) * 3:
+        if feature_dim - 1 != ((sh_degree + 1) ** 2) * 3:
             raise ValueError(f"feature_dim is incorrect for SHDecoder with {sh_degree} degrees")
         self.sh_degree = sh_degree + 1
         self.direction_encoder = tcnn.Encoding(
             n_input_dims=3,
             encoding_config={
                 "otype": "SphericalHarmonics",
-                "degree": sh_degree,
+                "degree": self.sh_degree,
             },
         )
-        super().__init__()
 
-    def compute_density(self, features, rays_d):
-        return features[..., -2:-1]
+    def compute_density(self, features, rays_d, **kwargs):
+        return features[..., -1].view(-1, 1)
 
     def compute_color(self, features, rays_d):
         color_features = features[..., :-1]
