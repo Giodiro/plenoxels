@@ -186,6 +186,7 @@ class VideoLLFFDataset(BaseDataset):
         poses, imgs, timestamps = load_llffvideo_data(
             videopaths=videopaths, poses=per_cam_poses, intrinsics=intrinsics, split=split,
             subsample_time=self.subsample_time)
+        poses = poses.float()
         rays_o, rays_d, imgs = create_llff_rays(
             imgs=imgs, poses=poses, intrinsics=intrinsics, merge_all=split == 'train')
         super().__init__(datadir=datadir,

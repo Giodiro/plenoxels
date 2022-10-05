@@ -8,6 +8,7 @@ from plenoxels.models.utils import grid_sample_wrapper, raw2alpha
 from .decoders import NNDecoder, SHDecoder
 from .lowrank_model import LowrankModel
 from ..raymarching.raymarching import RayMarcher
+from ..ops.activations import trunc_exp
 
 
 class LowrankVideo(LowrankModel):
@@ -29,7 +30,8 @@ class LowrankVideo(LowrankModel):
         self.is_ndc = is_ndc
         self.raymarcher = RayMarcher(**self.extra_args)
         self.sh = sh
-        self.density_act = torch.relu#trunc_exp
+        # self.density_act = torch.relu#trunc_exp
+        self.density_act = trunc_exp
 
         # For now, only allow a single index grid and a single feature grid, not multiple layers
         assert len(self.config) == 2
@@ -112,7 +114,7 @@ class LowrankVideo(LowrankModel):
         rays_d_rep = rays_d.view(-1, 1, 3).expand(intersection_pts.shape)
         masked_rays_d_rep = rays_d_rep[mask]
 
-        density_masked = self.density_act(self.decoder.compute_density(features, rays_d=masked_rays_d_rep))
+        density_masked = self.density_act(self.decoder.compute_density(features, rays_d=masked_rays_d_rep) - 1)
         density = torch.zeros(n_rays, n_intrs, device=intersection_pts.device, dtype=density_masked.dtype)
         density[mask] = density_masked.view(-1)
 

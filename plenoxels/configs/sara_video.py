@@ -1,14 +1,14 @@
 # configuration file to be used with `main.py` for video training
 config = {
     # "expname": "legovideo20views_regdepthweightedacc_400_0.1_512_3framesreso3rank20",
-    "expname": "test",
+    "expname": "test_truncexp",
     # "expname": "testrelu_sameranktimereso128_llff",
-    "logdir": "./logs/legovideo",
+    "logdir": "./logs/coffeevideo",
 
     # Data settings
-    "data_downsample": 3.0,
-    "data_dirs": ["/home/sfk/data/3DVideo/lego_video"],
-    # "data_dirs": ["/home/sfk/data/3DVideo/coffee_martini"],
+    "data_downsample": 8.0,
+    # "data_dirs": ["/home/sfk/data/3DVideo/lego_video"],
+    "data_dirs": ["/home/sfk/data/3DVideo/coffee_martini"],
     # "data_dir": "/data/datasets/nerf/data/nerf_synthetic/lego",
 
     # Data settings for 360
@@ -17,22 +17,23 @@ config = {
     "max_train_tsteps": 2,
     "max_test_tsteps": 2,
     # Data settings for LLFF
-    "subsample_time": 0.1,
+    "subsample_time": 1.0,
 
 
     # Optimization settings
     "num_epochs": 10,
-    "regnerf_weight_start": 10,
+    "regnerf_weight_start": 0,
     "regnerf_weight_end": 0.0,
     "regnerf_weight_max_step": 512,
     "plane_tv_weight": 0,  # Not used for video yet
     "l1density_weight": 0,  # Not used for video yet
     "volume_tv_weight": 0.0,  # Not used for video yet
     "volume_tv_npts": 1024,  # Not used for video yet
+    "volume_tv_what": "Gcoords",  # Not used for video yet
     "scheduler_type": None,
     "batch_size": 4096,  
     "optim_type": "adam",
-    "lr": 2e-3,
+    "lr": 4e-3,
     
     # Training settings
     "train_fp16": True,
@@ -49,21 +50,22 @@ config = {
     "single_jitter": True,
 
     # Model settings
+    "sh": True,
     "grid_config": """
 [
     {
         "input_coordinate_dim": 3,
-        "output_coordinate_dim": 4,
+        "output_coordinate_dim": 5,
         "grid_dimensions": 2,
-        "resolution": [128, 128, 128],
-        "rank": 20,
-        "time_reso": 3,
-        "init_std": 0.2,  
+        "resolution": [141, 157, 94],
+        "rank": 30,
+        "time_reso": 128,
+        "init_std": 0.01,  
     },
     {
-        "input_coordinate_dim": 4,
-        "resolution": [8, 8, 8, 8],
-        "feature_dim": 32,
+        "input_coordinate_dim": 5,
+        "resolution": [6, 6, 6, 6, 6],
+        "feature_dim": 28,
         "init_std": 0.05
     }
 ]

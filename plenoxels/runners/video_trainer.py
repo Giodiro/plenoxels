@@ -277,9 +277,9 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
         logging.info(f"Loading VideoLLFFDataset with downsample={data_downsample}")
         tr_dset = VideoLLFFDataset(data_dir, split='train', downsample=data_downsample,
                                    subsample_time=kwargs.get('subsample_time'),
-                                   extra_views=regnerf_bool)
+                                   extra_views=regnerf_bool, batch_size=batch_size)
         ts_dset = VideoLLFFDataset(data_dir, split='test', downsample=data_downsample,
-                                   subsample_time=1.0, extra_views=False)
+                                   subsample_time=1.0, extra_views=False, batch_size=batch_size)
     tr_loader = torch.utils.data.DataLoader(
         tr_dset, batch_size=None, shuffle=True, num_workers=4,
         prefetch_factor=4, pin_memory=True)
