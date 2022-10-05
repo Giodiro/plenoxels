@@ -141,7 +141,7 @@ class VideoTrainer(Trainer):
         self.loss_info["tv"].update(tv.item() if patch_rays_o is not None else 0.0)
         return scale <= self.gscaler.get_scale()
 
-    def post_step(self, dset_id, progress_bar):
+    def post_step(self, data, progress_bar):
         if self.regnerf_weight_start > 0:
             w = np.clip(self.global_step / (1 if self.regnerf_weight_max_step < 1 else self.regnerf_weight_max_step), 0, 1)
             self.cur_regnerf_weight = self.regnerf_weight_start * (1 - w) + w * self.regnerf_weight_end
@@ -241,7 +241,7 @@ class VideoTrainer(Trainer):
 
         out_img = preds_rgb
         if "depth" in preds:
-            out_img = torch.cat((out_img, preds["depth"]))
+            out_img = torch.cat((out_img, preds["depth"].expand_as(out_img)))
         out_img = (out_img * 255.0).byte().numpy()
 
         if not self.save_video:
