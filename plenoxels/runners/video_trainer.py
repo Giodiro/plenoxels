@@ -199,10 +199,10 @@ class VideoTrainer(Trainer):
 
     def write_video_to_file(self, frames, dataset):
         video_file = os.path.join(self.log_dir, f"epoch{self.epoch}.mp4")
-        logging.info(f"Saving video to {video_file}")
+        logging.info(f"Saving video ({len(frames)} frames) to {video_file}")
+        height, width = frames[0].shape[:2]
         video = cv2.VideoWriter(
-            video_file, cv2.VideoWriter_fourcc(*'mp4v'), 30,
-            (2 * dataset.intrinsics.width, dataset.intrinsics.height))
+            video_file, cv2.VideoWriter_fourcc(*'mp4v'), 30, (width, height))
         for img in frames:
             video.write(img[:, :, ::-1])  # opencv uses BGR instead of RGB
         cv2.destroyAllWindows()
