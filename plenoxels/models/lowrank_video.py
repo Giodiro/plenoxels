@@ -59,7 +59,6 @@ class LowrankVideo(LowrankModel):
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
 
         # Interpolate in time
-        grid_time = grid_time[0]  # we need it to be a length-1 ParameterList
         interp_time = grid_sample_wrapper(grid_time.unsqueeze(0), timestamps[:, None])  # [n, F_dim * rank]
         interp_time = interp_time.view(-1, level_info["output_coordinate_dim"], level_info["rank"][0])  # [n, F_dim, rank]
         # Interpolate in space
@@ -104,11 +103,11 @@ class LowrankVideo(LowrankModel):
         times = timestamps[:, None].repeat(1, n_intrs)[mask]  # [n_rays, n_intrs]
 
         # Normalization (between [-1, 1])
-        intersection_pts = self.normalize_coord(intersection_pts, 0)
+        intersection_pts = self.normalize_coords(intersection_pts, 0)
         times = (times * 2 / self.len_time) - 1
 
         # compute features and render
-        features = self.compute_features(intersection_pts, times)
+        features = self.compute_features(intersection_pts[mask], times)
 
         rays_d_rep = rays_d.view(-1, 1, 3).expand(intersection_pts.shape)
         masked_rays_d_rep = rays_d_rep[mask]
@@ -117,7 +116,7 @@ class LowrankVideo(LowrankModel):
         density = torch.zeros(n_rays, n_intrs, device=intersection_pts.device, dtype=density_masked.dtype)
         density[mask] = density_masked.view(-1)
 
-        alpha, weight, transmission = raw2alpha(density, deltas * self.density_multiplier)  # Each is shape [batch_size, n_samples]
+        alpha, weight, transmission = raw2alpha(density, deltas)  # Each is shape [batch_size, n_samples]
 
         rgb_masked = self.decoder.compute_color(features, rays_d=masked_rays_d_rep)
         rgb = torch.zeros(n_rays, n_intrs, 3, device=intersection_pts.device, dtype=rgb_masked.dtype)
@@ -149,3 +148,4 @@ class LowrankVideo(LowrankModel):
             {"params": self.features, "lr": lr},
         ]
         return params
+

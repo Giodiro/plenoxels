@@ -5,10 +5,10 @@ config = {
     "logdir": "./logs",
 
     # Data settings
-    "data_downsample": 2.0,
+    "data_downsample": 3.0,
     "data_dirs": ["/data/DATASETS/VidNerf/lego_video"],
     # Data settings for 360
-    "max_train_cameras": 50,
+    "max_train_cameras": 20,
     "max_test_cameras": 1,
     "max_train_tsteps": 10,
     "max_test_tsteps": None,
@@ -18,10 +18,23 @@ config = {
     # Optimization settings
     "num_epochs": 1,
     "batch_size": 4096,
-    "regnerf_weight": 0.1,
     "scheduler_type": None,
     "optim_type": "adam",
-    "lr": 2e-3,
+    "lr": 1e-2,
+
+    "regnerf_weight_start": 0.0,
+    "regnerf_weight_end": 0.0,
+    "regnerf_weight_max_step": 700,
+
+    "plane_tv_weight": 0.0,
+    "plane_tv_what": "Gcoords",
+
+    "l1density_weight": 0.000,
+
+    "volume_tv_weight": 0.00,
+    "volume_tv_npts": 100,
+    "volume_tv_patch_size": 8,
+    "volume_tv_what": "Gcoords",
 
     # Training settings
     "train_fp16": True,
@@ -32,29 +45,30 @@ config = {
 
     # Raymarching settings
     "raymarch_type": "voxel_size",
-    "num_sample_multiplier": 2,
+    "num_sample_multiplier": 1,
     "n_intersections": 400,
     "spacing_fn": "linear",
     "single_jitter": True,
 
     # Model settings
+    "sh": True,
     "grid_config": """
 [
     {
         "input_coordinate_dim": 3,
         "output_coordinate_dim": 4,
-        "grid_dimensions": 3,
+        "grid_dimensions": 2,
         "resolution": [128, 128, 128],
-        "rank": 1,
+        "rank": 10,
         "time_reso": 10,
         "time_rank": 5,
         "init_std": 0.01,
     },
     {
         "input_coordinate_dim": 4,
-        "resolution": [8, 8, 8, 8],
-        "feature_dim": 32,
-        "init_std": 0.05
+        "resolution": [6, 6, 6, 6],
+        "feature_dim": 28,
+        "init_std": 0.001
     }
 ]
 """
