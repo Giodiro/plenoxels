@@ -4,7 +4,7 @@ from typing import Dict, List, Union, Sequence, Tuple
 
 import torch
 
-from plenoxels.models.utils import grid_sample_wrapper
+from plenoxels.models.utils import grid_sample_wrapper, raw2alpha
 from .decoders import NNDecoder, SHDecoder
 from .lowrank_model import LowrankModel
 from ..raymarching.raymarching import RayMarcher

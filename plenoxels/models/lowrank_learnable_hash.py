@@ -1,6 +1,4 @@
-import collections.abc
 import itertools
-import math
 from typing import Dict, List, Union, Optional, Sequence, Tuple
 import logging as log
 
@@ -9,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import kaolin.render.spc as spc_render
 
-from plenoxels.models.utils import grid_sample_wrapper, compute_plane_tv
+from plenoxels.models.utils import grid_sample_wrapper, compute_plane_tv, raw2alpha
 from .decoders import NNDecoder, SHDecoder
 from ..ops.activations import trunc_exp
 from ..raymarching.raymarching import RayMarcher
@@ -55,7 +53,7 @@ class LowrankLearnableHash(LowrankModel):
         self.transfer_learning = self.extra_args["transfer_learning"]
         self.alpha_mask_threshold = self.extra_args["density_threshold"]
 
-        self.density_act = F.relu#trunc_exp
+        self.density_act = lambda x: trunc_exp(x - 1)
 
         self.scene_grids = nn.ModuleList()
         for si in range(num_scenes):
@@ -298,15 +296,13 @@ class LowrankLearnableHash(LowrankModel):
             return outputs
 
         # compute features and render
-        features = self.compute_features(intersection_pts[mask], grid_id)
-
         outputs = {}
         if version == 2:
             z_vals = rm_out["z_vals"]  # [batch_size, n_samples]
             deltas = rm_out["deltas"]  # [batch_size, n_samples]
             rays_d_rep = rays_d.view(-1, 1, 3).expand(intersection_pts.shape)
             masked_rays_d_rep = rays_d_rep[mask]
-            density_masked = self.density_act(self.decoder.compute_density(features, rays_d=masked_rays_d_rep))
+            density_masked, features = self.query_density(pts=intersection_pts[mask], grid_id=grid_id, return_feat=True)
             density = torch.zeros(n_rays, n_intrs, device=intersection_pts.device, dtype=density_masked.dtype)
             density[mask] = density_masked.view(-1)
 
@@ -318,7 +314,7 @@ class LowrankLearnableHash(LowrankModel):
             rgb = torch.sigmoid(rgb)
 
             # Confirmed that torch.sum(weight, -1) matches 1-transmission[:,-1]
-            acc_map = 1 - transmission[:,-1]
+            acc_map = 1 - transmission[:, -1]
 
             if "rgb" in channels:
                 rgb_map = torch.sum(weight[..., None] * rgb, -2)
@@ -332,6 +328,8 @@ class LowrankLearnableHash(LowrankModel):
                 depth_map = depth_map + (1.0 - acc_map) * rays_d[..., -1]  # Maybe the rays_d is to transform ray depth to absolute depth?
                 outputs["depth"] = depth_map
         elif version == 1:  # This uses kaolin. The depth could be wrong in mysterious ways.
+            features = self.compute_features(intersection_pts[mask], grid_id)
+
             ridx = rm_out["ridx"][mask]
             deltas = rm_out["deltas"][mask]
             boundary = spc_render.mark_pack_boundaries(ridx)
@@ -449,15 +447,3 @@ class LowrankLearnableHash(LowrankModel):
                 {"params": self.features, "lr": lr},
             ]
         return params
-
-
-def raw2alpha(sigma, dist):
-    alpha = 1 - torch.exp(-sigma * dist)
-    T = torch.cat((torch.ones(alpha.shape[0], 1, device=alpha.device),
-                   torch.cumprod(1.0 - alpha, dim=-1)), dim=-1)
-    # T = torch.cat((torch.ones(alpha.shape[0], 1, device=alpha.device),
-    #                torch.cumprod(1.0 - alpha[:, :-1] + 1e-10, dim=-1)), dim=-1)
-    #T = torch.cumprod(torch.cat([torch.ones(alpha.shape[0], 1, device=alpha.device), 1 - alpha + 1e-10], -1), -1)
-
-    weights = alpha * T[:, :-1]
-    return alpha, weights, T#[:, -1:]  # Return full-length T so we can use the last one for background
