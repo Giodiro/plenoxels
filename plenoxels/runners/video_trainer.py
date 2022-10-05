@@ -2,7 +2,7 @@ import logging
 import math
 import os
 from collections import defaultdict
-from typing import Dict, Optional
+from typing import Dict, Optional, MutableMapping
 
 import numpy as np
 import pandas as pd
@@ -20,7 +20,6 @@ from plenoxels.models.utils import compute_tv_norm
 from plenoxels.runners.multiscene_trainer import Trainer
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_png, write_exr
-from plenoxels.datasets.patchloader import PatchLoader
 
 
 class VideoTrainer(Trainer):
@@ -65,24 +64,30 @@ class VideoTrainer(Trainer):
                          **kwargs)
         self.save_video = save_video
 
-    def eval_step(self, data, dset_id) -> torch.Tensor:
+    def eval_step(self, data, dset_id) -> MutableMapping[str, torch.Tensor]:
         """
         Note that here `data` contains a whole image. we need to split it up before tracing
         for memory constraints.
         """
+        batch_size = self.train_datasets[dset_id].batch_size
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            rays_o = data[0]
-            rays_d = data[1]
-            timestamp = data[3]
-            # timestamp = 0
-            preds = []
-            for b in range(math.ceil(rays_o.shape[0] / self.batch_size)):
-                rays_o_b = rays_o[b * self.batch_size: (b + 1) * self.batch_size].cuda()
-                rays_d_b = rays_d[b * self.batch_size: (b + 1) * self.batch_size].cuda()
+            rays_o = data["rays_o"]
+            rays_d = data["rays_d"]
+            timestamp = data["timestamps"]
+            preds = defaultdict(list)
+            for b in range(math.ceil(rays_o.shape[0] / batch_size)):
+                rays_o_b = rays_o[b * batch_size: (b + 1) * batch_size].cuda()
+                rays_d_b = rays_d[b * batch_size: (b + 1) * batch_size].cuda()
                 timestamps_d_b = torch.ones(len(rays_o_b)).cuda() * timestamp
-                preds.append(self.model(rays_o_b, rays_d_b, timestamps_d_b, bg_color=1)[0])
-            preds = torch.cat(preds, 0)
-        return preds
+                if self.is_ndc:
+                    bg_color = None
+                else:
+                    bg_color = 1
+                outputs = self.model(rays_o_b, rays_d_b, timestamps_d_b, bg_color=bg_color,
+                                     channels={"rgb", "depth"})
+                for k, v in outputs.items():
+                    preds[k].append(v)
+        return {k: torch.cat(v, 0) for k, v in preds.items()}
 
     def step(self, data, do_update=True):
         rays_o = data["rays_o"].cuda()
@@ -110,19 +115,19 @@ class VideoTrainer(Trainer):
             imgs = imgs[..., :3] * imgs[..., 3:] + bg_color * (1.0 - imgs[..., 3:])
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            rgb_preds, _, _ = self.model(rays_o, rays_d, timestamps, bg_color=bg_color)
+            fwd_out = self.model(rays_o, rays_d, timestamps, bg_color=bg_color, channels={"rgb"})
+            rgb_preds = fwd_out["rgb"]
+
+            recon_loss = self.criterion(rgb_preds, imgs)
+
             tv = 0
             if patch_rays_o is not None:
                 # Don't randomize bg-color when only interested in depth.
-                _, depths, acc = self.model(patch_rays_o.reshape(-1, 3), patch_rays_d.reshape(-1, 3),
-                                       patch_timestamps.reshape(-1), bg_color=1)
-                depths = depths.reshape(patch_rays_o.shape[0], patch_rays_o.shape[1],
-                                        patch_rays_o.shape[2])
-                acc = acc.reshape(patch_rays_o.shape[0], patch_rays_o.shape[1],
-                                        patch_rays_o.shape[2])
-                # acc = torch.ones_like(acc)  # Don't weight for now
-                tv = compute_tv_norm(depths, weighting=acc)
-            recon_loss = self.criterion(rgb_preds, imgs)
+                patch_out = self.model(
+                    patch_rays_o.reshape(-1, 3), patch_rays_d.reshape(-1, 3),
+                    patch_timestamps.reshape(-1), bg_color=1, channels={"depth"})
+                depths = patch_out["depth"].reshape(patch_rays_o.shape[:3])
+                tv = compute_tv_norm(depths, weighting=None)
             loss = recon_loss + tv * self.cur_regnerf_weight
 
         self.gscaler.scale(loss).backward()
@@ -172,9 +177,8 @@ class VideoTrainer(Trainer):
                 pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
                 for img_idx, data in enumerate(dataset):
                     preds = self.eval_step(data, dset_id=dset_id)
-                    gt = data[2]
                     out_metrics, out_img = self.evaluate_metrics(
-                        gt, preds, dset_id=dset_id, dset=dataset, img_idx=img_idx, name=None)
+                        data["imgs"], preds, dset_id=dset_id, dset=dataset, img_idx=img_idx, name=None)
                     pred_frames.append(out_img)
                     per_scene_metrics["psnr"] += out_metrics["psnr"]
                     per_scene_metrics["ssim"] += out_metrics["ssim"]
@@ -204,29 +208,42 @@ class VideoTrainer(Trainer):
         cv2.destroyAllWindows()
         video.release()
 
-    def evaluate_metrics(self, gt, preds: torch.Tensor, dset, dset_id, img_idx, name=None,
-                         save_outputs: bool = True):
-        gt = gt.reshape(dset.intrinsics.height, dset.intrinsics.width, -1).cpu()
-        if gt.shape[-1] == 4:
-            gt = gt[..., :3] * gt[..., 3:] + (1.0 - gt[..., 3:])
-        preds = preds.reshape(dset.intrinsics.height, dset.intrinsics.width, 3).cpu()
-        err = (gt - preds) ** 2
+    def evaluate_metrics(self, gt, preds: MutableMapping[str, torch.Tensor], dset, dset_id,
+                         img_idx, name=None, save_outputs: bool = True):
+        preds_rgb = preds["rgb"].reshape(dset.img_h, dset.img_w, 3).cpu()
         exrdict = {
-            "gt": gt.numpy(),
-            "preds": preds.numpy(),
-            "err": err.numpy(),
+            "preds": preds_rgb.numpy(),
         }
-        summary = {
-            "mse": torch.mean(err),
-            "psnr": metrics.psnr(preds, gt),
-            "ssim": metrics.ssim(preds, gt),
-        }
+        summary = dict()
+
+        if "depth" in preds:
+            # normalize depth and add to exrdict
+            depth = preds["depth"]
+            depth = depth - depth.min()
+            depth = depth / depth.max()
+            depth = depth.cpu().reshape(dset.img_h, dset.img_w)[..., None]
+            preds["depth"] = depth
+            exrdict["depth"] = preds["depth"].numpy()
+
+        if gt is not None:
+            gt = gt.reshape(dset.intrinsics.height, dset.intrinsics.width, -1).cpu()
+            if gt.shape[-1] == 4:
+                gt = gt[..., :3] * gt[..., 3:] + (1.0 - gt[..., 3:])
+            err = (gt - preds_rgb) ** 2
+            exrdict["err"] = err.numpy()
+            summary["mse"] = torch.mean(err)
+            summary["psnr"] = metrics.psnr(preds_rgb, gt)
+            summary["ssim"] = metrics.ssim(preds_rgb, gt)
 
         out_name = f"epoch{self.epoch}-D{dset_id}-{img_idx}"
         if name is not None and name != "":
             out_name += "-" + name
 
-        out_img = (torch.cat((preds, gt), dim=1) * 255.0).byte().numpy()
+        out_img = preds_rgb
+        if "depth" in preds:
+            out_img = torch.cat((out_img, preds["depth"]))
+        out_img = (out_img * 255.0).byte().numpy()
+
         if not self.save_video:
             write_exr(os.path.join(self.log_dir, out_name + ".exr"), exrdict)
             write_png(os.path.join(self.log_dir, out_name + ".png"), out_img)
