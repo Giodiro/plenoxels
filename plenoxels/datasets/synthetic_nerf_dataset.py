@@ -93,7 +93,7 @@ class SyntheticNerfDataset(BaseDataset):
             # just use white during inference
             color_bkgd = torch.ones(3, device=self.images.device)
         out["imgs"] = pixels * alpha + color_bkgd * (1.0 - alpha)
-        out["color_bg"] = color_bkgd
+        out["bg_color"] = color_bkgd
 
         return out
 

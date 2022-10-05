@@ -258,7 +258,7 @@ class LowrankLearnableHash(LowrankModel):
         features = self.compute_features(pts_norm, grid_id)
         density = (
             self.density_act(self.decoder.compute_density(
-                features, rays_d=None, precompute_color=False)).view(pts_norm.shape[:-1], 1)
+                features, rays_d=None, precompute_color=False)).view(list(pts_norm.shape[:-1]) + [1])
             * selector[..., None]
         )
         if return_feat:
@@ -272,7 +272,7 @@ class LowrankLearnableHash(LowrankModel):
         grid_id: int,
     ):
         density, embedding = self.query_density(rays_o, grid_id, return_feat=True)
-        rgb = self._query_rgb(rays_d, embedding=embedding)
+        rgb = self.decoder.compute_color(embedding, rays_d=rays_d)
         return rgb, density
 
     def get_params(self, lr):

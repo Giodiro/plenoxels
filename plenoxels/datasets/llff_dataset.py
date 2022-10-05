@@ -41,7 +41,7 @@ class LLFFDataset(BaseDataset):
         self.patchloader = None
 
         image_paths, poses, near_fars, intrinsics = load_llff_poses(
-            datadir, downsample=downsample, split=split, hold_every=hold_every, near_scaling=1.0)
+            datadir, downsample=downsample, split=split, hold_every=hold_every, near_scaling=1.)
         imgs = load_llff_images(image_paths, intrinsics, split)
         rays_o, rays_d, imgs = create_llff_rays(
             imgs=imgs, poses=poses, intrinsics=intrinsics, merge_all=split == 'train')
@@ -100,8 +100,6 @@ def load_llff_poses_helper(datadir: str, downsample: float, near_scaling: float)
     # Original poses has rotation in form "down right back", change to "right up back"
     # See https://github.com/bmild/nerf/issues/34
     poses = np.concatenate([poses[..., 1:2], -poses[..., :1], poses[..., 2:4]], -1)
-    # (N_images, 3, 4) exclude H, W, focal
-    poses, pose_avg = center_poses(poses)
 
     # Step 3: correct scale so that the nearest depth is at a little more than 1.0
     # See https://github.com/bmild/nerf/issues/34
@@ -110,6 +108,9 @@ def load_llff_poses_helper(datadir: str, downsample: float, near_scaling: float)
     # the nearest depth is at 1/0.75=1.33
     near_fars /= scale_factor
     poses[..., 3] /= scale_factor
+
+    # (N_images, 3, 4) exclude H, W, focal
+    poses, pose_avg = center_poses(poses)
 
     return poses, near_fars, intrinsics
 

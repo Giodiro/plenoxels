@@ -164,10 +164,13 @@ class Trainer():
                 * (self.target_sample_batch_size / float(n_rendering_samples))
             )
             self.train_datasets[dset_id].update_num_rays(num_rays)
-            alive_ray_mask = acc.squeeze(-1) > 0
+            #alive_ray_mask = acc.squeeze(-1) > 0
+            #print("acc", acc)
+            #print("num alive", alive_ray_mask.sum())
 
             # compute loss
-            recon_loss = F.smooth_l1_loss(rgb[alive_ray_mask], imgs[alive_ray_mask])
+            #recon_loss = F.smooth_l1_loss(rgb[alive_ray_mask], imgs[alive_ray_mask])
+            recon_loss = F.smooth_l1_loss(rgb, imgs)
             loss = recon_loss
 
         if do_update:
@@ -485,7 +488,7 @@ class Trainer():
         occupancy_grids = []
         for scene in range(self.num_dsets):
             occupancy_grid = OccupancyGrid(
-                roi_aabb=self.model.aabb(scene),
+                roi_aabb=self.model.aabb(scene).view(-1),
                 resolution=self.model.resolution(scene),
                 contraction_type=self.contraction_type,
             ).cuda()
@@ -631,7 +634,7 @@ def render_image(
         packed_info, t_starts, t_ends = ray_marching(
             rays_o[i: i + chunk],
             rays_d[i: i + chunk],
-            scene_aabb=radiance_field.aabb(grid_id),
+            scene_aabb=radiance_field.aabb(grid_id).view(-1),
             grid=occupancy_grid,
             sigma_fn=sigma_fn,
             near_plane=near_plane,
