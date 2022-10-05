@@ -1,19 +1,16 @@
-import collections.abc
 import itertools
-import math
-from typing import Dict, List, Union, Optional, Sequence, Tuple
 import logging as log
+import math
+from typing import Dict, List, Union, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import kaolin.render.spc as spc_render
 
-from plenoxels.models.utils import grid_sample_wrapper, compute_plane_tv
+from plenoxels.models.utils import grid_sample_wrapper
 from .decoders import NNDecoder, SHDecoder
-from ..ops.activations import trunc_exp
-from ..raymarching.raymarching import RayMarcher
 from .lowrank_model import LowrankModel
+from ..ops.activations import trunc_exp
 
 
 class DensityMask(nn.Module):
@@ -40,6 +37,7 @@ class LowrankLearnableHash(LowrankModel):
                  aabb: List[torch.Tensor],
                  is_ndc: bool,
                  sh: bool,
+                 render_n_samples: int,
                  num_scenes: int = 1,
                  **kwargs):
         super().__init__()
@@ -51,11 +49,12 @@ class LowrankLearnableHash(LowrankModel):
         self.extra_args = kwargs
         self.is_ndc = is_ndc
         self.sh = sh
+        self.render_n_samples = render_n_samples
         self.density_multiplier = self.extra_args.get("density_multiplier")
         self.transfer_learning = self.extra_args["transfer_learning"]
         self.alpha_mask_threshold = self.extra_args["density_threshold"]
 
-        self.density_act = F.relu#trunc_exp
+        self.density_act = lambda x: trunc_exp(x - 1)
 
         self.scene_grids = nn.ModuleList()
         for si in range(num_scenes):
@@ -74,7 +73,6 @@ class LowrankLearnableHash(LowrankModel):
             self.decoder = SHDecoder(feature_dim=self.feature_dim)
         else:
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
-        self.raymarcher = RayMarcher(**self.extra_args)
         self.density_mask = nn.ModuleList([None] * num_scenes)
         log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes, decoder: {self.decoder}.")
 
@@ -240,6 +238,19 @@ class LowrankLearnableHash(LowrankModel):
         pts = aabb[0] * (1 - pts) + aabb[1] * pts
         return pts
 
+    def step_size(self, n_samples: int, grid_id: int):
+        aabb = self.aabb(grid_id)
+        return (
+            (aabb[1] - aabb[0]).max()
+            * math.sqrt(3)
+            / n_samples
+        )
+
+    def query_opacity(self, pts: torch.Tensor, grid_id: int):
+        density = self.query_density(pts, grid_id)
+        opacity = density * self.step_size(self.render_n_samples, grid_id)
+        return opacity
+
     def query_density(self, pts: torch.Tensor, grid_id: int, return_feat: bool = False):
         pts_norm = self.normalize_coords(pts, grid_id)
         selector = ((pts_norm >= -1.0) & (pts_norm <= 1.0)).all(dim=-1)
@@ -254,190 +265,15 @@ class LowrankLearnableHash(LowrankModel):
             return density, features
         return density
 
-    def forward(self, rays_o, rays_d, bg_color, grid_id=0, channels: Sequence[str] = ("rgb", "depth")):
-        """
-        rays_o : [batch, 3]
-        rays_d : [batch, 3]
-        """
-        rm_out = self.raymarcher.get_intersections2(
-            rays_o, rays_d, self.aabb(grid_id), self.resolution(grid_id), perturb=self.training,
-            is_ndc=self.is_ndc)
-        rays_d = rm_out["rays_d"]                   # [n_rays, 3]
-        intersection_pts = rm_out["intersections"]  # [n_rays, n_intrs, 3]
-        mask = rm_out["mask"]                       # [n_rays, n_intrs]
-        n_rays, n_intrs = intersection_pts.shape[:2]
-        dev = rays_o.device
-
-        version = 2
-
-        # Filter intersections which have a low density according to the density mask
-        if self.density_mask[grid_id] is not None:
-            # density_mask needs unnormalized coordinates: normalization happens internally
-            # and can be with a different aabb than the current one.
-            alpha_mask = self.density_mask[grid_id].sample_density(intersection_pts[mask]) > 0
-            invalid_mask = ~mask
-            invalid_mask[mask] |= (~alpha_mask)
-            mask = ~invalid_mask
-
-        # Normalization (between [-1, 1])
-        intersection_pts = self.normalize_coords(intersection_pts, grid_id)
-
-        if len(intersection_pts) == 0:
-            outputs = {}
-            if "rgb" in channels:
-                if bg_color is None:
-                    outputs["rgb"] = torch.zeros((n_rays, 3), dtype=rays_o.dtype, device=dev)
-                elif isinstance(bg_color, torch.Tensor) and bg_color.shape == (n_rays, 3):
-                    outputs["rgb"] = bg_color
-                else:
-                    outputs["rgb"] = torch.full((n_rays, 3), bg_color, dtype=rays_o.dtype, device=dev)
-            if "depth" in channels:
-                outputs["depth"] = torch.zeros(n_rays, 1, device=dev, dtype=rays_o.dtype)
-            if "alpha" in channels:
-                outputs["alpha"] = torch.zeros(n_rays, 1, device=dev, dtype=rays_o.dtype)
-            return outputs
-
-        # compute features and render
-        features = self.compute_features(intersection_pts[mask], grid_id)
-
-        outputs = {}
-        if version == 2:
-            z_vals = rm_out["z_vals"]  # [batch_size, n_samples]
-            deltas = rm_out["deltas"]  # [batch_size, n_samples]
-            rays_d_rep = rays_d.view(-1, 1, 3).expand(intersection_pts.shape)
-            masked_rays_d_rep = rays_d_rep[mask]
-            density_masked = self.density_act(self.decoder.compute_density(features, rays_d=masked_rays_d_rep))
-            density = torch.zeros(n_rays, n_intrs, device=intersection_pts.device, dtype=density_masked.dtype)
-            density[mask] = density_masked.view(-1)
-
-            alpha, weight, transmission = raw2alpha(density, deltas * self.density_multiplier)  # Each is shape [batch_size, n_samples]
-
-            rgb_masked = self.decoder.compute_color(features, rays_d=masked_rays_d_rep)
-            rgb = torch.zeros(n_rays, n_intrs, 3, device=intersection_pts.device, dtype=rgb_masked.dtype)
-            rgb[mask] = rgb_masked
-            rgb = torch.sigmoid(rgb)
-
-            # Confirmed that torch.sum(weight, -1) matches 1-transmission[:,-1]
-            acc_map = 1 - transmission[:,-1]
-
-            if "rgb" in channels:
-                rgb_map = torch.sum(weight[..., None] * rgb, -2)
-                if bg_color is None:
-                    pass
-                else:
-                    rgb_map = rgb_map + (1.0 - acc_map[..., None]) * bg_color
-                outputs["rgb"] = rgb_map
-            if "depth" in channels:
-                depth_map = torch.sum(weight * z_vals, -1)  # [batch_size]
-                depth_map = depth_map + (1.0 - acc_map) * rays_d[..., -1]  # Maybe the rays_d is to transform ray depth to absolute depth?
-                outputs["depth"] = depth_map
-        elif version == 1:  # This uses kaolin. The depth could be wrong in mysterious ways.
-            ridx = rm_out["ridx"][mask]
-            deltas = rm_out["deltas"][mask]
-            boundary = spc_render.mark_pack_boundaries(ridx)
-
-            # rays_d in the packed format (essentially repeated a number of times)
-            rays_d_rep = rays_d.index_select(0, ridx)
-
-            density_masked = self.density_act(self.decoder.compute_density(features, rays_d=rays_d_rep))
-            rgb_masked = torch.sigmoid(self.decoder.compute_color(features, rays_d=rays_d_rep))
-
-            # Compute optical thickness
-            tau = density_masked.reshape(-1, 1) * deltas.reshape(-1, 1) * self.density_multiplier
-            # ridx_hit are the ray-IDs at the first intersection (the boundary).
-            ridx_hit = ridx[boundary]
-            # Perform volumetric integration
-            ray_colors, transmittance = spc_render.exponential_integration(
-                rgb_masked.reshape(-1, 3), tau, boundary, exclusive=True)
-
-            alpha = spc_render.sum_reduce(transmittance, boundary)
-
-            if "rgb" in channels:
-                # Blend output color with background
-                if bg_color is None:
-                    rgb = torch.zeros((n_rays, 3), dtype=ray_colors.dtype, device=dev)
-                    color = ray_colors
-                elif isinstance(bg_color, torch.Tensor) and bg_color.shape == (n_rays, 3):
-                    rgb = bg_color
-                    color = ray_colors + (1.0 - alpha) * bg_color[ridx_hit.long(), :]
-                else:
-                    rgb = torch.full((n_rays, 3), bg_color, dtype=ray_colors.dtype, device=dev)
-                    color = ray_colors + (1.0 - alpha) * bg_color
-                rgb[ridx_hit.long(), :] = color
-                outputs["rgb"] = rgb
-            if "depth" in channels:
-                z_mids = rm_out["z_mids"][mask]
-                # Compute depth
-                depth_map = spc_render.sum_reduce(z_mids.view(-1, 1) * transmittance, boundary) / torch.clip(alpha, 1e-5)
-                depth = torch.zeros(n_rays, 1, device=dev, dtype=depth_map.dtype)
-                depth[ridx_hit.long(), :] = depth_map
-                outputs["depth"] = depth
-            if "alpha" in channels:
-                alpha_out = torch.zeros(n_rays, 1, device=alpha.device, dtype=alpha.dtype)
-                alpha_out[ridx_hit.long(), :] = alpha
-                outputs["alpha"] = alpha_out
-
-        return outputs
-
-    def compute_plane_tv(self, grid_id, what='Gcoords'):
-        grids: nn.ModuleList = self.scene_grids[grid_id]
-        total = 0
-        for grid_ls in grids:
-            for grid in grid_ls:
-                if what == 'Gcoords':
-                    total += compute_plane_tv(grid)
-                elif what == 'features':
-                    # Look up the features so we do tv on features rather than coordinates
-                    coords = grid.view(-1, len(self.features.shape)-1)
-                    features = grid_sample_wrapper(self.features, coords).reshape(-1, self.feature_dim, grid.shape[-2], grid.shape[-1])
-                    total += compute_plane_tv(features)
-        return total
-
-    def compute_l1density(self, max_voxels, grid_id):
-        pts = self.get_points_on_grid(
-            self.aabb(grid_id), self.resolution(grid_id), max_voxels=max_voxels)
-        # Compute density on the grid
-        density = self.query_density(pts, grid_id)
-        return torch.mean(torch.abs(density))
-
-    def compute_3d_tv(self, grid_id, what='Gcoords', batch_size=100, patch_size=3):
-        aabb = self.aabb(grid_id)
-        grid_size_l = self.resolution(grid_id)
-        dev = aabb.device
-        pts = torch.stack(torch.meshgrid(
-            torch.linspace(0, 1, patch_size, device=dev),
-            torch.linspace(0, 1, patch_size, device=dev),
-            torch.linspace(0, 1, patch_size, device=dev), indexing='ij'
-        ), dim=-1)  # [gs0, gs1, gs2, 3]
-        pts = pts.view(-1, 3)
-
-        start = torch.rand(batch_size, 3, device=dev) * (1 - patch_size / grid_size_l[None, :])
-        end = start + (patch_size / grid_size_l[None, :])
-
-        # pts: [1, gs0, gs1, gs2, 3] * (bs, 1, 1, 1, 3) + (bs, 1, 1, 1, 3)
-        pts = pts[None, ...] * (end - start)[:, None, None, None, :] + start[:, None, None, None, :]
-        pts = pts.view(-1, 3)  # [bs*gs0*gs1*gs2, 3]
-
-        # Normalize between [aabb0, aabb1]
-        pts = aabb[0] * (1 - pts) + aabb[1] * pts
-
-        if what == 'density':
-            # Compute density on the grid
-            density = self.query_density(pts, grid_id)
-            patches = density.view(-1, patch_size, patch_size, patch_size)
-        elif what == 'Gcoords':
-            pts = self.normalize_coords(pts, grid_id)
-            _, coords = self.compute_features(pts, grid_id, return_coords=True)
-            patches = coords.view(-1, patch_size, patch_size, patch_size, coords.shape[-1])
-        else:
-            raise ValueError(what)
-
-        d0 = patches[:, 1:, :, :, :] - patches[:, :-1, :, :, :]
-        d1 = patches[:, :, 1:, :, :] - patches[:, :, :-1, :, :]
-        d2 = patches[:, :, :, 1:, :] - patches[:, :, :, :-1, :]
-
-        return (d0.square().mean() + d1.square().mean() + d2.square().mean())  # l2
-        # return (d0.abs().mean() + d1.abs().mean() + d2.abs().mean())  # l1
+    def forward(
+        self,
+        rays_o: torch.Tensor,
+        rays_d: torch.Tensor,
+        grid_id: int,
+    ):
+        density, embedding = self.query_density(rays_o, grid_id, return_feat=True)
+        rgb = self._query_rgb(rays_d, embedding=embedding)
+        return rgb, density
 
     def get_params(self, lr):
         params = [

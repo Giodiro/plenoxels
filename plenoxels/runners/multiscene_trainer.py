@@ -9,18 +9,20 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.utils.data
+import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 
 from torch.profiler import profile, ProfilerActivity, schedule
 from plenoxels.ema import EMA
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash, DensityMask
-from plenoxels.models.utils import compute_tv_norm
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_exr, write_png
 from ..datasets import SyntheticNerfDataset, LLFFDataset
 from ..datasets.multi_dataset_sampler import MultiSceneSampler
 from ..my_tqdm import tqdm
 from ..utils import parse_optint
+
+from nerfacc import ContractionType, OccupancyGrid, ray_marching, rendering
 
 
 class Trainer():
@@ -76,6 +78,7 @@ class Trainer():
         self.valid_every = valid_every
         self.save_outputs = save_outputs
         self.gradient_acc = kwargs.get('gradient_acc', False)
+        self.target_sample_batch_size = 1 << 18
         # All 'steps' things must be multiplied by the number of datasets
         # to get consistent amount of training independently of how many dsets.
         # This is not needed if gradient_acc is set, since in that case the
@@ -95,8 +98,10 @@ class Trainer():
         self.global_step = None
         self.loss_info = None
         self.train_iterators = None
+        self.contraction_type = ContractionType.AABB
 
         self.model = self.init_model(**self.extra_args)
+        self.occupancy_grids = self.init_occupancy_grid(**self.extra_args)
         self.optimizer = self.init_optim(**self.extra_args)
         self.scheduler = self.init_lr_scheduler(**self.extra_args)
         self.criterion = torch.nn.MSELoss(reduction='mean')
@@ -129,65 +134,44 @@ class Trainer():
         rays_o = data["rays_o"].cuda()
         rays_d = data["rays_d"].cuda()
         imgs = data["imgs"].cuda()
-        patch_rays_o, patch_rays_d = None, None
-        if "patch_rays_o" in data:
-            patch_rays_o = data["patch_rays_o"].cuda()
-            patch_rays_d = data["patch_rays_d"].cuda()
-
-        C = imgs.shape[-1]
-        if self.is_ndc:
-            bg_color = None
-        elif C == 3:
-            bg_color = 1
-        else:  # Random bg-color
-            bg_color = torch.rand_like(imgs[..., :3])
-            imgs = imgs[..., :3] * imgs[..., 3:] + bg_color * (1.0 - imgs[..., 3:])
+        bg_color = data["bg_color"].cuda()
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            fwd_out = self.model(rays_o, rays_d, grid_id=dset_id, bg_color=bg_color, channels={"rgb"})
-            rgb_preds = fwd_out["rgb"]
-            # Reconstruction loss
-            recon_loss = self.criterion(rgb_preds, imgs)
-            loss = recon_loss
-            # Different regularizers
-            l1density: Optional[torch.Tensor] = None
-            if self.l1density_weight > 0:
-                l1density = self.model.compute_l1density(
-                    max_voxels=100_000, grid_id=dset_id) * self.l1density_weight
-                loss = loss + l1density
-            depth_tv: Optional[torch.Tensor] = None
-            if self.cur_regnerf_weight > 0:
-                ps = patch_rays_o.shape[1]  # patch-size
-                out = self.model(
-                    patch_rays_o.reshape(-1, 3), patch_rays_d.reshape(-1, 3), bg_color=None,
-                    channels={"depth", "rgb"}, grid_id=dset_id)
-                reshape_to_patch = lambda x, dim: x.reshape(-1, ps, ps, dim)
-                depths = reshape_to_patch(out["depth"], 1)
-                #if self.global_step > 2000:
-                #    torch.save(depths.detach().cpu(), "depths8.pt")
-                #    rgbs = reshape_to_patch(out["rgb"], 3)
-                #    torch.save(rgbs.detach().cpu(), "rgbs8.pt")
-                #    raise RuntimeError()
-                # NOTE: the weighting below is never applied in RegNerf (the constant in front of it is set to 0)
-                # with torch.autograd.no_grad():
-                #     weighting = reshape_to_patch(out["alpha"], 1)[:, :-1, :-1]
-                depth_tv = compute_tv_norm(depths, 'l2', None) * self.cur_regnerf_weight
-                loss = loss + depth_tv
-            plane_tv: Optional[torch.Tensor] = None
-            if self.plane_tv_weight > 0:
-                plane_tv = self.model.compute_plane_tv(
-                    grid_id=dset_id,
-                    what=self.plane_tv_what) * self.plane_tv_weight
-                loss = loss + plane_tv
-            volume_tv: Optional[torch.Tensor] = None
-            if self.volume_tv_weight > 0:
-                volume_tv = self.model.compute_3d_tv(
-                    grid_id=dset_id,
-                    what=self.volume_tv_what,
-                    batch_size=self.volume_tv_npts,
-                    patch_size=self.volume_tv_patch_size) * self.volume_tv_weight
-                loss = loss + volume_tv
+            # update occupancy grid
+            self.occupancy_grids[dset_id].every_n_step(
+                step=self.global_step,
+                occ_eval_fn=lambda x: self.model.query_opacity(
+                    x, dset_id
+                ),
+            )
+            # render
+            rgb, acc, depth, n_rendering_samples = render_image(
+                self.model,
+                self.occupancy_grids[dset_id],
+                dset_id,
+                rays_o,
+                rays_d,
+                # rendering options
+                near_plane=None,
+                far_plane=None,
+                render_bkgd=bg_color,
+                cone_angle=0.0,
+            )
+            # dynamic batch size for rays to keep sample batch size constant.
+            num_rays = len(imgs)
+            num_rays = int(
+                num_rays
+                * (self.target_sample_batch_size / float(n_rendering_samples))
+            )
+            self.train_datasets[dset_id].update_num_rays(num_rays)
+            alive_ray_mask = acc.squeeze(-1) > 0
 
+            # compute loss
+            recon_loss = F.smooth_l1_loss(rgb[alive_ray_mask], imgs[alive_ray_mask])
+            loss = recon_loss
+
+        if do_update:
+            self.optimizer.zero_grad(set_to_none=True)
         self.gscaler.scale(loss).backward()
 
         # Report on losses
@@ -195,21 +179,12 @@ class Trainer():
         if len(self.test_datasets) < 5:
             self.loss_info[dset_id]["mse"].update(recon_loss_val)
         self.loss_info[dset_id]["psnr"].update(-10 * math.log10(recon_loss_val))
-        if l1density is not None:
-            self.loss_info[dset_id]["l1_density"].update(l1density.item())
-        if depth_tv is not None:
-            self.loss_info[dset_id]["depth_tv"].update(depth_tv.item())
-        if plane_tv is not None:
-            self.loss_info[dset_id]["plane_tv"].update(plane_tv.item())
-        if volume_tv is not None:
-            self.loss_info[dset_id]["volume_tv"].update(volume_tv.item())
 
         # Update weights
         if do_update:
             self.gscaler.step(self.optimizer)
             scale = self.gscaler.get_scale()
             self.gscaler.update()
-            self.optimizer.zero_grad(set_to_none=True)
 
             # Run grid-update routines (masking, shrinking, upscaling)
             opt_reset_required = False
@@ -499,11 +474,23 @@ class Trainer():
             grid_config=kwargs.pop("grid_config"),
             aabb=aabbs,
             is_ndc=self.is_ndc,  # TODO: This should also be per-scene
+            render_n_samples=1024,
             **kwargs)
         logging.info(f"Initialized LowrankLearnableHash model with "
                      f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters.")
         model.cuda()
         return model
+
+    def init_occupancy_grid(self, **kwargs):
+        occupancy_grids = []
+        for scene in range(self.num_dsets):
+            occupancy_grid = OccupancyGrid(
+                roi_aabb=self.model.aabb(scene),
+                resolution=self.model.resolution(scene),
+                contraction_type=self.contraction_type,
+            ).cuda()
+            occupancy_grids.append(occupancy_grid)
+        return occupancy_grids
 
     def cur_lr(self):
         if self.scheduler is not None:
@@ -592,3 +579,83 @@ def trace_handler(p):
 def N_to_reso(num_voxels, aabb):
     voxel_size = ((aabb[1] - aabb[0]).prod() / num_voxels).pow(1 / 3)
     return ((aabb[1] - aabb[0]) / voxel_size).long().cpu().tolist()
+
+def render_image(
+    # scene
+    radiance_field: torch.nn.Module,
+    occupancy_grid: OccupancyGrid,
+    grid_id: int,
+    rays_o: torch.Tensor,
+    rays_d: torch.Tensor,
+    # rendering options
+    near_plane: Optional[float] = None,
+    far_plane: Optional[float] = None,
+    render_step_size: float = 1e-3,
+    render_bkgd: Optional[torch.Tensor] = None,
+    cone_angle: float = 0.0,
+    device = "cuda:0",
+    # test options
+    test_chunk_size: int = 8192,
+):
+    """Render the pixels of an image."""
+    rays_shape = rays_o.shape
+    if len(rays_shape) == 3:
+        height, width, _ = rays_shape
+        num_rays = height * width
+        rays_o = rays_o.reshape([num_rays] + list(rays_o.shape[2:]))
+        rays_d = rays_d.reshape([num_rays] + list(rays_d.shape[2:]))
+    else:
+        num_rays, _ = rays_shape
+
+    def sigma_fn(t_starts, t_ends, ray_indices):
+        ray_indices = ray_indices.long()
+        t_origins = rays_o[ray_indices]
+        t_dirs = rays_d[ray_indices]
+        positions = t_origins + t_dirs * (t_starts + t_ends) / 2.0
+        return radiance_field.query_density(positions, grid_id)
+
+    def rgb_sigma_fn(t_starts, t_ends, ray_indices):
+        ray_indices = ray_indices.long()
+        t_origins = rays_o[ray_indices]
+        t_dirs = rays_d[ray_indices]
+        positions = t_origins + t_dirs * (t_starts + t_ends) / 2.0
+        return radiance_field(positions, t_dirs, grid_id)
+
+    results = []
+    chunk = (
+        torch.iinfo(torch.int32).max
+        if radiance_field.training
+        else test_chunk_size
+    )
+    for i in range(0, num_rays, chunk):
+        packed_info, t_starts, t_ends = ray_marching(
+            rays_o[i: i + chunk],
+            rays_d[i: i + chunk],
+            scene_aabb=radiance_field.aabb(grid_id),
+            grid=occupancy_grid,
+            sigma_fn=sigma_fn,
+            near_plane=near_plane,
+            far_plane=far_plane,
+            render_step_size=render_step_size,
+            stratified=radiance_field.training,
+            cone_angle=cone_angle,
+        )
+        rgb, opacity, depth = rendering(
+            rgb_sigma_fn,
+            packed_info,
+            t_starts,
+            t_ends,
+            render_bkgd=render_bkgd,
+        )
+        chunk_results = [rgb, opacity, depth, len(t_starts)]
+        results.append(chunk_results)
+    colors, opacities, depths, n_rendering_samples = [
+        torch.cat(r, dim=0) if isinstance(r[0], torch.Tensor) else r
+        for r in zip(*results)
+    ]
+    return (
+        colors.view((*rays_shape[:-1], -1)),
+        opacities.view((*rays_shape[:-1], -1)),
+        depths.view((*rays_shape[:-1], -1)),
+        sum(n_rendering_samples),
+    )

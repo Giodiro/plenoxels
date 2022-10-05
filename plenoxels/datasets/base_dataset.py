@@ -41,7 +41,7 @@ class BaseDataset(Dataset, ABC):
         self.rays_d = rays_d
         self.intrinsics = intrinsics
         self.imgs = imgs
-        self.num_batches = self.rays_o.shape[0]
+        self.num_samples = self.rays_o.shape[0]
 
         self.perm = None
 
@@ -54,7 +54,10 @@ class BaseDataset(Dataset, ABC):
         return self.intrinsics.width
 
     def reset_iter(self):
-        self.perm = torch.randperm(self.num_batches)
+        self.perm = torch.randperm(self.num_samples)
+
+    def update_num_rays(self, num_rays):
+        self.batch_size = num_rays
 
     def get_rand_ids(self, index):
         assert self.perm is not None, "Call reset_iter"
@@ -63,9 +66,9 @@ class BaseDataset(Dataset, ABC):
 
     def __len__(self):
         if self.split == 'train':
-            return (self.num_batches + self.batch_size - 1) // self.batch_size
+            return (self.num_samples + self.batch_size - 1) // self.batch_size
         else:
-            return self.num_batches
+            return self.num_samples
 
     def __getitem__(self, index):
         if self.split == 'train':

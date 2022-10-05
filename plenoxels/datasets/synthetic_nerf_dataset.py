@@ -31,7 +31,8 @@ class SyntheticNerfDataset(BaseDataset):
                  resolution: Optional[int] = 512,
                  max_frames: Optional[int] = None,
                  patch_size: Optional[int] = 8,
-                 extra_views: bool = False):
+                 extra_views: bool = False,
+                 color_bkgd_aug: str = 'white'):
 
         self.downsample = downsample
         self.resolution = (resolution, resolution)
@@ -41,6 +42,7 @@ class SyntheticNerfDataset(BaseDataset):
         self.near_far = [2.0, 6.0]
         self.extra_views = split == 'train' and extra_views
         self.patchloader = None
+        self.color_bkgd_aug = color_bkgd_aug
 
         frames, transform = load_360_frames(datadir, split, self.max_frames)
         imgs, poses = load_360_images(frames, datadir, split, self.downsample, self.resolution)
@@ -76,6 +78,23 @@ class SyntheticNerfDataset(BaseDataset):
         out["dset_id"] = self.dset_id
         if self.split == 'train' and self.extra_views:
             out.update(self.patchloader[index])
+
+        pixels, alpha = torch.split(out["imgs"], [3, 1], dim=-1)
+        if self.split == 'train':
+            if self.color_bkgd_aug == "random":
+                color_bkgd = torch.rand(3, device=pixels.device)
+            elif self.color_bkgd_aug == "white":
+                color_bkgd = torch.ones(3, device=pixels.device)
+            elif self.color_bkgd_aug == "black":
+                color_bkgd = torch.zeros(3, device=pixels.device)
+            else:
+                raise ValueError('color_bkgd_aug')
+        else:
+            # just use white during inference
+            color_bkgd = torch.ones(3, device=self.images.device)
+        out["imgs"] = pixels * alpha + color_bkgd * (1.0 - alpha)
+        out["color_bg"] = color_bkgd
+
         return out
 
 

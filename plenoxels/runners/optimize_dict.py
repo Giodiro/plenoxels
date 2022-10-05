@@ -69,7 +69,7 @@ all_patches = all_patches.transpose(0,1).contiguous().pin_memory()  # [num_patch
 patch_dict = PatchDict(num_atoms=train_cfg.model.num_atoms, patch_reso=train_cfg.model.patch_reso, data_dim=model.shape[0])
 patch_dict = patch_dict.cuda().train()
 optim = torch.optim.Adam(patch_dict.parameters(), lr=train_cfg.optim.lr)
-for step in range(train_cfg.optim.num_batches):
+for step in range(train_cfg.optim.num_samples):
     # Get a batch
     idx = np.random.choice(all_patches.shape[0], size=train_cfg.optim.batch_size)  # this is slow
     batch = all_patches[idx, ...]  # [batch_size, data_dim, patch_reso, patch_reso, patch_reso]
