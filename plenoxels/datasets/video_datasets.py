@@ -92,7 +92,7 @@ class Video360Dataset(BaseDataset):
                  f"{intrinsics}")
 
     def __getitem__(self, index):
-        out = super()[index]
+        out = super().__getitem__(index)
         if self.split == 'train':
             idxs = self.get_rand_ids(index)
             out["timestamps"] = self.timestamps[idxs]
@@ -225,7 +225,7 @@ class VideoLLFFDataset(BaseDataset):
         return torch.tensor([[-2.0, -2.0, -1.0], [2.0, 2.0, 1.0]])
 
     def __getitem__(self, index):
-        out = super()[index]
+        out = super().__getitem__(index)
         if self.split == 'train':
             idxs = self.get_rand_ids(index)
             out["timestamps"] = self.timestamps[idxs]

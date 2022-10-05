@@ -110,6 +110,8 @@ class LowrankVideo(nn.Module):
             level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
         interp_space = None  # [n, F_dim, rank]
         for ci, coo_comb in enumerate(coo_combs):
+            print(f'level_info["input_coordinate_dim"] is {level_info["input_coordinate_dim"]}')
+            print(f'first input shape is {grid_space[ci].shape}, second is shape {interp[..., coo_comb].shape}')
             if interp_space is None:
                 interp_space = (
                     grid_sample_wrapper(grid_space[ci], interp[..., coo_comb]).view(
@@ -145,8 +147,8 @@ class LowrankVideo(nn.Module):
         rays_d = rm_out["rays_d"]
         deltas = rm_out["deltas"]
         intersection_pts = rm_out["intersections"]
-        ridx = rm_out["ridx"]
-        boundary = rm_out["boundary"]
+        # ridx = rm_out["ridx"]
+        # boundary = rm_out["boundary"]
 
         times = timestamps[:, None].repeat(1, rm_out["mask"].shape[1])[rm_out["mask"]]
 
@@ -161,38 +163,67 @@ class LowrankVideo(nn.Module):
         times = (times * 2 / self.len_time) - 1
 
         # rays_d in the packed format (essentially repeated a number of times)
-        rays_d_rep = rays_d.index_select(0, ridx)
+        # rays_d_rep = rays_d.index_select(0, ridx)
 
         # compute features and render
         features = self.compute_features(intersection_pts, times)
         density_masked = nn.functional.relu(self.decoder.compute_density(features, rays_d=rays_d_rep)) 
         rgb_masked = torch.sigmoid(self.decoder.compute_color(features, rays_d=rays_d_rep))
 
-        # Compute optical thickness
-        tau = density_masked.reshape(-1, 1) * deltas.reshape(-1, 1)
-        # ridx_hit are the ray-IDs at the first intersection (the boundary).
-        ridx_hit = ridx[boundary]
-        # Perform volumetric integration
-        ray_colors, transmittance = spc_render.exponential_integration(
-            rgb_masked.reshape(-1, 3), tau, boundary, exclusive=True)  # transmittance is [n_intersections, 1]
-        alpha = spc_render.sum_reduce(transmittance, boundary)  # [n_valid_rays, 1]
-        # Compute depth as a weighted sum over z values according to absorption/transmission
-        z_vals = spc_render.cumsum(deltas[:, None], boundary)
-        real_depth = spc_render.sum_reduce(transmittance * z_vals, boundary)  # [n_valid_rays, 1]
-        depth = torch.full((n_rays, 1), 100, dtype=ray_colors.dtype, device=dev)
-        depth[ridx_hit.long()] = real_depth  # [n_rays, 1]
-        # Try weighting by acc, as in RegNerf
-        acc = torch.full((n_rays, 1), 0, dtype=ray_colors.dtype, device=dev)
-        acc[ridx_hit.long()] = alpha
+        z_vals = rm_out["z_vals"]  # [batch_size, n_samples]
+        deltas = rm_out["deltas"]  # [batch_size, n_samples]
+        rays_d_rep = rays_d.view(-1, 1, 3).expand(intersection_pts.shape)
+        masked_rays_d_rep = rays_d_rep[mask]
+        density_masked = self.density_act(self.decoder.compute_density(features, rays_d=masked_rays_d_rep))
+        density = torch.zeros(n_rays, n_intrs, device=intersection_pts.device, dtype=density_masked.dtype)
+        density[mask] = density_masked.view(-1)
 
-        # Blend output color with background
-        if isinstance(bg_color, torch.Tensor) and bg_color.shape == (n_rays, 3):
-            rgb = bg_color
-            color = ray_colors + (1.0 - alpha) * bg_color[ridx_hit.long(), :]
+        alpha, weight, transmission = raw2alpha(density, deltas * self.density_multiplier)  # Each is shape [batch_size, n_samples]
+
+        # rgb_masked = self.decoder.compute_color(features, rays_d=masked_rays_d_rep)
+        rgb = torch.zeros(n_rays, n_intrs, 3, device=intersection_pts.device, dtype=rgb_masked.dtype)
+        rgb[mask] = rgb_masked
+        # rgb = torch.sigmoid(rgb)
+
+        # Confirmed that torch.sum(weight, -1) matches 1-transmission[:,-1]
+        acc = 1 - transmission[:,-1]
+
+        rgb_map = torch.sum(weight[..., None] * rgb, -2)
+        if bg_color is None:
+            pass
         else:
-            rgb = torch.full((n_rays, 3), bg_color, dtype=ray_colors.dtype, device=dev)
-            color = ray_colors + (1.0 - alpha) * bg_color
-        rgb[ridx_hit.long(), :] = color  # [n_rays, 3]
+            rgb_map = rgb_map + (1.0 - acc[..., None]) * bg_color
+        rgb = rgb_map
+
+        depth = torch.sum(weight * z_vals, -1)  # [batch_size]
+        depth = depth + (1.0 - acc_map) * rays_d[..., -1]  # Maybe the rays_d is to transform ray depth to absolute depth?
+
+        # kaolin version
+        # # Compute optical thickness
+        # tau = density_masked.reshape(-1, 1) * deltas.reshape(-1, 1)
+        # # ridx_hit are the ray-IDs at the first intersection (the boundary).
+        # ridx_hit = ridx[boundary]
+        # # Perform volumetric integration
+        # ray_colors, transmittance = spc_render.exponential_integration(
+        #     rgb_masked.reshape(-1, 3), tau, boundary, exclusive=True)  # transmittance is [n_intersections, 1]
+        # alpha = spc_render.sum_reduce(transmittance, boundary)  # [n_valid_rays, 1]
+        # # Compute depth as a weighted sum over z values according to absorption/transmission
+        # z_vals = spc_render.cumsum(deltas[:, None], boundary)
+        # real_depth = spc_render.sum_reduce(transmittance * z_vals, boundary)  # [n_valid_rays, 1]
+        # depth = torch.full((n_rays, 1), 100, dtype=ray_colors.dtype, device=dev)
+        # depth[ridx_hit.long()] = real_depth  # [n_rays, 1]
+        # # Try weighting by acc, as in RegNerf
+        # acc = torch.full((n_rays, 1), 0, dtype=ray_colors.dtype, device=dev)
+        # acc[ridx_hit.long()] = alpha
+
+        # # Blend output color with background
+        # if isinstance(bg_color, torch.Tensor) and bg_color.shape == (n_rays, 3):
+        #     rgb = bg_color
+        #     color = ray_colors + (1.0 - alpha) * bg_color[ridx_hit.long(), :]
+        # else:
+        #     rgb = torch.full((n_rays, 3), bg_color, dtype=ray_colors.dtype, device=dev)
+        #     color = ray_colors + (1.0 - alpha) * bg_color
+        # rgb[ridx_hit.long(), :] = color  # [n_rays, 3]
 
         # inspect(density_masked, "density_masked")
         # inspect(rgb_masked, 'rgb_masked')

@@ -27,7 +27,6 @@ class VideoTrainer(Trainer):
     def __init__(self,
                  tr_loader: torch.utils.data.DataLoader,
                  ts_dset: torch.utils.data.TensorDataset,
-                 patch_loader: Optional[PatchLoader],
                  regnerf_weight_start: float,
                  regnerf_weight_end: float,
                  regnerf_weight_max_step: int,
@@ -46,9 +45,9 @@ class VideoTrainer(Trainer):
         # Keys we wish to ignore
         kwargs.pop('transfer_learning', None)
         kwargs.pop('num_batches_per_dset', None)
-        super().__init__(tr_loaders=[tr_loader],
+        super().__init__(tr_loader=tr_loader,
+                         tr_dsets=[tr_loader.dataset],
                          ts_dsets=[ts_dset],
-                         patch_loaders=[patch_loader],
                          regnerf_weight_start=regnerf_weight_start,
                          regnerf_weight_end=regnerf_weight_end,
                          regnerf_weight_max_step=regnerf_weight_max_step,
@@ -85,16 +84,16 @@ class VideoTrainer(Trainer):
             preds = torch.cat(preds, 0)
         return preds
 
-    def step(self, data, dset_id):
-        rays_o = data["train"][0].cuda()
-        rays_d = data["train"][1].cuda()
-        imgs = data["train"][2].cuda()
-        timestamps = data["train"][3].cuda()
+    def step(self, data, do_update=True):
+        rays_o = data["rays_o"].cuda()
+        rays_d = data["rays_d"].cuda()
+        imgs = data["imgs"].cuda()
+        timestamps = data["timestamps"].cuda()
         patch_rays_o, patch_rays_d, patch_timestamps = None, None, None
         if "patches" in data:
-            patch_rays_o = data["patches"][0].cuda()
-            patch_rays_d = data["patches"][1].cuda()
-            patch_timestamps = data["patches"][2]
+            patch_rays_o = data["patch_rays_o"].cuda()
+            patch_rays_d = data["patch_rays_d"].cuda()
+            patch_timestamps = data["patch_timestamps"]
             # Broadcast timestamps to match rays
             patch_timestamps = torch.ones(len(patch_timestamps), patch_rays_o.shape[1],
                                           patch_rays_o.shape[2]) * patch_timestamps[:, None, None]
@@ -150,7 +149,7 @@ class VideoTrainer(Trainer):
         self.loss_info = defaultdict(lambda: EMA(ema_weight))
 
     def init_model(self, **kwargs) -> torch.nn.Module:
-        dset = self.train_data_loaders[0].dataset
+        dset = self.train_data_loader.dataset
         model = LowrankVideo(
             aabb=dset.scene_bbox,
             len_time=dset.len_time,
@@ -250,11 +249,11 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
             data_dir, split='train', downsample=data_downsample,
             resolution=None,  # Don't use resolution for low-pass filtering any more
             max_cameras=kwargs.get('max_train_cameras'), max_tsteps=kwargs.get('max_train_tsteps'),
-            extra_views=regnerf_bool)
+            extra_views=regnerf_bool, batch_size=batch_size)
         ts_dset = Video360Dataset(
             data_dir, split='test', downsample=1, resolution=None,
             max_cameras=kwargs.get('max_test_cameras'), max_tsteps=kwargs.get('max_test_tsteps'),
-            extra_views=False)
+            extra_views=False, batch_size=batch_size)
     else:
         # For LLFF we downsample both train and test unlike 360.
         # For LLFF the test-set is not time-subsampled!
@@ -265,10 +264,6 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
         ts_dset = VideoLLFFDataset(data_dir, split='test', downsample=data_downsample,
                                    subsample_time=1.0, extra_views=False)
     tr_loader = torch.utils.data.DataLoader(
-        tr_dset, batch_size=batch_size, shuffle=True, num_workers=3,
+        tr_dset, batch_size=None, shuffle=True, num_workers=4,
         prefetch_factor=4, pin_memory=True)
-    patch_loader = None
-    if regnerf_bool:
-        patch_loader = PatchLoader(
-            rays_o=tr_dset.extra_rays_o, rays_d=tr_dset.extra_rays_d, len_time=tr_dset.len_time)
-    return {"tr_loader": tr_loader, "ts_dset": ts_dset, "patch_loader": patch_loader}
+    return {"tr_loader": tr_loader, "ts_dset": ts_dset}

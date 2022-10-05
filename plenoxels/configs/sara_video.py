@@ -3,7 +3,7 @@ config = {
     # "expname": "legovideo20views_regdepthweightedacc_400_0.1_512_3framesreso3rank20",
     "expname": "test",
     # "expname": "testrelu_sameranktimereso128_llff",
-    "logdir": "./logs",
+    "logdir": "./logs/legovideo",
 
     # Data settings
     "data_downsample": 3.0,
@@ -23,11 +23,14 @@ config = {
     # Optimization settings
     "num_epochs": 10,
     "regnerf_weight_start": 10,
-    "regnerf_weight_end": 0.1,
+    "regnerf_weight_end": 0.0,
     "regnerf_weight_max_step": 512,
-    "plane_tv_weight": 0, # Not used for video yet
+    "plane_tv_weight": 0,  # Not used for video yet
+    "l1density_weight": 0,  # Not used for video yet
+    "volume_tv_weight": 0.0,  # Not used for video yet
+    "volume_tv_npts": 1024,  # Not used for video yet
     "scheduler_type": None,
-    "batch_size": 3500,  
+    "batch_size": 4096,  
     "optim_type": "adam",
     "lr": 2e-3,
     
