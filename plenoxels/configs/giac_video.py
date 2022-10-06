@@ -5,8 +5,10 @@ config = {
     "logdir": "./logs",
 
     # Data settings
-    "data_downsample": 3.0,
-    "data_dirs": ["/data/DATASETS/VidNerf/lego_video"],
+    #"data_downsample": 1.0,
+    #"data_dirs": ["/data/DATASETS/VidNerf/lego_video"],
+    "data_downsample": 8,
+    "data_dirs": ["/data/DATASETS/VidNerf/coffee_martini"],
     # Data settings for 360
     "max_train_cameras": 20,
     "max_test_cameras": 1,
@@ -16,11 +18,11 @@ config = {
     "subsample_time": 0.1,
 
     # Optimization settings
-    "num_epochs": 1,
+    "num_epochs": 5,
     "batch_size": 4096,
-    "scheduler_type": None,
+    "scheduler_type": "cosine",
     "optim_type": "adam",
-    "lr": 1e-2,
+    "lr": 8e-3,
 
     "regnerf_weight_start": 0.0,
     "regnerf_weight_end": 0.0,
@@ -45,7 +47,7 @@ config = {
 
     # Raymarching settings
     "raymarch_type": "voxel_size",
-    "num_sample_multiplier": 1,
+    "num_sample_multiplier": 2,
     "n_intersections": 400,
     "spacing_fn": "linear",
     "single_jitter": True,
@@ -61,8 +63,8 @@ config = {
         "resolution": [128, 128, 128],
         "rank": 10,
         "time_reso": 10,
-        "time_rank": 5,
-        "init_std": 0.01,
+        "time_rank": 20,
+        "init_std": 0.2,
     },
     {
         "input_coordinate_dim": 4,
