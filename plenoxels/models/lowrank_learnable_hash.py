@@ -62,6 +62,7 @@ class LowrankLearnableHash(LowrankModel):
                 if "feature_dim" in grid_config and si == 0:  # Only make one set of features
                     self.features = self.init_features_param(grid_config, self.sh)
                     self.feature_dim = self.features.shape[0]
+                    #self.basis_mat = torch.nn.Linear(50, 5)
                 else:
                     gpdesc = self.init_grid_param(grid_config, is_video=False, grid_level=li)
                     if li == 0:
@@ -109,7 +110,17 @@ class LowrankLearnableHash(LowrankModel):
                     interp_out = interp_out * (
                         grid_sample_wrapper(grid[ci], interp[..., coo_comb]).view(
                             -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
-            interp = interp_out.sum(dim=-1)
+            #interp = interp_out.sum(dim=-1)
+            #interp_soft = F.softmax(interp_out, dim=-1)
+            #interp_hard = torch.amax(interp_soft.detach(), dim=-1)
+            #interp_soft = interp_soft.sum(-1)
+            #interp = interp_hard - interp_soft.detach() + interp_soft
+            #interp = interp_soft * 2 - 1
+            interp = interp_out.sum(-1)
+            #interp = torch.tanh(interp)
+            #interp = torch.sigmoid(interp) * 2 - 1
+            #print("interp", interp.min(), interp.mean(), interp.max())
+
         out = grid_sample_wrapper(self.features.to(dtype=interp.dtype), interp).view(-1, self.feature_dim)
         if return_coords:
             return out, interp
@@ -245,7 +256,7 @@ class LowrankLearnableHash(LowrankModel):
         features = self.compute_features(pts_norm, grid_id)
         density = (
             self.density_act(self.decoder.compute_density(
-                features, rays_d=None, precompute_color=False)).view(pts_norm.shape[:-1], 1)
+                features, rays_d=None, precompute_color=False)).view((*pts_norm.shape[:-1], 1))
             * selector[..., None]
         )
         if return_feat:
@@ -277,9 +288,6 @@ class LowrankLearnableHash(LowrankModel):
             invalid_mask[mask] |= (~alpha_mask)
             mask = ~invalid_mask
 
-        # Normalization (between [-1, 1])
-        intersection_pts = self.normalize_coords(intersection_pts, grid_id)
-
         if len(intersection_pts) == 0:
             outputs = {}
             if "rgb" in channels:
@@ -303,13 +311,13 @@ class LowrankLearnableHash(LowrankModel):
             rays_d_rep = rays_d.view(-1, 1, 3).expand(intersection_pts.shape)
             masked_rays_d_rep = rays_d_rep[mask]
             density_masked, features = self.query_density(pts=intersection_pts[mask], grid_id=grid_id, return_feat=True)
-            density = torch.zeros(n_rays, n_intrs, device=intersection_pts.device, dtype=density_masked.dtype)
+            density = torch.zeros(n_rays, n_intrs, device=dev, dtype=density_masked.dtype)
             density[mask] = density_masked.view(-1)
 
             alpha, weight, transmission = raw2alpha(density, deltas * self.density_multiplier)  # Each is shape [batch_size, n_samples]
 
             rgb_masked = self.decoder.compute_color(features, rays_d=masked_rays_d_rep)
-            rgb = torch.zeros(n_rays, n_intrs, 3, device=intersection_pts.device, dtype=rgb_masked.dtype)
+            rgb = torch.zeros(n_rays, n_intrs, 3, device=dev, dtype=rgb_masked.dtype)
             rgb[mask] = rgb_masked
             rgb = torch.sigmoid(rgb)
 
@@ -328,52 +336,7 @@ class LowrankLearnableHash(LowrankModel):
                 depth_map = depth_map + (1.0 - acc_map) * rays_d[..., -1]  # Maybe the rays_d is to transform ray depth to absolute depth?
                 outputs["depth"] = depth_map
         elif version == 1:  # This uses kaolin. The depth could be wrong in mysterious ways.
-            features = self.compute_features(intersection_pts[mask], grid_id)
-
-            ridx = rm_out["ridx"][mask]
-            deltas = rm_out["deltas"][mask]
-            boundary = spc_render.mark_pack_boundaries(ridx)
-
-            # rays_d in the packed format (essentially repeated a number of times)
-            rays_d_rep = rays_d.index_select(0, ridx)
-
-            density_masked = self.density_act(self.decoder.compute_density(features, rays_d=rays_d_rep))
-            rgb_masked = torch.sigmoid(self.decoder.compute_color(features, rays_d=rays_d_rep))
-
-            # Compute optical thickness
-            tau = density_masked.reshape(-1, 1) * deltas.reshape(-1, 1) * self.density_multiplier
-            # ridx_hit are the ray-IDs at the first intersection (the boundary).
-            ridx_hit = ridx[boundary]
-            # Perform volumetric integration
-            ray_colors, transmittance = spc_render.exponential_integration(
-                rgb_masked.reshape(-1, 3), tau, boundary, exclusive=True)
-
-            alpha = spc_render.sum_reduce(transmittance, boundary)
-
-            if "rgb" in channels:
-                # Blend output color with background
-                if bg_color is None:
-                    rgb = torch.zeros((n_rays, 3), dtype=ray_colors.dtype, device=dev)
-                    color = ray_colors
-                elif isinstance(bg_color, torch.Tensor) and bg_color.shape == (n_rays, 3):
-                    rgb = bg_color
-                    color = ray_colors + (1.0 - alpha) * bg_color[ridx_hit.long(), :]
-                else:
-                    rgb = torch.full((n_rays, 3), bg_color, dtype=ray_colors.dtype, device=dev)
-                    color = ray_colors + (1.0 - alpha) * bg_color
-                rgb[ridx_hit.long(), :] = color
-                outputs["rgb"] = rgb
-            if "depth" in channels:
-                z_mids = rm_out["z_mids"][mask]
-                # Compute depth
-                depth_map = spc_render.sum_reduce(z_mids.view(-1, 1) * transmittance, boundary) / torch.clip(alpha, 1e-5)
-                depth = torch.zeros(n_rays, 1, device=dev, dtype=depth_map.dtype)
-                depth[ridx_hit.long(), :] = depth_map
-                outputs["depth"] = depth
-            if "alpha" in channels:
-                alpha_out = torch.zeros(n_rays, 1, device=alpha.device, dtype=alpha.dtype)
-                alpha_out[ridx_hit.long(), :] = alpha
-                outputs["alpha"] = alpha_out
+            raise NotImplementedError()
 
         return outputs
 
@@ -440,6 +403,7 @@ class LowrankLearnableHash(LowrankModel):
     def get_params(self, lr):
         params = [
             {"params": self.scene_grids.parameters(), "lr": lr},
+            #{"params": self.bn.parameters(), "lr": lr},
         ]
         if not self.transfer_learning:
             params += [
