@@ -1,6 +1,4 @@
-import collections.abc
 import itertools
-import math
 from typing import Dict, List, Union, Optional, Sequence, Tuple
 import logging as log
 
@@ -9,10 +7,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 import kaolin.render.spc as spc_render
 
-from plenoxels.models.utils import grid_sample_wrapper, compute_plane_tv
+from plenoxels.models.utils import grid_sample_wrapper, compute_plane_tv, raw2alpha
 from .decoders import NNDecoder, SHDecoder
 from ..ops.activations import trunc_exp
 from ..raymarching.raymarching import RayMarcher
+from .lowrank_model import LowrankModel
 
 
 class DensityMask(nn.Module):
@@ -33,13 +32,13 @@ class DensityMask(nn.Module):
         return torch.tensor((self.density_volume.shape[-1], self.density_volume.shape[-2], self.density_volume.shape[-3]), dtype=torch.long)
 
 
-class LowrankLearnableHash(nn.Module):
+class LowrankLearnableHash(LowrankModel):
     def __init__(self,
                  grid_config: Union[str, List[Dict]],
                  aabb: List[torch.Tensor],
                  is_ndc: bool,
+                 sh: bool,
                  num_scenes: int = 1,
-                 sh: bool = False,
                  **kwargs):
         super().__init__()
         if isinstance(grid_config, str):
@@ -54,58 +53,20 @@ class LowrankLearnableHash(nn.Module):
         self.transfer_learning = self.extra_args["transfer_learning"]
         self.alpha_mask_threshold = self.extra_args["density_threshold"]
 
-        self.density_act = F.relu#trunc_exp
+        self.density_act = lambda x: trunc_exp(x - 1)
 
         self.scene_grids = nn.ModuleList()
-        self.features = None
-        self.feature_dim = None
         for si in range(num_scenes):
             grids = nn.ModuleList()
             for li, grid_config in enumerate(self.config):
-                if "feature_dim" in grid_config:
-                    if si == 0:  # Only make one set of features
-                        reso: List[int] = grid_config["resolution"]
-                        try:
-                            in_dim = len(reso)
-                        except AttributeError:
-                            raise ValueError("Configuration incorrect: resolution must be a list.")
-                        assert in_dim == grid_config["input_coordinate_dim"]
-                        self.features = nn.Parameter(
-                            torch.empty([grid_config["feature_dim"]] + reso[::-1]))
-                        if self.sh:
-                            nn.init.zeros_(self.features)
-                            self.features[-1].data.fill_(grid_config["init_std"])  # here init_std is repurposed as the sigma initialization
-                        else:
-                            nn.init.normal_(self.features, mean=0.0, std=grid_config["init_std"])
-                        self.feature_dim = grid_config["feature_dim"]
+                if "feature_dim" in grid_config and si == 0:  # Only make one set of features
+                    self.features = self.init_features_param(grid_config, self.sh)
+                    self.feature_dim = self.features.shape[0]
                 else:
-                    out_dim: int = grid_config["output_coordinate_dim"]
-                    grid_nd: int = grid_config["grid_dimensions"]
-                    self.reso: List[int] = grid_config["resolution"]
-                    try:
-                        in_dim = len(self.reso)
-                    except AttributeError:
-                        raise ValueError("Configuration incorrect: resolution must be a list.")
-                    num_comp = math.comb(in_dim, grid_nd)
-                    rank: Sequence[int] = to_list(grid_config["rank"], num_comp, "rank")
-                    grid_config["rank"] = rank
-                    # Configuration correctness checks
-                    assert in_dim == grid_config["input_coordinate_dim"]
+                    gpdesc = self.init_grid_param(grid_config, is_video=False, grid_level=li)
                     if li == 0:
-                        assert in_dim == 3
-                        self.set_resolution(torch.tensor(self.reso, dtype=torch.long), grid_id=si)
-                    assert out_dim in {1, 2, 3, 4, 5, 6, 7}
-                    assert grid_nd <= in_dim
-                    if grid_nd == in_dim:
-                        assert all(r == 1 for r in rank)
-                    coo_combs = list(itertools.combinations(range(in_dim), grid_nd))
-                    grid_coefs = nn.ParameterList()
-                    for ci, coo_comb in enumerate(coo_combs):
-                        grid_coefs.append(
-                            torch.nn.Parameter(nn.init.normal_(torch.empty(
-                                [1, out_dim * rank[ci]] + [self.reso[cc] for cc in coo_comb[::-1]]
-                            ), mean=0.0, std=grid_config["init_std"])))
-                    grids.append(grid_coefs)
+                        self.set_resolution(gpdesc.reso, grid_id=si)
+                    grids.append(gpdesc.grid_coefs)
             self.scene_grids.append(grids)
         if self.sh:
             self.decoder = SHDecoder(feature_dim=self.feature_dim)
@@ -114,42 +75,6 @@ class LowrankLearnableHash(nn.Module):
         self.raymarcher = RayMarcher(**self.extra_args)
         self.density_mask = nn.ModuleList([None] * num_scenes)
         log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes, decoder: {self.decoder}.")
-
-    def set_aabb(self, aabb: Union[torch.Tensor, List[torch.Tensor]], grid_id: Optional[int] = None):
-        if grid_id is None:
-            # aabb needs to be BufferList (but BufferList doesn't exist so we emulate it)
-            for i, p in enumerate(aabb):
-                if hasattr(self, f'aabb{i}'):
-                    setattr(self, f'aabb{i}', p)
-                else:
-                    self.register_buffer(f'aabb{i}', p)
-        else:
-            assert isinstance(aabb, torch.Tensor)
-            if hasattr(self, f'aabb{grid_id}'):
-                setattr(self, f'aabb{grid_id}', aabb)
-            else:
-                self.register_buffer(f'aabb{grid_id}', aabb)
-
-    def aabb(self, i: int) -> torch.Tensor:
-        return getattr(self, f'aabb{i}')
-
-    def set_resolution(self, resolution: Union[torch.Tensor, List[torch.Tensor]], grid_id: Optional[int] = None):
-        if grid_id is None:
-            # resolution needs to be BufferList (but BufferList doesn't exist so we emulate it)
-            for i, p in enumerate(resolution):
-                if hasattr(self, f'resolution{i}'):
-                    setattr(self, f'resolution{i}', p)
-                else:
-                    self.register_buffer(f'resolution{i}', p)
-        else:
-            assert isinstance(resolution, torch.Tensor)
-            if hasattr(self, f'resolution{grid_id}'):
-                setattr(self, f'resolution{grid_id}', resolution)
-            else:
-                self.register_buffer(f'resolution{grid_id}', resolution)
-
-    def resolution(self, i: int) -> torch.Tensor:
-        return getattr(self, f'resolution{i}')
 
     def compute_features(self,
                          pts: torch.Tensor,
@@ -190,18 +115,6 @@ class LowrankLearnableHash(nn.Module):
             return out, interp
         return out
 
-    @torch.autograd.no_grad()
-    def normalize_coords(self, pts: torch.Tensor, grid_id: int) -> torch.Tensor:
-        """
-        break-down of the normalization steps. pts starts from [a0, a1]
-        1. pts - a0 => [0, a1-a0]
-        2. / (a1 - a0) => [0, 1]
-        3. * 2 => [0, 2]
-        4. - 1 => [-1, 1]
-        """
-        aabb = self.aabb(grid_id)
-        return (pts - aabb[0]) * (2.0 / (aabb[1] - aabb[0])) - 1
-
     @torch.no_grad()
     def update_alpha_mask(self, grid_id: int = 0):
         assert len(self.config) == 2, "Alpha-masking not supported for multiple layers of indirection."
@@ -212,7 +125,7 @@ class LowrankLearnableHash(nn.Module):
 
         # Compute density on a regular grid (of shape grid_size)
         pts = self.get_points_on_grid(aabb, grid_size, max_voxels=None)
-        density = self.compute_density(pts, grid_id, use_mask=True)
+        density = self.query_density(pts, grid_id).view(-1)
 
         alpha = 1.0 - torch.exp(-density * step_size * self.density_multiplier).view(grid_size_l)  # [gs0, gs1, gs2]
         pts = pts.view(grid_size_l + [3])  # [gs0, gs1, gs2, 3]
@@ -325,25 +238,18 @@ class LowrankLearnableHash(nn.Module):
         pts = aabb[0] * (1 - pts) + aabb[1] * pts
         return pts
 
-    def compute_density(self, pts: torch.Tensor, grid_id: int, use_mask: bool):
-        dev = pts.device
-        alpha_mask = None
-        if self.density_mask[grid_id] is not None and use_mask:
-            alpha_mask = self.density_mask[grid_id].sample_density(pts).gt(0.0)
+    def query_density(self, pts: torch.Tensor, grid_id: int, return_feat: bool = False):
+        pts_norm = self.normalize_coords(pts, grid_id)
+        selector = ((pts_norm >= -1.0) & (pts_norm <= 1.0)).all(dim=-1)
 
-        if alpha_mask is not None and alpha_mask.any():
-            pts_sampled = self.normalize_coords(pts[alpha_mask], grid_id)
-            features = self.compute_features(pts_sampled, grid_id)
-            density_masked = self.density_act(
-                self.decoder.compute_density(features, rays_d=None, precompute_color=False))
-            density = torch.zeros(pts.shape[0], dtype=density_masked.dtype, device=dev)
-            density[alpha_mask] = density_masked.view(-1)
-        elif alpha_mask is None:
-            features = self.compute_features(self.normalize_coords(pts, grid_id), grid_id)
-            density = self.density_act(
-                self.decoder.compute_density(features, rays_d=None, precompute_color=False)).view(-1)
-        else:
-            density = torch.zeros(pts.shape[0], dtype=torch.float32, device=dev)
+        features = self.compute_features(pts_norm, grid_id)
+        density = (
+            self.density_act(self.decoder.compute_density(
+                features, rays_d=None, precompute_color=False)).view(pts_norm.shape[:-1], 1)
+            * selector[..., None]
+        )
+        if return_feat:
+            return density, features
         return density
 
     def forward(self, rays_o, rays_d, bg_color, grid_id=0, channels: Sequence[str] = ("rgb", "depth")):
@@ -390,15 +296,13 @@ class LowrankLearnableHash(nn.Module):
             return outputs
 
         # compute features and render
-        features = self.compute_features(intersection_pts[mask], grid_id)
-
         outputs = {}
         if version == 2:
             z_vals = rm_out["z_vals"]  # [batch_size, n_samples]
             deltas = rm_out["deltas"]  # [batch_size, n_samples]
             rays_d_rep = rays_d.view(-1, 1, 3).expand(intersection_pts.shape)
             masked_rays_d_rep = rays_d_rep[mask]
-            density_masked = self.density_act(self.decoder.compute_density(features, rays_d=masked_rays_d_rep))
+            density_masked, features = self.query_density(pts=intersection_pts[mask], grid_id=grid_id, return_feat=True)
             density = torch.zeros(n_rays, n_intrs, device=intersection_pts.device, dtype=density_masked.dtype)
             density[mask] = density_masked.view(-1)
 
@@ -410,7 +314,7 @@ class LowrankLearnableHash(nn.Module):
             rgb = torch.sigmoid(rgb)
 
             # Confirmed that torch.sum(weight, -1) matches 1-transmission[:,-1]
-            acc_map = 1 - transmission[:,-1]
+            acc_map = 1 - transmission[:, -1]
 
             if "rgb" in channels:
                 rgb_map = torch.sum(weight[..., None] * rgb, -2)
@@ -424,6 +328,8 @@ class LowrankLearnableHash(nn.Module):
                 depth_map = depth_map + (1.0 - acc_map) * rays_d[..., -1]  # Maybe the rays_d is to transform ray depth to absolute depth?
                 outputs["depth"] = depth_map
         elif version == 1:  # This uses kaolin. The depth could be wrong in mysterious ways.
+            features = self.compute_features(intersection_pts[mask], grid_id)
+
             ridx = rm_out["ridx"][mask]
             deltas = rm_out["deltas"][mask]
             boundary = spc_render.mark_pack_boundaries(ridx)
@@ -489,7 +395,7 @@ class LowrankLearnableHash(nn.Module):
         pts = self.get_points_on_grid(
             self.aabb(grid_id), self.resolution(grid_id), max_voxels=max_voxels)
         # Compute density on the grid
-        density = self.compute_density(pts, grid_id, use_mask=True)
+        density = self.query_density(pts, grid_id)
         return torch.mean(torch.abs(density))
 
     def compute_3d_tv(self, grid_id, what='Gcoords', batch_size=100, patch_size=3):
@@ -515,7 +421,7 @@ class LowrankLearnableHash(nn.Module):
 
         if what == 'density':
             # Compute density on the grid
-            density = self.compute_density(pts, grid_id, use_mask=False)
+            density = self.query_density(pts, grid_id)
             patches = density.view(-1, patch_size, patch_size, patch_size)
         elif what == 'Gcoords':
             pts = self.normalize_coords(pts, grid_id)
@@ -541,23 +447,3 @@ class LowrankLearnableHash(nn.Module):
                 {"params": self.features, "lr": lr},
             ]
         return params
-
-
-def raw2alpha(sigma, dist):
-    alpha = 1 - torch.exp(-sigma * dist)
-    T = torch.cat((torch.ones(alpha.shape[0], 1, device=alpha.device),
-                   torch.cumprod(1.0 - alpha, dim=-1)), dim=-1)
-    # T = torch.cat((torch.ones(alpha.shape[0], 1, device=alpha.device),
-    #                torch.cumprod(1.0 - alpha[:, :-1] + 1e-10, dim=-1)), dim=-1)
-    #T = torch.cumprod(torch.cat([torch.ones(alpha.shape[0], 1, device=alpha.device), 1 - alpha + 1e-10], -1), -1)
-
-    weights = alpha * T[:, :-1]
-    return alpha, weights, T#[:, -1:]  # Return full-length T so we can use the last one for background
-
-
-def to_list(el, list_len, name: Optional[str] = None) -> Sequence:
-    if not isinstance(el, collections.abc.Sequence):
-        return [el] * list_len
-    if len(el) != list_len:
-        raise ValueError(f"Length of {name} is incorrect. Expected {list_len} but found {len(el)}")
-    return el

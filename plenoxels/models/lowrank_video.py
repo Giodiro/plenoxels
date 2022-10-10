@@ -1,106 +1,66 @@
-import collections.abc
 import itertools
-import math
-from typing import Dict, List, Union, Sequence, Optional
 import logging as log
+from typing import Dict, List, Union, Sequence, Tuple
 
 import torch
-import torch.nn as nn
-import kaolin.render.spc as spc_render
 
-from plenoxels.models.utils import grid_sample_wrapper
+from plenoxels.models.utils import grid_sample_wrapper, raw2alpha
 from .decoders import NNDecoder, SHDecoder
+from .lowrank_model import LowrankModel
 from ..raymarching.raymarching import RayMarcher
+from ..ops.activations import trunc_exp
 
 
-class LowrankVideo(nn.Module):
+class LowrankVideo(LowrankModel):
     def __init__(self,
                  grid_config: Union[str, List[Dict]],
                  aabb: torch.Tensor,  # [[x_min, y_min, z_min], [x_max, y_max, z_max]]
                  len_time: int,
                  is_ndc: bool,
+                 sh: bool,
                  **kwargs):
         super().__init__()
         if isinstance(grid_config, str):
             self.config: List[Dict] = eval(grid_config)
         else:
             self.config: List[Dict] = grid_config
-        self.register_buffer("aabb", aabb)
+        self.set_aabb(aabb, 0)
         self.len_time = len_time
         self.extra_args = kwargs
         self.is_ndc = is_ndc
         self.raymarcher = RayMarcher(**self.extra_args)
+        self.sh = sh
+        # self.density_act = torch.relu#trunc_exp
+        self.density_act = trunc_exp
 
-        self.features = None
-        feature_dim = None
-        self.grids = nn.ModuleList()
+        # For now, only allow a single index grid and a single feature grid, not multiple layers
+        assert len(self.config) == 2
         for li, grid_config in enumerate(self.config):
             if "feature_dim" in grid_config:
-                reso: List[int] = grid_config["resolution"]
-                try:
-                    in_dim = len(reso)
-                except AttributeError:
-                    raise ValueError("Configuration incorrect: resolution must be a list.")
-                assert in_dim == grid_config["input_coordinate_dim"]
-                self.features = nn.Parameter(nn.init.normal_(
-                        torch.empty([grid_config["feature_dim"]] + reso),
-                        mean=0.0, std=grid_config["init_std"]))
-                feature_dim = grid_config["feature_dim"]
+                self.features = self.init_features_param(grid_config, self.sh)
+                self.feature_dim = self.features.shape[0]
             else:
-                out_dim = grid_config["output_coordinate_dim"]
-                grid_nd = grid_config["grid_dimensions"]
-                reso: List[int] = grid_config["resolution"]
-                try:
-                    in_dim = len(reso)
-                except AttributeError:
-                    raise ValueError("Configuration incorrect: resolution must be a list.")
-                num_comp = math.comb(in_dim, grid_nd)
-                rank: Sequence[int] = to_list(grid_config["rank"], num_comp, "rank")
-                grid_config["rank"] = rank
-                # Configuration correctness checks
-                assert in_dim == grid_config["input_coordinate_dim"]
-                if li == 0:
-                    assert in_dim == 3
-                    self.register_buffer("resolution", torch.tensor(reso, dtype=torch.long))
-                assert out_dim in {1, 2, 3, 4}
-                assert grid_nd <= in_dim
-                if grid_nd == in_dim:
-                    assert all(r == 1 for r in rank)
-                time_reso = grid_config["time_reso"]
-                coo_combs = list(itertools.combinations(range(in_dim), grid_nd))
-                grid_coefs = nn.ParameterList()
-                for ci, coo_comb in enumerate(coo_combs):
-                    grid_coefs.append(
-                        torch.nn.Parameter(nn.init.normal_(torch.empty(
-                            [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb]
-                        ), mean=0.0, std=grid_config["init_std"])))
-                time_coef = nn.Parameter(nn.init.normal_(
-                                torch.empty([out_dim * rank[0], time_reso]),
-                                mean=0.0, std=grid_config["init_std"]))
-                self.grids.append(grid_coefs)
-                self.grids.append(nn.ParameterList([time_coef]))
-        assert len(self.grids) == 2  # For now, only allow a single index grid and a single feature grid, not multiple layers
-        self.decoder = NNDecoder(feature_dim=feature_dim, sigma_net_width=64, sigma_net_layers=1)
-        log.info(f"Initialized LowrankVideo.")
+                gpdesc = self.init_grid_param(grid_config, is_video=True, grid_level=li)
+                self.set_resolution(gpdesc.reso, 0)
+                self.grids = gpdesc.grid_coefs
+                self.time_coef = gpdesc.time_coef
+        if self.sh:
+            self.decoder = SHDecoder(feature_dim=self.feature_dim)
+        else:
+            self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
+        log.info(f"Initialized LowrankVideo. "
+                 f"time-reso={self.time_coef.shape[1]} - decoder={self.decoder}")
 
-    @staticmethod
-    def get_coo_plane(coords, dim):
-        """
-        :param coords:
-            torch tensor [n, input d]
-        :param dim:
-        :return:
-            torch tensor [num_comp, n, dim]
-        """
-        coo_combs = list(itertools.combinations(range(coords.shape[-1]), dim))
-        return coords[..., coo_combs].transpose(0, 1)
-
-    def compute_features(self, pts, timestamps):
-        grid_space, grid_time = self.grids  # space: [3, rank * F_dim, reso, reso], time: [rank * F_dim, time_reso]
+    def compute_features(self,
+                         pts,
+                         timestamps,
+                         return_coords: bool = False
+                         ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        grid_space = self.grids  # space: [3, rank * F_dim, reso, reso]
+        grid_time = self.time_coef  # time: [rank * F_dim, time_reso]
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
 
         # Interpolate in time
-        grid_time = grid_time[0]  # we need it to be a length-1 ParameterList
         interp_time = grid_sample_wrapper(grid_time.unsqueeze(0), timestamps[:, None])  # [n, F_dim * rank]
         interp_time = interp_time.view(-1, level_info["output_coordinate_dim"], level_info["rank"][0])  # [n, F_dim, rank]
         # Interpolate in space
@@ -120,19 +80,12 @@ class LowrankVideo(nn.Module):
                         -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
         # Combine space and time over rank
         interp = (interp_space * interp_time).sum(dim=-1)  # [n, F_dim]
-        return grid_sample_wrapper(self.features, interp)
+        out = grid_sample_wrapper(self.features, interp).view(-1, self.feature_dim)
+        if return_coords:
+            return out, interp
+        return out
 
-    def normalize_coord(self, pts):
-        """
-        break-down of the normalization steps
-        1. pts - aabb[0] => [0, a1-a0]
-        2. / (a1 - a0) => [0, 1]
-        3. * 2 => [0, 2]
-        4. - 1 => [-1, 1]
-        """
-        return (pts - self.aabb[0]) * (2.0 / (self.aabb[1] - self.aabb[0])) - 1
-
-    def forward(self, rays_o, rays_d, timestamps, bg_color):
+    def forward(self, rays_o, rays_d, timestamps, bg_color, channels: Sequence[str] = ("rgb", "depth")):
         """
         rays_o : [batch, 3]
         rays_d : [batch, 3]
@@ -140,75 +93,55 @@ class LowrankVideo(nn.Module):
         """
 
         rm_out = self.raymarcher.get_intersections2(
-            rays_o, rays_d, self.aabb, self.resolution, perturb=self.training,
+            rays_o, rays_d, self.aabb(0), self.resolution(0), perturb=self.training,
             is_ndc=self.is_ndc)
-        rays_d = rm_out["rays_d"]
-        deltas = rm_out["deltas"]
-        intersection_pts = rm_out["intersections"]
-        ridx = rm_out["ridx"]
-        boundary = rm_out["boundary"]
+        rays_d = rm_out["rays_d"]                   # [n_rays, 3]
+        intersection_pts = rm_out["intersections"]  # [n_rays, n_intrs, 3]
+        mask = rm_out["mask"]                       # [n_rays, n_intrs]
+        z_vals = rm_out["z_vals"]                   # [n_rays, n_intrs]
+        deltas = rm_out["deltas"]                   # [n_rays, n_intrs]
+        n_rays, n_intrs = intersection_pts.shape[:2]
 
-        times = timestamps[:, None].repeat(1, rm_out["mask"].shape[1])[rm_out["mask"]]
-
-        n_rays = rays_o.shape[0]
-        dev = rays_o.device
-
-        # mask has shape [batch, n_intrs]
-        # intersection_pts has shape [n_valid_intrs, 3]
+        times = timestamps[:, None].repeat(1, n_intrs)[mask]  # [n_rays, n_intrs]
 
         # Normalization (between [-1, 1])
-        intersection_pts = self.normalize_coord(intersection_pts)
+        intersection_pts = self.normalize_coords(intersection_pts, 0)
         times = (times * 2 / self.len_time) - 1
 
-        # rays_d in the packed format (essentially repeated a number of times)
-        rays_d_rep = rays_d.index_select(0, ridx)
-
         # compute features and render
-        features = self.compute_features(intersection_pts, times)
-        density_masked = nn.functional.relu(self.decoder.compute_density(features, rays_d=rays_d_rep)) 
-        rgb_masked = torch.sigmoid(self.decoder.compute_color(features, rays_d=rays_d_rep))
+        features = self.compute_features(intersection_pts[mask], times)
 
-        # Compute optical thickness
-        tau = density_masked.reshape(-1, 1) * deltas.reshape(-1, 1)
-        # ridx_hit are the ray-IDs at the first intersection (the boundary).
-        ridx_hit = ridx[boundary]
-        # Perform volumetric integration
-        ray_colors, transmittance = spc_render.exponential_integration(
-            rgb_masked.reshape(-1, 3), tau, boundary, exclusive=True)  # transmittance is [n_intersections, 1]
-        alpha = spc_render.sum_reduce(transmittance, boundary)  # [n_valid_rays, 1]
-        # Compute depth as a weighted sum over z values according to absorption/transmission
-        z_vals = spc_render.cumsum(deltas[:, None], boundary)
-        real_depth = spc_render.sum_reduce(transmittance * z_vals, boundary)  # [n_valid_rays, 1]
-        depth = torch.full((n_rays, 1), 100, dtype=ray_colors.dtype, device=dev)
-        depth[ridx_hit.long()] = real_depth  # [n_rays, 1]
-        # Try weighting by acc, as in RegNerf
-        acc = torch.full((n_rays, 1), 0, dtype=ray_colors.dtype, device=dev)
-        acc[ridx_hit.long()] = alpha
+        rays_d_rep = rays_d.view(-1, 1, 3).expand(intersection_pts.shape)
+        masked_rays_d_rep = rays_d_rep[mask]
 
-        # Blend output color with background
-        if isinstance(bg_color, torch.Tensor) and bg_color.shape == (n_rays, 3):
-            rgb = bg_color
-            color = ray_colors + (1.0 - alpha) * bg_color[ridx_hit.long(), :]
-        else:
-            rgb = torch.full((n_rays, 3), bg_color, dtype=ray_colors.dtype, device=dev)
-            color = ray_colors + (1.0 - alpha) * bg_color
-        rgb[ridx_hit.long(), :] = color  # [n_rays, 3]
+        density_masked = self.density_act(self.decoder.compute_density(features, rays_d=masked_rays_d_rep) - 1)
+        density = torch.zeros(n_rays, n_intrs, device=intersection_pts.device, dtype=density_masked.dtype)
+        density[mask] = density_masked.view(-1)
 
-        # inspect(density_masked, "density_masked")
-        # inspect(rgb_masked, 'rgb_masked')
-        # inspect(tau, 'tau')
-        # inspect(ridx_hit, 'ridx_hit')
-        # inspect(ray_colors, 'ray_colors')
-        # inspect(transmittance, 'transmittance')
-        # inspect(alpha, 'alpha')
-        # inspect(z_vals, 'z_vals')
-        # inspect(real_depth, 'real_depth')
-        # inspect(depth, 'depth')
-        # inspect(acc, 'acc')
-        # inspect(rgb, 'rgb')
-        # inspect(acc*depth, 'acc*depth')
+        alpha, weight, transmission = raw2alpha(density, deltas)  # Each is shape [batch_size, n_samples]
 
-        return rgb, depth, acc
+        rgb_masked = self.decoder.compute_color(features, rays_d=masked_rays_d_rep)
+        rgb = torch.zeros(n_rays, n_intrs, 3, device=intersection_pts.device, dtype=rgb_masked.dtype)
+        rgb[mask] = rgb_masked
+        rgb = torch.sigmoid(rgb)
+
+        # Confirmed that torch.sum(weight, -1) matches 1-transmission[:, -1]
+        acc_map = 1 - transmission[:, -1]
+
+        outputs = {}
+        if "rgb" in channels:
+            rgb_map = torch.sum(weight[..., None] * rgb, -2)
+            if bg_color is None:
+                pass
+            else:
+                rgb_map = rgb_map + (1.0 - acc_map[..., None]) * bg_color
+            outputs["rgb"] = rgb_map
+        if "depth" in channels:
+            depth_map = torch.sum(weight * z_vals, -1)  # [batch_size]
+            depth_map = depth_map + (1.0 - acc_map) * rays_d[..., -1]  # Maybe the rays_d is to transform ray depth to absolute depth?
+            outputs["depth"] = depth_map
+
+        return outputs
 
     def get_params(self, lr):
         params = [
@@ -218,13 +151,3 @@ class LowrankVideo(nn.Module):
         ]
         return params
 
-
-def to_list(el, list_len, name: Optional[str] = None) -> Sequence:
-    if not isinstance(el, collections.abc.Sequence):
-        return [el] * list_len
-    if len(el) != list_len:
-        raise ValueError(f"Length of {name} is incorrect. Expected {list_len} but found {len(el)}")
-    return el
-
-def inspect(variable, name):
-    print(f'{name} has shape {variable.shape}, min {torch.min(variable)}, and max {torch.max(variable)}')
