@@ -277,8 +277,6 @@ class LowrankLearnableHash(LowrankModel):
         n_rays, n_intrs = intersection_pts.shape[:2]
         dev = rays_o.device
 
-        version = 2
-
         # Filter intersections which have a low density according to the density mask
         if self.density_mask[grid_id] is not None:
             # density_mask needs unnormalized coordinates: normalization happens internally
@@ -305,38 +303,35 @@ class LowrankLearnableHash(LowrankModel):
 
         # compute features and render
         outputs = {}
-        if version == 2:
-            z_vals = rm_out["z_vals"]  # [batch_size, n_samples]
-            deltas = rm_out["deltas"]  # [batch_size, n_samples]
-            rays_d_rep = rays_d.view(-1, 1, 3).expand(intersection_pts.shape)
-            masked_rays_d_rep = rays_d_rep[mask]
-            density_masked, features = self.query_density(pts=intersection_pts[mask], grid_id=grid_id, return_feat=True)
-            density = torch.zeros(n_rays, n_intrs, device=dev, dtype=density_masked.dtype)
-            density[mask] = density_masked.view(-1)
+        z_vals = rm_out["z_vals"]  # [batch_size, n_samples]
+        deltas = rm_out["deltas"]  # [batch_size, n_samples]
+        rays_d_rep = rays_d.view(-1, 1, 3).expand(intersection_pts.shape)
+        masked_rays_d_rep = rays_d_rep[mask]
+        density_masked, features = self.query_density(pts=intersection_pts[mask], grid_id=grid_id, return_feat=True)
+        density = torch.zeros(n_rays, n_intrs, device=dev, dtype=density_masked.dtype)
+        density[mask] = density_masked.view(-1)
 
-            alpha, weight, transmission = raw2alpha(density, deltas * self.density_multiplier)  # Each is shape [batch_size, n_samples]
+        alpha, weight, transmission = raw2alpha(density, deltas * self.density_multiplier)  # Each is shape [batch_size, n_samples]
 
-            rgb_masked = self.decoder.compute_color(features, rays_d=masked_rays_d_rep)
-            rgb = torch.zeros(n_rays, n_intrs, 3, device=dev, dtype=rgb_masked.dtype)
-            rgb[mask] = rgb_masked
-            rgb = torch.sigmoid(rgb)
+        rgb_masked = self.decoder.compute_color(features, rays_d=masked_rays_d_rep)
+        rgb = torch.zeros(n_rays, n_intrs, 3, device=dev, dtype=rgb_masked.dtype)
+        rgb[mask] = rgb_masked
+        rgb = torch.sigmoid(rgb)
 
-            # Confirmed that torch.sum(weight, -1) matches 1-transmission[:,-1]
-            acc_map = 1 - transmission[:, -1]
+        # Confirmed that torch.sum(weight, -1) matches 1-transmission[:,-1]
+        acc_map = 1 - transmission[:, -1]
 
-            if "rgb" in channels:
-                rgb_map = torch.sum(weight[..., None] * rgb, -2)
-                if bg_color is None:
-                    pass
-                else:
-                    rgb_map = rgb_map + (1.0 - acc_map[..., None]) * bg_color
-                outputs["rgb"] = rgb_map
-            if "depth" in channels:
-                depth_map = torch.sum(weight * z_vals, -1)  # [batch_size]
-                depth_map = depth_map + (1.0 - acc_map) * rays_d[..., -1]  # Maybe the rays_d is to transform ray depth to absolute depth?
-                outputs["depth"] = depth_map
-        elif version == 1:  # This uses kaolin. The depth could be wrong in mysterious ways.
-            raise NotImplementedError()
+        if "rgb" in channels:
+            rgb_map = torch.sum(weight[..., None] * rgb, -2)
+            if bg_color is None:
+                pass
+            else:
+                rgb_map = rgb_map + (1.0 - acc_map[..., None]) * bg_color
+            outputs["rgb"] = rgb_map
+        if "depth" in channels:
+            depth_map = torch.sum(weight * z_vals, -1)  # [batch_size]
+            depth_map = depth_map + (1.0 - acc_map) * rays_d[..., -1]  # Maybe the rays_d is to transform ray depth to absolute depth?
+            outputs["depth"] = depth_map
 
         return outputs
 
