@@ -110,15 +110,15 @@ class LowrankModel(ABC, nn.Module):
         grid_coefs = nn.ParameterList()
         for ci, coo_comb in enumerate(coo_combs):
             grid_coefs.append(
-                torch.nn.Parameter(nn.init.normal_(torch.empty(
+                nn.Parameter(nn.init.uniform_(torch.empty(
                     [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb[::-1]]
-                ), mean=0.0, std=grid_config["init_std"])))
+                ), a=-1.0, b=1.0)))
 
-        if is_video:
+        if is_video:  
             time_reso = int(grid_config["time_reso"])
-            time_coef = nn.Parameter(nn.init.normal_(
+            time_coef = nn.Parameter(nn.init.uniform_(
                 torch.empty([out_dim * rank[0], time_reso]),
-                mean=0.0, std=grid_config["init_std"]))
+                a=-1.0, b=1.0))
             return GridParamDescription(
                 grid_coefs=grid_coefs, reso=pt_reso, time_reso=time_reso, time_coef=time_coef)
         return GridParamDescription(

@@ -2,14 +2,14 @@
 # the configuration must be specified in a dictionary called `config`.
 import numpy as np
 config = {
-    "expname": "lego_rank10_sh28",
+    "expname": "lego_rank10_sh28_meaninit-11",
     # "expname": "lowrank_noupsamplelr4e-3_planetvfeats0.04",
     # "logdir": "./logs/fullresofern",
     "logdir": "./logs/sh",
 
     # Data settings
     "data_resolution": None,
-    "data_downsample": 3,
+    "data_downsample": 1,
     "data_dirs": ["/home/sfk/data/nerf_synthetic/lego"],
     # "data_dirs": ["/home/sfk/data/nerf_llff_data/fern"],
     # Data settings for 360
@@ -24,7 +24,7 @@ config = {
     "num_batches_per_dset": 1,
     "scheduler_type": None,
     "optim_type": "adam",
-    "lr": 4e-3,
+    "lr": 1e-2,
     "regnerf_weight_start": 0,
     "regnerf_weight_end": 0.0,
     "regnerf_weight_max_step": 512,
@@ -36,7 +36,7 @@ config = {
     # Training settings
     "train_fp16": True,
     "save_every": 10,
-    "valid_every": 1,
+    "valid_every": 10,
     "save_outputs": True,
     "transfer_learning": False,
 
@@ -62,13 +62,12 @@ config = {
         "grid_dimensions": 2,
         "resolution": [128, 128, 128],
         "rank": 10,
-        "init_std": 0.2,  
     },
     {
         "input_coordinate_dim": 5,
         "resolution": [6, 6, 6, 6, 6],
         "feature_dim": 28,
-        "init_std": 0.05
+        "init_std": 0.5
     }
 ]
 """

@@ -110,16 +110,7 @@ class LowrankLearnableHash(LowrankModel):
                     interp_out = interp_out * (
                         grid_sample_wrapper(grid[ci], interp[..., coo_comb]).view(
                             -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
-            #interp = interp_out.sum(dim=-1)
-            #interp_soft = F.softmax(interp_out, dim=-1)
-            #interp_hard = torch.amax(interp_soft.detach(), dim=-1)
-            #interp_soft = interp_soft.sum(-1)
-            #interp = interp_hard - interp_soft.detach() + interp_soft
-            #interp = interp_soft * 2 - 1
-            interp = interp_out.sum(-1)
-            #interp = torch.tanh(interp)
-            #interp = torch.sigmoid(interp) * 2 - 1
-            #print("interp", interp.min(), interp.mean(), interp.max())
+            interp = interp_out.mean(dim=-1)
 
         out = grid_sample_wrapper(self.features.to(dtype=interp.dtype), interp).view(-1, self.feature_dim)
         if return_coords:

@@ -30,7 +30,6 @@ class LowrankVideo(LowrankModel):
         self.is_ndc = is_ndc
         self.raymarcher = RayMarcher(**self.extra_args)
         self.sh = sh
-        # self.density_act = torch.relu#trunc_exp
         self.density_act = trunc_exp
 
         # For now, only allow a single index grid and a single feature grid, not multiple layers
@@ -79,7 +78,7 @@ class LowrankVideo(LowrankModel):
                     grid_sample_wrapper(grid_space[ci], interp[..., coo_comb]).view(
                         -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
         # Combine space and time over rank
-        interp = (interp_space * interp_time).sum(dim=-1)  # [n, F_dim]
+        interp = (interp_space * interp_time).mean(dim=-1)  # [n, F_dim]  
         out = grid_sample_wrapper(self.features, interp).view(-1, self.feature_dim)
         if return_coords:
             return out, interp
@@ -114,7 +113,7 @@ class LowrankVideo(LowrankModel):
         rays_d_rep = rays_d.view(-1, 1, 3).expand(intersection_pts.shape)
         masked_rays_d_rep = rays_d_rep[mask]
 
-        density_masked = self.density_act(self.decoder.compute_density(features, rays_d=masked_rays_d_rep) - 1)
+        density_masked = self.density_act(self.decoder.compute_density(features, rays_d=masked_rays_d_rep) - 1) 
         density = torch.zeros(n_rays, n_intrs, device=intersection_pts.device, dtype=density_masked.dtype)
         density[mask] = density_masked.view(-1)
 
