@@ -1,7 +1,7 @@
 # configuration file to be used with `main.py` for video training
 config = {
     # "expname": "legovideo20views_regdepthweightedacc_400_0.1_512_3framesreso3rank20",
-    "expname": "test",
+    "expname": "test_keyframes10k",
     # "expname": "testrelu_sameranktimereso128_llff",
     "logdir": "./logs/coffeevideo",
 
@@ -17,11 +17,10 @@ config = {
     "max_train_tsteps": 2,
     "max_test_tsteps": 2,
     # Data settings for LLFF
-    "subsample_time": 0.05,
-
+    "keyframes": True,
 
     # Optimization settings
-    "num_epochs": 2,
+    "num_epochs": 10,
     "regnerf_weight_start": 0,
     "regnerf_weight_end": 0.0,
     "regnerf_weight_max_step": 512,
@@ -33,7 +32,7 @@ config = {
     "scheduler_type": None,
     "batch_size": 8000,  
     "optim_type": "adam",
-    "lr": 8e-3,
+    "lr": 1e-2,
     
     # Training settings
     "train_fp16": True,
@@ -51,6 +50,8 @@ config = {
 
     # Model settings
     "sh": True,
+    "upsample_time_resolution": [150],
+    "upsample_time_steps": [10],  # DyNerf does 300K iterations with keyframes, with lr 5e-4
     "grid_config": """
 [
     {
@@ -59,7 +60,7 @@ config = {
         "grid_dimensions": 2,
         "resolution": [128, 128, 128],
         "rank": 20,
-        "time_reso": 64,
+        "time_reso": 30,
     },
     {
         "input_coordinate_dim": 5,

@@ -161,7 +161,7 @@ class VideoLLFFDataset(BaseDataset):
                  batch_size: Optional[int] = None,
                  generator: Optional[torch.random.Generator] = None,
                  downsample=1.0,
-                 subsample_time=1.0,
+                 keyframes=True,
                  extra_views: bool = False,
                  patch_size: Optional[int] = 8,):
         """
@@ -173,8 +173,7 @@ class VideoLLFFDataset(BaseDataset):
             in [0,1] lets you use a percentage of randomly selected frames from each video
         :param extra_views:
         """
-
-        self.subsample_time = subsample_time
+        self.keyframes = keyframes
         self.downsample = downsample
         self.patch_size = patch_size
         self.near_far = [0.0, 1.0]
@@ -185,7 +184,7 @@ class VideoLLFFDataset(BaseDataset):
             datadir, downsample=self.downsample, split=split, near_scaling=1.0)
         poses, imgs, timestamps = load_llffvideo_data(
             videopaths=videopaths, poses=per_cam_poses, intrinsics=intrinsics, split=split,
-            subsample_time=self.subsample_time)
+            keyframes=keyframes)
         poses = poses.float()
         rays_o, rays_d, imgs = create_llff_rays(
             imgs=imgs, poses=poses, intrinsics=intrinsics, merge_all=split == 'train')
@@ -276,7 +275,7 @@ def load_llffvideo_data(videopaths: List[str],
                         poses: torch.Tensor,
                         intrinsics: Intrinsics,
                         split: str,
-                        subsample_time: float) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+                        keyframes: bool) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     def load_frame(f, out_h, out_w, already_pil=False):
         if not already_pil:
             f = tensor2pil(f)
@@ -291,7 +290,7 @@ def load_llffvideo_data(videopaths: List[str],
         cam_video = imageio.get_reader(videopaths[camera_id], 'ffmpeg')
         for frame_idx, frame in enumerate(cam_video):
             # Decide whether to keep this frame or not
-            if np.random.uniform() > subsample_time:
+            if keyframes and frame_idx % 30 != 0:
                 continue
             # Do any downsampling on the image
             img = load_frame(frame, intrinsics.height, intrinsics.width)

@@ -3,6 +3,7 @@ import logging as log
 from typing import Dict, List, Union, Sequence, Tuple
 
 import torch
+import torch.nn.functional as F
 
 from plenoxels.models.utils import grid_sample_wrapper, raw2alpha
 from .decoders import NNDecoder, SHDecoder
@@ -42,13 +43,21 @@ class LowrankVideo(LowrankModel):
                 gpdesc = self.init_grid_param(grid_config, is_video=True, grid_level=li)
                 self.set_resolution(gpdesc.reso, 0)
                 self.grids = gpdesc.grid_coefs
-                self.time_coef = gpdesc.time_coef
+                self.time_coef = gpdesc.time_coef  # [out_dim * rank, time_reso]
         if self.sh:
             self.decoder = SHDecoder(feature_dim=self.feature_dim)
         else:
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
         log.info(f"Initialized LowrankVideo. "
                  f"time-reso={self.time_coef.shape[1]} - decoder={self.decoder}")
+
+    @torch.no_grad()
+    def upsample_time(self, new_reso):
+        old_reso = self.time_coef.shape[-1]
+        grid_data = self.time_coef.data
+        self.time_coef = torch.nn.Parameter(
+            F.interpolate(self.time_coef.data[:,None,:], size=(new_reso), mode='linear', align_corners=True).squeeze())
+        log.info(f"Upsampled time resolution from {old_reso} to {new_reso}")
 
     def compute_features(self,
                          pts,

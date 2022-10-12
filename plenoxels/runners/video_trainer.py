@@ -39,6 +39,8 @@ class VideoTrainer(Trainer):
                  valid_every: int,
                  save_video: bool,  # TODO: Rationalize parameters for saving
                  save_outputs: bool,
+                 upsample_time_resolution: [int],
+                 upsample_time_steps: [int],
                  **kwargs
                  ):
         # Keys we wish to ignore
@@ -63,6 +65,9 @@ class VideoTrainer(Trainer):
                          save_outputs=save_outputs,
                          **kwargs)
         self.save_video = save_video
+        self.upsample_time_resolution = upsample_time_resolution
+        self.upsample_time_steps = upsample_time_steps
+        assert len(upsample_time_resolution) == len(upsample_time_steps)
 
     def eval_step(self, data, dset_id) -> MutableMapping[str, torch.Tensor]:
         """
@@ -139,6 +144,22 @@ class VideoTrainer(Trainer):
         self.loss_info["mse"].update(recon_loss_val)
         self.loss_info["psnr"].update(-10 * math.log10(recon_loss_val))
         self.loss_info["tv"].update(tv.item() if patch_rays_o is not None else 0.0)
+
+        if self.global_step in self.upsample_time_steps:
+            # Upsample time resolution
+            self.model.upsample_time(self.upsample_time_resolution[self.upsample_time_steps.index(self.global_step)])
+            # Reset optimizer
+            self.optimizer = self.init_optim(**self.extra_args)
+            # After upsampling time, train with full time data
+            if self.train_data_loader.dataset.keyframes:
+                print(f'loading all the training frames')
+                tr_dset = VideoLLFFDataset(self.train_data_loader.dataset.datadir, split='train', downsample=self.train_data_loader.dataset.downsample,
+                                    keyframes=False, extra_views=self.train_data_loader.dataset.extra_views, batch_size=self.train_data_loader.dataset.batch_size)
+                self.train_data_loader = torch.utils.data.DataLoader(
+                    tr_dset, batch_size=None, shuffle=True, num_workers=4,
+                    prefetch_factor=4, pin_memory=True)
+                self.train_datasets = [tr_dset]
+
         return scale <= self.gscaler.get_scale()
 
     def post_step(self, data, progress_bar):
@@ -276,10 +297,10 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
         # For LLFF the test-set is not time-subsampled!
         logging.info(f"Loading VideoLLFFDataset with downsample={data_downsample}")
         tr_dset = VideoLLFFDataset(data_dir, split='train', downsample=data_downsample,
-                                   subsample_time=kwargs.get('subsample_time'),
+                                   keyframes=kwargs.get('keyframes'),
                                    extra_views=regnerf_bool, batch_size=batch_size)
         ts_dset = VideoLLFFDataset(data_dir, split='test', downsample=data_downsample,
-                                   subsample_time=1.0, extra_views=False, batch_size=batch_size)
+                                   keyframes=False, extra_views=False, batch_size=batch_size)
     tr_loader = torch.utils.data.DataLoader(
         tr_dset, batch_size=None, shuffle=True, num_workers=4,
         prefetch_factor=4, pin_memory=True)

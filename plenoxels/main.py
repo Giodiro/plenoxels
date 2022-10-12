@@ -80,7 +80,7 @@ def main():
     overrides: List[str] = args.override
     overrides_dict = {ovr.split("=")[0]: ovr.split("=")[1] for ovr in overrides}
     config.update(overrides_dict)
-    is_video = "subsample_time" in config
+    is_video = "keyframes" in config
 
     pprint.pprint(config)
     data = load_data(is_video, **config)
