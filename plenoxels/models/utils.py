@@ -130,3 +130,14 @@ def compute_plane_tv(t):
     # loss = ((v00 - v01) ** 2) + ((v00 - v10) ** 2)
     # return torch.mean(loss)
 
+
+def raw2alpha(sigma, dist):
+    alpha = 1 - torch.exp(-sigma * dist)
+    T = torch.cat((torch.ones(alpha.shape[0], 1, device=alpha.device),
+                   torch.cumprod(1.0 - alpha, dim=-1)), dim=-1)
+    # T = torch.cat((torch.ones(alpha.shape[0], 1, device=alpha.device),
+    #                torch.cumprod(1.0 - alpha[:, :-1] + 1e-10, dim=-1)), dim=-1)
+    #T = torch.cumprod(torch.cat([torch.ones(alpha.shape[0], 1, device=alpha.device), 1 - alpha + 1e-10], -1), -1)
+
+    weights = alpha * T[:, :-1]
+    return alpha, weights, T#[:, -1:]  # Return full-length T so we can use the last one for background

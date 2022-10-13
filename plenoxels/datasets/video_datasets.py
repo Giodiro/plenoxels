@@ -100,7 +100,6 @@ class Video360Dataset(BaseDataset):
                 out.update(self.patchloader[index])
         else:
             out["timestamps"] = self.timestamps[index]
-
         return out
 
 
@@ -161,7 +160,8 @@ class VideoLLFFDataset(BaseDataset):
                  batch_size: Optional[int] = None,
                  generator: Optional[torch.random.Generator] = None,
                  downsample=1.0,
-                 subsample_time=1.0,
+                 keyframes=True,
+                 isg=False,
                  extra_views: bool = False,
                  patch_size: Optional[int] = 8,):
         """
@@ -173,8 +173,8 @@ class VideoLLFFDataset(BaseDataset):
             in [0,1] lets you use a percentage of randomly selected frames from each video
         :param extra_views:
         """
-
-        self.subsample_time = subsample_time
+        self.keyframes = keyframes
+        self.isg = isg
         self.downsample = downsample
         self.patch_size = patch_size
         self.near_far = [0.0, 1.0]
@@ -183,11 +183,19 @@ class VideoLLFFDataset(BaseDataset):
 
         per_cam_poses, per_cam_near_fars, intrinsics, videopaths = load_llffvideo_poses(
             datadir, downsample=self.downsample, split=split, near_scaling=1.0)
-        poses, imgs, timestamps = load_llffvideo_data(
+        poses, imgs, timestamps, median_imgs = load_llffvideo_data(
             videopaths=videopaths, poses=per_cam_poses, intrinsics=intrinsics, split=split,
-            subsample_time=self.subsample_time)
+            keyframes=keyframes)
+        gamma = 2e-2
+        if keyframes:
+            gamma = 1e-3
+        self.isg_weights = None
+        if self.isg:
+            isg_weights = dynerf_isg_weight(imgs, median_imgs, gamma)
+            self.isg_weights = isg_weights.reshape(-1)
+        poses = poses.float()
         rays_o, rays_d, imgs = create_llff_rays(
-            imgs=imgs, poses=poses, intrinsics=intrinsics, merge_all=split == 'train')
+            imgs=imgs, poses=poses, intrinsics=intrinsics, merge_all=split == 'train')  # [-1, 3]
         super().__init__(datadir=datadir,
                          split=split,
                          scene_bbox=self.init_bbox(),
@@ -225,9 +233,14 @@ class VideoLLFFDataset(BaseDataset):
         return torch.tensor([[-2.0, -2.0, -1.0], [2.0, 2.0, 1.0]])
 
     def __getitem__(self, index):
-        out = super().__getitem__(index)
+        if self.isg_weights is not None:
+            out, idxs = super().__getitem__(index, weights=self.isg_weights)
+        else:
+            out = super().__getitem__(index, weights=self.isg_weights)
+            idxs = None
         if self.split == 'train':
-            idxs = self.get_rand_ids(index)
+            if idxs is None:
+                idxs = self.get_rand_ids(index)
             out["timestamps"] = self.timestamps[idxs]
             if self.extra_views:
                 out.update(self.patchloader[index])
@@ -275,7 +288,7 @@ def load_llffvideo_data(videopaths: List[str],
                         poses: torch.Tensor,
                         intrinsics: Intrinsics,
                         split: str,
-                        subsample_time: float) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+                        keyframes: bool) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     def load_frame(f, out_h, out_w, already_pil=False):
         if not already_pil:
             f = tensor2pil(f)
@@ -286,19 +299,42 @@ def load_llffvideo_data(videopaths: List[str],
 
     imgs, timestamps = [], []
     all_poses = []
+    median_imgs = []
     for camera_id in tqdm(range(len(videopaths)), desc=f"Loading {split} data"):
         cam_video = imageio.get_reader(videopaths[camera_id], 'ffmpeg')
+        cam_imgs = []
         for frame_idx, frame in enumerate(cam_video):
             # Decide whether to keep this frame or not
-            if np.random.uniform() > subsample_time:
+            if keyframes and frame_idx % 30 != 0:
                 continue
             # Do any downsampling on the image
             img = load_frame(frame, intrinsics.height, intrinsics.width)
             imgs.append(img)
+            cam_imgs.append(img)
             timestamps.append(frame_idx)
             all_poses.append(poses[camera_id])
+        # Compute the median image from this camera
+        median_imgs.append(median_image(cam_imgs))
     timestamps = torch.tensor(timestamps, dtype=torch.int32)  # [N]
     poses = torch.stack(all_poses, 0)  # [N, 3, 4]
-    imgs = torch.stack(imgs, 0)
+    imgs = torch.stack(imgs, 0)  # [N, h, w, 3]
+    median_imgs = torch.stack(median_imgs, 0)  # [num_cameras, h, w, 3]
 
-    return poses, imgs, timestamps
+    return poses, imgs, timestamps, median_imgs
+
+
+def median_image(imgs):
+    imgs = torch.stack(imgs, -1)
+    values, _ = torch.median(imgs, dim=-1)  # [h, w, 3]
+    return values
+
+
+def dynerf_isg_weight(imgs, median_imgs, gamma):
+    # imgs is [num_cameras * num_frames, h, w, 3]
+    # median_imgs is [num_cameras, h, w, 3]
+    num_cameras, h, w, c = median_imgs.shape
+    differences = median_imgs[:, None, ...] - imgs.view(num_cameras, -1, h, w, c)  # [num_cameras, num_frames, h, w, 3]
+    squarediff = torch.square(differences)
+    psidiff = squarediff / (squarediff + gamma**2)
+    psidiff = (1./3) * torch.sum(psidiff, dim=-1)  # [num_cameras, num_frames, h, w]
+    return psidiff  # valid probabilities, each in [0, 1]

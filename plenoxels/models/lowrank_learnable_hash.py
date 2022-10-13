@@ -63,6 +63,7 @@ class LowrankLearnableHash(LowrankModel):
                 if "feature_dim" in grid_config and si == 0:  # Only make one set of features
                     self.features = self.init_features_param(grid_config, self.sh)
                     self.feature_dim = self.features.shape[0]
+                    #self.basis_mat = torch.nn.Linear(50, 5)
                 else:
                     gpdesc = self.init_grid_param(grid_config, is_video=False, grid_level=li)
                     if li == 0:
@@ -109,7 +110,8 @@ class LowrankLearnableHash(LowrankModel):
                     interp_out = interp_out * (
                         grid_sample_wrapper(grid[ci], interp[..., coo_comb]).view(
                             -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
-            interp = interp_out.sum(dim=-1)
+            interp = interp_out.mean(dim=-1)
+
         out = grid_sample_wrapper(self.features.to(dtype=interp.dtype), interp).view(-1, self.feature_dim)
         if return_coords:
             return out, interp
@@ -258,7 +260,7 @@ class LowrankLearnableHash(LowrankModel):
         features = self.compute_features(pts_norm, grid_id)
         density = (
             self.density_act(self.decoder.compute_density(
-                features, rays_d=None, precompute_color=False)).view(list(pts_norm.shape[:-1]) + [1])
+                features, rays_d=None, precompute_color=False)).view((*pts_norm.shape[:-1], 1))
             * selector[..., None]
         )
         if return_feat:
@@ -278,6 +280,7 @@ class LowrankLearnableHash(LowrankModel):
     def get_params(self, lr):
         params = [
             {"params": self.scene_grids.parameters(), "lr": lr},
+            #{"params": self.bn.parameters(), "lr": lr},
         ]
         if not self.transfer_learning:
             params += [
@@ -285,15 +288,3 @@ class LowrankLearnableHash(LowrankModel):
                 {"params": self.features, "lr": lr},
             ]
         return params
-
-
-def raw2alpha(sigma, dist):
-    alpha = 1 - torch.exp(-sigma * dist)
-    T = torch.cat((torch.ones(alpha.shape[0], 1, device=alpha.device),
-                   torch.cumprod(1.0 - alpha, dim=-1)), dim=-1)
-    # T = torch.cat((torch.ones(alpha.shape[0], 1, device=alpha.device),
-    #                torch.cumprod(1.0 - alpha[:, :-1] + 1e-10, dim=-1)), dim=-1)
-    #T = torch.cumprod(torch.cat([torch.ones(alpha.shape[0], 1, device=alpha.device), 1 - alpha + 1e-10], -1), -1)
-
-    weights = alpha * T[:, :-1]
-    return alpha, weights, T#[:, -1:]  # Return full-length T so we can use the last one for background

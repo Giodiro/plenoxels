@@ -2,7 +2,6 @@ from typing import Optional, Mapping
 import logging as log
 
 import torch
-import kaolin.render.spc as spc_render
 
 
 class RayMarcher():
@@ -115,10 +114,8 @@ class RayMarcher():
         rays_d = rays_d / dir_norm
         if is_ndc:
             # Make deltas linear in disparity, as in the NDC derivation (but not in the NeRF code)
-            deltas = deltas * dir_norm
             deltas = 1. / (1 - intersections) - 1. / (1 - intersections + deltas)
-        else:
-            deltas = deltas * dir_norm
+        deltas = deltas * dir_norm
 
         n_rays, n_intersections = intersections.shape[0:2]
         ridx = torch.arange(0, n_rays, device=dev)

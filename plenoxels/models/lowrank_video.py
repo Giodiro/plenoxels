@@ -3,11 +3,13 @@ import logging as log
 from typing import Dict, List, Union, Sequence, Tuple
 
 import torch
+import torch.nn.functional as F
 
-from plenoxels.models.utils import grid_sample_wrapper
+from plenoxels.models.utils import grid_sample_wrapper, raw2alpha
 from .decoders import NNDecoder, SHDecoder
 from .lowrank_model import LowrankModel
 from ..raymarching.raymarching import RayMarcher
+from ..ops.activations import trunc_exp
 
 
 class LowrankVideo(LowrankModel):
@@ -29,7 +31,7 @@ class LowrankVideo(LowrankModel):
         self.is_ndc = is_ndc
         self.raymarcher = RayMarcher(**self.extra_args)
         self.sh = sh
-        self.density_act = torch.relu#trunc_exp
+        self.density_act = trunc_exp
 
         # For now, only allow a single index grid and a single feature grid, not multiple layers
         assert len(self.config) == 2
@@ -41,13 +43,21 @@ class LowrankVideo(LowrankModel):
                 gpdesc = self.init_grid_param(grid_config, is_video=True, grid_level=li)
                 self.set_resolution(gpdesc.reso, 0)
                 self.grids = gpdesc.grid_coefs
-                self.time_coef = gpdesc.time_coef
+                self.time_coef = gpdesc.time_coef  # [out_dim * rank, time_reso]
         if self.sh:
             self.decoder = SHDecoder(feature_dim=self.feature_dim)
         else:
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
         log.info(f"Initialized LowrankVideo. "
                  f"time-reso={self.time_coef.shape[1]} - decoder={self.decoder}")
+
+    @torch.no_grad()
+    def upsample_time(self, new_reso):
+        old_reso = self.time_coef.shape[-1]
+        grid_data = self.time_coef.data
+        self.time_coef = torch.nn.Parameter(
+            F.interpolate(self.time_coef.data[:,None,:], size=(new_reso), mode='linear', align_corners=True).squeeze())
+        log.info(f"Upsampled time resolution from {old_reso} to {new_reso}")
 
     def compute_features(self,
                          pts,
@@ -59,7 +69,6 @@ class LowrankVideo(LowrankModel):
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
 
         # Interpolate in time
-        grid_time = grid_time[0]  # we need it to be a length-1 ParameterList
         interp_time = grid_sample_wrapper(grid_time.unsqueeze(0), timestamps[:, None])  # [n, F_dim * rank]
         interp_time = interp_time.view(-1, level_info["output_coordinate_dim"], level_info["rank"][0])  # [n, F_dim, rank]
         # Interpolate in space
@@ -78,7 +87,7 @@ class LowrankVideo(LowrankModel):
                     grid_sample_wrapper(grid_space[ci], interp[..., coo_comb]).view(
                         -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
         # Combine space and time over rank
-        interp = (interp_space * interp_time).sum(dim=-1)  # [n, F_dim]
+        interp = (interp_space * interp_time).mean(dim=-1)  # [n, F_dim]  
         out = grid_sample_wrapper(self.features, interp).view(-1, self.feature_dim)
         if return_coords:
             return out, interp
@@ -104,20 +113,20 @@ class LowrankVideo(LowrankModel):
         times = timestamps[:, None].repeat(1, n_intrs)[mask]  # [n_rays, n_intrs]
 
         # Normalization (between [-1, 1])
-        intersection_pts = self.normalize_coord(intersection_pts, 0)
+        intersection_pts = self.normalize_coords(intersection_pts, 0)
         times = (times * 2 / self.len_time) - 1
 
         # compute features and render
-        features = self.compute_features(intersection_pts, times)
+        features = self.compute_features(intersection_pts[mask], times)
 
         rays_d_rep = rays_d.view(-1, 1, 3).expand(intersection_pts.shape)
         masked_rays_d_rep = rays_d_rep[mask]
 
-        density_masked = self.density_act(self.decoder.compute_density(features, rays_d=masked_rays_d_rep))
+        density_masked = self.density_act(self.decoder.compute_density(features, rays_d=masked_rays_d_rep) - 1) 
         density = torch.zeros(n_rays, n_intrs, device=intersection_pts.device, dtype=density_masked.dtype)
         density[mask] = density_masked.view(-1)
 
-        alpha, weight, transmission = raw2alpha(density, deltas * self.density_multiplier)  # Each is shape [batch_size, n_samples]
+        alpha, weight, transmission = raw2alpha(density, deltas)  # Each is shape [batch_size, n_samples]
 
         rgb_masked = self.decoder.compute_color(features, rays_d=masked_rays_d_rep)
         rgb = torch.zeros(n_rays, n_intrs, 3, device=intersection_pts.device, dtype=rgb_masked.dtype)
@@ -149,3 +158,4 @@ class LowrankVideo(LowrankModel):
             {"params": self.features, "lr": lr},
         ]
         return params
+

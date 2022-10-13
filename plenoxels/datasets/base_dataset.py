@@ -59,9 +59,11 @@ class BaseDataset(Dataset, ABC):
     def update_num_rays(self, num_rays):
         self.batch_size = num_rays
 
-    def get_rand_ids(self, index):
-        assert self.perm is not None, "Call reset_iter"
+    def get_rand_ids(self, index, weights=None):
         assert self.batch_size is not None, "Can't get rand_ids for test split"
+        if weights is not None:
+            return torch.multinomial(input=weights, num_samples=self.batch_size, generator=self.generator)
+        assert self.perm is not None, "Call reset_iter"
         return self.perm[index * self.batch_size: (index + 1) * self.batch_size]
 
     def __len__(self):
@@ -70,15 +72,17 @@ class BaseDataset(Dataset, ABC):
         else:
             return self.num_samples
 
-    def __getitem__(self, index):
+    def __getitem__(self, index, weights=None):
         if self.split == 'train':
-            idxs = self.get_rand_ids(index)
+            idxs = self.get_rand_ids(index, weights)
             out = {
                 "rays_o": self.rays_o[idxs].contiguous(),
                 "rays_d": self.rays_d[idxs].contiguous(),
             }
             if self.imgs is not None:
                 out["imgs"] = self.imgs[idxs].contiguous()
+            if weights is not None:
+                return out, idxs
             return out
         else:
             out = {
