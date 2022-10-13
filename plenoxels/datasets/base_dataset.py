@@ -88,4 +88,4 @@ class BaseDataset(Dataset, ABC):
             }
             if self.imgs is not None:
                 out["imgs"] = self.imgs[index]
-            return outm
+            return out
