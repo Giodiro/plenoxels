@@ -154,7 +154,7 @@ class VideoTrainer(Trainer):
             if self.train_data_loader.dataset.keyframes:
                 print(f'loading all the training frames')
                 tr_dset = VideoLLFFDataset(self.train_data_loader.dataset.datadir, split='train', downsample=self.train_data_loader.dataset.downsample,
-                                    keyframes=False, extra_views=self.train_data_loader.dataset.extra_views, batch_size=self.train_data_loader.dataset.batch_size)
+                                    keyframes=False, isg=self.train_data_loader.dataset.isg, extra_views=self.train_data_loader.dataset.extra_views, batch_size=self.train_data_loader.dataset.batch_size)
                 self.train_data_loader = torch.utils.data.DataLoader(
                     tr_dset, batch_size=None, shuffle=True, num_workers=4,
                     prefetch_factor=4, pin_memory=True)
@@ -297,7 +297,7 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
         # For LLFF the test-set is not time-subsampled!
         logging.info(f"Loading VideoLLFFDataset with downsample={data_downsample}")
         tr_dset = VideoLLFFDataset(data_dir, split='train', downsample=data_downsample,
-                                   keyframes=kwargs.get('keyframes'),
+                                   keyframes=kwargs.get('keyframes'), isg = kwargs.get('isg'),
                                    extra_views=regnerf_bool, batch_size=batch_size)
         ts_dset = VideoLLFFDataset(data_dir, split='test', downsample=data_downsample,
                                    keyframes=False, extra_views=False, batch_size=batch_size)
