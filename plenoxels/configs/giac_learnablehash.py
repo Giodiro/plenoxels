@@ -17,9 +17,8 @@ config = {
     "hold_every": 8,
 
     # Optimization settings
-    "num_epochs": 10,
+    "num_steps": 35000,
     "batch_size": 4096,
-    "num_batches_per_dset": 1,
     "scheduler_type": None,
     "optim_type": "adam",
     "lr": 2e-2,
@@ -40,9 +39,9 @@ config = {
 
     # Training settings
     "train_fp16": True,
-    "save_every": 10,
-    "valid_every": 5,
-    "save_outputs": True,
+    "save_every": 35000,
+    "valid_every": 10000,
+    "save_outputs": False,
     "transfer_learning": False,
 
     # Raymarching settings
@@ -54,10 +53,10 @@ config = {
 
     # Model settings
     "sh": True,
-    "density_threshold": 1e-4,
+    "density_threshold": 1e-2,
     "dmask_update": [],
-    "upsample_steps": [],#2000,3000,4000,5500], #[500, 800, 1200, 1500, 2000],
-    "upsample_resolution": [],#, 78205680, 261365436], #[3241792, 5832000, 11239424, 16777216, 27000000], #[4410944, 11239424, 32768000, 91125000],
+    "upsample_steps": [],
+    "upsample_resolution": [],
     "density_multiplier": 1,
     "grid_config": """
 [

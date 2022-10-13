@@ -1,28 +1,24 @@
 import logging
-from contextlib import ExitStack
 import math
 import os
-from collections import defaultdict
-from typing import Dict, List, Optional, MutableMapping, Union, Any
+from collections import defaultdict, OrderedDict
+from typing import Dict, List, Optional, MutableMapping, Union
 
 import numpy as np
 import pandas as pd
 import torch
 import torch.utils.data
-import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 
-from torch.profiler import profile, ProfilerActivity, schedule
+from nerfacc import ContractionType, OccupancyGrid, ray_marching, rendering
 from plenoxels.ema import EMA
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash, DensityMask
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_exr, write_png
 from ..datasets import SyntheticNerfDataset, LLFFDataset
-from ..datasets.multi_dataset_sampler import MultiSceneSampler
+from ..datasets.synthetic_nerf_dataset import MultiSceneDataset
 from ..my_tqdm import tqdm
 from ..utils import parse_optint
-
-from nerfacc import ContractionType, OccupancyGrid, ray_marching, rendering
 
 
 class Trainer():
@@ -37,7 +33,7 @@ class Trainer():
                  l1density_weight: float,
                  volume_tv_weight: float,
                  volume_tv_npts: int,
-                 num_epochs: int,
+                 num_steps: int,
                  scheduler_type: Optional[str],
                  optim_type: str,
                  logdir: str,
@@ -68,7 +64,7 @@ class Trainer():
         self.volume_tv_what = kwargs.get('volume_tv_what', 'Gcoords')
         self.volume_tv_patch_size = kwargs.get('volume_tv_patch_size', 3)
 
-        self.num_epochs = num_epochs
+        self.num_steps = num_steps
 
         self.scheduler_type = scheduler_type
         self.optim_type = optim_type
@@ -94,7 +90,6 @@ class Trainer():
         os.makedirs(self.log_dir, exist_ok=True)
         self.writer = SummaryWriter(log_dir=self.log_dir)
 
-        self.epoch = None
         self.global_step = None
         self.loss_info = None
         self.train_iterators = None
@@ -146,7 +141,7 @@ class Trainer():
                 ),
                 warmup_steps=512,
                 n=64,
-                occ_thre=1e-2,
+                occ_thre=self.extra_args['density_threshold'],
             )
             # render
             rgb, acc, depth, n_rendering_samples = render_image(
@@ -156,8 +151,8 @@ class Trainer():
                 rays_o,
                 rays_d,
                 # rendering options
-                near_plane=None,
-                far_plane=None,
+                near_plane=self.train_datasets[dset_id].near_far[0],
+                far_plane=self.train_datasets[dset_id].near_far[1],
                 render_bkgd=bg_color,
                 cone_angle=0.0,
             )
@@ -169,10 +164,8 @@ class Trainer():
             )
             self.train_datasets[dset_id].update_num_rays(num_rays)
             alive_ray_mask = acc.squeeze(-1) > 0
-            print("num alive", alive_ray_mask.sum())
 
             # compute loss
-            #recon_loss = F.smooth_l1_loss(rgb[alive_ray_mask], imgs[alive_ray_mask])
             recon_loss = self.criterion(rgb[alive_ray_mask], imgs[alive_ray_mask])
             loss = recon_loss
 
@@ -199,7 +192,7 @@ class Trainer():
                 for u_dset_id in range(self.num_dsets):
                     new_aabb = self.model.update_alpha_mask(grid_id=u_dset_id)
                     sorted_updates = sorted(self.density_mask_update_steps)
-                    if self.global_step == sorted_updates[0] or self.global_step == sorted_updates[1]:#min(self.density_mask_update_steps):
+                    if self.global_step == sorted_updates[0] or self.global_step == sorted_updates[1]:
                         self.model.shrink(new_aabb, grid_id=u_dset_id)
                         opt_reset_required = True
             try:
@@ -231,76 +224,32 @@ class Trainer():
         progress_bar.set_postfix_str(losses_to_postfix(self.loss_info, lr=self.cur_lr()), refresh=False)
         progress_bar.update(1)
 
-    def pre_epoch(self):
-        for d in self.train_datasets:
-            d.reset_iter()
-        self.init_epoch_info()
-        self.model.train()
-
-    def post_epoch(self):
-        self.model.eval()
-        # Save model
-        if self.save_every > -1 and self.epoch % self.save_every == 0:
+        if self.save_every > -1 and self.global_step % self.save_every == 0:
+            print()
             self.save_model()
-        if self.valid_every > -1 and \
-                self.epoch % self.valid_every == 0 and \
-                self.epoch != 0:
+        if self.valid_every > -1 and self.global_step % self.valid_every == 0:
+            print()
             self.validate()
-        if self.epoch >= self.num_epochs:
-            raise StopIteration(f"Finished after {self.epoch} epochs.")
-
-    def train_epoch(self):
-        self.pre_epoch()
-        eff_num_batches = len(self.train_data_loader)
-        if self.gradient_acc:
-            eff_num_batches //= self.num_dsets
-        pb = tqdm(total=eff_num_batches, desc=f"E{self.epoch}")
-
-        try:
-            with ExitStack() as stack:
-                prof = None
-                if False:  # TODO: Put this behind a flag
-                    prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-                                   schedule=schedule(wait=10, warmup=5, active=2),
-                                   on_trace_ready=trace_handler,
-                                   record_shapes=True,
-                                   with_stack=True)
-                    stack.enter_context(p)
-                for i, data in enumerate(self.train_data_loader):
-                    if self.gradient_acc:
-                        # NOTE: This only works if every scene has the same number of batches,
-                        #       and if the sampler associated to the data loader goes through
-                        #       the scenes cyclically.
-                        do_update = (i + 1) % self.num_dsets == 0
-                    else:
-                        do_update = True
-
-                    step_successful = self.step(data, do_update=do_update)
-                    if do_update:
-                        self.post_step(data=data, progress_bar=pb)
-                        self.global_step += 1
-                        if prof is not None:
-                            prof.step()
-                        if step_successful and self.scheduler is not None:
-                            self.scheduler.step()
-        finally:
-            pb.close()
-        self.post_epoch()
 
     def train(self):
         """Override this if some very specific training procedure is needed."""
-        if self.epoch is None:
-            self.epoch = 0
         if self.global_step is None:
             self.global_step = 0
-        logging.info(f"Starting training from epoch {self.epoch + 1}")
+        logging.info(f"Starting training from step {self.global_step + 1}")
+        data_iter = iter(self.train_data_loader)
+        pb = tqdm(initial=self.global_step, total=self.num_steps)
         try:
-            while True:
-                self.epoch += 1
-                self.train_epoch()
-        except StopIteration as e:
-            logging.info(str(e))
+            self.init_loss_info()
+            while self.global_step < self.num_steps:
+                self.model.train()
+                data = next(data_iter)
+                step_successful = self.step(data, do_update=True)
+                self.global_step += 1
+                if step_successful:
+                    self.scheduler.step()
+                self.post_step(data=data, progress_bar=pb)
         finally:
+            pb.close()
             self.writer.close()
 
     def validate(self):
@@ -322,37 +271,17 @@ class Trainer():
                     per_scene_metrics["ssim"] += out_metrics["ssim"]
                     pb.set_postfix_str(f"PSNR={out_metrics['psnr']:.2f}", refresh=False)
                     pb.update(1)
-                if False:  # Save a training image as well
-                    dset = self.train_datasets[0]
-                    data = dict(rays_o=dset.rays_o.view(-1, gt.shape[0], 3)[0],
-                                rays_d=dset.rays_d.view(-1, gt.shape[0], 3)[0],
-                                imgs=dset.imgs.view(-1, gt.shape[0], gt.shape[1])[0])
-                    preds = self.eval_step(data, dset_id=dset_id)
-                    out_metrics = self.evaluate_metrics(
-                        data["imgs"], preds, dset_id=dset_id, dset=dset, img_idx=0, name="train",
-                        save_outputs=True)
-                    print(f"train img 0 PSNR={out_metrics['psnr']}")
                 pb.close()
                 per_scene_metrics["psnr"] /= len(dataset)  # noqa
                 per_scene_metrics["ssim"] /= len(dataset)  # noqa
-                log_text = f"EPOCH {self.epoch}/{self.num_epochs} | scene {dset_id}"
+                log_text = f"STEP {self.global_step}/{self.num_steps} | scene {dset_id}"
                 log_text += f" | D{dset_id} PSNR: {per_scene_metrics['psnr']:.2f}"
                 log_text += f" | D{dset_id} SSIM: {per_scene_metrics['ssim']:.6f}"
                 logging.info(log_text)
                 val_metrics.append(per_scene_metrics)
-            if False:  # Render extra poses
-                dset = self.train_datasets[0]
-                ro, rd = dset.extra_rays_o, dset.extra_rays_d
-                pb = tqdm(total=ro.shape[0], desc="Rendering extra poses")
-                for pose_idx in range(ro.shape[0]):
-                    data = dict(rays_o=ro[pose_idx].view(-1, 3), rays_d=rd[pose_idx].view(-1, 3))
-                    preds = self.eval_step(data, dset_id=0)
-                    self.evaluate_metrics(None, preds, dset_id=0, dset=dset, img_idx=pose_idx, name="extra_pose",
-                                          save_outputs=True)
-                    pb.update(1)
 
         df = pd.DataFrame.from_records(val_metrics)
-        df.to_csv(os.path.join(self.log_dir, f"test_metrics_epoch{self.epoch}.csv"))
+        df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.num_steps}.csv"))
 
     def evaluate_metrics(self, gt, preds: MutableMapping[str, torch.Tensor], dset, dset_id: int, img_idx: int,
                          name: Optional[str] = None, save_outputs: bool = True):
@@ -384,13 +313,13 @@ class Trainer():
             summary["ssim"] = metrics.ssim(preds_rgb, gt)
 
         if save_outputs:
-            out_name = f"epoch{self.epoch}-D{dset_id}-{img_idx}"
+            out_name = f"step{self.global_step}-D{dset_id}-{img_idx}"
             if name is not None and name != "":
                 out_name += "-" + name
             write_exr(os.path.join(self.log_dir, out_name + ".exr"), exrdict)
             write_png(os.path.join(self.log_dir, out_name + ".png"), (preds_rgb * 255.0).byte().numpy())
             if "depth" in preds:
-                out_name = f"epoch{self.epoch}-D{dset_id}-{img_idx}-depth"
+                out_name = f"step{self.global_step}-D{dset_id}-{img_idx}-depth"
                 depth = preds["depth"].repeat(1, 1, 3)
                 write_png(os.path.join(self.log_dir, out_name + ".png"), (depth * 255.0).byte().numpy())
 
@@ -405,7 +334,6 @@ class Trainer():
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "lr_scheduler": self.scheduler.state_dict() if self.scheduler is not None else None,
-            "epoch": self.epoch,
             "global_step": self.global_step
         }, model_fname)
 
@@ -415,7 +343,7 @@ class Trainer():
             for key in checkpoint_data["model"].keys():
                 if 'scene' in key or 'density' in key or 'aabb' in key or 'resolution' in key:
                     continue
-                self.model.load_state_dict({key: checkpoint_data["model"][key]}, strict=False)
+                self.model.load_state_dict(OrderedDict({key: checkpoint_data["model"][key]}), strict=False)
                 logging.info(f"=> Loaded model state {key} with shape {checkpoint_data['model'][key].shape} from checkpoint")
         else:
             # Loading model grids is complicated due to possible shrinkage.
@@ -433,13 +361,12 @@ class Trainer():
             self.optimizer.load_state_dict(checkpoint_data["optimizer"])
             logging.info("=> Loaded optimizer state from checkpoint")
             if self.scheduler is not None:
-                self.scheduler.load_state_dict(checkpoint_data['scheduler'])
+                self.scheduler.load_state_dict(checkpoint_data['lr_scheduler'])
                 logging.info("=> Loaded scheduler state from checkpoint")
-            self.epoch = checkpoint_data["epoch"]
             self.global_step = checkpoint_data["global_step"]
-            logging.info(f"=> Loaded epoch-state {self.epoch}, step {self.global_step} from checkpoints")
+            logging.info(f"=> Loaded step {self.global_step} from checkpoints")
 
-    def init_epoch_info(self):
+    def init_loss_info(self):
         ema_weight = 0.1
         self.loss_info = [defaultdict(lambda: EMA(ema_weight)) for _ in range(self.num_dsets)]
 
@@ -532,7 +459,6 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
 
     data_resolution = parse_optint(kwargs.get('data_resolution'))
     regnerf_weight = float(kwargs.get('regnerf_weight_start'))
-    num_batches_per_dataset = int(kwargs['num_batches_per_dset'])
     extra_views = regnerf_weight > 0
     patch_size = 8
 
@@ -546,45 +472,36 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
             tr_dsets.append(SyntheticNerfDataset(
                 data_dir, split='train', downsample=data_downsample, resolution=data_resolution,
                 max_frames=max_tr_frames, extra_views=extra_views, batch_size=batch_size,
-                patch_size=patch_size, dset_id=i))
+                patch_size=patch_size, dset_id=i, color_bkgd_aug='random'))
             ts_dsets.append(SyntheticNerfDataset(
                 data_dir, split='test', downsample=1, resolution=800, max_frames=max_ts_frames,
-                dset_id=i))
+                dset_id=i, color_bkgd_aug='random'))
         elif dset_type == "llff":
             hold_every = parse_optint(kwargs.get('hold_every'))
             logging.info(f"About to load LLFF data downsampled by {data_downsample} times.")
             tr_dsets.append(LLFFDataset(
                 data_dir, split='train', downsample=data_downsample, hold_every=hold_every,
                 extra_views=extra_views, batch_size=batch_size, patch_size=patch_size,
-                dset_id=i))
+                dset_id=i, color_bkgd_aug='random'))
             # Note that LLFF has same downsampling applied to train and test datasets
             ts_dsets.append(LLFFDataset(
                 data_dir, split='test', downsample=4, hold_every=hold_every,
-                dset_id=i))
+                dset_id=i, color_bkgd_aug='random'))
         else:
             raise ValueError(dset_type)
 
-    tr_sampler = MultiSceneSampler(
-        tr_dsets, num_samples_per_dataset=num_batches_per_dataset)
-    cat_tr_dset = torch.utils.data.ConcatDataset(tr_dsets)
+    cat_tr_dset = MultiSceneDataset(tr_dsets)
     tr_loader = torch.utils.data.DataLoader(
         cat_tr_dset, num_workers=4, prefetch_factor=4, pin_memory=True,
-        batch_size=None, sampler=tr_sampler)
+        batch_size=None, sampler=None)
 
     return {"ts_dsets": ts_dsets, "tr_dsets": tr_dsets, "tr_loader": tr_loader}
-
-
-def trace_handler(p):
-    output = p.key_averages(group_by_input_shape=True).table(sort_by="self_cuda_time_total", row_limit=20)
-    print(output)
-    output = p.key_averages(group_by_input_shape=True).table(sort_by="self_cpu_time_total", row_limit=20)
-    print(output)
-    p.export_chrome_trace("./logs/trace_" + str(p.step_num) + ".json")
 
 
 def N_to_reso(num_voxels, aabb):
     voxel_size = ((aabb[1] - aabb[0]).prod() / num_voxels).pow(1 / 3)
     return ((aabb[1] - aabb[0]) / voxel_size).long().cpu().tolist()
+
 
 def render_image(
     # scene
@@ -599,7 +516,7 @@ def render_image(
     render_step_size: float = 1e-3,
     render_bkgd: Optional[torch.Tensor] = None,
     cone_angle: float = 0.0,
-    device = "cuda:0",
+    device="cuda:0",
     # test options
     test_chunk_size: int = 8192,
 ):

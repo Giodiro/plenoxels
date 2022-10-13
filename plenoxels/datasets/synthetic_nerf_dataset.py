@@ -5,17 +5,25 @@ from typing import Tuple, Optional, Any
 
 import numpy as np
 import torch
+import torch.utils.data
 
 from .data_loading import parallel_load_images
-from .ray_utils import get_rays, get_ray_directions, generate_hemispherical_orbit
 from .intrinsics import Intrinsics
 from .base_dataset import BaseDataset
 from .patchloader import PatchLoader
 
-# y indexes from top to bottom so flip it
-# camera looks along negative z axis so flip that also
-blender2opencv = torch.tensor([
-    [1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]], dtype=torch.float32)
+
+class MultiSceneDataset(torch.utils.data.IterableDataset):
+    def __init__(self, datasets):
+        super(MultiSceneDataset, self).__init__()
+        self.datasets = list(datasets)
+        assert len(self.datasets) > 0, 'datasets should not be an empty iterable'
+
+    def __iter__(self):
+        idx = 0
+        while True:
+            yield self.datasets[idx % len(self.datasets)][0]
+            idx += 1
 
 
 class SyntheticNerfDataset(BaseDataset):
@@ -47,8 +55,6 @@ class SyntheticNerfDataset(BaseDataset):
         frames, transform = load_360_frames(datadir, split, self.max_frames)
         imgs, poses = load_360_images(frames, datadir, split, self.downsample, self.resolution)
         intrinsics = load_360_intrinsics(transform, imgs, self.downsample)
-        rays_o, rays_d, imgs = create_360_rays(
-            imgs, poses, merge_all=split == 'train', intrinsics=intrinsics, is_blender_format=True)
         super().__init__(datadir=datadir,
                          split=split,
                          scene_bbox=get_360_bbox(datadir),
@@ -56,46 +62,88 @@ class SyntheticNerfDataset(BaseDataset):
                          generator=generator,
                          batch_size=batch_size,
                          imgs=imgs,
-                         rays_o=rays_o,
-                         rays_d=rays_d,
+                         poses=poses,
                          intrinsics=intrinsics)
 
-        if self.extra_views:
-            extra_poses = generate_hemispherical_orbit(poses, n_frames=120)
-            extra_rays_o, extra_rays_d, _ = create_360_rays(
-                imgs=None, poses=extra_poses, merge_all=False, intrinsics=intrinsics,
-                is_blender_format=True)
-            extra_rays_o = extra_rays_o.view(-1, self.img_h, self.img_w, 3)
-            extra_rays_d = extra_rays_d.view(-1, self.img_h, self.img_w, 3)
-            self.patchloader = PatchLoader(extra_rays_o, extra_rays_d, len_time=None,
-                                           batch_size=self.batch_size, patch_size=self.patch_size,
-                                           generator=self.generator)
         log.info(f"SyntheticNerfDataset - Loaded {split} set from {datadir}: {len(poses)} images of size "
                  f"{self.img_h}x{self.img_w} and {imgs.shape[-1]} channels. {intrinsics}")
 
-    def __getitem__(self, index):
-        out = super().__getitem__(index)
-        out["dset_id"] = self.dset_id
-        if self.split == 'train' and self.extra_views:
-            out.update(self.patchloader[index])
+    def fetch_data(self, index):
+        batch_size = self.batch_size
+        if self.split == 'train':
+            image_id = torch.randint(
+                0,
+                len(self.imgs),
+                size=(batch_size,),
+                device=self.images.device,
+            )
+            x = torch.randint(
+                0, self.intrinsics.width, size=(batch_size,), device=self.imgs.device
+            )
+            y = torch.randint(
+                0, self.intrinsics.height, size=(batch_size,), device=self.imgs.device
+            )
+        else:
+            image_id = [index]
+            x, y = torch.meshgrid(
+                torch.arange(self.intrinsics.width, device=self.imgs.device),
+                torch.arange(self.intrinsics.height, device=self.imgs.device),
+                indexing="xy",
+            )
+            x = x.flatten()
+            y = y.flatten()
 
-        pixels, alpha = torch.split(out["imgs"], [3, 1], dim=-1)
+        rays_o, rays_d = create_360_rays_v2(
+            x, y, intrinsics=self.intrinsics, poses=self.poses[image_id])
+        rgba = self.imgs[image_id, y, x] / 255.0  # (num_rays, 4)
+
+        if self.split == 'train':
+            rays_o = rays_o.reshape(-1, 3)
+            rays_d = rays_d.reshape(-1, 3)
+            rgba = rgba.reshape(-1, 4)
+        else:
+            rays_o = rays_o.reshape(self.intrinsics.width, self.intrinsics.height, 3)
+            rays_d = rays_d.reshape(self.intrinsics.width, self.intrinsics.height, 3)
+            rgba = rgba.reshape(self.intrinsics.width, self.intrinsics.height, 4)
+
+        return {
+            "rays_o": rays_o,
+            "rays_d": rays_d,
+            "rgba": rgba,
+        }
+
+    def preprocess(self, data):
+        """Process the fetched / cached data with randomness."""
+        rgba, rays_o, rays_d = data["rgba"], data["rays_o"], data["rays_d"]
+        pixels, alpha = torch.split(rgba, [3, 1], dim=-1)
+
         if self.split == 'train':
             if self.color_bkgd_aug == "random":
-                color_bkgd = torch.rand(3, device=pixels.device)
+                bg_color = torch.rand(3, device=self.imgs.device)
             elif self.color_bkgd_aug == "white":
-                color_bkgd = torch.ones(3, device=pixels.device)
+                bg_color = torch.ones(3, device=self.imgs.device)
             elif self.color_bkgd_aug == "black":
-                color_bkgd = torch.zeros(3, device=pixels.device)
+                bg_color = torch.zeros(3, device=self.imgs.device)
             else:
-                raise ValueError('color_bkgd_aug')
+                raise ValueError(self.color_bkgd_aug)
         else:
             # just use white during inference
-            color_bkgd = torch.ones(3, device=self.images.device)
-        out["imgs"] = pixels * alpha + color_bkgd * (1.0 - alpha)
-        out["bg_color"] = color_bkgd
+            bg_color = torch.ones(3, device=self.imgs.device)
 
-        return out
+        pixels = pixels * alpha + bg_color * (1.0 - alpha)
+        return {
+            "pixels": pixels,  # [n_rays, 3] or [h, w, 3]
+            "rays_o": rays_o,  # [n_rays, 3] or [h, w, 3]
+            "rays_d": rays_d,  # [n_rays, 3] or [h, w, 3]
+            "bg_color": bg_color,  # [3,]
+            **{k: v for k, v in data.items() if k not in {"rgba", "rays_o", "rays_d"}},
+        }
+
+    def __getitem__(self, index):
+        data = self.fetch_data(index)
+        data = self.preprocess(data)
+        data["dset_id"] = self.dset_id
+        return data
 
 
 def get_360_bbox(datadir):
@@ -106,36 +154,41 @@ def get_360_bbox(datadir):
     return torch.tensor([[-radius, -radius, -radius], [radius, radius, radius]])
 
 
-def create_360_rays(
-              imgs,
-              poses,
-              merge_all: bool,
-              intrinsics: Intrinsics,
-              is_blender_format: bool = True) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    directions = get_ray_directions(intrinsics)  # [H, W, 3]
-    directions = directions / torch.norm(directions, dim=-1, keepdim=True)
+def ray_directions(x: torch.Tensor, y:  torch.Tensor, intrinsics: Intrinsics, opengl_camera: bool) -> torch.Tensor:
+    """
+    Get ray directions for all pixels in camera coordinate.
+    Reference: https://www.scratchapixel.com/lessons/3d-basic-rendering/
+               ray-tracing-generating-camera-rays/standard-coordinate-systems
+    Inputs:
+        height, width, focal: image height, width and focal length
+    Outputs:
+        directions: (height, width, 3), the direction of the rays in camera coordinate
+    """
+    # the direction here is without +0.5 pixel centering as calibration is not so accurate
+    # see https://github.com/bmild/nerf/issues/24
+    return torch.stack([
+        (x - intrinsics.center_x + 0.5) / intrinsics.focal_x,
+        (y - intrinsics.center_y + 0.5) / intrinsics.focal_y * (-1 if opengl_camera else 1),
+        torch.ones_like(x) * (-1 if opengl_camera else 1)
+    ], -1)  # (H, W, 3)
+
+
+def create_360_rays_v2(
+            x: torch.Tensor,
+            y: torch.Tensor,
+            poses,
+            intrinsics: Intrinsics,
+            is_blender_format: bool = True) -> Tuple[torch.Tensor, torch.Tensor]:
+    camera_dirs = ray_directions(x, y, intrinsics, is_blender_format)  # [H, W, 3]
+    # directions = directions / torch.norm(directions, dim=-1, keepdim=True)
     num_frames = poses.shape[0]
 
-    all_rays_o, all_rays_d = [], []
-    for i in range(num_frames):
-        pose_opencv = poses[i]
-        if is_blender_format:
-            pose_opencv = pose_opencv @ blender2opencv
-        rays_o, rays_d = get_rays(directions, pose_opencv)  # h*w, 3
-        all_rays_o.append(rays_o)
-        all_rays_d.append(rays_d)
-
-    all_rays_o = torch.cat(all_rays_o, 0).to(dtype=torch.float32)  # [n_frames * h * w, 3]
-    all_rays_d = torch.cat(all_rays_d, 0).to(dtype=torch.float32)  # [n_frames * h * w, 3]
-    if imgs is not None:
-        imgs = imgs.view(-1, imgs.shape[-1]).to(dtype=torch.float32)   # [N*H*W, 3/4]
-    if not merge_all:
-        num_pixels = intrinsics.height * intrinsics.width
-        if imgs is not None:
-            imgs = imgs.view(num_frames, num_pixels, -1)  # [N, H*W, 3/4]
-        all_rays_o = all_rays_o.view(num_frames, num_pixels, 3)  # [N, H*W, 3]
-        all_rays_d = all_rays_d.view(num_frames, num_pixels, 3)  # [N, H*W, 3]
-    return all_rays_o, all_rays_d, imgs
+    directions = (camera_dirs[:, None, :] * poses[:, :3, :3]).sum(dim=-1)
+    origins = torch.broadcast_to(poses[:, :3, -1], directions.shape)
+    viewdirs = directions / torch.linalg.norm(
+        directions, dim=-1, keepdims=True
+    )
+    return origins, viewdirs
 
 
 def load_360_frames(datadir, split, max_frames: int) -> Tuple[Any, Any]:
@@ -163,8 +216,8 @@ def load_360_images(frames, datadir, split, downsample, resolution) -> Tuple[tor
         out_h=None, out_w=None, downsample=downsample,
         resolution=resolution, tqdm_title=f'Loading {split} data')
     imgs, poses = zip(*img_poses)
-    imgs = torch.stack(imgs, 0)  # [N, H, W, 3/4]
-    poses = torch.stack(poses, 0)  # [N, ????]
+    imgs = torch.stack(imgs, 0).float()  # [N, H, W, 3/4]
+    poses = torch.stack(poses, 0).float()  # [N, ????]
     return imgs, poses
 
 

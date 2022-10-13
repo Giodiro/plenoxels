@@ -14,8 +14,7 @@ class BaseDataset(Dataset, ABC):
                  scene_bbox: torch.Tensor,
                  split: str,
                  is_ndc: bool,
-                 rays_o: torch.Tensor,
-                 rays_d: torch.Tensor,
+                 poses: torch.Tensor,
                  intrinsics: Intrinsics,
                  generator: Optional[torch.random.Generator],
                  batch_size: Optional[int] = None,
@@ -37,13 +36,9 @@ class BaseDataset(Dataset, ABC):
         else:
             self.generator = generator
 
-        self.rays_o = rays_o
-        self.rays_d = rays_d
+        self.poses = poses
         self.intrinsics = intrinsics
-        self.imgs = imgs
-        self.num_samples = self.rays_o.shape[0]
-
-        self.perm = None
+        self.imgs = imgs  # [N, H, W, 3/4]
 
     @property
     def img_h(self) -> int:
@@ -53,42 +48,22 @@ class BaseDataset(Dataset, ABC):
     def img_w(self) -> int:
         return self.intrinsics.width
 
-    def reset_iter(self):
-        self.perm = torch.randperm(self.num_samples)
+    @property
+    def num_images(self) -> int:
+        return self.imgs.shape[0]
+
+    @property
+    def num_samples(self) -> int:
+        if self.split == 'train':
+            return self.img_h * self.img_w * self.num_images
+        else:
+            return self.num_images
 
     def update_num_rays(self, num_rays):
         self.batch_size = num_rays
-
-    def get_rand_ids(self, index, weights=None):
-        assert self.batch_size is not None, "Can't get rand_ids for test split"
-        if weights is not None:
-            return torch.multinomial(input=weights, num_samples=self.batch_size, generator=self.generator)
-        assert self.perm is not None, "Call reset_iter"
-        return self.perm[index * self.batch_size: (index + 1) * self.batch_size]
 
     def __len__(self):
         if self.split == 'train':
             return (self.num_samples + self.batch_size - 1) // self.batch_size
         else:
             return self.num_samples
-
-    def __getitem__(self, index, weights=None):
-        if self.split == 'train':
-            idxs = self.get_rand_ids(index, weights)
-            out = {
-                "rays_o": self.rays_o[idxs].contiguous(),
-                "rays_d": self.rays_d[idxs].contiguous(),
-            }
-            if self.imgs is not None:
-                out["imgs"] = self.imgs[idxs].contiguous()
-            if weights is not None:
-                return out, idxs
-            return out
-        else:
-            out = {
-                "rays_o": self.rays_o[index],
-                "rays_d": self.rays_d[index],
-            }
-            if self.imgs is not None:
-                out["imgs"] = self.imgs[index]
-            return out
