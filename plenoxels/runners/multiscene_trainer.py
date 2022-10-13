@@ -144,6 +144,9 @@ class Trainer():
                 occ_eval_fn=lambda x: self.model.query_opacity(
                     x, dset_id
                 ),
+                warmup_steps=512,
+                n=64,
+                occ_thre=1e-2,
             )
             # render
             rgb, acc, depth, n_rendering_samples = render_image(
@@ -165,13 +168,12 @@ class Trainer():
                 * (self.target_sample_batch_size / float(n_rendering_samples))
             )
             self.train_datasets[dset_id].update_num_rays(num_rays)
-            #alive_ray_mask = acc.squeeze(-1) > 0
-            #print("acc", acc)
-            #print("num alive", alive_ray_mask.sum())
+            alive_ray_mask = acc.squeeze(-1) > 0
+            print("num alive", alive_ray_mask.sum())
 
             # compute loss
             #recon_loss = F.smooth_l1_loss(rgb[alive_ray_mask], imgs[alive_ray_mask])
-            recon_loss = F.smooth_l1_loss(rgb, imgs)
+            recon_loss = self.criterion(rgb[alive_ray_mask], imgs[alive_ray_mask])
             loss = recon_loss
 
         if do_update:

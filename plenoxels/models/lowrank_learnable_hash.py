@@ -123,42 +123,6 @@ class LowrankLearnableHash(LowrankModel):
         return out
 
     @torch.no_grad()
-    def update_alpha_mask(self, grid_id: int = 0):
-        assert len(self.config) == 2, "Alpha-masking not supported for multiple layers of indirection."
-        aabb = self.aabb(grid_id)
-        grid_size = self.resolution(grid_id)
-        grid_size_l = grid_size.cpu().tolist()
-        step_size = self.raymarcher.get_step_size(aabb, grid_size)
-
-        # Compute density on a regular grid (of shape grid_size)
-        pts = self.get_points_on_grid(aabb, grid_size, max_voxels=None)
-        density = self.query_density(pts, grid_id).view(-1)
-
-        alpha = 1.0 - torch.exp(-density * step_size * self.density_multiplier).view(grid_size_l)  # [gs0, gs1, gs2]
-        pts = pts.view(grid_size_l + [3])  # [gs0, gs1, gs2, 3]
-
-        # Transpose to get correct Depth, Height, Width format
-        pts = pts.transpose(0, 2).contiguous()
-        alpha = alpha.clamp(0, 1).transpose(0, 2).contiguous()
-
-        # Compute the mask (max-pooling) and the new aabb.
-        alpha = F.max_pool3d(alpha[None, None, ...], kernel_size=3, padding=1, stride=1)
-        alpha = alpha.view(grid_size_l[::-1])
-        alpha = F.threshold(alpha, self.alpha_mask_threshold, 0.0)  # set to 0 if <= threshold
-
-        alpha_mask = alpha > 0
-        valid_pts = pts[alpha_mask]
-        pts_min = valid_pts.amin(0)
-        pts_max = valid_pts.amax(0)
-
-        new_aabb = torch.stack((pts_min, pts_max), 0)
-        log.info(f"Updated alpha mask for scene {grid_id}. "
-                 f"New bounding box={new_aabb.view(-1)}. "
-                 f"Remaining {alpha_mask.sum() / grid_size_l[0] / grid_size_l[1] / grid_size_l[2] * 100:.2f}% voxels.")
-        self.density_mask[grid_id] = DensityMask(alpha, aabb=aabb)
-        return new_aabb
-
-    @torch.no_grad()
     def shrink(self, new_aabb, grid_id: int):
         log.info(f"Shrinking grid {grid_id}...")
 
