@@ -193,6 +193,7 @@ class VideoLLFFDataset(BaseDataset):
         if self.isg:
             isg_weights = dynerf_isg_weight(imgs, median_imgs, gamma)
             self.isg_weights = isg_weights.reshape(-1)
+        print(f'isg is {isg}')
         poses = poses.float()
         rays_o, rays_d, imgs = create_llff_rays(
             imgs=imgs, poses=poses, intrinsics=intrinsics, merge_all=split == 'train')  # [-1, 3]
@@ -236,7 +237,7 @@ class VideoLLFFDataset(BaseDataset):
         if self.isg_weights is not None:
             out, idxs = super().__getitem__(index, weights=self.isg_weights)
         else:
-            out = super().__getitem__(index, weights=self.isg_weights)
+            out = super().__getitem__(index)
             idxs = None
         if self.split == 'train':
             if idxs is None:
