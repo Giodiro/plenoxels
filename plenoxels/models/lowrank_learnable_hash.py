@@ -55,6 +55,8 @@ class LowrankLearnableHash(LowrankModel):
         self.alpha_mask_threshold = self.extra_args["density_threshold"]
 
         self.density_act = lambda x: trunc_exp(x - 1)
+        self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
+        self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
 
         self.scene_grids = nn.ModuleList()
         for si in range(num_scenes):
@@ -63,7 +65,6 @@ class LowrankLearnableHash(LowrankModel):
                 if "feature_dim" in grid_config and si == 0:  # Only make one set of features
                     self.features = self.init_features_param(grid_config, self.sh)
                     self.feature_dim = self.features.shape[0]
-                    #self.basis_mat = torch.nn.Linear(50, 5)
                 else:
                     gpdesc = self.init_grid_param(grid_config, is_video=False, grid_level=li)
                     if li == 0:
@@ -111,6 +112,10 @@ class LowrankLearnableHash(LowrankModel):
                         grid_sample_wrapper(grid[ci], interp[..., coo_comb]).view(
                             -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
             interp = interp_out.mean(dim=-1)
+
+        if interp.numel() > 0:
+            interp = (interp - self.pt_min) / (self.pt_max - self.pt_min)
+            interp = interp * 2 - 1
 
         out = grid_sample_wrapper(self.features.to(dtype=interp.dtype), interp).view(-1, self.feature_dim)
         if return_coords:
@@ -280,6 +285,7 @@ class LowrankLearnableHash(LowrankModel):
     def get_params(self, lr):
         params = [
             {"params": self.scene_grids.parameters(), "lr": lr},
+            {"params": [self.pt_min, self.pt_max], "lr": lr},
             #{"params": self.bn.parameters(), "lr": lr},
         ]
         if not self.transfer_learning:
