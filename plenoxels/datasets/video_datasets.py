@@ -193,6 +193,7 @@ class VideoLLFFDataset(BaseDataset):
         if self.isg:
             isg_weights = dynerf_isg_weight(imgs, median_imgs, gamma)
             self.isg_weights = isg_weights.reshape(-1)
+            self.isg_weights = self.isg_weights / torch.sum(isg_weights)  # Normalize into a probability distribution, to speed up sampling
         print(f'isg is {isg}')
         poses = poses.float()
         rays_o, rays_d, imgs = create_llff_rays(
@@ -247,7 +248,6 @@ class VideoLLFFDataset(BaseDataset):
                 out.update(self.patchloader[index])
         else:
             out["timestamps"] = self.timestamps[index]
-
         return out
 
 

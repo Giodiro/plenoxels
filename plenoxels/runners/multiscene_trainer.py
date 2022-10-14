@@ -294,7 +294,7 @@ class Trainer():
                         do_update = (i + 1) % self.num_dsets == 0
                     else:
                         do_update = True
-
+               
                     step_successful = self.step(data, do_update=do_update)
                     if do_update:
                         self.post_step(data=data, progress_bar=pb)
