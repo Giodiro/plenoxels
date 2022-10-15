@@ -4,20 +4,22 @@ import logging as log
 import os
 from typing import Optional, List, Tuple, Any
 
-import imageio
+import imageio.v3 as iio
 import numpy as np
 import torch
 import torchvision.transforms
-from PIL import Image
+import torchvision.transforms.functional as tf
 
-from .llff_dataset import load_llff_poses_helper, create_llff_rays
-from .intrinsics import Intrinsics
-from .ray_utils import generate_hemispherical_orbit, generate_spiral_path
-from .synthetic_nerf_dataset import create_360_rays, load_360_images, load_360_intrinsics, get_360_bbox
-from .patchloader import PatchLoader
-from ..my_tqdm import tqdm
 from .base_dataset import BaseDataset
-
+from .data_loading import parallel_load_images
+from .intrinsics import Intrinsics
+from .llff_dataset import load_llff_poses_helper, create_llff_rays
+from .patchloader import PatchLoader
+from .ray_utils import generate_hemispherical_orbit, generate_spiral_path
+from .synthetic_nerf_dataset import (
+    create_360_rays, load_360_images, load_360_intrinsics,
+    get_360_bbox
+)
 
 pil2tensor = torchvision.transforms.ToTensor()
 tensor2pil = torchvision.transforms.ToPILImage()
@@ -169,8 +171,6 @@ class VideoLLFFDataset(BaseDataset):
         :param datadir:
         :param split:
         :param downsample:
-        :param subsample_time:
-            in [0,1] lets you use a percentage of randomly selected frames from each video
         :param extra_views:
         """
         self.keyframes = keyframes
@@ -184,7 +184,7 @@ class VideoLLFFDataset(BaseDataset):
         per_cam_poses, per_cam_near_fars, intrinsics, videopaths = load_llffvideo_poses(
             datadir, downsample=self.downsample, split=split, near_scaling=1.0)
         poses, imgs, timestamps, median_imgs = load_llffvideo_data(
-            videopaths=videopaths, poses=per_cam_poses, intrinsics=intrinsics, split=split,
+            videopaths=videopaths, cam_poses=per_cam_poses, intrinsics=intrinsics, split=split,
             keyframes=keyframes)
         gamma = 2e-2
         if keyframes:
@@ -286,48 +286,34 @@ def load_llffvideo_poses(datadir: str,
 
 
 def load_llffvideo_data(videopaths: List[str],
-                        poses: torch.Tensor,
+                        cam_poses: torch.Tensor,
                         intrinsics: Intrinsics,
                         split: str,
-                        keyframes: bool) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    def load_frame(f, out_h, out_w, already_pil=False):
-        if not already_pil:
-            f = tensor2pil(f)
-        f = f.resize((out_w, out_h), Image.LANCZOS)  # PIL has x and y reversed from torch
-        f = pil2tensor(f)  # [C, H, W]
-        f = f.permute(1, 2, 0)  # [H, W, C]
-        return f
+                        keyframes: bool,
+                        keyframes_take_each: Optional[int] = None,
+                        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    if keyframes and (keyframes_take_each is None or keyframes_take_each < 1):
+        raise ValueError(f"'keyframes_take_each' must be a positive number, "
+                         f"but is {keyframes_take_each}.")
 
-    imgs, timestamps = [], []
-    all_poses = []
-    median_imgs = []
-    for camera_id in tqdm(range(len(videopaths)), desc=f"Loading {split} data"):
-        cam_video = imageio.get_reader(videopaths[camera_id], 'ffmpeg')
-        cam_imgs = []
-        for frame_idx, frame in enumerate(cam_video):
-            # Decide whether to keep this frame or not
-            if keyframes and frame_idx % 30 != 0:
-                continue
-            # Do any downsampling on the image
-            img = load_frame(frame, intrinsics.height, intrinsics.width)
-            imgs.append(img)
-            cam_imgs.append(img)
-            timestamps.append(frame_idx)
-            all_poses.append(poses[camera_id])
-        # Compute the median image from this camera
-        median_imgs.append(median_image(cam_imgs))
+    loaded = parallel_load_images(
+        dset_type="video",
+        tqdm_title=f"Loading {split} data",
+        num_images=len(videopaths),
+        paths=videopaths,
+        poses=cam_poses,
+        out_h=intrinsics.height,
+        out_w=intrinsics.width,
+        load_every=keyframes_take_each if keyframes else 1,
+    )
+    imgs, poses, median_imgs, timestamps = zip(*loaded)
+    # Stack everything together
     timestamps = torch.tensor(timestamps, dtype=torch.int32)  # [N]
-    poses = torch.stack(all_poses, 0)  # [N, 3, 4]
-    imgs = torch.stack(imgs, 0)  # [N, h, w, 3]
+    poses = torch.stack(poses, 0)  # [N, 3, 4]
+    imgs = torch.stack(imgs, 0)    # [N, h, w, 3]
     median_imgs = torch.stack(median_imgs, 0)  # [num_cameras, h, w, 3]
 
     return poses, imgs, timestamps, median_imgs
-
-
-def median_image(imgs):
-    imgs = torch.stack(imgs, -1)
-    values, _ = torch.median(imgs, dim=-1)  # [h, w, 3]
-    return values
 
 
 def dynerf_isg_weight(imgs, median_imgs, gamma):

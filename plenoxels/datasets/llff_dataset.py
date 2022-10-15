@@ -139,13 +139,14 @@ def load_llff_poses(datadir: str, downsample: float, split: str, hold_every: int
 
 def load_llff_images(image_paths: List[str], intrinsics: Intrinsics, split: str):
     all_rgbs: List[torch.Tensor] = parallel_load_images(
-        image_paths,
         tqdm_title=f'Loading {split} data',
         dset_type='llff',
         data_dir='/',  # paths from glob are absolute
+        num_images=len(image_paths),
+        paths=image_paths,
         out_h=intrinsics.height,
         out_w=intrinsics.width,
-        resolution=(None, None)
+        resolution=(None, None),
     )
     return torch.stack(all_rgbs, 0)
 

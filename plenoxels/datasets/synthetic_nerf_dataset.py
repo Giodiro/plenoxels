@@ -140,9 +140,16 @@ def load_360_frames(datadir, split, max_frames: int) -> Tuple[Any, Any]:
 
 def load_360_images(frames, datadir, split, downsample, resolution) -> Tuple[torch.Tensor, torch.Tensor]:
     img_poses = parallel_load_images(
-        image_iter=frames, dset_type="synthetic", data_dir=datadir,
-        out_h=None, out_w=None, downsample=downsample,
-        resolution=resolution, tqdm_title=f'Loading {split} data')
+        dset_type="synthetic",
+        tqdm_title=f'Loading {split} data',
+        num_images=len(frames),
+        frames=frames,
+        data_dir=datadir,
+        out_h=None,
+        out_w=None,
+        downsample=downsample,
+        resolution=resolution,
+    )
     imgs, poses = zip(*img_poses)
     imgs = torch.stack(imgs, 0)  # [N, H, W, 3/4]
     poses = torch.stack(poses, 0)  # [N, ????]
