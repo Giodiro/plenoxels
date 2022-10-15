@@ -93,29 +93,27 @@ def _load_video_1cam(idx: int,
                      out_w: int,
                      load_every: int = 1
                      ):  # -> Tuple[List[torch.Tensor], torch.Tensor, List[int]]:
+    filters = [
+        ("scale", f"w={out_w}:h={out_h}")
+    ]
     all_frames = iio.imread(
-        paths[idx], plugin='pyav', format='rgb24', constant_framerate=True)
+        paths[idx], plugin='pyav', format='rgb24', constant_framerate=True, thread_count=2,
+        filter_sequence=filters,)
     imgs, timestamps = [], []
     for frame_idx, frame in enumerate(all_frames):
         if frame_idx % load_every != 0:
             continue
         # Frame is np.ndarray in uint8 dtype (H, W, C)
         imgs.append(
-            tf.resize(
-                torch.from_numpy(frame).to(torch.float32).div(255),
-                size=[out_h, out_w],
-                interpolation=tf.InterpolationMode.BILINEAR
-            )
+            torch.from_numpy(frame).to(torch.float32).div(255),
         )
         timestamps.append(frame_idx)
-    med_img = median_image(imgs)
-    return (imgs, poses[idx].expand(len(timestamps), -1, -1), med_img, timestamps)
-
-
-def median_image(imgs):
-    imgs = torch.stack(imgs, -1)
-    values, _ = torch.median(imgs, dim=-1)  # [h, w, 3]
-    return values
+    imgs = torch.stack(imgs, 0)
+    med_img, _ = torch.median(imgs, dim=0)  # [h, w, 3]
+    return (imgs,
+            poses[idx].expand(len(timestamps), -1, -1),
+            med_img,
+            torch.tensor(timestamps, dtype=torch.int32))
 
 
 def _parallel_loader_video(args):
@@ -127,15 +125,17 @@ def parallel_load_images(tqdm_title,
                          dset_type: str,
                          num_images: int,
                          **kwargs) -> List[Any]:
-    p = Pool(min(4, num_images))
+    max_threads = 4
     if dset_type == 'llff':
         fn = _parallel_loader_llff_image
     elif dset_type == 'synthetic':
         fn = _parallel_loader_nerf_image_pose
     elif dset_type == 'video':
         fn = _parallel_loader_video
+        max_threads = 10
     else:
         raise ValueError(dset_type)
+    p = Pool(min(max_threads, num_images))
 
     iterator = p.imap(fn, [{"idx": i, **kwargs} for i in range(num_images)])
     # iterator = p.imap(fn, [{iter_name: img_desc, **kwargs} for img_desc in image_iter])

@@ -185,7 +185,7 @@ class VideoLLFFDataset(BaseDataset):
             datadir, downsample=self.downsample, split=split, near_scaling=1.0)
         poses, imgs, timestamps, median_imgs = load_llffvideo_data(
             videopaths=videopaths, cam_poses=per_cam_poses, intrinsics=intrinsics, split=split,
-            keyframes=keyframes)
+            keyframes=keyframes, keyframes_take_each=30)
         gamma = 2e-2
         if keyframes:
             gamma = 1e-3
@@ -196,6 +196,7 @@ class VideoLLFFDataset(BaseDataset):
             self.isg_weights = self.isg_weights / torch.sum(isg_weights)  # Normalize into a probability distribution, to speed up sampling
         print(f'isg is {isg}')
         poses = poses.float()
+        print("imgs", imgs.shape, "poses", poses.shape)
         rays_o, rays_d, imgs = create_llff_rays(
             imgs=imgs, poses=poses, intrinsics=intrinsics, merge_all=split == 'train')  # [-1, 3]
         super().__init__(datadir=datadir,
@@ -308,9 +309,9 @@ def load_llffvideo_data(videopaths: List[str],
     )
     imgs, poses, median_imgs, timestamps = zip(*loaded)
     # Stack everything together
-    timestamps = torch.tensor(timestamps, dtype=torch.int32)  # [N]
-    poses = torch.stack(poses, 0)  # [N, 3, 4]
-    imgs = torch.stack(imgs, 0)    # [N, h, w, 3]
+    timestamps = torch.cat(timestamps, 0)  # [N]
+    poses = torch.cat(poses, 0)            # [N, 3, 4]
+    imgs = torch.cat(imgs, 0)              # [N, h, w, 3]
     median_imgs = torch.stack(median_imgs, 0)  # [num_cameras, h, w, 3]
 
     return poses, imgs, timestamps, median_imgs
