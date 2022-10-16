@@ -1,7 +1,7 @@
 # configuration file to be used with `main.py` for video training
 config = {
     # "expname": "legovideo20views_regdepthweightedacc_400_0.1_512_3framesreso3rank20",
-    "expname": "test_keyframes10k_isg",
+    "expname": "test_keyframes3650isgtoist",
     # "expname": "testspeed",
     # "expname": "testrelu_sameranktimereso128_llff",
     "logdir": "./logs/coffeevideo",
@@ -53,7 +53,7 @@ config = {
     # Model settings
     "sh": True,
     "upsample_time_resolution": [150],
-    "upsample_time_steps": [10000],  # DyNerf does 300K iterations with keyframes, with lr 5e-4
+    "upsample_time_steps": [3650], # 2 epochs with keyframes # DyNerf does 300K iterations with keyframes, with lr 5e-4
     "grid_config": """
 [
     {
