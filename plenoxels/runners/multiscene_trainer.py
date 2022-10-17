@@ -75,6 +75,10 @@ class Trainer():
         self.save_outputs = save_outputs
         self.gradient_acc = kwargs.get('gradient_acc', False)
         self.target_sample_batch_size = 1 << 18
+        self.render_n_samples = 1024
+        # Set initial batch-size
+        for dset in self.train_datasets:
+            dset.update_num_rays(self.target_sample_batch_size // self.render_n_samples)
         # All 'steps' things must be multiplied by the number of datasets
         # to get consistent amount of training independently of how many dsets.
         # This is not needed if gradient_acc is set, since in that case the
@@ -108,28 +112,30 @@ class Trainer():
         Note that here `data` contains a whole image. we need to split it up before tracing
         for memory constraints.
         """
-        batch_size = self.train_datasets[dset_id].batch_size
-        with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            rays_o = data["rays_o"]
-            rays_d = data["rays_d"]
-            preds = defaultdict(list)
-            for b in range(math.ceil(rays_o.shape[0] / batch_size)):
-                rays_o_b = rays_o[b * batch_size: (b + 1) * batch_size].cuda()
-                rays_d_b = rays_d[b * batch_size: (b + 1) * batch_size].cuda()
-                if self.is_ndc:
-                    bg_color = None
-                else:
-                    bg_color = 1
-                outputs = self.model(rays_o_b, rays_d_b, grid_id=dset_id, bg_color=bg_color, channels={"rgb", "depth"})
-                for k, v in outputs.items():
-                    preds[k].append(v)
-        return {k: torch.cat(v, 0) for k, v in preds.items()}
+        with torch.cuda.amp.autocast(enabled=self.train_fp16), torch.no_grad():
+            rgb, acc, depth, _ = render_image(
+                self.model,
+                self.occupancy_grids[dset_id],
+                dset_id,
+                data['rays_o'].cuda(),
+                data['rays_d'].cuda(),
+                near_plane=None,#self.train_datasets[dset_id].near_far[0],
+                far_plane=None,#self.train_datasets[dset_id].near_far[1],
+                render_bkgd=data['bg_color'].cuda(),
+                cone_angle=0.0,
+                render_step_size=self.model.step_size(self.render_n_samples, dset_id),
+            )
+
+        return {
+            "rgb": rgb,
+            "depth": depth,
+        }
 
     def step(self, data: Dict[str, Union[int, torch.Tensor]], do_update: bool):
         dset_id = data["dset_id"]
         rays_o = data["rays_o"].cuda()
         rays_d = data["rays_d"].cuda()
-        imgs = data["imgs"].cuda()
+        imgs = data["pixels"].cuda()
         bg_color = data["bg_color"].cuda()
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
@@ -151,10 +157,11 @@ class Trainer():
                 rays_o,
                 rays_d,
                 # rendering options
-                near_plane=self.train_datasets[dset_id].near_far[0],
-                far_plane=self.train_datasets[dset_id].near_far[1],
+                near_plane=None,#self.train_datasets[dset_id].near_far[0],
+                far_plane=None,#self.train_datasets[dset_id].near_far[1],
                 render_bkgd=bg_color,
                 cone_angle=0.0,
+                render_step_size=self.model.step_size(self.render_n_samples, dset_id),
             )
             # dynamic batch size for rays to keep sample batch size constant.
             num_rays = len(imgs)
@@ -245,7 +252,7 @@ class Trainer():
                 data = next(data_iter)
                 step_successful = self.step(data, do_update=True)
                 self.global_step += 1
-                if step_successful:
+                if step_successful and self.scheduler is not None:
                     self.scheduler.step()
                 self.post_step(data=data, progress_bar=pb)
         finally:
@@ -254,6 +261,7 @@ class Trainer():
 
     def validate(self):
         val_metrics = []
+        self.model.eval()
         with torch.no_grad():
             for dset_id, dataset in enumerate(self.test_datasets):
                 per_scene_metrics = {
@@ -265,7 +273,7 @@ class Trainer():
                 for img_idx, data in enumerate(dataset):
                     preds = self.eval_step(data, dset_id=dset_id)
                     out_metrics = self.evaluate_metrics(
-                        data["imgs"], preds, dset_id=dset_id, dset=dataset, img_idx=img_idx, name=None,
+                        data["pixels"], preds, dset_id=dset_id, dset=dataset, img_idx=img_idx, name=None,
                         save_outputs=self.save_outputs)
                     per_scene_metrics["psnr"] += out_metrics["psnr"]
                     per_scene_metrics["ssim"] += out_metrics["ssim"]
@@ -374,7 +382,7 @@ class Trainer():
     def init_lr_scheduler(self, **kwargs) -> Optional[torch.optim.lr_scheduler._LRScheduler]:
         eta_min = 0
         lr_sched = None
-        max_steps = int(self.num_epochs * len(self.train_data_loader))
+        max_steps = self.num_steps
         if self.scheduler_type == "cosine":
             lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
                 self.optimizer,
@@ -518,7 +526,7 @@ def render_image(
     cone_angle: float = 0.0,
     device="cuda:0",
     # test options
-    test_chunk_size: int = 8192,
+    test_chunk_size: int = 4096,
 ):
     """Render the pixels of an image."""
     rays_shape = rays_o.shape
@@ -560,7 +568,7 @@ def render_image(
             near_plane=near_plane,
             far_plane=far_plane,
             render_step_size=render_step_size,
-            stratified=radiance_field.training,
+            stratified=radiance_field.training,  # add random perturbations
             cone_angle=cone_angle,
         )
         rgb, opacity, depth = rendering(

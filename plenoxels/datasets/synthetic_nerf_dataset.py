@@ -75,7 +75,7 @@ class SyntheticNerfDataset(BaseDataset):
                 0,
                 len(self.imgs),
                 size=(batch_size,),
-                device=self.images.device,
+                device=self.imgs.device,
             )
             x = torch.randint(
                 0, self.intrinsics.width, size=(batch_size,), device=self.imgs.device
@@ -95,7 +95,7 @@ class SyntheticNerfDataset(BaseDataset):
 
         rays_o, rays_d = create_360_rays_v2(
             x, y, intrinsics=self.intrinsics, poses=self.poses[image_id])
-        rgba = self.imgs[image_id, y, x] / 255.0  # (num_rays, 4)
+        rgba = self.imgs[image_id, y, x]  # (num_rays, 4)
 
         if self.split == 'train':
             rays_o = rays_o.reshape(-1, 3)
@@ -180,7 +180,6 @@ def create_360_rays_v2(
             intrinsics: Intrinsics,
             is_blender_format: bool = True) -> Tuple[torch.Tensor, torch.Tensor]:
     camera_dirs = ray_directions(x, y, intrinsics, is_blender_format)  # [H, W, 3]
-    # directions = directions / torch.norm(directions, dim=-1, keepdim=True)
     num_frames = poses.shape[0]
 
     directions = (camera_dirs[:, None, :] * poses[:, :3, :3]).sum(dim=-1)
