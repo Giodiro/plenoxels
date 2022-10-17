@@ -478,11 +478,11 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
             max_ts_frames = parse_optint(kwargs.get('max_ts_frames'))
             logging.info(f"About to load data at reso={data_resolution}, downsample={data_downsample}")
             tr_dsets.append(SyntheticNerfDataset(
-                data_dir, split='train', downsample=data_downsample, resolution=data_resolution,
-                max_frames=max_tr_frames, extra_views=extra_views, batch_size=batch_size,
-                patch_size=patch_size, dset_id=i, color_bkgd_aug='random'))
+                data_dir, split='train', downsample=data_downsample,
+                max_frames=max_tr_frames, batch_size=batch_size,
+                dset_id=i, color_bkgd_aug='random'))
             ts_dsets.append(SyntheticNerfDataset(
-                data_dir, split='test', downsample=1, resolution=800, max_frames=max_ts_frames,
+                data_dir, split='test', downsample=1, max_frames=max_ts_frames,
                 dset_id=i, color_bkgd_aug='random'))
         elif dset_type == "llff":
             hold_every = parse_optint(kwargs.get('hold_every'))

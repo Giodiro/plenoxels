@@ -1,16 +1,16 @@
 import json
 import logging as log
+import math
 import os
-from typing import Tuple, Optional, Any
+from typing import Optional
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 import torch.utils.data
 
 from .data_loading import parallel_load_images
 from .intrinsics import Intrinsics
-from .base_dataset import BaseDataset
-from .patchloader import PatchLoader
 
 
 class MultiSceneDataset(torch.utils.data.IterableDataset):
@@ -26,218 +26,205 @@ class MultiSceneDataset(torch.utils.data.IterableDataset):
             idx += 1
 
 
-class SyntheticNerfDataset(BaseDataset):
-    patchloader: Optional[PatchLoader]
+def _load_renderings(data_dir: str, split: str, max_frames: int, downsample: float):
+    """Load images from disk."""
+    with open(
+        os.path.join(data_dir, "transforms_{}.json".format(split)), "r"
+    ) as fp:
+        meta = json.load(fp)
 
-    def __init__(self,
-                 datadir,
-                 split: str,
-                 dset_id: int,
-                 batch_size: Optional[int] = None,
-                 generator: Optional[torch.random.Generator] = None,
-                 downsample: float = 1.0,
-                 resolution: Optional[int] = 512,
-                 max_frames: Optional[int] = None,
-                 patch_size: Optional[int] = 8,
-                 extra_views: bool = False,
-                 color_bkgd_aug: str = 'white'):
+    frames = meta['frames']
 
-        self.downsample = downsample
-        self.resolution = (resolution, resolution)
-        self.max_frames = max_frames
-        self.patch_size = patch_size
+    # Subsample frames
+    tot_frames = len(frames)
+    num_frames = min(tot_frames, max_frames or tot_frames)
+    if split == 'train' or split == 'test':
+        subsample = int(round(tot_frames / num_frames))
+        frame_ids = np.arange(tot_frames)[::subsample]
+        if subsample > 1:
+            log.info(f"Subsampling {split} set to 1 every {subsample} images.")
+    else:
+        frame_ids = np.arange(num_frames)
+    frames = np.take(frames, frame_ids).tolist()
+
+    img_poses = parallel_load_images(
+        image_iter=frames, dset_type="synthetic", data_dir=data_dir,
+        out_h=None, out_w=None, downsample=downsample,
+        resolution=(None, None), tqdm_title=f'Loading {split} data')
+    images, camtoworlds = zip(*img_poses)
+    images = torch.stack(images, 0).float()  # [N, H, W, 3/4]
+    camtoworlds = torch.stack(camtoworlds, 0).float()  # [N, ????]
+
+    h, w = images.shape[1:3]
+    camera_angle_x = float(meta["camera_angle_x"])
+    focal = 0.5 * w / math.tan(0.5 * camera_angle_x)
+
+    return images, camtoworlds, focal
+
+
+class SyntheticNerfDataset(torch.utils.data.Dataset):
+    """Single subject data loader for training and evaluation."""
+
+    SPLITS = ["train", "val", "trainval", "test"]
+    SUBJECT_IDS = [
+        "chair",
+        "drums",
+        "ficus",
+        "hotdog",
+        "lego",
+        "materials",
+        "mic",
+        "ship",
+    ]
+
+    WIDTH, HEIGHT = 800, 800
+    NEAR, FAR = 2.0, 6.0
+    OPENGL_CAMERA = True
+
+    def __init__(
+        self,
+        datadir: str,
+        split: str,
+        dset_id: int,
+        color_bkgd_aug: str = "white",
+        batch_size: int = None,
+        downsample: float = 1.0,
+        max_frames: Optional[int] = None,
+        generator: Optional[torch.random.Generator] = None,
+    ):
+        super().__init__()
+        assert split in self.SPLITS, "%s" % split
+        assert color_bkgd_aug in ["white", "black", "random"]
+        self.split = split
+        self.datadir = datadir
         self.dset_id = dset_id
-        self.near_far = [2.0, 6.0]
-        self.extra_views = split == 'train' and extra_views
-        self.patchloader = None
+        self.batch_size = batch_size
+        self.near = self.NEAR
+        self.far = self.FAR
+        self.downsample = downsample
+        self.max_frames = max_frames
+        self.training = (batch_size is not None) and (
+            split in ["train", "trainval"]
+        )
+        if generator is None:
+            seed = int(torch.empty((), dtype=torch.int64).random_().item())
+            self.generator = torch.Generator()
+            self.generator.manual_seed(seed)
+        else:
+            self.generator = generator
         self.color_bkgd_aug = color_bkgd_aug
+        self.images, self.camtoworlds, self.focal = _load_renderings(
+            self.datadir, split=self.split, max_frames=self.max_frames, downsample=self.downsample
+        )
+        self.images = self.images.to(torch.uint8)
+        self.camtoworlds = self.camtoworlds.to(torch.float32)
+        self.intrinsics = Intrinsics(
+            width=self.WIDTH, height=self.HEIGHT, focal_x=self.focal,
+            focal_y=self.focal, center_x=self.WIDTH / 2, center_y=self.HEIGHT / 2)
+        self.intrinsics.scale(self.downsample)
+        assert self.images.shape[1:3] == (self.intrinsics.height, self.intrinsics.width)
 
-        frames, transform = load_360_frames(datadir, split, self.max_frames)
-        imgs, poses = load_360_images(frames, datadir, split, self.downsample, self.resolution)
-        intrinsics = load_360_intrinsics(transform, imgs, self.downsample)
-        super().__init__(datadir=datadir,
-                         split=split,
-                         scene_bbox=get_360_bbox(datadir),
-                         is_ndc=False,
-                         generator=generator,
-                         batch_size=batch_size,
-                         imgs=imgs,
-                         poses=poses,
-                         intrinsics=intrinsics)
+    def __len__(self):
+        return len(self.images)
 
-        log.info(f"SyntheticNerfDataset - Loaded {split} set from {datadir}: {len(poses)} images of size "
-                 f"{self.img_h}x{self.img_w} and {imgs.shape[-1]} channels. {intrinsics}")
-
-    def fetch_data(self, index):
-        batch_size = self.batch_size
-        if self.split == 'train':
-            image_id = torch.randint(
-                0,
-                len(self.imgs),
-                size=(batch_size,),
-                device=self.imgs.device,
-            )
-            x = torch.randint(
-                0, self.intrinsics.width, size=(batch_size,), device=self.imgs.device
-            )
-            y = torch.randint(
-                0, self.intrinsics.height, size=(batch_size,), device=self.imgs.device
-            )
-        else:
-            image_id = [index]
-            x, y = torch.meshgrid(
-                torch.arange(self.intrinsics.width, device=self.imgs.device),
-                torch.arange(self.intrinsics.height, device=self.imgs.device),
-                indexing="xy",
-            )
-            x = x.flatten()
-            y = y.flatten()
-
-        rays_o, rays_d = create_360_rays_v2(
-            x, y, intrinsics=self.intrinsics, poses=self.poses[image_id])
-        rgba = self.imgs[image_id, y, x]  # (num_rays, 4)
-
-        if self.split == 'train':
-            rays_o = rays_o.reshape(-1, 3)
-            rays_d = rays_d.reshape(-1, 3)
-            rgba = rgba.reshape(-1, 4)
-        else:
-            rays_o = rays_o.reshape(self.intrinsics.width, self.intrinsics.height, 3)
-            rays_d = rays_d.reshape(self.intrinsics.width, self.intrinsics.height, 3)
-            rgba = rgba.reshape(self.intrinsics.width, self.intrinsics.height, 4)
-
-        return {
-            "rays_o": rays_o,
-            "rays_d": rays_d,
-            "rgba": rgba,
-        }
+    @torch.no_grad()
+    def __getitem__(self, index):
+        data = self.fetch_data(index)
+        data = self.preprocess(data)
+        return data
 
     def preprocess(self, data):
         """Process the fetched / cached data with randomness."""
         rgba, rays_o, rays_d = data["rgba"], data["rays_o"], data["rays_d"]
         pixels, alpha = torch.split(rgba, [3, 1], dim=-1)
 
-        if self.split == 'train':
+        if self.training:
             if self.color_bkgd_aug == "random":
-                bg_color = torch.rand(3, device=self.imgs.device)
+                color_bkgd = torch.rand(3, device=self.images.device)
             elif self.color_bkgd_aug == "white":
-                bg_color = torch.ones(3, device=self.imgs.device)
+                color_bkgd = torch.ones(3, device=self.images.device)
             elif self.color_bkgd_aug == "black":
-                bg_color = torch.zeros(3, device=self.imgs.device)
+                color_bkgd = torch.zeros(3, device=self.images.device)
             else:
                 raise ValueError(self.color_bkgd_aug)
         else:
             # just use white during inference
-            bg_color = torch.ones(3, device=self.imgs.device)
+            color_bkgd = torch.ones(3, device=self.images.device)
 
-        pixels = pixels * alpha + bg_color * (1.0 - alpha)
+        pixels = pixels * alpha + color_bkgd * (1.0 - alpha)
         return {
             "pixels": pixels,  # [n_rays, 3] or [h, w, 3]
-            "rays_o": rays_o,  # [n_rays, 3] or [h, w, 3]
-            "rays_d": rays_d,  # [n_rays, 3] or [h, w, 3]
-            "bg_color": bg_color,  # [3,]
+            "rays_o": rays_o,  # [n_rays,] or [h, w]
+            "rays_d": rays_d,  # [n_rays,] or [h, w]
+            "color_bkgd": color_bkgd,  # [3,]
+            "dset_id": self.dset_id,
             **{k: v for k, v in data.items() if k not in {"rgba", "rays_o", "rays_d"}},
         }
 
-    def __getitem__(self, index):
-        data = self.fetch_data(index)
-        data = self.preprocess(data)
-        data["dset_id"] = self.dset_id
-        return data
+    def update_num_rays(self, num_rays):
+        self.batch_size = num_rays
 
+    def fetch_data(self, index):
+        """Fetch the data (it maybe cached for multiple batches)."""
+        num_rays = self.batch_size
 
-def get_360_bbox(datadir):
-    if "ship" in datadir:
-        radius = 1.5
-    else:
-        radius = 1.3
-    return torch.tensor([[-radius, -radius, -radius], [radius, radius, radius]])
-
-
-def ray_directions(x: torch.Tensor, y:  torch.Tensor, intrinsics: Intrinsics, opengl_camera: bool) -> torch.Tensor:
-    """
-    Get ray directions for all pixels in camera coordinate.
-    Reference: https://www.scratchapixel.com/lessons/3d-basic-rendering/
-               ray-tracing-generating-camera-rays/standard-coordinate-systems
-    Inputs:
-        height, width, focal: image height, width and focal length
-    Outputs:
-        directions: (height, width, 3), the direction of the rays in camera coordinate
-    """
-    # the direction here is without +0.5 pixel centering as calibration is not so accurate
-    # see https://github.com/bmild/nerf/issues/24
-    return torch.stack([
-        (x - intrinsics.center_x + 0.5) / intrinsics.focal_x,
-        (y - intrinsics.center_y + 0.5) / intrinsics.focal_y * (-1 if opengl_camera else 1),
-        torch.ones_like(x) * (-1 if opengl_camera else 1)
-    ], -1)  # (H, W, 3)
-
-
-def create_360_rays_v2(
-            x: torch.Tensor,
-            y: torch.Tensor,
-            poses,
-            intrinsics: Intrinsics,
-            is_blender_format: bool = True) -> Tuple[torch.Tensor, torch.Tensor]:
-    camera_dirs = ray_directions(x, y, intrinsics, is_blender_format)  # [H, W, 3]
-    num_frames = poses.shape[0]
-
-    directions = (camera_dirs[:, None, :] * poses[:, :3, :3]).sum(dim=-1)
-    origins = torch.broadcast_to(poses[:, :3, -1], directions.shape)
-    viewdirs = directions / torch.linalg.norm(
-        directions, dim=-1, keepdims=True
-    )
-    return origins, viewdirs
-
-
-def load_360_frames(datadir, split, max_frames: int) -> Tuple[Any, Any]:
-    with open(os.path.join(datadir, f"transforms_{split}.json"), 'r') as f:
-        meta = json.load(f)
-        frames = meta['frames']
-
-        # Subsample frames
-        tot_frames = len(frames)
-        num_frames = min(tot_frames, max_frames or tot_frames)
-        if split == 'train' or split == 'test':
-            subsample = int(round(tot_frames / num_frames))
-            frame_ids = np.arange(tot_frames)[::subsample]
-            if subsample > 1:
-                log.info(f"Subsampling {split} set to 1 every {subsample} images.")
+        if self.training:
+            image_id = torch.randint(
+                0,
+                len(self.images),
+                size=(num_rays,),
+                device=self.images.device,
+            )
+            x = torch.randint(
+                0, self.intrinsics.width, size=(num_rays,), device=self.images.device
+            )
+            y = torch.randint(
+                0, self.intrinsics.height, size=(num_rays,), device=self.images.device
+            )
         else:
-            frame_ids = np.arange(num_frames)
-        frames = np.take(frames, frame_ids).tolist()
-    return frames, meta
+            image_id = [index]
+            x, y = torch.meshgrid(
+                torch.arange(self.intrinsics.width, device=self.images.device),
+                torch.arange(self.intrinsics.height, device=self.images.device),
+                indexing="xy",
+            )
+            x = x.flatten()
+            y = y.flatten()
 
+        # generate rays
+        rgba = self.images[image_id, y, x] / 255.0  # (num_rays, 4)   this converts to f32
+        c2w = self.camtoworlds[image_id]  # (num_rays, 3, 4)
+        camera_dirs = F.pad(
+            torch.stack(
+                [
+                    (x - self.intrinsics.center_x + 0.5) / self.intrinsics.focal_x,
+                    (y - self.intrinsics.center_y + 0.5) / self.intrinsics.focal_y
+                    * (-1.0 if self.OPENGL_CAMERA else 1.0),
+                ],
+                dim=-1,
+            ),
+            (0, 1),
+            value=(-1.0 if self.OPENGL_CAMERA else 1.0),
+        )  # [num_rays, 3]
 
-def load_360_images(frames, datadir, split, downsample, resolution) -> Tuple[torch.Tensor, torch.Tensor]:
-    img_poses = parallel_load_images(
-        image_iter=frames, dset_type="synthetic", data_dir=datadir,
-        out_h=None, out_w=None, downsample=downsample,
-        resolution=resolution, tqdm_title=f'Loading {split} data')
-    imgs, poses = zip(*img_poses)
-    imgs = torch.stack(imgs, 0).float()  # [N, H, W, 3/4]
-    poses = torch.stack(poses, 0).float()  # [N, ????]
-    return imgs, poses
+        # [n_cams, height, width, 3]
+        directions = (camera_dirs[:, None, :] * c2w[:, :3, :3]).sum(dim=-1)
+        origins = torch.broadcast_to(c2w[:, :3, -1], directions.shape)
+        viewdirs = directions / torch.linalg.norm(
+            directions, dim=-1, keepdims=True
+        )
 
+        if self.training:
+            origins = torch.reshape(origins, (num_rays, 3))
+            viewdirs = torch.reshape(viewdirs, (num_rays, 3))
+            rgba = torch.reshape(rgba, (num_rays, 4))
+        else:
+            origins = torch.reshape(origins, (self.intrinsics.height, self.intrinsics.width, 3))
+            viewdirs = torch.reshape(viewdirs, (self.intrinsics.height, self.intrinsics.width, 3))
+            rgba = torch.reshape(rgba, (self.intrinsics.height, self.intrinsics.width, 4))
 
-def load_360_intrinsics(transform, imgs, downsample) -> Intrinsics:
-    height = imgs[0].shape[0]
-    width = imgs[0].shape[1]
-    # load intrinsics
-    if 'fl_x' in transform or 'fl_y' in transform:
-        fl_x = (transform['fl_x'] if 'fl_x' in transform else transform['fl_y']) / downsample
-        fl_y = (transform['fl_y'] if 'fl_y' in transform else transform['fl_x']) / downsample
-    elif 'camera_angle_x' in transform or 'camera_angle_y' in transform:
-        # blender, assert in radians. already downscaled since we use H/W
-        fl_x = width / (2 * np.tan(transform['camera_angle_x'] / 2)) if 'camera_angle_x' in transform else None
-        fl_y = height / (2 * np.tan(transform['camera_angle_y'] / 2)) if 'camera_angle_y' in transform else None
-        if fl_x is None:
-            fl_x = fl_y
-        if fl_y is None:
-            fl_y = fl_x
-    else:
-        raise RuntimeError('Failed to load focal length, please check the transforms.json!')
-
-    cx = (transform['cx'] / downsample) if 'cx' in transform else (width / 2)
-    cy = (transform['cy'] / downsample) if 'cy' in transform else (height / 2)
-    return Intrinsics(height=height, width=width, focal_x=fl_x, focal_y=fl_y, center_x=cx, center_y=cy)
+        return {
+            "rgba": rgba,       # [h, w, 4] or [num_rays, 4]
+            "rays_o": origins,  # [h, w, 3] or [num_rays, 3]
+            "rays_d": viewdirs,
+        }

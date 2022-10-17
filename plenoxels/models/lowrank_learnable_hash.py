@@ -75,7 +75,6 @@ class LowrankLearnableHash(LowrankModel):
             self.decoder = SHDecoder(feature_dim=self.feature_dim)
         else:
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
-        self.density_mask = nn.ModuleList([None] * num_scenes)
         log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes, decoder: {self.decoder}.")
 
     def compute_features(self,
