@@ -524,6 +524,7 @@ def render_image(
     render_step_size: float = 1e-3,
     render_bkgd: Optional[torch.Tensor] = None,
     cone_angle: float = 0.0,
+    alpha_thresh: float = 0.0,
     device="cuda:0",
     # test options
     test_chunk_size: int = 4096,
@@ -570,6 +571,7 @@ def render_image(
             render_step_size=render_step_size,
             stratified=radiance_field.training,  # add random perturbations
             cone_angle=cone_angle,
+            alpha_thre=alpha_thresh,
         )
         rgb, opacity, depth = rendering(
             rgb_sigma_fn,
