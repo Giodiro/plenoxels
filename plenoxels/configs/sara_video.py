@@ -1,7 +1,7 @@
 # configuration file to be used with `main.py` for video training
 config = {
     # "expname": "legovideo20views_regdepthweightedacc_400_0.1_512_3framesreso3rank20",
-    "expname": "test_keyframes3650isgtoist",
+    "expname": "test_keyframesisgtoistdelayed",
     # "expname": "testspeed",
     # "expname": "testrelu_sameranktimereso128_llff",
     "logdir": "./logs/coffeevideo",
@@ -20,6 +20,7 @@ config = {
     # Data settings for LLFF
     "keyframes": True,
     "isg": True,
+    "ist_step": 8000,
 
     # Optimization settings
     "num_epochs": 10,
@@ -32,7 +33,7 @@ config = {
     "volume_tv_npts": 1024,  # Not used for video yet
     "volume_tv_what": "Gcoords",  # Not used for video yet
     "scheduler_type": None,
-    "batch_size": 8000,  
+    "batch_size": 4000,  
     "optim_type": "adam",
     "lr": 1e-2,
     
@@ -53,15 +54,16 @@ config = {
     # Model settings
     "sh": True,
     "upsample_time_resolution": [150],
-    "upsample_time_steps": [3650], # 2 epochs with keyframes # DyNerf does 300K iterations with keyframes, with lr 5e-4
+    # "upsample_time_steps": [3649], # 2 epochs with keyframes # DyNerf does 300K iterations with keyframes, with lr 5e-4
+    "upsample_time_steps": [4500],
     "grid_config": """
 [
     {
         "input_coordinate_dim": 3,
         "output_coordinate_dim": 5,
         "grid_dimensions": 2,
-        "resolution": [128, 128, 128],
-        "rank": 20,
+        "resolution": [256, 256, 128],
+        "rank": 30,
         "time_reso": 30,
     },
     {

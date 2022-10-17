@@ -69,8 +69,7 @@ class Video360Dataset(BaseDataset):
 
         timestamps = [parse_360_file_path(frame['file_path'])[0] for frame in frames]
         timestamps = torch.tensor(timestamps, dtype=torch.int32)
-        # self.len_time = torch.amax(timestamps).item()
-        self.len_time = 300 # This is true for the 10-second sequences from DyNerf
+        self.len_time = torch.amax(timestamps).item()
         if self.split == 'train':
             self.timestamps = timestamps[:, None, None].repeat(
                 1, intrinsics.height, intrinsics.width).reshape(-1)  # [n_frames * h * w]
@@ -217,7 +216,8 @@ class VideoLLFFDataset(BaseDataset):
                          rays_o=rays_o,
                          rays_d=rays_d,
                          intrinsics=intrinsics)
-        self.len_time = torch.amax(timestamps).item()
+        # self.len_time = torch.amax(timestamps).item()
+        self.len_time = 300 # This is true for the 10-second sequences from DyNerf
         if self.split == 'train':
             self.timestamps = timestamps[:, None, None].repeat(
                 1, intrinsics.height, intrinsics.width).reshape(-1)  # [n_frames * h * w]
