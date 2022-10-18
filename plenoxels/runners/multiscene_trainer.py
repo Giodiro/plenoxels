@@ -74,6 +74,7 @@ class Trainer():
         self.target_sample_batch_size = sample_batch_size
         self.render_n_samples = n_samples
         self.alpha_threshold = kwargs['alpha_threshold']
+        self.cone_angle = kwargs['cone_angle']
         # Set initial batch-size
         for dset in self.train_datasets:
             dset.update_num_rays(self.target_sample_batch_size // self.render_n_samples)
@@ -127,7 +128,7 @@ class Trainer():
                 near_plane=None,#self.train_datasets[dset_id].near_far[0],
                 far_plane=None,#self.train_datasets[dset_id].near_far[1],
                 render_bkgd=data['color_bkgd'],
-                cone_angle=0.0,
+                cone_angle=self.cone_angle,
                 render_step_size=self.model.step_size(self.render_n_samples, dset_id),
                 alpha_thresh=self.alpha_threshold,
             )
@@ -145,7 +146,7 @@ class Trainer():
             self.occupancy_grids[dset_id].every_n_step(
                 step=self.global_step,
                 occ_eval_fn=lambda x: self.model.query_opacity(
-                    x, dset_id
+                    x, dset_id, self.train_datasets[dset_id]
                 ),
                 occ_thre=self.cur_density_threshold(),
             )
@@ -160,7 +161,7 @@ class Trainer():
                 near_plane=None,#self.train_datasets[dset_id].near_far[0],
                 far_plane=None,#self.train_datasets[dset_id].near_far[1],
                 render_bkgd=data["color_bkgd"],
-                cone_angle=0.0,
+                cone_angle=self.cone_angle,
                 render_step_size=self.model.step_size(self.render_n_samples, dset_id),
                 alpha_thresh=self.alpha_threshold,
             )

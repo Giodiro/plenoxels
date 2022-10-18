@@ -31,6 +31,7 @@ class LowrankLearnableHash(LowrankModel):
         self.extra_args = kwargs
         self.is_ndc = is_ndc
         self.sh = sh
+        self.cone_angle = kwargs.get('cone_angle', 0.0)
         # render_n_samples: number of intersections in each ray. Used for computing step-size.
         self.render_n_samples = render_n_samples
         self.transfer_learning = self.extra_args["transfer_learning"]
@@ -190,9 +191,31 @@ class LowrankLearnableHash(LowrankModel):
             / n_samples
         )
 
-    def query_opacity(self, pts: torch.Tensor, grid_id: int):
+    def query_opacity(self, pts: torch.Tensor, grid_id: int, dset):
         density = self.query_density(pts, grid_id)
-        opacity = density * self.step_size(self.render_n_samples, grid_id)
+        if self.cone_angle > 0.0:
+            render_step_size = self.step_size(self.render_n_samples, grid_id)
+            # randomly sample a camera for computing step size.
+            camera_ids = torch.randint(
+                0, len(dset), (pts.shape[0],), device=pts.device
+            )
+            origins = dset.camtoworlds[camera_ids, :3, -1]
+            t: torch.Tensor = (origins - pts).norm(dim=-1, keepdim=True)
+            # compute actual step size used in marching, based on the distance to the camera.
+            step_size = torch.clamp(
+                t * self.cone_angle, min=render_step_size
+            )
+            # filter out the points that are not in the near far plane.
+            if (dset.near is not None) and (dset.far is not None):
+                step_size = torch.where(
+                    (t > dset.near) & (t < dset.far),
+                    step_size,
+                    torch.zeros_like(step_size),
+                )
+        else:
+            step_size = self.step_size(self.render_n_samples, grid_id)
+
+        opacity = density * step_size
         return opacity
 
     def query_density(self, pts: torch.Tensor, grid_id: int, return_feat: bool = False):
