@@ -127,13 +127,14 @@ class SyntheticNerfDataset(torch.utils.data.Dataset):
         )
         self.images = self.images.to(torch.float32)
         self.camtoworlds = self.camtoworlds.to(torch.float32)
+        assert self.images.shape[0] == self.camtoworlds.shape[0]
         assert self.images.shape[1:3] == (self.intrinsics.height, self.intrinsics.width)
         log.info(f"SyntheticNerfDataset - Loaded {split} set from {datadir}: "
                  f"{self.images.shape[0]} images of size {self.images.shape[1]}x{self.images.shape[2]} "
                  f"and {self.images.shape[3]} channels. {self.intrinsics}")
 
     def __len__(self):
-        return len(self.images)
+        return self.images.shape[0]
 
     @torch.no_grad()
     def __getitem__(self, index):
@@ -174,6 +175,9 @@ class SyntheticNerfDataset(torch.utils.data.Dataset):
 
     def fetch_data(self, index):
         """Fetch the data (it maybe cached for multiple batches)."""
+        if index >= len(self):
+            raise StopIteration()
+
         num_rays = self.batch_size
 
         if self.training:
