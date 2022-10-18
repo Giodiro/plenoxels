@@ -63,7 +63,7 @@ class Video360Dataset(BaseDataset):
                          rays_o=rays_o,
                          rays_d=rays_d,
                          intrinsics=intrinsics,
-                         imgs=imgs)
+                         images=imgs)
 
         timestamps = [parse_360_file_path(frame['file_path'])[0] for frame in frames]
         timestamps = torch.tensor(timestamps, dtype=torch.int32)
@@ -202,7 +202,7 @@ class VideoLLFFDataset(BaseDataset):
                          is_ndc=True,
                          generator=generator,
                          batch_size=batch_size,
-                         imgs=imgs,
+                         images=imgs,
                          rays_o=rays_o,
                          rays_d=rays_d,
                          intrinsics=intrinsics)

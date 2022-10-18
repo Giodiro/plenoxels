@@ -1,34 +1,16 @@
 import itertools
 import logging as log
 import math
-from typing import Dict, List, Union, Optional, Tuple
+from typing import Dict, List, Union, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from plenoxels.models.utils import grid_sample_wrapper
+from plenoxels.models.utils import grid_sample_wrapper, compute_plane_tv
 from .decoders import NNDecoder, SHDecoder
 from .lowrank_model import LowrankModel
 from ..ops.activations import trunc_exp
-
-
-class DensityMask(nn.Module):
-    def __init__(self, density_volume: torch.Tensor, aabb: torch.Tensor):
-        super().__init__()
-        self.register_buffer('density_volume', density_volume)
-        self.register_buffer('aabb', aabb)
-
-    def sample_density(self, pts: torch.Tensor) -> torch.Tensor:
-        # Normalize pts
-        pts = (pts - self.aabb[0]) * (2.0 / (self.aabb[1] - self.aabb[0])) - 1
-        pts = pts.to(dtype=self.density_volume.dtype)
-        density_vals = grid_sample_wrapper(self.density_volume[None, ...], pts, align_corners=True).view(-1)
-        return density_vals
-
-    @property
-    def grid_size(self) -> torch.Tensor:
-        return torch.tensor((self.density_volume.shape[-1], self.density_volume.shape[-2], self.density_volume.shape[-3]), dtype=torch.long)
 
 
 class LowrankLearnableHash(LowrankModel):
@@ -49,10 +31,9 @@ class LowrankLearnableHash(LowrankModel):
         self.extra_args = kwargs
         self.is_ndc = is_ndc
         self.sh = sh
+        # render_n_samples: number of intersections in each ray. Used for computing step-size.
         self.render_n_samples = render_n_samples
-        self.density_multiplier = self.extra_args.get("density_multiplier")
         self.transfer_learning = self.extra_args["transfer_learning"]
-        self.alpha_mask_threshold = self.extra_args["density_threshold"]
 
         self.density_act = lambda x: trunc_exp(x - 1)
         self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
@@ -112,6 +93,7 @@ class LowrankLearnableHash(LowrankModel):
                             -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
             interp = interp_out.mean(dim=-1)
 
+        # Learned normalization
         if interp.numel() > 0:
             interp = (interp - self.pt_min) / (self.pt_max - self.pt_min)
             interp = interp * 2 - 1
@@ -126,10 +108,13 @@ class LowrankLearnableHash(LowrankModel):
         log.info(f"Calculating occupancy {grid_id}")
         aabb = self.aabb(grid_id)
         occ_grid_reso = occ_grid.resolution
+        cur_grid_size = self.resolution(grid_id)
         pts = occ_grid.grid_coords.view([*occ_grid_reso, 3])
         # Transpose to get correct Depth, Height, Width format
         pts = pts.transpose(0, 2).contiguous()
         mask = occ_grid.binary.transpose(0, 2).contiguous()
+
+        # Obtain the bounds which we can resize to
         valid_pts = pts[mask]
         pts_min = valid_pts.amin(0)
         pts_max = valid_pts.amax(0)
@@ -141,9 +126,8 @@ class LowrankLearnableHash(LowrankModel):
         new_aabb = torch.stack((pts_min, pts_max), 0)
         log.info(f"Scene {grid_id} can be shrunk to new bounding box: {new_aabb.view(-1)}.")
 
+        # Compute the new bounds on the parameter grid
         log.info(f"Shrinking grid {grid_id}...")
-        cur_grid_size = self.resolution(grid_id)
-
         cur_units = (aabb[1] - aabb[0]) / (cur_grid_size - 1)
         t_l, b_r = (new_aabb[0] - aabb[0]) / cur_units, (new_aabb[1] - aabb[0]) / cur_units
         t_l = torch.round(t_l).long()
@@ -162,14 +146,13 @@ class LowrankLearnableHash(LowrankModel):
                 self.scene_grids[grid_id][0][ci].data[slices]
             )
 
-        # TODO: Why the correction? Check if this ever occurs
         if not torch.all(occ_grid_reso == cur_grid_size):
-             t_l_r, b_r_r = t_l / (cur_grid_size - 1), (b_r - 1) / (cur_grid_size - 1)
-             correct_aabb = torch.zeros_like(new_aabb)
-             correct_aabb[0] = (1 - t_l_r) * aabb[0] + t_l_r * aabb[1]
-             correct_aabb[1] = (1 - b_r_r) * aabb[0] + b_r_r * aabb[1]
-             log.info(f"Corrected new AABB from {new_aabb.view(-1)} to {correct_aabb.view(-1)}")
-             new_aabb = correct_aabb
+            t_l_r, b_r_r = t_l / (cur_grid_size - 1), (b_r - 1) / (cur_grid_size - 1)
+            correct_aabb = torch.zeros_like(new_aabb)
+            correct_aabb[0] = (1 - t_l_r) * aabb[0] + t_l_r * aabb[1]
+            correct_aabb[1] = (1 - b_r_r) * aabb[0] + b_r_r * aabb[1]
+            log.info(f"Corrected new AABB from {new_aabb.view(-1)} to {correct_aabb.view(-1)}")
+            new_aabb = correct_aabb
 
         new_size = b_r - t_l
         self.set_aabb(new_aabb, grid_id)
@@ -240,7 +223,6 @@ class LowrankLearnableHash(LowrankModel):
         params = [
             {"params": self.scene_grids.parameters(), "lr": lr},
             {"params": [self.pt_min, self.pt_max], "lr": lr},
-            #{"params": self.bn.parameters(), "lr": lr},
         ]
         if not self.transfer_learning:
             params += [
@@ -248,3 +230,59 @@ class LowrankLearnableHash(LowrankModel):
                 {"params": self.features, "lr": lr},
             ]
         return params
+
+    """Regularizers"""
+    def compute_plane_tv(self, grid_id: int, what='Gcoords'):
+        grids: nn.ModuleList = self.scene_grids[grid_id]  # noqa
+        total = 0
+        for grid_ls in grids:
+            for grid in grid_ls:
+                if what == 'Gcoords':
+                    total += compute_plane_tv(grid)
+                elif what == 'features':
+                    # Look up the features so we do tv on features rather than coordinates
+                    coords = grid.view(-1, len(self.features.shape) - 1)
+                    features = grid_sample_wrapper(self.features, coords).reshape(-1, self.feature_dim, grid.shape[-2], grid.shape[-1])
+                    total += compute_plane_tv(features)
+        return total
+
+    def compute_3d_tv(self, grid_id, what='Gcoords', batch_size=100, patch_size=3):
+        aabb = self.aabb(grid_id)
+        grid_size_l = self.resolution(grid_id)
+        dev = aabb.device
+        pts = torch.stack(torch.meshgrid(
+            torch.linspace(0, 1, patch_size, device=dev),
+            torch.linspace(0, 1, patch_size, device=dev),
+            torch.linspace(0, 1, patch_size, device=dev), indexing='ij'
+        ), dim=-1)  # [gs0, gs1, gs2, 3]
+        pts = pts.view(-1, 3)
+
+        start = torch.rand(batch_size, 3, device=dev) * (1 - patch_size / grid_size_l[None, :])
+        end = start + (patch_size / grid_size_l[None, :])
+
+        # pts: [1, gs0, gs1, gs2, 3] * (bs, 1, 1, 1, 3) + (bs, 1, 1, 1, 3)
+        pts = (
+            pts[None, ...] * (end - start)[:, None, None, None, :] + start[:, None, None, None, :]
+        ).view(-1, 3)  # [bs*gs0*gs1*gs2, 3]
+        # Normalize between [aabb0, aabb1]
+        pts = aabb[0] * (1 - pts) + aabb[1] * pts
+
+        if what == 'density':
+            # Compute density on the grid
+            patches = (
+                self.query_density(pts, grid_id, return_feat=False)
+                    .view(-1, patch_size, patch_size, patch_size)
+            )
+        elif what == 'Gcoords':
+            pts = self.normalize_coords(pts, grid_id)
+            _, coords = self.compute_features(pts, grid_id, return_coords=True)
+            patches = coords.view(-1, patch_size, patch_size, patch_size, coords.shape[-1])
+        else:
+            raise ValueError(what)
+
+        d0 = patches[:, 1:, :, :, :] - patches[:, :-1, :, :, :]
+        d1 = patches[:, :, 1:, :, :] - patches[:, :, :-1, :, :]
+        d2 = patches[:, :, :, 1:, :] - patches[:, :, :, :-1, :]
+
+        return (d0.square().mean() + d1.square().mean() + d2.square().mean())  # l2
+        # return (d0.abs().mean() + d1.abs().mean() + d2.abs().mean())  # l1

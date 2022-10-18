@@ -7,16 +7,17 @@ from typing import Dict, List, Optional, MutableMapping, Union
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn.functional as F
 import torch.utils.data
 from torch.utils.tensorboard import SummaryWriter
 
 from nerfacc import ContractionType, OccupancyGrid, ray_marching, rendering
 from plenoxels.ema import EMA
-from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash, DensityMask
+from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_exr, write_png
 from ..datasets import SyntheticNerfDataset, LLFFDataset
-from ..datasets.synthetic_nerf_dataset import MultiSceneDataset
+from ..datasets.base_dataset import MultiSceneDataset
 from ..my_tqdm import tqdm
 from ..utils import parse_optint
 
@@ -173,23 +174,41 @@ class Trainer():
             )
             self.train_datasets[dset_id].update_num_rays(num_rays)
             alive_ray_mask = acc.squeeze(-1) > 0
-
-            # compute loss
-            recon_loss = self.criterion(rgb[alive_ray_mask], imgs[alive_ray_mask])
-            loss = recon_loss
+            # compute loss and add regularizers
+            loss = self.criterion(rgb[alive_ray_mask], imgs[alive_ray_mask])
+            plane_tv: Optional[torch.Tensor] = None
+            if self.plane_tv_weight > 0:
+                plane_tv = self.model.compute_plane_tv(
+                    grid_id=dset_id,
+                    what=self.plane_tv_what) * self.plane_tv_weight
+                loss = loss + plane_tv
+            volume_tv: Optional[torch.Tensor] = None
+            if self.volume_tv_weight > 0:
+                volume_tv = self.model.compute_3d_tv(
+                    grid_id=dset_id,
+                    what=self.volume_tv_what,
+                    batch_size=self.volume_tv_npts,
+                    patch_size=self.volume_tv_patch_size) * self.volume_tv_weight
+                loss = loss + volume_tv
 
         if do_update:
             self.optimizer.zero_grad(set_to_none=True)
         self.gscaler.scale(loss).backward()
 
         # Report on losses
-        recon_loss_val = recon_loss.item()
-        if len(self.test_datasets) < 5:
-            self.loss_info[dset_id]["mse"].update(recon_loss_val)
-            self.loss_info[dset_id]["alive_ray_mask"].update(float(alive_ray_mask.long().sum().item()))
-            self.loss_info[dset_id]["n_rendering_samples"].update(float(n_rendering_samples))
-            self.loss_info[dset_id]["n_rays"].update(float(len(imgs)))
-        self.loss_info[dset_id]["psnr"].update(-10 * math.log10(recon_loss_val))
+        if self.global_step % 30 == 0:
+            with torch.no_grad():
+                mse = F.mse_loss(rgb[alive_ray_mask], imgs[alive_ray_mask]).item()
+                self.loss_info[dset_id]["psnr"].update(-10 * math.log10(mse))
+                if self.num_dsets < 5:
+                    self.loss_info[dset_id]["mse"].update(mse)
+                    self.loss_info[dset_id]["alive_ray_mask"].update(float(alive_ray_mask.long().sum().item()))
+                    self.loss_info[dset_id]["n_rendering_samples"].update(float(n_rendering_samples))
+                    self.loss_info[dset_id]["n_rays"].update(float(len(imgs)))
+                    if plane_tv is not None:
+                        self.loss_info[dset_id]["plane_tv"].update(plane_tv.item())
+                    if volume_tv is not None:
+                        self.loss_info[dset_id]["volume_tv"].update(volume_tv.item())
 
         # Update weights
         if do_update:
@@ -225,10 +244,12 @@ class Trainer():
 
     def post_step(self, data, progress_bar):
         dset_id = data["dset_id"]
-        self.writer.add_scalar(
-            f"mse/D{dset_id}", self.loss_info[dset_id]["mse"].value, self.global_step)
-        progress_bar.set_postfix_str(
-            losses_to_postfix(self.loss_info, lr=self.cur_lr()), refresh=False)
+        if self.global_step % 30 == 0:
+            self.writer.add_scalar(
+                f"mse/D{dset_id}", self.loss_info[dset_id]["mse"].value, self.global_step)
+            progress_bar.set_postfix_str(
+                losses_to_postfix(self.loss_info, lr=self.cur_lr()), refresh=False)
+
         progress_bar.update(1)
 
         if self.valid_every > -1 and self.global_step % self.valid_every == 0:
@@ -495,12 +516,9 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
             logging.info(f"About to load LLFF data downsampled by {data_downsample} times.")
             tr_dsets.append(LLFFDataset(
                 data_dir, split='train', downsample=data_downsample, hold_every=hold_every,
-                extra_views=extra_views, batch_size=batch_size, patch_size=patch_size,
-                dset_id=i, color_bkgd_aug='random'))
-            # Note that LLFF has same downsampling applied to train and test datasets
+                batch_size=batch_size, dset_id=i))
             ts_dsets.append(LLFFDataset(
-                data_dir, split='test', downsample=4, hold_every=hold_every,
-                dset_id=i, color_bkgd_aug='random'))
+                data_dir, split='test', downsample=4, hold_every=hold_every, dset_id=i))
         else:
             raise ValueError(dset_type)
 

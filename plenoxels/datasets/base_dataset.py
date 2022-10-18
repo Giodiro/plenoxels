@@ -1,3 +1,4 @@
+import abc
 from abc import ABC
 import os
 from typing import Optional
@@ -8,17 +9,33 @@ from torch.utils.data import Dataset
 from .intrinsics import Intrinsics
 
 
+class MultiSceneDataset(torch.utils.data.IterableDataset):
+    def __init__(self, datasets):
+        super(MultiSceneDataset, self).__init__()
+        self.datasets = list(datasets)
+        self.num_datasets = len(self.datasets)
+        assert self.num_datasets > 0, 'datasets should not be an empty iterable'
+
+    def __iter__(self):
+        idx = 0
+        while True:
+            dset_idx = idx % self.num_datasets
+            batch_idx = (idx // self.num_datasets) % len(self.datasets[dset_idx])
+            yield self.datasets[dset_idx][batch_idx]
+            idx += 1
+
+
 class BaseDataset(Dataset, ABC):
     def __init__(self,
                  datadir: str,
                  scene_bbox: torch.Tensor,
                  split: str,
                  is_ndc: bool,
-                 poses: torch.Tensor,
+                 camtoworlds: torch.Tensor,
                  intrinsics: Intrinsics,
                  generator: Optional[torch.random.Generator],
                  batch_size: Optional[int] = None,
-                 imgs: Optional[torch.Tensor] = None,
+                 images: Optional[torch.Tensor] = None,
                  ):
         self.datadir = datadir
         self.name = os.path.basename(self.datadir)
@@ -36,9 +53,12 @@ class BaseDataset(Dataset, ABC):
         else:
             self.generator = generator
 
-        self.poses = poses
+        self.camtoworlds = camtoworlds
         self.intrinsics = intrinsics
-        self.imgs = imgs  # [N, H, W, 3/4]
+        self.images = images  # [N, H, W, 3/4]
+
+        assert self.images.shape[0] == self.camtoworlds.shape[0]
+        assert self.images.shape[1:3] == (self.intrinsics.height, self.intrinsics.width)
 
     @property
     def img_h(self) -> int:
@@ -50,20 +70,31 @@ class BaseDataset(Dataset, ABC):
 
     @property
     def num_images(self) -> int:
-        return self.imgs.shape[0]
-
-    @property
-    def num_samples(self) -> int:
-        if self.split == 'train':
-            return self.img_h * self.img_w * self.num_images
-        else:
-            return self.num_images
+        return self.images.shape[0]
 
     def update_num_rays(self, num_rays):
         self.batch_size = num_rays
 
     def __len__(self):
-        if self.split == 'train':
-            return (self.num_samples + self.batch_size - 1) // self.batch_size
-        else:
-            return self.num_samples
+        return self.images.shape[0]
+
+    def to(self, device):
+        self.images = self.images.to(device)
+        self.camtoworlds = self.camtoworlds.to(device)
+
+    @torch.no_grad()
+    def __getitem__(self, index):
+        if index >= len(self):
+            raise StopIteration()
+
+        data = self.fetch_data(index)
+        data = self.preprocess(data)
+        return data
+
+    @abc.abstractmethod
+    def fetch_data(self, index: int):
+        pass
+
+    @abc.abstractmethod
+    def preprocess(self, data):
+        pass

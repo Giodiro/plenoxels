@@ -1,20 +1,20 @@
 import glob
-import os
 import logging as log
+import os
 from typing import Tuple, Optional, List
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
-from .data_loading import parallel_load_images
-from .ray_utils import get_ray_directions_blender, get_rays, ndc_rays_blender, center_poses, generate_spiral_path
-from .intrinsics import Intrinsics
 from .base_dataset import BaseDataset
-from .patchloader import PatchLoader
+from .data_loading import parallel_load_images
+from .intrinsics import Intrinsics
+from .ray_utils import ndc_rays_blender, center_poses
 
 
 class LLFFDataset(BaseDataset):
-    patchloader: Optional[PatchLoader]
+    OPENGL_CAMERA = True
 
     def __init__(self,
                  datadir,
@@ -23,61 +23,106 @@ class LLFFDataset(BaseDataset):
                  batch_size: Optional[int] = None,
                  generator: Optional[torch.random.Generator] = None,
                  downsample: int = 4,
-                 hold_every: int = 8,
-                 patch_size: Optional[int] = 8,
-                 extra_views: bool = False):
-        """
-        spheric_poses: whether the images are taken in a spheric inward-facing manner
-                       default: False (forward-facing)
-        val_num: number of val images (used for multigpu training, validate same image for all gpus)
-        """
-
+                 hold_every: int = 8):
         self.downsample = downsample
         self.hold_every = hold_every
-        self.patch_size = patch_size
         self.dset_id = dset_id
-        self.near_far = [0.0, 1.0]
-        self.extra_views = split == 'train' and extra_views
-        self.patchloader = None
-
-        image_paths, poses, near_fars, intrinsics = load_llff_poses(
+        self.near = 0.0
+        self.far = 1.0
+        image_paths, camtoworlds, near_fars, intrinsics = load_llff_poses(
             datadir, downsample=downsample, split=split, hold_every=hold_every, near_scaling=1.)
-        imgs = load_llff_images(image_paths, intrinsics, split)
-        rays_o, rays_d, imgs = create_llff_rays(
-            imgs=imgs, poses=poses, intrinsics=intrinsics, merge_all=split == 'train')
+        images = load_llff_images(image_paths, intrinsics, split)
         super().__init__(datadir=datadir,
                          split=split,
-                         scene_bbox=self.init_bbox(datadir),
+                         scene_bbox=torch.tensor([[-1.5, -1.67, -1.0], [1.5, 1.67, 1.0]]),
                          is_ndc=True,
                          generator=generator,
                          batch_size=batch_size,
-                         imgs=imgs,
-                         rays_o=rays_o,
-                         rays_d=rays_d,
-                         intrinsics=intrinsics)
+                         images=images,
+                         intrinsics=intrinsics,
+                         camtoworlds=camtoworlds)
 
-        if self.extra_views:
-            extra_poses = generate_spiral_path(poses.numpy(), near_fars, n_frames=120)
-            extra_rays_o, extra_rays_d, _ = create_llff_rays(
-                imgs=None, poses=extra_poses, intrinsics=intrinsics, merge_all=False)
-            extra_rays_o = extra_rays_o.view(-1, self.img_h, self.img_w, 3)
-            extra_rays_d = extra_rays_d.view(-1, self.img_h, self.img_w, 3)
-            self.patchloader = PatchLoader(extra_rays_o, extra_rays_d, len_time=None,
-                                           batch_size=self.batch_size, patch_size=self.patch_size,
-                                           generator=self.generator)
+        log.info(f"LLFFDataset - Loaded {split} set from {datadir}: {len(camtoworlds)} images of "
+                 f"shape {self.img_h}x{self.img_w} with {images.shape[-1]} channels. {intrinsics}")
 
-        log.info(f"LLFFDataset - Loaded {split} set from {datadir}: {len(poses)} images of "
-                 f"shape {self.img_h}x{self.img_w} with {imgs.shape[-1]} channels. {intrinsics}")
+    def preprocess(self, data):
+        """Process the fetched / cached data with randomness."""
+        rgba, rays_o, rays_d = data["rgba"], data["rays_o"], data["rays_d"]
+        return {
+            "pixels": rgba,  # [n_rays, 3] or [h, w, 3]
+            "rays_o": rays_o,  # [n_rays,] or [h, w]
+            "rays_d": rays_d,  # [n_rays,] or [h, w]
+            "color_bkgd": None,  # [3,]
+            "dset_id": self.dset_id,
+            **{k: v for k, v in data.items() if k not in {"rgba", "rays_o", "rays_d"}},
+        }
 
-    def init_bbox(self, datadir):
-        return torch.tensor([[-1.5, -1.67, -1.0], [1.5, 1.67, 1.0]])
+    def fetch_data(self, index):
+        """Fetch the data (it maybe cached for multiple batches)."""
+        num_rays = self.batch_size
 
-    def __getitem__(self, index):
-        out = super().__getitem__(index)
-        out["dset_id"] = self.dset_id
-        if self.split == 'train' and self.extra_views:
-            out.update(self.patchloader[index])
-        return out
+        if self.training:
+            image_id = torch.randint(
+                0,
+                len(self.images),
+                size=(num_rays,),
+                device=self.images.device,
+            )
+            x = torch.randint(
+                0, self.intrinsics.width, size=(num_rays,), device=self.images.device
+            )
+            y = torch.randint(
+                0, self.intrinsics.height, size=(num_rays,), device=self.images.device
+            )
+        else:
+            image_id = [index]
+            x, y = torch.meshgrid(
+                torch.arange(self.intrinsics.width, device=self.images.device),
+                torch.arange(self.intrinsics.height, device=self.images.device),
+                indexing="xy",
+            )
+            x = x.flatten()
+            y = y.flatten()
+
+        # generate rays
+        rgba = self.images[image_id, y, x]  # (num_rays, 4)   this converts to f32
+        c2w = self.camtoworlds[image_id]    # (num_rays, 3, 4)
+        camera_dirs = F.pad(
+            torch.stack(
+                [
+                    (x - self.intrinsics.center_x + 0.5) / self.intrinsics.focal_x,
+                    (y - self.intrinsics.center_y + 0.5) / self.intrinsics.focal_y
+                    * (-1.0 if self.OPENGL_CAMERA else 1.0),
+                ],
+                dim=-1,
+            ),
+            (0, 1),
+            value=(-1.0 if self.OPENGL_CAMERA else 1.0),
+        )  # [num_rays, 3]
+
+        # [n_cams, height, width, 3]
+        directions = (camera_dirs[:, None, :] * c2w[:, :3, :3]).sum(dim=-1)
+        origins = torch.broadcast_to(c2w[:, :3, -1], directions.shape)
+        viewdirs = directions / torch.linalg.norm(  # TODO: Unsure about this
+            directions, dim=-1, keepdims=True
+        )
+        origins, viewdirs = ndc_rays_blender(
+            intrinsics=self.intrinsics, near=1.0, rays_o=origins, rays_d=viewdirs)
+
+        if self.training:
+            origins = torch.reshape(origins, (num_rays, 3))
+            viewdirs = torch.reshape(viewdirs, (num_rays, 3))
+            rgba = torch.reshape(rgba, (num_rays, 4))
+        else:
+            origins = torch.reshape(origins, (self.intrinsics.height, self.intrinsics.width, 3))
+            viewdirs = torch.reshape(viewdirs, (self.intrinsics.height, self.intrinsics.width, 3))
+            rgba = torch.reshape(rgba, (self.intrinsics.height, self.intrinsics.width, 4))
+
+        return {
+            "rgba": rgba,       # [h, w, 4] or [num_rays, 4]
+            "rays_o": origins,  # [h, w, 3] or [num_rays, 3]
+            "rays_d": viewdirs,
+        }
 
 
 def _split_poses_bounds(poses_bounds: np.ndarray) -> Tuple[np.ndarray, np.ndarray, Intrinsics]:
@@ -149,32 +194,3 @@ def load_llff_images(image_paths: List[str], intrinsics: Intrinsics, split: str)
         resolution=(None, None)
     )
     return torch.stack(all_rgbs, 0)
-
-
-def create_llff_rays(imgs: Optional[torch.Tensor],
-                     poses: torch.Tensor,
-                     intrinsics: Intrinsics,
-                     merge_all: bool) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    # ray directions for all pixels, same for all images (same H, W, focal)
-    directions = get_ray_directions_blender(intrinsics)  # H, W, 3
-
-    all_rays_o, all_rays_d = [], []
-    for i in range(poses.shape[0]):
-        rays_o, rays_d = get_rays(directions, poses[i])  # both (h*w, 3)
-        rays_o, rays_d = ndc_rays_blender(
-            intrinsics=intrinsics, near=1.0, rays_o=rays_o, rays_d=rays_d)
-        all_rays_o.append(rays_o)
-        all_rays_d.append(rays_d)
-
-    all_rays_o = torch.cat(all_rays_o, 0).to(dtype=torch.float32)  # [n_frames * h * w, 3]
-    all_rays_d = torch.cat(all_rays_d, 0).to(dtype=torch.float32)  # [n_frames * h * w, 3]
-    if imgs is not None:
-        imgs = imgs.view(-1, imgs.shape[-1]).to(dtype=torch.float32)  # [n_frames * h * w, C]
-    if not merge_all:
-        num_pixels = intrinsics.height * intrinsics.width
-        all_rays_o = all_rays_o.view(-1, num_pixels, 3)  # [n_frames, h * w, 3]
-        all_rays_d = all_rays_d.view(-1, num_pixels, 3)  # [n_frames, h * w, 3]
-        if imgs is not None:
-            imgs = imgs.view(-1, num_pixels, imgs.shape[-1])
-
-    return all_rays_o, all_rays_d, imgs

@@ -2,7 +2,7 @@ import json
 import logging as log
 import math
 import os
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
@@ -11,29 +11,16 @@ import torch.utils.data
 
 from .data_loading import parallel_load_images
 from .intrinsics import Intrinsics
+from .base_dataset import BaseDataset
 
 
-class MultiSceneDataset(torch.utils.data.IterableDataset):
-    def __init__(self, datasets):
-        super(MultiSceneDataset, self).__init__()
-        self.datasets = list(datasets)
-        self.num_datasets = len(self.datasets)
-        assert self.num_datasets > 0, 'datasets should not be an empty iterable'
-
-    def __iter__(self):
-        idx = 0
-        while True:
-            dset_idx = idx % self.num_datasets
-            batch_idx = (idx // self.num_datasets) % len(self.datasets[dset_idx])
-            yield self.datasets[dset_idx][batch_idx]
-            idx += 1
-
-
-def _load_renderings(data_dir: str, split: str, max_frames: int, downsample: float):
+def _load_renderings(data_dir: str,
+                     split: str,
+                     max_frames: int,
+                     downsample: float
+                     ) -> Tuple[torch.Tensor, torch.Tensor, Intrinsics]:
     """Load images from disk."""
-    with open(
-        os.path.join(data_dir, "transforms_{}.json".format(split)), "r"
-    ) as fp:
+    with open(os.path.join(data_dir, f"transforms_{split}.json"), "r") as fp:
         meta = json.load(fp)
 
     frames = meta['frames']
@@ -69,21 +56,18 @@ def _load_renderings(data_dir: str, split: str, max_frames: int, downsample: flo
     return images, camtoworlds, intrinsics
 
 
-class SyntheticNerfDataset(torch.utils.data.Dataset):
+def _get_360_bbox(datadir):
+    if "ship" in datadir:
+        radius = 1.5
+    else:
+        radius = 1.3
+    return torch.tensor([[-radius, -radius, -radius], [radius, radius, radius]])
+
+
+class SyntheticNerfDataset(BaseDataset):
     """Single subject data loader for training and evaluation."""
 
     SPLITS = ["train", "val", "trainval", "test"]
-    SUBJECT_IDS = [
-        "chair",
-        "drums",
-        "ficus",
-        "hotdog",
-        "lego",
-        "materials",
-        "mic",
-        "ship",
-    ]
-
     NEAR, FAR = 2.0, 6.0
     OPENGL_CAMERA = True
 
@@ -98,49 +82,36 @@ class SyntheticNerfDataset(torch.utils.data.Dataset):
         max_frames: Optional[int] = None,
         generator: Optional[torch.random.Generator] = None,
     ):
-        super().__init__()
         assert split in self.SPLITS, "%s" % split
         assert color_bkgd_aug in ["white", "black", "random"]
-        self.split = split
-        self.datadir = datadir
         self.dset_id = dset_id
-        self.batch_size = batch_size
         self.near = self.NEAR
         self.far = self.FAR
         self.downsample = downsample
         self.max_frames = max_frames
-        self.scene_bbox = torch.tensor([[-1.3, -1.3, -1.3], [1.3, 1.3, 1.3]])
-        self.is_ndc = False
-        self.name = os.path.basename(self.datadir)
         self.training = (batch_size is not None) and (
             split in ["train", "trainval"]
         )
-        if generator is None:
-            seed = int(torch.empty((), dtype=torch.int64).random_().item())
-            self.generator = torch.Generator()
-            self.generator.manual_seed(seed)
-        else:
-            self.generator = generator
         self.color_bkgd_aug = color_bkgd_aug
-        self.images, self.camtoworlds, self.intrinsics = _load_renderings(
-            self.datadir, split=self.split, max_frames=self.max_frames, downsample=self.downsample
+        images, camtoworlds, intrinsics = _load_renderings(
+            datadir, split=split, max_frames=self.max_frames, downsample=self.downsample
         )
-        self.images = self.images.to(torch.float32)
-        self.camtoworlds = self.camtoworlds.to(torch.float32)
-        assert self.images.shape[0] == self.camtoworlds.shape[0]
-        assert self.images.shape[1:3] == (self.intrinsics.height, self.intrinsics.width)
+        images = images.to(torch.float32)
+        camtoworlds = camtoworlds.to(torch.float32)
+        super().__init__(
+            datadir=datadir,
+            scene_bbox=_get_360_bbox(datadir),
+            split=split,
+            is_ndc=False,
+            camtoworlds=camtoworlds,
+            intrinsics=intrinsics,
+            generator=generator,
+            batch_size=batch_size,
+            images=images,
+        )
         log.info(f"SyntheticNerfDataset - Loaded {split} set from {datadir}: "
                  f"{self.images.shape[0]} images of size {self.images.shape[1]}x{self.images.shape[2]} "
                  f"and {self.images.shape[3]} channels. {self.intrinsics}")
-
-    def __len__(self):
-        return self.images.shape[0]
-
-    @torch.no_grad()
-    def __getitem__(self, index):
-        data = self.fetch_data(index)
-        data = self.preprocess(data)
-        return data
 
     def preprocess(self, data):
         """Process the fetched / cached data with randomness."""
@@ -170,14 +141,8 @@ class SyntheticNerfDataset(torch.utils.data.Dataset):
             **{k: v for k, v in data.items() if k not in {"rgba", "rays_o", "rays_d"}},
         }
 
-    def update_num_rays(self, num_rays):
-        self.batch_size = num_rays
-
     def fetch_data(self, index):
         """Fetch the data (it maybe cached for multiple batches)."""
-        if index >= len(self):
-            raise StopIteration()
-
         num_rays = self.batch_size
 
         if self.training:
@@ -240,7 +205,3 @@ class SyntheticNerfDataset(torch.utils.data.Dataset):
             "rays_o": origins,  # [h, w, 3] or [num_rays, 3]
             "rays_d": viewdirs,
         }
-
-    def to(self, device):
-        self.images = self.images.to(device)
-        self.camtoworlds = self.camtoworlds.to(device)
