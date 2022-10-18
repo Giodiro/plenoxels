@@ -29,7 +29,7 @@ class VideoTrainer(Trainer):
                  regnerf_weight_start: float,
                  regnerf_weight_end: float,
                  regnerf_weight_max_step: int,
-                 num_epochs: int,
+                 num_steps: int,
                  scheduler_type: Optional[str],
                  optim_type: str,
                  logdir: str,
@@ -54,7 +54,7 @@ class VideoTrainer(Trainer):
                          regnerf_weight_end=regnerf_weight_end,
                          regnerf_weight_max_step=regnerf_weight_max_step,
                          num_batches_per_dset=1,
-                         num_epochs=num_epochs,
+                         num_steps=num_steps,
                          scheduler_type=scheduler_type,
                          optim_type=optim_type,
                          logdir=logdir,
@@ -162,6 +162,7 @@ class VideoTrainer(Trainer):
                     tr_dset, batch_size=None, shuffle=True, num_workers=4,
                     prefetch_factor=4, pin_memory=True)
                 self.train_datasets = [tr_dset]
+                raise StopIteration  # Whenever we change the dataset
 
         if self.global_step == self.ist_step:
             print(f'enabling IST importance sampling')
@@ -172,6 +173,7 @@ class VideoTrainer(Trainer):
                 tr_dset, batch_size=None, shuffle=True, num_workers=4,
                 prefetch_factor=4, pin_memory=True)
             self.train_datasets = [tr_dset]
+            raise StopIteration  # Whenever we change the dataset
 
         return scale <= self.gscaler.get_scale()
 
@@ -223,16 +225,16 @@ class VideoTrainer(Trainer):
                     self.write_video_to_file(pred_frames, dataset)
                 per_scene_metrics["psnr"] /= len(dataset)  # noqa
                 per_scene_metrics["ssim"] /= len(dataset)  # noqa
-                log_text = f"EPOCH {self.epoch}/{self.num_epochs} | scene {dset_id}"
+                log_text = f"step {self.global_step}/{self.num_steps} | scene {dset_id}"
                 log_text += f" | D{dset_id} PSNR: {per_scene_metrics['psnr']:.2f}"
                 log_text += f" | D{dset_id} SSIM: {per_scene_metrics['ssim']:.6f}"
                 logging.info(log_text)
                 val_metrics.append(per_scene_metrics)
         df = pd.DataFrame.from_records(val_metrics)
-        df.to_csv(os.path.join(self.log_dir, f"test_metrics_epoch{self.epoch}.csv"))
+        df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
 
     def write_video_to_file(self, frames, dataset):
-        video_file = os.path.join(self.log_dir, f"epoch{self.epoch}.mp4")
+        video_file = os.path.join(self.log_dir, f"step{self.global_step}.mp4")
         logging.info(f"Saving video ({len(frames)} frames) to {video_file}")
         height, width = frames[0].shape[:2]
         video = cv2.VideoWriter(
@@ -269,7 +271,7 @@ class VideoTrainer(Trainer):
             summary["psnr"] = metrics.psnr(preds_rgb, gt)
             summary["ssim"] = metrics.ssim(preds_rgb, gt)
 
-        out_name = f"epoch{self.epoch}-D{dset_id}-{img_idx}"
+        out_name = f"step{self.global_step}-D{dset_id}-{img_idx}"
         if name is not None and name != "":
             out_name += "-" + name
 

@@ -35,7 +35,7 @@ class Trainer():
                  l1density_weight: float,
                  volume_tv_weight: float,
                  volume_tv_npts: int,
-                 num_epochs: int,
+                 num_steps: int,
                  scheduler_type: Optional[str],
                  optim_type: str,
                  logdir: str,
@@ -66,7 +66,7 @@ class Trainer():
         self.volume_tv_what = kwargs.get('volume_tv_what', 'Gcoords')
         self.volume_tv_patch_size = kwargs.get('volume_tv_patch_size', 3)
 
-        self.num_epochs = num_epochs
+        self.num_steps = num_steps
 
         self.scheduler_type = scheduler_type
         self.optim_type = optim_type
@@ -91,7 +91,6 @@ class Trainer():
         os.makedirs(self.log_dir, exist_ok=True)
         self.writer = SummaryWriter(log_dir=self.log_dir)
 
-        self.epoch = None
         self.global_step = None
         self.loss_info = None
         self.train_iterators = None
@@ -257,71 +256,98 @@ class Trainer():
         self.init_epoch_info()
         self.model.train()
 
-    def post_epoch(self):
-        self.model.eval()
-        # Save model
-        if self.save_every > -1 and self.epoch % self.save_every == 0:
-            self.save_model()
-        if self.valid_every > -1 and \
-                self.epoch % self.valid_every == 0 and \
-                self.epoch != 0:
-            self.validate()
-        if self.epoch >= self.num_epochs:
-            raise StopIteration(f"Finished after {self.epoch} epochs.")
+    # def post_epoch(self):
+    #     self.model.eval()
+    #     # Save model
+    #     if self.save_every > -1 and self.epoch % self.save_every == 0:
+    #         self.save_model()
+    #     if self.valid_every > -1 and \
+    #             self.epoch % self.valid_every == 0 and \
+    #             self.epoch != 0:
+    #         self.validate()
+    #     if self.epoch >= self.num_epochs:
+    #         raise StopIteration(f"Finished after {self.epoch} epochs.")
 
-    def train_epoch(self):
-        self.pre_epoch()
-        eff_num_batches = len(self.train_data_loader)
-        if self.gradient_acc:
-            eff_num_batches //= self.num_dsets
-        pb = tqdm(total=eff_num_batches, desc=f"E{self.epoch}")
+    # def train_epoch(self):
+    #     self.pre_epoch()
+    #     eff_num_batches = len(self.train_data_loader)
+    #     if self.gradient_acc:
+    #         eff_num_batches //= self.num_dsets
+    #     pb = tqdm(total=eff_num_batches, desc=f"E{self.epoch}")
 
-        try:
-            with ExitStack() as stack:
-                prof = None
-                if False:  # TODO: Put this behind a flag
-                    prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-                                   schedule=schedule(wait=10, warmup=5, active=2),
-                                   on_trace_ready=trace_handler,
-                                   record_shapes=True,
-                                   with_stack=True)
-                    stack.enter_context(p)
-                for i, data in enumerate(self.train_data_loader):
-                    if self.gradient_acc:
-                        # NOTE: This only works if every scene has the same number of batches,
-                        #       and if the sampler associated to the data loader goes through
-                        #       the scenes cyclically.
-                        do_update = (i + 1) % self.num_dsets == 0
-                    else:
-                        do_update = True
+    #     try:
+    #         with ExitStack() as stack:
+    #             prof = None
+    #             if False:  # TODO: Put this behind a flag
+    #                 prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+    #                                schedule=schedule(wait=10, warmup=5, active=2),
+    #                                on_trace_ready=trace_handler,
+    #                                record_shapes=True,
+    #                                with_stack=True)
+    #                 stack.enter_context(p)
+    #             for i, data in enumerate(self.train_data_loader):
+    #                 if self.gradient_acc:
+    #                     # NOTE: This only works if every scene has the same number of batches,
+    #                     #       and if the sampler associated to the data loader goes through
+    #                     #       the scenes cyclically.
+    #                     do_update = (i + 1) % self.num_dsets == 0
+    #                 else:
+    #                     do_update = True
                
-                    step_successful = self.step(data, do_update=do_update)
-                    if do_update:
-                        self.post_step(data=data, progress_bar=pb)
-                        self.global_step += 1
-                        if prof is not None:
-                            prof.step()
-                        if step_successful and self.scheduler is not None:
-                            self.scheduler.step()
-        finally:
-            pb.close()
-        self.post_epoch()
+    #                 step_successful = self.step(data, do_update=do_update)
+    #                 if do_update:
+    #                     self.post_step(data=data, progress_bar=pb)
+    #                     self.global_step += 1
+    #                     if prof is not None:
+    #                         prof.step()
+    #                     if step_successful and self.scheduler is not None:
+    #                         self.scheduler.step()
+    #     finally:
+    #         pb.close()
+    #     self.post_epoch()
 
     def train(self):
         """Override this if some very specific training procedure is needed."""
-        if self.epoch is None:
-            self.epoch = 0
         if self.global_step is None:
             self.global_step = 0
-        logging.info(f"Starting training from epoch {self.epoch + 1}")
-        try:
-            while True:
-                self.epoch += 1
-                self.train_epoch()
-        except StopIteration as e:
-            logging.info(str(e))
-        finally:
-            self.writer.close()
+        logging.info(f"Starting training from step {self.global_step + 1}")
+        self.pre_epoch()
+        pb = tqdm(total=self.num_steps, desc=f"")
+        batch_iter = iter(self.train_data_loader)
+        while self.global_step < self.num_steps:
+            try:
+                # Check if we need to save model at this step
+                if self.save_every > -1 and self.global_step % self.save_every == 0 and self.global_step > 0:
+                    self.model.eval()
+                    self.save_model()
+                    self.model.train()
+                if self.valid_every > -1 and self.global_step % self.valid_every == 0 and self.global_step > 0:
+                    self.model.eval()
+                    self.validate()
+                    self.model.train()
+                # Get a batch of data
+                data = next(batch_iter)
+                self.global_step += 1
+                # Take a step
+                if self.gradient_acc:
+                    # NOTE: This only works if every scene has the same number of batches,
+                    #       and if the sampler associated to the data loader goes through
+                    #       the scenes cyclically.
+                    do_update = (i + 1) % self.num_dsets == 0
+                else:
+                    do_update = True
+                step_successful = self.step(data, do_update=do_update)
+                # Update the progress bar
+                if do_update:
+                    self.post_step(data=data, progress_bar=pb)
+                    if step_successful and self.scheduler is not None:
+                        self.scheduler.step()                
+            except StopIteration as e: 
+                logging.info(str(e))
+                print(f'resetting after a full pass through the data, or when the dataset changed')
+                self.pre_epoch()
+                batch_iter = iter(self.train_data_loader)
+        pb.close()
 
     def validate(self):
         val_metrics = []
@@ -355,7 +381,7 @@ class Trainer():
                 pb.close()
                 per_scene_metrics["psnr"] /= len(dataset)  # noqa
                 per_scene_metrics["ssim"] /= len(dataset)  # noqa
-                log_text = f"EPOCH {self.epoch}/{self.num_epochs} | scene {dset_id}"
+                log_text = f"step {self.global_step}/{self.num_steps} | scene {dset_id}"
                 log_text += f" | D{dset_id} PSNR: {per_scene_metrics['psnr']:.2f}"
                 log_text += f" | D{dset_id} SSIM: {per_scene_metrics['ssim']:.6f}"
                 logging.info(log_text)
@@ -372,7 +398,7 @@ class Trainer():
                     pb.update(1)
 
         df = pd.DataFrame.from_records(val_metrics)
-        df.to_csv(os.path.join(self.log_dir, f"test_metrics_epoch{self.epoch}.csv"))
+        df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
 
     def evaluate_metrics(self, gt, preds: MutableMapping[str, torch.Tensor], dset, dset_id: int, img_idx: int,
                          name: Optional[str] = None, save_outputs: bool = True):
@@ -404,13 +430,13 @@ class Trainer():
             summary["ssim"] = metrics.ssim(preds_rgb, gt)
 
         if save_outputs:
-            out_name = f"epoch{self.epoch}-D{dset_id}-{img_idx}"
+            out_name = f"step{self.global_step}-D{dset_id}-{img_idx}"
             if name is not None and name != "":
                 out_name += "-" + name
             write_exr(os.path.join(self.log_dir, out_name + ".exr"), exrdict)
             write_png(os.path.join(self.log_dir, out_name + ".png"), (preds_rgb * 255.0).byte().numpy())
             if "depth" in preds:
-                out_name = f"epoch{self.epoch}-D{dset_id}-{img_idx}-depth"
+                out_name = f"step{self.global_step}-D{dset_id}-{img_idx}-depth"
                 depth = preds["depth"].repeat(1, 1, 3)
                 write_png(os.path.join(self.log_dir, out_name + ".png"), (depth * 255.0).byte().numpy())
 
@@ -425,7 +451,6 @@ class Trainer():
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "lr_scheduler": self.scheduler.state_dict() if self.scheduler is not None else None,
-            "epoch": self.epoch,
             "global_step": self.global_step
         }, model_fname)
 
@@ -455,9 +480,8 @@ class Trainer():
             if self.scheduler is not None:
                 self.scheduler.load_state_dict(checkpoint_data['scheduler'])
                 logging.info("=> Loaded scheduler state from checkpoint")
-            self.epoch = checkpoint_data["epoch"]
             self.global_step = checkpoint_data["global_step"]
-            logging.info(f"=> Loaded epoch-state {self.epoch}, step {self.global_step} from checkpoints")
+            logging.info(f"=> Loaded step {self.global_step} from checkpoints")
 
     def init_epoch_info(self):
         ema_weight = 0.1
@@ -467,7 +491,7 @@ class Trainer():
     def init_lr_scheduler(self, **kwargs) -> Optional[torch.optim.lr_scheduler._LRScheduler]:
         eta_min = 0
         lr_sched = None
-        max_steps = int(self.num_epochs * len(self.train_data_loader))
+        max_steps = self.num_steps
         if self.scheduler_type == "cosine":
             lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
                 self.optimizer,
