@@ -122,15 +122,28 @@ class LowrankLearnableHash(LowrankModel):
         return out
 
     @torch.no_grad()
-    def shrink(self, new_aabb, grid_id: int):
+    def shrink(self, occ_grid, grid_id: int):
+        log.info(f"Calculating occupancy {grid_id}")
+        aabb = self.aabb(grid_id)
+        pts = occ_grid.grid_coords
+        # Transpose to get correct Depth, Height, Width format
+        pts = pts.transpose(0, 2).contiguous()
+        valid_pts = pts[occ_grid.binary]
+        pts_min = valid_pts.amin(0)
+        pts_max = valid_pts.amax(0)
+        # Normalize pts_min, pts_max from [0, reso] to world-coordinates
+        pts_min = (pts_min / occ_grid.resolution)
+        pts_min = aabb[0] * (1 - pts_min) + aabb[1] * pts_min
+        pts_max = (pts_max / occ_grid.resolution)
+        pts_max = aabb[0] * (1 - pts_max) + aabb[1] * pts_max
+        new_aabb = torch.stack((pts_min, pts_max), 0)
+        log.info(f"Scene {grid_id} can be shrunk to new bounding box: {new_aabb.view(-1)}.")
+
         log.info(f"Shrinking grid {grid_id}...")
-
-        cur_aabb = self.aabb(grid_id)
         cur_grid_size = self.resolution(grid_id)
-        dev = cur_aabb.device
 
-        cur_units = (cur_aabb[1] - cur_aabb[0]) / (cur_grid_size - 1)
-        t_l, b_r = (new_aabb[0] - cur_aabb[0]) / cur_units, (new_aabb[1] - cur_aabb[0]) / cur_units
+        cur_units = (aabb[1] - aabb[0]) / (cur_grid_size - 1)
+        t_l, b_r = (new_aabb[0] - aabb[0]) / cur_units, (new_aabb[1] - aabb[0]) / cur_units
         t_l = torch.round(t_l).long()
         b_r = torch.round(b_r).long() + 1
         b_r = torch.minimum(b_r, cur_grid_size)  # don't exceed current grid dimensions
@@ -148,13 +161,13 @@ class LowrankLearnableHash(LowrankModel):
             )
 
         # TODO: Why the correction? Check if this ever occurs
-        if not torch.all(self.density_mask[grid_id].grid_size.to(device=dev) == cur_grid_size):
-            t_l_r, b_r_r = t_l / (cur_grid_size - 1), (b_r - 1) / (cur_grid_size - 1)
-            correct_aabb = torch.zeros_like(new_aabb)
-            correct_aabb[0] = (1 - t_l_r) * cur_aabb[0] + t_l_r * cur_aabb[1]
-            correct_aabb[1] = (1 - b_r_r) * cur_aabb[0] + b_r_r * cur_aabb[1]
-            log.info(f"Corrected new AABB from {new_aabb.view(-1)} to {correct_aabb.view(-1)}")
-            new_aabb = correct_aabb
+        # if not torch.all(self.density_mask[grid_id].grid_size.to(device=dev) == cur_grid_size):
+        #     t_l_r, b_r_r = t_l / (cur_grid_size - 1), (b_r - 1) / (cur_grid_size - 1)
+        #     correct_aabb = torch.zeros_like(new_aabb)
+        #     correct_aabb[0] = (1 - t_l_r) * cur_aabb[0] + t_l_r * cur_aabb[1]
+        #     correct_aabb[1] = (1 - b_r_r) * cur_aabb[0] + b_r_r * cur_aabb[1]
+        #     log.info(f"Corrected new AABB from {new_aabb.view(-1)} to {correct_aabb.view(-1)}")
+        #     new_aabb = correct_aabb
 
         new_size = b_r - t_l
         self.set_aabb(new_aabb, grid_id)
@@ -183,30 +196,6 @@ class LowrankLearnableHash(LowrankModel):
         self.set_resolution(
             torch.tensor(new_reso, dtype=torch.long, device=grid_data.device), grid_id)
         log.info(f"Upsampled scene {grid_id} to resolution={new_reso}")
-
-    def get_points_on_grid(self, aabb, grid_size, max_voxels: Optional[int] = None):
-        """
-        Returns points from a regularly spaced grids of size grid_size.
-        Coordinates normalized between [aabb0, aabb1]
-
-        :param aabb:
-        :param grid_size:
-        :param max_voxels:
-        :return:
-        """
-        dev = self.features.device
-        pts = torch.stack(torch.meshgrid(
-            torch.linspace(0, 1, grid_size[0], device=dev),
-            torch.linspace(0, 1, grid_size[1], device=dev),
-            torch.linspace(0, 1, grid_size[2], device=dev), indexing='ij'
-        ), dim=-1)  # [gs0, gs1, gs2, 3]
-        pts = pts.view(-1, 3)  # [gs0*gs1*gs2, 3]
-        if max_voxels is not None:
-            # with replacement as it's faster?
-            pts = pts[torch.randint(pts.shape[0], (max_voxels, )), :]
-        # Normalize between [aabb0, aabb1]
-        pts = aabb[0] * (1 - pts) + aabb[1] * pts
-        return pts
 
     def step_size(self, n_samples: int, grid_id: int):
         aabb = self.aabb(grid_id)

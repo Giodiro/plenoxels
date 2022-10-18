@@ -26,9 +26,6 @@ class Trainer():
                  tr_loader: torch.utils.data.DataLoader,
                  ts_dsets: List[torch.utils.data.TensorDataset],
                  tr_dsets: List[torch.utils.data.TensorDataset],
-                 regnerf_weight_start: float,
-                 regnerf_weight_end: float,
-                 regnerf_weight_max_step: int,
                  plane_tv_weight: float,
                  l1density_weight: float,
                  volume_tv_weight: float,
@@ -42,6 +39,7 @@ class Trainer():
                  save_every: int,
                  valid_every: int,
                  save_outputs: bool,
+                 device,
                  **kwargs
                  ):
         self.train_data_loader = tr_loader
@@ -52,10 +50,6 @@ class Trainer():
         self.extra_args = kwargs
         self.num_dsets = len(self.train_datasets)
 
-        self.regnerf_weight_start = regnerf_weight_start
-        self.regnerf_weight_end = regnerf_weight_end
-        self.regnerf_weight_max_step = regnerf_weight_max_step
-        self.cur_regnerf_weight = self.regnerf_weight_start
         self.plane_tv_weight = plane_tv_weight
         self.plane_tv_what = kwargs.get('plane_tv_what', 'features')
         self.l1density_weight = l1density_weight
@@ -84,7 +78,7 @@ class Trainer():
         # This is not needed if gradient_acc is set, since in that case the
         # global_step is only updated once every time we cycle through each scene
         step_multiplier = 1 if self.gradient_acc else self.num_dsets
-        self.density_mask_update_steps = [s * step_multiplier for s in kwargs.get('dmask_update', [])]
+        self.shrink_steps = [s * step_multiplier for s in kwargs.get('shrink_steps', [])]
         self.upsample_steps = [s * step_multiplier for s in kwargs.get('upsample_steps', [])]
         self.upsample_resolution_list = list(kwargs.get('upsample_resolution', []))
         assert len(self.upsample_resolution_list) == len(self.upsample_steps), \
@@ -103,29 +97,35 @@ class Trainer():
         self.occupancy_grids = self.init_occupancy_grid(**self.extra_args)
         self.optimizer = self.init_optim(**self.extra_args)
         self.scheduler = self.init_lr_scheduler(**self.extra_args)
-        self.criterion = torch.nn.MSELoss(reduction='mean')
-        #self.criterion = torch.nn.SmoothL1Loss(reduction='mean')
+        # self.criterion = torch.nn.MSELoss(reduction='mean')
+        self.criterion = torch.nn.SmoothL1Loss(reduction='mean')
         self.gscaler = torch.cuda.amp.GradScaler(enabled=self.train_fp16)
+
+        self.device = device
+        self.model.to(device=device)
+        for dset in self.train_datasets:
+            dset.to(device=device)
+        for dset in self.test_datasets:
+            dset.to(device=device)
 
     def eval_step(self, data, dset_id) -> MutableMapping[str, torch.Tensor]:
         """
         Note that here `data` contains a whole image. we need to split it up before tracing
         for memory constraints.
         """
-        with torch.cuda.amp.autocast(enabled=self.train_fp16), torch.no_grad():
+        with torch.cuda.amp.autocast(enabled=self.train_fp16):
             rgb, acc, depth, _ = render_image(
                 self.model,
                 self.occupancy_grids[dset_id],
                 dset_id,
-                data['rays_o'].cuda(),
-                data['rays_d'].cuda(),
+                data['rays_o'],
+                data['rays_d'],
                 near_plane=None,#self.train_datasets[dset_id].near_far[0],
                 far_plane=None,#self.train_datasets[dset_id].near_far[1],
-                render_bkgd=data['bg_color'].cuda(),
+                render_bkgd=data['color_bkgd'],
                 cone_angle=0.0,
                 render_step_size=self.model.step_size(self.render_n_samples, dset_id),
             )
-
         return {
             "rgb": rgb,
             "depth": depth,
@@ -133,10 +133,7 @@ class Trainer():
 
     def step(self, data: Dict[str, Union[int, torch.Tensor]], do_update: bool):
         dset_id = data["dset_id"]
-        rays_o = data["rays_o"].cuda()
-        rays_d = data["rays_d"].cuda()
-        imgs = data["pixels"].cuda()
-        bg_color = data["bg_color"].cuda()
+        imgs = data["pixels"]
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             # update occupancy grid
@@ -145,24 +142,24 @@ class Trainer():
                 occ_eval_fn=lambda x: self.model.query_opacity(
                     x, dset_id
                 ),
-                warmup_steps=512,
-                n=64,
-                occ_thre=self.extra_args['density_threshold'],
+                occ_thre=self.cur_density_threshold(),
             )
             # render
             rgb, acc, depth, n_rendering_samples = render_image(
                 self.model,
                 self.occupancy_grids[dset_id],
                 dset_id,
-                rays_o,
-                rays_d,
+                data["rays_o"],
+                data["rays_d"],
                 # rendering options
                 near_plane=None,#self.train_datasets[dset_id].near_far[0],
                 far_plane=None,#self.train_datasets[dset_id].near_far[1],
-                render_bkgd=bg_color,
+                render_bkgd=data["color_bkgd"],
                 cone_angle=0.0,
                 render_step_size=self.model.step_size(self.render_n_samples, dset_id),
             )
+            if n_rendering_samples == 0:
+                return False
             # dynamic batch size for rays to keep sample batch size constant.
             num_rays = len(imgs)
             num_rays = int(
@@ -194,17 +191,15 @@ class Trainer():
 
             # Run grid-update routines (masking, shrinking, upscaling)
             opt_reset_required = False
-            if self.global_step in self.density_mask_update_steps:
-                logging.info(f"Updating alpha-mask for all datasets at step {self.global_step}.")
+            if self.global_step in self.shrink_steps:
+                print()
                 for u_dset_id in range(self.num_dsets):
-                    new_aabb = self.model.update_alpha_mask(grid_id=u_dset_id)
-                    sorted_updates = sorted(self.density_mask_update_steps)
-                    if self.global_step == sorted_updates[0] or self.global_step == sorted_updates[1]:
-                        self.model.shrink(new_aabb, grid_id=u_dset_id)
-                        opt_reset_required = True
+                    self.model.shrink(self.occupancy_grids[dset_id], dset_id)
+                    opt_reset_required = True
             try:
                 upsample_step_idx = self.upsample_steps.index(self.global_step)  # if not an upsample step will raise
                 new_num_voxels = self.upsample_resolution_list[upsample_step_idx]
+                print()
                 logging.info(f"Upsampling all datasets at step {self.global_step} to {new_num_voxels} voxels.")
                 for u_dset_id in range(self.num_dsets):
                     new_reso = N_to_reso(new_num_voxels, self.model.aabb(u_dset_id))
@@ -221,22 +216,19 @@ class Trainer():
         return True
 
     def post_step(self, data, progress_bar):
-        # Anneal regularization weights
-        if self.regnerf_weight_start > 0:
-            w = np.clip(self.global_step / (1 if self.regnerf_weight_max_step < 1 else self.regnerf_weight_max_step), 0, 1)
-            self.cur_regnerf_weight = self.regnerf_weight_start * (1 - w) + w * self.regnerf_weight_end
-
         dset_id = data["dset_id"]
-        self.writer.add_scalar(f"mse/D{dset_id}", self.loss_info[dset_id]["mse"].value, self.global_step)
-        progress_bar.set_postfix_str(losses_to_postfix(self.loss_info, lr=self.cur_lr()), refresh=False)
+        self.writer.add_scalar(
+            f"mse/D{dset_id}", self.loss_info[dset_id]["mse"].value, self.global_step)
+        progress_bar.set_postfix_str(
+            losses_to_postfix(self.loss_info, lr=self.cur_lr()), refresh=False)
         progress_bar.update(1)
 
-        if self.save_every > -1 and self.global_step % self.save_every == 0:
-            print()
-            self.save_model()
         if self.valid_every > -1 and self.global_step % self.valid_every == 0:
             print()
             self.validate()
+        if self.save_every > -1 and self.global_step % self.save_every == 0:
+            print()
+            self.save_model()
 
     def train(self):
         """Override this if some very specific training procedure is needed."""
@@ -415,11 +407,10 @@ class Trainer():
             grid_config=kwargs.pop("grid_config"),
             aabb=aabbs,
             is_ndc=self.is_ndc,  # TODO: This should also be per-scene
-            render_n_samples=1024,
+            render_n_samples=self.render_n_samples,
             **kwargs)
         logging.info(f"Initialized LowrankLearnableHash model with "
                      f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters.")
-        model.cuda()
         return model
 
     def init_occupancy_grid(self, **kwargs):
@@ -437,6 +428,11 @@ class Trainer():
         if self.scheduler is not None:
             return self.scheduler.get_last_lr()[0]
         return None
+
+    def cur_density_threshold(self) -> float:
+        if self.global_step < 512:
+            return self.extra_args['density_threshold'] / 10
+        return self.extra_args['density_threshold']
 
 
 def losses_to_postfix(losses: List[Dict[str, EMA]], lr: float) -> str:
@@ -466,9 +462,6 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
             raise RuntimeError(f"data_dir {dd} not recognized as LLFF or Synthetic dataset.")
 
     data_resolution = parse_optint(kwargs.get('data_resolution'))
-    regnerf_weight = float(kwargs.get('regnerf_weight_start'))
-    extra_views = regnerf_weight > 0
-    patch_size = 8
 
     tr_dsets, ts_dsets = [], []
     for i, data_dir in enumerate(data_dirs):
@@ -525,9 +518,8 @@ def render_image(
     render_bkgd: Optional[torch.Tensor] = None,
     cone_angle: float = 0.0,
     alpha_thresh: float = 0.0,
-    device="cuda:0",
     # test options
-    test_chunk_size: int = 4096,
+    test_chunk_size: int = 8192,
 ):
     """Render the pixels of an image."""
     rays_shape = rays_o.shape
@@ -541,15 +533,15 @@ def render_image(
 
     def sigma_fn(t_starts, t_ends, ray_indices):
         ray_indices = ray_indices.long()
-        t_origins = rays_o[ray_indices]
-        t_dirs = rays_d[ray_indices]
+        t_origins = chunk_rays_o[ray_indices]
+        t_dirs = chunk_rays_d[ray_indices]
         positions = t_origins + t_dirs * (t_starts + t_ends) / 2.0
         return radiance_field.query_density(positions, grid_id)
 
     def rgb_sigma_fn(t_starts, t_ends, ray_indices):
         ray_indices = ray_indices.long()
-        t_origins = rays_o[ray_indices]
-        t_dirs = rays_d[ray_indices]
+        t_origins = chunk_rays_o[ray_indices]
+        t_dirs = chunk_rays_d[ray_indices]
         positions = t_origins + t_dirs * (t_starts + t_ends) / 2.0
         return radiance_field(positions, t_dirs, grid_id)
 
@@ -560,9 +552,11 @@ def render_image(
         else test_chunk_size
     )
     for i in range(0, num_rays, chunk):
+        chunk_rays_o = rays_o[i: i + chunk]
+        chunk_rays_d = rays_d[i: i + chunk]
         packed_info, t_starts, t_ends = ray_marching(
-            rays_o[i: i + chunk],
-            rays_d[i: i + chunk],
+            chunk_rays_o,
+            chunk_rays_d,
             scene_aabb=radiance_field.aabb(grid_id).view(-1),
             grid=occupancy_grid,
             sigma_fn=sigma_fn,

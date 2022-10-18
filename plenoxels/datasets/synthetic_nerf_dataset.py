@@ -17,12 +17,15 @@ class MultiSceneDataset(torch.utils.data.IterableDataset):
     def __init__(self, datasets):
         super(MultiSceneDataset, self).__init__()
         self.datasets = list(datasets)
-        assert len(self.datasets) > 0, 'datasets should not be an empty iterable'
+        self.num_datasets = len(self.datasets)
+        assert self.num_datasets > 0, 'datasets should not be an empty iterable'
 
     def __iter__(self):
         idx = 0
         while True:
-            yield self.datasets[idx % len(self.datasets)][0]
+            dset_idx = idx % self.num_datasets
+            batch_idx = (idx // self.num_datasets) % len(self.datasets[dset_idx])
+            yield self.datasets[dset_idx][batch_idx]
             idx += 1
 
 
@@ -58,8 +61,12 @@ def _load_renderings(data_dir: str, split: str, max_frames: int, downsample: flo
     h, w = images.shape[1:3]
     camera_angle_x = float(meta["camera_angle_x"])
     focal = 0.5 * w / math.tan(0.5 * camera_angle_x)
+    intrinsics = Intrinsics(
+        width=800, height=800, focal_x=focal,
+        focal_y=focal, center_x=800 / 2, center_y=800 / 2)
+    intrinsics.scale(1 / downsample)
 
-    return images, camtoworlds, focal
+    return images, camtoworlds, intrinsics
 
 
 class SyntheticNerfDataset(torch.utils.data.Dataset):
@@ -77,7 +84,6 @@ class SyntheticNerfDataset(torch.utils.data.Dataset):
         "ship",
     ]
 
-    WIDTH, HEIGHT = 800, 800
     NEAR, FAR = 2.0, 6.0
     OPENGL_CAMERA = True
 
@@ -103,6 +109,8 @@ class SyntheticNerfDataset(torch.utils.data.Dataset):
         self.far = self.FAR
         self.downsample = downsample
         self.max_frames = max_frames
+        self.scene_bbox = torch.tensor([[-1.3, -1.3, -1.3], [1.3, 1.3, 1.3]])
+        self.is_ndc = False
         self.training = (batch_size is not None) and (
             split in ["train", "trainval"]
         )
@@ -113,16 +121,15 @@ class SyntheticNerfDataset(torch.utils.data.Dataset):
         else:
             self.generator = generator
         self.color_bkgd_aug = color_bkgd_aug
-        self.images, self.camtoworlds, self.focal = _load_renderings(
+        self.images, self.camtoworlds, self.intrinsics = _load_renderings(
             self.datadir, split=self.split, max_frames=self.max_frames, downsample=self.downsample
         )
         self.images = self.images.to(torch.uint8)
         self.camtoworlds = self.camtoworlds.to(torch.float32)
-        self.intrinsics = Intrinsics(
-            width=self.WIDTH, height=self.HEIGHT, focal_x=self.focal,
-            focal_y=self.focal, center_x=self.WIDTH / 2, center_y=self.HEIGHT / 2)
-        self.intrinsics.scale(self.downsample)
         assert self.images.shape[1:3] == (self.intrinsics.height, self.intrinsics.width)
+        log.info(f"SyntheticNerfDataset - Loaded {split} set from {datadir}: "
+                 f"{self.images.shape[0]} images of size {self.images.shape[1]}x{self.images.shape[2]} "
+                 f"and {self.images.shape[3]} channels. {self.intrinsics}")
 
     def __len__(self):
         return len(self.images)
@@ -228,3 +235,7 @@ class SyntheticNerfDataset(torch.utils.data.Dataset):
             "rays_o": origins,  # [h, w, 3] or [num_rays, 3]
             "rays_d": viewdirs,
         }
+
+    def to(self, device):
+        self.images = self.images.to(device)
+        self.camtoworlds = self.camtoworlds.to(device)
