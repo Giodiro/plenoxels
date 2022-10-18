@@ -29,8 +29,9 @@ class LLFFDataset(BaseDataset):
         self.dset_id = dset_id
         self.near = 0.0
         self.far = 1.0
+        self.training = split == 'train' and batch_size is not None
         image_paths, camtoworlds, near_fars, intrinsics = load_llff_poses(
-            datadir, downsample=downsample, split=split, hold_every=hold_every, near_scaling=1.)
+            datadir, downsample=downsample, split=split, hold_every=hold_every, near_scaling=0.75)
         images = load_llff_images(image_paths, intrinsics, split)
         super().__init__(datadir=datadir,
                          split=split,
@@ -106,17 +107,18 @@ class LLFFDataset(BaseDataset):
         viewdirs = directions / torch.linalg.norm(  # TODO: Unsure about this
             directions, dim=-1, keepdims=True
         )
+        viewdirs = directions
         origins, viewdirs = ndc_rays_blender(
             intrinsics=self.intrinsics, near=1.0, rays_o=origins, rays_d=viewdirs)
 
         if self.training:
             origins = torch.reshape(origins, (num_rays, 3))
             viewdirs = torch.reshape(viewdirs, (num_rays, 3))
-            rgba = torch.reshape(rgba, (num_rays, 4))
+            rgba = torch.reshape(rgba, (num_rays, rgba.shape[-1]))
         else:
             origins = torch.reshape(origins, (self.intrinsics.height, self.intrinsics.width, 3))
             viewdirs = torch.reshape(viewdirs, (self.intrinsics.height, self.intrinsics.width, 3))
-            rgba = torch.reshape(rgba, (self.intrinsics.height, self.intrinsics.width, 4))
+            rgba = torch.reshape(rgba, (self.intrinsics.height, self.intrinsics.width, rgba.shape[-1]))
 
         return {
             "rgba": rgba,       # [h, w, 4] or [num_rays, 4]
