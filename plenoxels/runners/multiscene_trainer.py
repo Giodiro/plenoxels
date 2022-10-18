@@ -40,6 +40,8 @@ class Trainer():
                  valid_every: int,
                  save_outputs: bool,
                  device,
+                 sample_batch_size: int,
+                 n_samples: int,
                  **kwargs
                  ):
         self.train_data_loader = tr_loader
@@ -68,8 +70,8 @@ class Trainer():
         self.valid_every = valid_every
         self.save_outputs = save_outputs
         self.gradient_acc = kwargs.get('gradient_acc', False)
-        self.target_sample_batch_size = 1 << 18
-        self.render_n_samples = 1024
+        self.target_sample_batch_size = sample_batch_size
+        self.render_n_samples = n_samples
         self.alpha_threshold = kwargs['alpha_threshold']
         # Set initial batch-size
         for dset in self.train_datasets:
