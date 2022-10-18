@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass
 
 
@@ -11,8 +12,8 @@ class Intrinsics:
     center_y: float
 
     def scale(self, factor: float):
-        nw = round(self.width * factor)
-        nh = round(self.height * factor)
+        nw = int(math.floor(self.width * factor))
+        nh = int(math.floor(self.height * factor))
         sw = nw / self.width
         sh = nh / self.height
         self.focal_x *= sw
