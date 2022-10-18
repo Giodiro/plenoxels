@@ -125,16 +125,18 @@ class LowrankLearnableHash(LowrankModel):
     def shrink(self, occ_grid, grid_id: int):
         log.info(f"Calculating occupancy {grid_id}")
         aabb = self.aabb(grid_id)
-        pts = occ_grid.grid_coords
+        occ_grid_reso = occ_grid.resolution
+        pts = occ_grid.grid_coords.view([*occ_grid_reso, 3])
         # Transpose to get correct Depth, Height, Width format
         pts = pts.transpose(0, 2).contiguous()
-        valid_pts = pts[occ_grid.binary]
+        mask = occ_grid.binary.transpose(0, 2).contiguous()
+        valid_pts = pts[mask]
         pts_min = valid_pts.amin(0)
         pts_max = valid_pts.amax(0)
         # Normalize pts_min, pts_max from [0, reso] to world-coordinates
-        pts_min = (pts_min / occ_grid.resolution)
+        pts_min = (pts_min / occ_grid_reso)
         pts_min = aabb[0] * (1 - pts_min) + aabb[1] * pts_min
-        pts_max = (pts_max / occ_grid.resolution)
+        pts_max = (pts_max / occ_grid_reso)
         pts_max = aabb[0] * (1 - pts_max) + aabb[1] * pts_max
         new_aabb = torch.stack((pts_min, pts_max), 0)
         log.info(f"Scene {grid_id} can be shrunk to new bounding box: {new_aabb.view(-1)}.")
@@ -161,13 +163,13 @@ class LowrankLearnableHash(LowrankModel):
             )
 
         # TODO: Why the correction? Check if this ever occurs
-        # if not torch.all(self.density_mask[grid_id].grid_size.to(device=dev) == cur_grid_size):
-        #     t_l_r, b_r_r = t_l / (cur_grid_size - 1), (b_r - 1) / (cur_grid_size - 1)
-        #     correct_aabb = torch.zeros_like(new_aabb)
-        #     correct_aabb[0] = (1 - t_l_r) * cur_aabb[0] + t_l_r * cur_aabb[1]
-        #     correct_aabb[1] = (1 - b_r_r) * cur_aabb[0] + b_r_r * cur_aabb[1]
-        #     log.info(f"Corrected new AABB from {new_aabb.view(-1)} to {correct_aabb.view(-1)}")
-        #     new_aabb = correct_aabb
+        if not torch.all(occ_grid_reso == cur_grid_size):
+             t_l_r, b_r_r = t_l / (cur_grid_size - 1), (b_r - 1) / (cur_grid_size - 1)
+             correct_aabb = torch.zeros_like(new_aabb)
+             correct_aabb[0] = (1 - t_l_r) * aabb[0] + t_l_r * aabb[1]
+             correct_aabb[1] = (1 - b_r_r) * aabb[0] + b_r_r * aabb[1]
+             log.info(f"Corrected new AABB from {new_aabb.view(-1)} to {correct_aabb.view(-1)}")
+             new_aabb = correct_aabb
 
         new_size = b_r - t_l
         self.set_aabb(new_aabb, grid_id)
