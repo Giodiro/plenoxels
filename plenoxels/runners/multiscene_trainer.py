@@ -184,6 +184,9 @@ class Trainer():
         recon_loss_val = recon_loss.item()
         if len(self.test_datasets) < 5:
             self.loss_info[dset_id]["mse"].update(recon_loss_val)
+            self.loss_info[dset_id]["alive_ray_mask"].update(float(alive_ray_mask.long().sum().item()))
+            self.loss_info[dset_id]["n_rendering_samples"].update(float(n_rendering_samples))
+            self.loss_info[dset_id]["n_rays"].update(float(len(imgs)))
         self.loss_info[dset_id]["psnr"].update(-10 * math.log10(recon_loss_val))
 
         # Update weights
