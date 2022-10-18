@@ -70,6 +70,7 @@ class Trainer():
         self.gradient_acc = kwargs.get('gradient_acc', False)
         self.target_sample_batch_size = 1 << 18
         self.render_n_samples = 1024
+        self.alpha_threshold = kwargs['alpha_threshold']
         # Set initial batch-size
         for dset in self.train_datasets:
             dset.update_num_rays(self.target_sample_batch_size // self.render_n_samples)
@@ -125,6 +126,7 @@ class Trainer():
                 render_bkgd=data['color_bkgd'],
                 cone_angle=0.0,
                 render_step_size=self.model.step_size(self.render_n_samples, dset_id),
+                alpha_thresh=self.alpha_threshold,
             )
         return {
             "rgb": rgb,
@@ -157,6 +159,7 @@ class Trainer():
                 render_bkgd=data["color_bkgd"],
                 cone_angle=0.0,
                 render_step_size=self.model.step_size(self.render_n_samples, dset_id),
+                alpha_thresh=self.alpha_threshold,
             )
             if n_rendering_samples == 0:
                 return False
@@ -285,7 +288,12 @@ class Trainer():
 
     def evaluate_metrics(self, gt, preds: MutableMapping[str, torch.Tensor], dset, dset_id: int, img_idx: int,
                          name: Optional[str] = None, save_outputs: bool = True):
-        preds_rgb = preds["rgb"].reshape(dset.img_h, dset.img_w, 3).cpu()
+        preds_rgb = (
+            preds["rgb"]
+                .reshape(dset.intrinsics.height, dset.intrinsics.width, 3)
+                .cpu()
+                .clamp(0, 1)
+        )
         exrdict = {
             "preds": preds_rgb.numpy(),
         }
@@ -296,12 +304,12 @@ class Trainer():
             depth = preds["depth"]
             depth = depth - depth.min()
             depth = depth / depth.max()
-            depth = depth.cpu().reshape(dset.img_h, dset.img_w)[..., None]
+            depth = depth.cpu().reshape(dset.intrinsics.height, dset.intrinsics.width)[..., None]
             preds["depth"] = depth
             exrdict["depth"] = preds["depth"].numpy()
 
         if gt is not None:
-            gt = gt.reshape(dset.img_h, dset.img_w, -1).cpu()
+            gt = gt.reshape(dset.intrinsics.height, dset.intrinsics.width, -1).cpu()
             if gt.shape[-1] == 4:
                 gt = gt[..., :3] * gt[..., 3:] + (1.0 - gt[..., 3:])
             exrdict["gt"] = gt.numpy()
@@ -493,7 +501,7 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
 
     cat_tr_dset = MultiSceneDataset(tr_dsets)
     tr_loader = torch.utils.data.DataLoader(
-        cat_tr_dset, num_workers=4, prefetch_factor=4, pin_memory=True,
+        cat_tr_dset, num_workers=0, prefetch_factor=2, pin_memory=False,
         batch_size=None, sampler=None)
 
     return {"ts_dsets": ts_dsets, "tr_dsets": tr_dsets, "tr_loader": tr_loader}

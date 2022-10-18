@@ -3,10 +3,11 @@
 config = {
     "expname": "lego_test",
     "logdir": "./logs",
+    "device": "cuda:0",
 
     # Data settings
     "data_resolution": None,
-    "data_downsample": 3,
+    "data_downsample": 1,
     "data_dirs": ["/data/DATASETS/SyntheticNerf/lego"],
     #"data_dirs": ["/data/DATASETS/LLFF/fern"],
     # Data settings for 360
@@ -23,9 +24,8 @@ config = {
     "optim_type": "adam",
     "lr": 2e-2,
 
-    "regnerf_weight_start": 0.0,
-    "regnerf_weight_end": 0.0,
-    "regnerf_weight_max_step": 700,
+    "alpha_threshold": 1e-3,
+
 
     "plane_tv_weight": 0.000,
     "plane_tv_what": "Gcoords",
@@ -40,8 +40,8 @@ config = {
     # Training settings
     "train_fp16": True,
     "save_every": 35000,
-    "valid_every": 10000,
-    "save_outputs": False,
+    "valid_every": 20000,
+    "save_outputs": True,
     "transfer_learning": False,
 
     # Raymarching settings
@@ -53,7 +53,7 @@ config = {
 
     # Model settings
     "sh": True,
-    "density_threshold": 1e-2,
+    "density_threshold": 1e-4,
     "dmask_update": [],
     "upsample_steps": [],
     "upsample_resolution": [],
@@ -66,7 +66,6 @@ config = {
         "grid_dimensions": 2,
         "resolution": [128, 128, 128],
         "rank": 10,
-        "init_std": 0.2,
     },
     {
         "input_coordinate_dim": 5,
