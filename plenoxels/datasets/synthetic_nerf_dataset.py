@@ -111,6 +111,7 @@ class SyntheticNerfDataset(torch.utils.data.Dataset):
         self.max_frames = max_frames
         self.scene_bbox = torch.tensor([[-1.3, -1.3, -1.3], [1.3, 1.3, 1.3]])
         self.is_ndc = False
+        self.name = os.path.basename(self.datadir)
         self.training = (batch_size is not None) and (
             split in ["train", "trainval"]
         )
