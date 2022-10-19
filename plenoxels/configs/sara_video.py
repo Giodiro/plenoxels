@@ -1,16 +1,16 @@
 # configuration file to be used with `main.py` for video training
 config = {
     # "expname": "legovideo20views_regdepthweightedacc_400_0.1_512_3framesreso3rank20",
-    "expname": "test_keyframes4k_isg10k_ist20k",
+    "expname": "test_keyframes4k_isg10k_ist20k_lr0.1_step",
     # "expname": "testspeed",
     # "expname": "testrelu_sameranktimereso128_llff",
-    "logdir": "./logs/coffeevideo",
+    "logdir": "./logs/salmonvideo",
 
     # Data settings
     "data_downsample": 8.0,
     # "data_dirs": ["/home/sfk/data/3DVideo/lego_video"],
-    "data_dirs": ["/home/sfk/data/3DVideo/coffee_martini"],
-    # "data_dir": "/data/datasets/nerf/data/nerf_synthetic/lego",
+    # "data_dirs": ["/home/sfk/data/3DVideo/coffee_martini"],
+    "data_dirs": ["/home/sfk/data/3DVideo/flame_salmon_1"],
 
     # Data settings for 360
     "max_train_cameras": 20,
@@ -23,7 +23,7 @@ config = {
     "ist_step": 10000,
 
     # Optimization settings
-    "num_steps": 20000,
+    "num_steps": 20001,
     "regnerf_weight_start": 0,
     "regnerf_weight_end": 0.0,
     "regnerf_weight_max_step": 512,
@@ -32,10 +32,10 @@ config = {
     "volume_tv_weight": 0.0,  # Not used for video yet
     "volume_tv_npts": 1024,  # Not used for video yet
     "volume_tv_what": "Gcoords",  # Not used for video yet
-    "scheduler_type": None,
+    "scheduler_type": "step",
     "batch_size": 4096,  
     "optim_type": "adam",
-    "lr": 1e-2,
+    "lr": 0.1,
     
     # Training settings
     "train_fp16": True,
@@ -54,8 +54,7 @@ config = {
     # Model settings
     "sh": True,
     "upsample_time_resolution": [150],
-    # "upsample_time_steps": [3649], # 2 epochs with keyframes # DyNerf does 300K iterations with keyframes, with lr 5e-4
-    "upsample_time_steps": [4000],
+    "upsample_time_steps": [4000],  # DyNerf does 300K iterations with keyframes, with lr 5e-4
     "grid_config": """
 [
     {

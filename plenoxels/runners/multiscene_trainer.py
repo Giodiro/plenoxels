@@ -256,56 +256,7 @@ class Trainer():
         self.init_epoch_info()
         self.model.train()
 
-    # def post_epoch(self):
-    #     self.model.eval()
-    #     # Save model
-    #     if self.save_every > -1 and self.epoch % self.save_every == 0:
-    #         self.save_model()
-    #     if self.valid_every > -1 and \
-    #             self.epoch % self.valid_every == 0 and \
-    #             self.epoch != 0:
-    #         self.validate()
-    #     if self.epoch >= self.num_epochs:
-    #         raise StopIteration(f"Finished after {self.epoch} epochs.")
-
-    # def train_epoch(self):
-    #     self.pre_epoch()
-    #     eff_num_batches = len(self.train_data_loader)
-    #     if self.gradient_acc:
-    #         eff_num_batches //= self.num_dsets
-    #     pb = tqdm(total=eff_num_batches, desc=f"E{self.epoch}")
-
-    #     try:
-    #         with ExitStack() as stack:
-    #             prof = None
-    #             if False:  # TODO: Put this behind a flag
-    #                 prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-    #                                schedule=schedule(wait=10, warmup=5, active=2),
-    #                                on_trace_ready=trace_handler,
-    #                                record_shapes=True,
-    #                                with_stack=True)
-    #                 stack.enter_context(p)
-    #             for i, data in enumerate(self.train_data_loader):
-    #                 if self.gradient_acc:
-    #                     # NOTE: This only works if every scene has the same number of batches,
-    #                     #       and if the sampler associated to the data loader goes through
-    #                     #       the scenes cyclically.
-    #                     do_update = (i + 1) % self.num_dsets == 0
-    #                 else:
-    #                     do_update = True
-               
-    #                 step_successful = self.step(data, do_update=do_update)
-    #                 if do_update:
-    #                     self.post_step(data=data, progress_bar=pb)
-    #                     self.global_step += 1
-    #                     if prof is not None:
-    #                         prof.step()
-    #                     if step_successful and self.scheduler is not None:
-    #                         self.scheduler.step()
-    #     finally:
-    #         pb.close()
-    #     self.post_epoch()
-
+  
     def train(self):
         """Override this if some very specific training procedure is needed."""
         if self.global_step is None:
@@ -499,15 +450,21 @@ class Trainer():
                 eta_min=eta_min)
             logging.info(f"Initialized CosineAnnealing LR Scheduler with {max_steps} maximum steps.")
         elif self.scheduler_type == "step":
+            # lr_sched = torch.optim.lr_scheduler.MultiStepLR(
+            #     self.optimizer,
+            #     milestones=[
+            #         max_steps // 2,
+            #         max_steps * 3 // 4,
+            #         max_steps * 5 // 6,
+            #         max_steps * 9 // 10,
+            #     ],
+            #     gamma=0.33)
             lr_sched = torch.optim.lr_scheduler.MultiStepLR(
                 self.optimizer,
                 milestones=[
                     max_steps // 2,
-                    max_steps * 3 // 4,
-                    max_steps * 5 // 6,
-                    max_steps * 9 // 10,
                 ],
-                gamma=0.33)
+                gamma=0.1)
         return lr_sched
 
     def init_optim(self, **kwargs) -> torch.optim.Optimizer:
