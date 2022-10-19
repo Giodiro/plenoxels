@@ -96,7 +96,7 @@ class SyntheticNerfDataset(BaseDataset):
         images, camtoworlds, intrinsics = _load_renderings(
             datadir, split=split, max_frames=self.max_frames, downsample=self.downsample
         )
-        images = images.to(torch.float32)
+        images = (images * 255).to(torch.uint8)
         camtoworlds = camtoworlds.to(torch.float32)
         super().__init__(
             datadir=datadir,
@@ -169,8 +169,8 @@ class SyntheticNerfDataset(BaseDataset):
             y = y.flatten()
 
         # generate rays
-        rgba = self.images[image_id, y, x]  # (num_rays, 4)   this converts to f32
-        c2w = self.camtoworlds[image_id]    # (num_rays, 3, 4)
+        rgba = self.images[image_id, y, x] / 255.0  # (num_rays, 4)   this converts to f32
+        c2w = self.camtoworlds[image_id]            # (num_rays, 3, 4)
         camera_dirs = F.pad(
             torch.stack(
                 [
