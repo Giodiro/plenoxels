@@ -169,10 +169,10 @@ class Trainer():
                 return False
             # dynamic batch size for rays to keep sample batch size constant.
             num_rays = len(imgs)
-            num_rays = int(
+            num_rays = min(self.cur_max_rays(), int(
                 num_rays
                 * (self.target_sample_batch_size / float(n_rendering_samples))
-            )
+            ))
             self.train_datasets[dset_id].update_num_rays(num_rays)
             alive_ray_mask = acc.squeeze(-1) > 0
             # compute loss and add regularizers
@@ -361,7 +361,6 @@ class Trainer():
         return summary
 
     def save_model(self):
-        """Override this function to change model saving."""
         model_fname = os.path.join(self.log_dir, f'model.pth')
         logging.info(f'Saving model checkpoint to: {model_fname}')
 
@@ -369,6 +368,7 @@ class Trainer():
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "lr_scheduler": self.scheduler.state_dict() if self.scheduler is not None else None,
+            "occupancy_grids": [og.state_dict() for og in self.occupancy_grids],
             "global_step": self.global_step
         }, model_fname)
 
@@ -386,15 +386,17 @@ class Trainer():
                 if 'resolution' in k:
                     grid_id = int(k[-1])  # TODO: won't work with more than 10 scenes
                     self.model.upsample(v.cpu().tolist(), grid_id)
-                if 'density_volume' in k:
-                    grid_id = int(k.split('.')[1])  # 'density_mask.0.density_volume'
-                    self.model.density_mask[grid_id] = DensityMask(
-                        density_volume=v, aabb=torch.empty(2, 3, dtype=torch.float32, device=v.device))
             self.model.load_state_dict(checkpoint_data["model"])
-
             logging.info("=> Loaded model state from checkpoint")
+
             self.optimizer.load_state_dict(checkpoint_data["optimizer"])
             logging.info("=> Loaded optimizer state from checkpoint")
+
+            assert len(self.occupancy_grids) == len(checkpoint_data["occupancy_grids"])
+            for og, og_sd in zip(self.occupancy_grids, checkpoint_data["occupancy_grids"]):
+                og.load_state_dict(og_sd)
+            logging.info("=> Loaded occupancy grids state from checkpoint")
+
             if self.scheduler is not None:
                 self.scheduler.load_state_dict(checkpoint_data['lr_scheduler'])
                 logging.info("=> Loaded scheduler state from checkpoint")
@@ -468,6 +470,11 @@ class Trainer():
         if self.global_step < 512:
             return self.extra_args['density_threshold'] / 10
         return self.extra_args['density_threshold']
+
+    def cur_max_rays(self) -> int:
+        if self.global_step < 512:
+            return 15_000
+        return 40_000
 
 
 def losses_to_postfix(losses: List[Dict[str, EMA]], lr: float) -> str:
