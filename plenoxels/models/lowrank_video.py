@@ -1,14 +1,14 @@
 import itertools
 import logging as log
-from typing import Dict, List, Union, Sequence, Tuple
+import math
+from typing import Dict, List, Union, Tuple
 
 import torch
 import torch.nn.functional as F
 
-from plenoxels.models.utils import grid_sample_wrapper, raw2alpha
+from plenoxels.models.utils import grid_sample_wrapper
 from .decoders import NNDecoder, SHDecoder
 from .lowrank_model import LowrankModel
-from ..raymarching.raymarching import RayMarcher
 from ..ops.activations import trunc_exp
 
 
@@ -19,6 +19,7 @@ class LowrankVideo(LowrankModel):
                  len_time: int,
                  is_ndc: bool,
                  sh: bool,
+                 render_n_samples: int,
                  **kwargs):
         super().__init__()
         if isinstance(grid_config, str):
@@ -29,9 +30,11 @@ class LowrankVideo(LowrankModel):
         self.len_time = len_time
         self.extra_args = kwargs
         self.is_ndc = is_ndc
-        self.raymarcher = RayMarcher(**self.extra_args)
         self.sh = sh
-        self.density_act = trunc_exp
+        self.render_n_samples = render_n_samples
+        self.density_act = lambda x: trunc_exp(x - 1)
+        self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
+        self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
 
         # For now, only allow a single index grid and a single feature grid, not multiple layers
         assert len(self.config) == 2
@@ -54,9 +57,14 @@ class LowrankVideo(LowrankModel):
     @torch.no_grad()
     def upsample_time(self, new_reso):
         old_reso = self.time_coef.shape[-1]
-        grid_data = self.time_coef.data
         self.time_coef = torch.nn.Parameter(
-            F.interpolate(self.time_coef.data[:,None,:], size=(new_reso), mode='linear', align_corners=True).squeeze())
+            F.interpolate(
+                self.time_coef.data[:, None, :],
+                size=(new_reso),
+                mode='linear',
+                align_corners=True)
+             .squeeze()
+        )
         log.info(f"Upsampled time resolution from {old_reso} to {new_reso}")
 
     def compute_features(self,
@@ -87,75 +95,62 @@ class LowrankVideo(LowrankModel):
                     grid_sample_wrapper(grid_space[ci], interp[..., coo_comb]).view(
                         -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
         # Combine space and time over rank
-        interp = (interp_space * interp_time).mean(dim=-1)  # [n, F_dim]  
+        interp = (interp_space * interp_time).mean(dim=-1)  # [n, F_dim]
+        # Learned normalization
+        if interp.numel() > 0:
+            interp = (interp - self.pt_min) / (self.pt_max - self.pt_min)
+            interp = interp * 2 - 1
         out = grid_sample_wrapper(self.features, interp).view(-1, self.feature_dim)
         if return_coords:
             return out, interp
         return out
 
-    def forward(self, rays_o, rays_d, timestamps, bg_color, channels: Sequence[str] = ("rgb", "depth")):
-        """
-        rays_o : [batch, 3]
-        rays_d : [batch, 3]
-        timestamps : [batch]
-        """
+    def step_size(self, n_samples: int):
+        aabb = self.aabb(0)
+        return (
+            (aabb[1] - aabb[0]).max()
+            * (math.sqrt(3) / n_samples)
+        )
 
-        rm_out = self.raymarcher.get_intersections2(
-            rays_o, rays_d, self.aabb(0), self.resolution(0), perturb=self.training,
-            is_ndc=self.is_ndc)
-        rays_d = rm_out["rays_d"]                   # [n_rays, 3]
-        intersection_pts = rm_out["intersections"]  # [n_rays, n_intrs, 3]
-        mask = rm_out["mask"]                       # [n_rays, n_intrs]
-        z_vals = rm_out["z_vals"]                   # [n_rays, n_intrs]
-        deltas = rm_out["deltas"]                   # [n_rays, n_intrs]
-        n_rays, n_intrs = intersection_pts.shape[:2]
+    def query_opacity(self, x, timestamps, dset):
+        idxs = torch.randint(0, len(timestamps), (x.shape[0],), device=x.device)
+        t = timestamps[idxs]
+        density = self.query_density(x, t)
+        # if the density is small enough those two are the same.
+        # opacity = 1.0 - torch.exp(-density * step_size)
+        step_size = self.step_size(self.render_n_samples)
+        opacity = density * step_size
+        return opacity
 
-        times = timestamps[:, None].repeat(1, n_intrs)[mask]  # [n_rays, n_intrs]
+    def query_density(self, pts: torch.Tensor, timestamps: torch.Tensor, return_feat: bool = False):
+        pts_norm = self.normalize_coords(pts, 0)
+        timestamps_norm = (timestamps * 2 / self.len_time) - 1
+        selector = ((pts_norm >= -1.0) & (pts_norm <= 1.0)).all(dim=-1)
 
-        # Normalization (between [-1, 1])
-        intersection_pts = self.normalize_coords(intersection_pts, 0)
-        times = (times * 2 / self.len_time) - 1
+        features = self.compute_features(pts_norm, timestamps_norm, return_coords=False)
+        density = (
+            self.density_act(self.decoder.compute_density(
+                features, rays_d=None, precompute_color=False)).view((*pts_norm.shape[:-1], 1))
+            * selector[..., None]
+        )
+        if return_feat:
+            return density, features
+        return density
 
-        # compute features and render
-        features = self.compute_features(intersection_pts[mask], times)
-
-        rays_d_rep = rays_d.view(-1, 1, 3).expand(intersection_pts.shape)
-        masked_rays_d_rep = rays_d_rep[mask]
-
-        density_masked = self.density_act(self.decoder.compute_density(features, rays_d=masked_rays_d_rep) - 1) 
-        density = torch.zeros(n_rays, n_intrs, device=intersection_pts.device, dtype=density_masked.dtype)
-        density[mask] = density_masked.view(-1)
-
-        alpha, weight, transmission = raw2alpha(density, deltas)  # Each is shape [batch_size, n_samples]
-
-        rgb_masked = self.decoder.compute_color(features, rays_d=masked_rays_d_rep)
-        rgb = torch.zeros(n_rays, n_intrs, 3, device=intersection_pts.device, dtype=rgb_masked.dtype)
-        rgb[mask] = rgb_masked
-        rgb = torch.sigmoid(rgb)
-
-        # Confirmed that torch.sum(weight, -1) matches 1-transmission[:, -1]
-        acc_map = 1 - transmission[:, -1]
-
-        outputs = {}
-        if "rgb" in channels:
-            rgb_map = torch.sum(weight[..., None] * rgb, -2)
-            if bg_color is None:
-                pass
-            else:
-                rgb_map = rgb_map + (1.0 - acc_map[..., None]) * bg_color
-            outputs["rgb"] = rgb_map
-        if "depth" in channels:
-            depth_map = torch.sum(weight * z_vals, -1)  # [batch_size]
-            depth_map = depth_map + (1.0 - acc_map) * rays_d[..., -1]  # Maybe the rays_d is to transform ray depth to absolute depth?
-            outputs["depth"] = depth_map
-
-        return outputs
+    def forward(
+        self,
+        rays_o: torch.Tensor,
+        rays_d: torch.Tensor,
+        timestamps: torch.Tensor,
+    ):
+        density, embedding = self.query_density(rays_o, timestamps, return_feat=True)
+        rgb = self.decoder.compute_color(embedding, rays_d=rays_d)
+        return rgb, density
 
     def get_params(self, lr):
         params = [
             {"params": self.decoder.parameters(), "lr": lr},
             {"params": self.grids.parameters(), "lr": lr},
-            {"params": self.features, "lr": lr},
+            {"params": [self.features, self.pt_min, self.pt_max], "lr": lr},
         ]
         return params
-

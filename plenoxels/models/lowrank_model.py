@@ -125,7 +125,6 @@ class LowrankModel(ABC, nn.Module):
             grid_coefs=grid_coefs, reso=pt_reso)
 
 
-
 def to_list(el, list_len, name: Optional[str] = None) -> Sequence:
     if not isinstance(el, collections.abc.Sequence):
         return [el] * list_len
