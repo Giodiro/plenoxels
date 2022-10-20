@@ -435,12 +435,12 @@ class Trainer():
         eta_min = 0
         lr_sched = None
         max_steps = self.num_steps
+        logging.info(f"Initializing LR Scheduler of type {self.scheduler_type} with {max_steps} maximum steps.")
         if self.scheduler_type == "cosine":
             lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
                 self.optimizer,
                 T_max=max_steps,
                 eta_min=eta_min)
-            logging.info(f"Initialized CosineAnnealing LR Scheduler with {max_steps} maximum steps.")
         elif self.scheduler_type == "warmup_cosine":
             lr_sched = get_cosine_schedule_with_warmup(
                 self.optimizer, num_warmup_steps=512, num_training_steps=max_steps)
