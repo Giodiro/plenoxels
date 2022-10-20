@@ -44,6 +44,22 @@ def _parallel_loader_llff_image(args):
     return _load_llff_image(**args)
 
 
+def _load_phototourism_image(idx: int,
+                             paths: str,
+                             data_dir: str,
+                             ) -> torch.Tensor:
+    
+    f_path = os.path.join(data_dir, paths[idx])
+    img = Image.open(f_path).convert('RGB')
+
+    img = pil2tensor(img)  # [C, H, W]
+    img = img.permute(1, 2, 0)  # [H, W, C]
+    return img
+
+def _parallel_loader_phototourism_image(args):
+    torch.set_num_threads(1)
+    return _load_phototourism_image(**args)
+
 def _load_nerf_image_pose(idx: int,
                           frames: List[Dict[str, Any]],
                           data_dir: str,
@@ -133,6 +149,8 @@ def parallel_load_images(tqdm_title,
     elif dset_type == 'video':
         fn = _parallel_loader_video
         max_threads = 10
+    elif dset_type == 'phototourism':
+        fn = _parallel_loader_phototourism_image
     else:
         raise ValueError(dset_type)
     p = Pool(min(max_threads, num_images))

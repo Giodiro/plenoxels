@@ -17,7 +17,7 @@ from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash, Densit
 from plenoxels.models.utils import compute_tv_norm
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_exr, write_png
-from ..datasets import SyntheticNerfDataset, LLFFDataset
+from ..datasets import SyntheticNerfDataset, LLFFDataset, PhotoTourismDataset
 from ..datasets.multi_dataset_sampler import MultiSceneSampler
 from ..my_tqdm import tqdm
 from ..utils import parse_optint
@@ -535,6 +535,8 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
               or "horns" in dd or "leaves" in dd or "orchids" in dd
               or "room" in dd or "trex" in dd):
             return "llff"
+        elif "sacre" in dd or "notre" in dd or "brandenburg" in dd or "trevi" in dd:
+            return "phototourism"
         else:
             raise RuntimeError(f"data_dir {dd} not recognized as LLFF or Synthetic dataset.")
 
@@ -569,6 +571,16 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
             ts_dsets.append(LLFFDataset(
                 data_dir, split='test', downsample=4, hold_every=hold_every,
                 dset_id=i))
+        elif dset_type == "phototourism":
+            logging.info(f"About to load Phototourism data downsampled by {data_downsample} times.")
+            tr_dset = PhotoTourismDataset(
+                data_dir, split='train', downsample=data_downsample,
+                batch_size=batch_size, patch_size=patch_size, dset_id=i)
+            ts_dset = PhotoTourismDataset(
+                data_dir, split='test', downsample=4, dset_id=i)
+            
+            tr_loader = torch.utils.data.DataLoader(tr_dset, batch_size=1, shuffle=True)
+            return {"ts_dsets" : [tr_dset], "tr_dsets" : [ts_dset], "tr_loader": tr_loader}
         else:
             raise ValueError(dset_type)
 
