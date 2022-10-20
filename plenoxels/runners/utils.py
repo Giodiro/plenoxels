@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 from nerfacc import OccupancyGrid, ray_marching, rendering
 from plenoxels.nerf_rendering import sigma2alpha, shrgb2rgb
-from plenoxels.datasets.synthetic_nerf_dataset import SyntheticNerfDataset, get_rays
+from plenoxels.datasets.synthetic_nerf_dataset import SyntheticNerfDataset#, get_rays
 
 __all__ = (
     "get_freer_gpu",
@@ -352,3 +352,22 @@ def render_image(
         depths.view((*rays_shape[:-1], -1)),
         sum(n_rendering_samples),
     )
+
+
+def get_cosine_schedule_with_warmup(
+    optimizer: torch.optim.Optimizer,
+    num_warmup_steps: int,
+    num_training_steps: int,
+    num_cycles: float = 0.5,
+    last_epoch: int = -1
+):
+    """
+    https://github.com/huggingface/transformers/blob/bd469c40659ce76c81f69c7726759d249b4aef49/src/transformers/optimization.py#L129
+    """
+    def lr_lambda(current_step):
+        if current_step < num_warmup_steps:
+            return float(current_step) / float(max(1, num_warmup_steps))
+        progress = float(current_step - num_warmup_steps) / float(max(1, num_training_steps - num_warmup_steps))
+        return max(1e-5, 0.5 * (1.0 + math.cos(math.pi * ((float(num_cycles) * progress) % 1.0))))
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda, last_epoch)

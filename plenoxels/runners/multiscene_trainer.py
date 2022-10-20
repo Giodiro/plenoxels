@@ -22,6 +22,7 @@ from ..datasets import SyntheticNerfDataset, LLFFDataset
 from ..datasets.base_dataset import MultiSceneDataset
 from ..my_tqdm import tqdm
 from ..utils import parse_optint
+from .utils import get_cosine_schedule_with_warmup
 
 
 class UpsamplingOccupancyGrid(OccupancyGrid):
@@ -440,6 +441,9 @@ class Trainer():
                 T_max=max_steps,
                 eta_min=eta_min)
             logging.info(f"Initialized CosineAnnealing LR Scheduler with {max_steps} maximum steps.")
+        elif self.scheduler_type == "warmup_cosine":
+            lr_sched = get_cosine_schedule_with_warmup(
+                self.optimizer, num_warmup_steps=512, num_training_steps=max_steps)
         elif self.scheduler_type == "step":
             lr_sched = torch.optim.lr_scheduler.MultiStepLR(
                 self.optimizer,
