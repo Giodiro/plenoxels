@@ -1,7 +1,8 @@
-from typing import Tuple
+from typing import Tuple, Optional
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from .intrinsics import Intrinsics
 
@@ -246,3 +247,72 @@ def generate_hemispherical_orbit(poses: torch.Tensor, n_frames=120):  # TODO: Ch
 
     render_poses = torch.stack(render_poses, dim=0)
     return render_poses
+
+
+def gen_pixel_samples(training: bool,
+                      images: torch.Tensor,
+                      index: int,
+                      num_samples: Optional[int],
+                      intrinsics: Intrinsics,
+                      generator: torch.Generator = None):
+    dev = images.device
+    if training:
+        image_id = torch.randint(
+            0,
+            len(images),
+            size=(num_samples,),
+            device=dev,
+            generator=generator,
+        )
+        x = torch.randint(
+            0, intrinsics.width, size=(num_samples,), device=dev, generator=generator,
+        )
+        y = torch.randint(
+            0, intrinsics.height, size=(num_samples,), device=dev, generator=generator,
+        )
+    else:
+        image_id = [index]
+        x, y = torch.meshgrid(
+            torch.arange(intrinsics.width, device=dev),
+            torch.arange(intrinsics.height, device=dev),
+            indexing="xy",
+        )
+        x = x.flatten()
+        y = y.flatten()
+
+    return image_id, x, y
+
+
+def gen_camera_dirs(x: torch.Tensor, y: torch.Tensor, intrinsics: Intrinsics, opengl_camera: bool):
+    return F.pad(
+        torch.stack(
+            [
+                (x - intrinsics.center_x + 0.5) / intrinsics.focal_x,
+                (y - intrinsics.center_y + 0.5) / intrinsics.focal_y
+                * (-1.0 if opengl_camera else 1.0),
+            ],
+            dim=-1,
+        ),
+        (0, 1),
+        value=(-1.0 if opengl_camera else 1.0),
+    )  # [num_rays, 3]
+
+
+def add_color_bkgd(rgba: torch.Tensor, color_bkgd_aug: str, training: bool):
+    pixels, alpha = torch.split(rgba, [3, 1], dim=-1)
+    dev = rgba.device
+    if training:
+        if color_bkgd_aug == "random":
+            color_bkgd = torch.rand(3, device=dev)
+        elif color_bkgd_aug == "white":
+            color_bkgd = torch.ones(3, device=dev)
+        elif color_bkgd_aug == "black":
+            color_bkgd = torch.zeros(3, device=dev)
+        else:
+            raise ValueError(color_bkgd_aug)
+    else:
+        # just use white during inference
+        color_bkgd = torch.ones(3, device=dev)
+
+    pixels = pixels * alpha + color_bkgd * (1.0 - alpha)
+    return pixels, color_bkgd

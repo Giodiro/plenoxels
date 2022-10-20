@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from .base_dataset import BaseDataset
 from .data_loading import parallel_load_images
 from .intrinsics import Intrinsics
-from .ray_utils import ndc_rays_blender, center_poses
+from .ray_utils import ndc_rays_blender, center_poses, gen_pixel_samples, gen_camera_dirs
 
 
 class LLFFDataset(BaseDataset):
@@ -61,45 +61,13 @@ class LLFFDataset(BaseDataset):
     def fetch_data(self, index):
         """Fetch the data (it maybe cached for multiple batches)."""
         num_rays = self.batch_size
-
-        if self.training:
-            image_id = torch.randint(
-                0,
-                len(self.images),
-                size=(num_rays,),
-                device=self.images.device,
-            )
-            x = torch.randint(
-                0, self.intrinsics.width, size=(num_rays,), device=self.images.device
-            )
-            y = torch.randint(
-                0, self.intrinsics.height, size=(num_rays,), device=self.images.device
-            )
-        else:
-            image_id = [index]
-            x, y = torch.meshgrid(
-                torch.arange(self.intrinsics.width, device=self.images.device),
-                torch.arange(self.intrinsics.height, device=self.images.device),
-                indexing="xy",
-            )
-            x = x.flatten()
-            y = y.flatten()
-
+        image_id, x, y = gen_pixel_samples(
+            self.training, self.images, index, num_rays, self.intrinsics)
         # generate rays
         rgba = self.images[image_id, y, x]  # (num_rays, 4)   this converts to f32
         c2w = self.camtoworlds[image_id]    # (num_rays, 3, 4)
-        camera_dirs = F.pad(
-            torch.stack(
-                [
-                    (x - self.intrinsics.center_x + 0.5) / self.intrinsics.focal_x,
-                    (y - self.intrinsics.center_y + 0.5) / self.intrinsics.focal_y
-                    * (-1.0 if self.OPENGL_CAMERA else 1.0),
-                ],
-                dim=-1,
-            ),
-            (0, 1),
-            value=(-1.0 if self.OPENGL_CAMERA else 1.0),
-        )  # [num_rays, 3]
+        camera_dirs = gen_camera_dirs(
+            x, y, self.intrinsics, self.OPENGL_CAMERA)  # [num_rays, 3]
 
         # [n_cams, height, width, 3]
         directions = (camera_dirs[:, None, :] * c2w[:, :3, :3]).sum(dim=-1)
