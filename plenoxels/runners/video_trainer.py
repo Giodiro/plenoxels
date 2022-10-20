@@ -13,6 +13,7 @@ import torch.utils.data
 from plenoxels.datasets.video_datasets import Video360Dataset, VideoLLFFDataset
 from plenoxels.my_tqdm import tqdm
 import cv2
+import gc
 
 from plenoxels.ema import EMA
 from plenoxels.models.lowrank_video import LowrankVideo
@@ -158,10 +159,19 @@ class VideoTrainer(Trainer):
             self.optimizer = self.init_optim(**self.extra_args)
             # After upsampling time, train with full time data
             if self.train_data_loader.dataset.keyframes:
+                print(f'deleting the keyframe training data to avoid OOM')
+                datadir = self.train_data_loader.dataset.datadir
+                downsample = self.train_data_loader.dataset.downsample
+                isg = self.train_data_loader.dataset.isg
+                ist = self.train_data_loader.dataset.ist
+                extra_views = self.train_data_loader.dataset.extra_views
+                batch_size = self.train_data_loader.dataset.batch_size
+                del self.train_data_loader, self.train_datasets
+                gc.collect()
                 print(f'loading all the training frames')
-                tr_dset = VideoLLFFDataset(self.train_data_loader.dataset.datadir, split='train', downsample=self.train_data_loader.dataset.downsample,
-                                    keyframes=False, isg=self.train_data_loader.dataset.isg, ist=self.train_data_loader.dataset.ist, 
-                                    extra_views=self.train_data_loader.dataset.extra_views, batch_size=self.train_data_loader.dataset.batch_size)
+                tr_dset = VideoLLFFDataset(datadir, split='train', downsample=downsample,
+                                    keyframes=False, isg=isg, ist=ist, 
+                                    extra_views=extra_views, batch_size=batch_size)
                 self.train_data_loader = torch.utils.data.DataLoader(
                     tr_dset, batch_size=None, shuffle=True, num_workers=4,
                     prefetch_factor=4, pin_memory=True)
@@ -169,10 +179,18 @@ class VideoTrainer(Trainer):
                 raise StopIteration  # Whenever we change the dataset
 
         if self.global_step == self.ist_step:
-            print(f'enabling IST importance sampling')
-            tr_dset = VideoLLFFDataset(self.train_data_loader.dataset.datadir, split='train', downsample=self.train_data_loader.dataset.downsample,
-                                keyframes=self.train_data_loader.dataset.keyframes, isg=False, ist=True, 
-                                extra_views=self.train_data_loader.dataset.extra_views, batch_size=self.train_data_loader.dataset.batch_size)
+            print(f'deleting pre-ist training data to avoid OOM')
+            datadir = self.train_data_loader.dataset.datadir
+            downsample = self.train_data_loader.dataset.downsample
+            keyframes = self.train_data_loader.dataset.keyframes
+            extra_views = self.train_data_loader.dataset.extra_views
+            batch_size = self.train_data_loader.dataset.batch_size
+            del self.train_data_loader, self.train_datasets
+            gc.collect()
+            print(f'reloading training data with IST importance sampling')
+            tr_dset = VideoLLFFDataset(datadir, split='train', downsample=downsample,
+                                keyframes=keyframes, isg=False, ist=True, 
+                                extra_views=extra_views, batch_size=batch_size)
             self.train_data_loader = torch.utils.data.DataLoader(
                 tr_dset, batch_size=None, shuffle=True, num_workers=4,
                 prefetch_factor=4, pin_memory=True)

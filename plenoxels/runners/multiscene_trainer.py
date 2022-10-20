@@ -276,9 +276,9 @@ class Trainer():
                     self.model.eval()
                     self.validate()
                     self.model.train()
+                self.global_step += 1
                 # Get a batch of data
                 data = next(batch_iter)
-                self.global_step += 1
                 # Take a step
                 if self.gradient_acc:
                     # NOTE: This only works if every scene has the same number of batches,
