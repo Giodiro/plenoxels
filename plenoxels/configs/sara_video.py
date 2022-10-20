@@ -1,13 +1,13 @@
 # configuration file to be used with `main.py` for video training
 config = {
     # "expname": "legovideo20views_regdepthweightedacc_400_0.1_512_3framesreso3rank20",
-    "expname": "test_keyframes4k_isg10k_ist20k_lr0.1_step",
+    "expname": "downsample4_keyframes4k_isg10k_ist20k_lr0.1_step",
     # "expname": "testspeed",
     # "expname": "testrelu_sameranktimereso128_llff",
     "logdir": "./logs/salmonvideo",
 
     # Data settings
-    "data_downsample": 8.0,
+    "data_downsample": 4.0,
     # "data_dirs": ["/home/sfk/data/3DVideo/lego_video"],
     # "data_dirs": ["/home/sfk/data/3DVideo/coffee_martini"],
     "data_dirs": ["/home/sfk/data/3DVideo/flame_salmon_1"],
@@ -27,7 +27,7 @@ config = {
     "regnerf_weight_start": 0,
     "regnerf_weight_end": 0.0,
     "regnerf_weight_max_step": 512,
-    "plane_tv_weight": 0,  # Not used for video yet
+    "plane_tv_weight": 0.00,  
     "l1density_weight": 0,  # Not used for video yet
     "volume_tv_weight": 0.0,  # Not used for video yet
     "volume_tv_npts": 1024,  # Not used for video yet
@@ -40,7 +40,7 @@ config = {
     # Training settings
     "train_fp16": True,
     "save_every": 5000,
-    "valid_every": 2000,
+    "valid_every": 5000,
     "save_video": True,
     "save_outputs": True,
 

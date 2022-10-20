@@ -135,7 +135,10 @@ class VideoTrainer(Trainer):
                     patch_timestamps.reshape(-1), bg_color=1, channels={"depth"})
                 depths = patch_out["depth"].reshape(patch_rays_o.shape[:3])
                 tv = compute_tv_norm(depths, weighting=None)
-            loss = recon_loss + tv * self.cur_regnerf_weight
+            plane_tv = 0
+            if self.plane_tv_weight > 0:
+                plane_tv = self.model.compute_plane_tv()
+            loss = recon_loss + tv * self.cur_regnerf_weight + plane_tv * self.plane_tv_weight
 
         self.gscaler.scale(loss).backward()
         self.gscaler.step(self.optimizer)
@@ -146,6 +149,7 @@ class VideoTrainer(Trainer):
         self.loss_info["mse"].update(recon_loss_val)
         self.loss_info["psnr"].update(-10 * math.log10(recon_loss_val))
         self.loss_info["tv"].update(tv.item() if patch_rays_o is not None else 0.0)
+        self.loss_info["plane_tv"].update(plane_tv.item() if self.plane_tv_weight > 0 else 0.0)
 
         if self.global_step in self.upsample_time_steps:
             # Upsample time resolution
