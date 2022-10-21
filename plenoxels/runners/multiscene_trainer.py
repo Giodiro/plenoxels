@@ -17,7 +17,7 @@ from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash, Densit
 from plenoxels.models.utils import compute_tv_norm
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_exr, write_png
-from ..datasets import SyntheticNerfDataset, LLFFDataset, PhotoTourismDataset
+from ..datasets import SyntheticNerfDataset, LLFFDataset
 from ..datasets.multi_dataset_sampler import MultiSceneSampler
 from ..my_tqdm import tqdm
 from ..utils import parse_optint
@@ -108,10 +108,12 @@ class Trainer():
         Note that here `data` contains a whole image. we need to split it up before tracing
         for memory constraints.
         """
+
         batch_size = self.train_datasets[dset_id].batch_size
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             rays_o = data["rays_o"]
             rays_d = data["rays_d"]
+                        
             preds = defaultdict(list)
             for b in range(math.ceil(rays_o.shape[0] / batch_size)):
                 rays_o_b = rays_o[b * batch_size: (b + 1) * batch_size].cuda()
@@ -134,7 +136,7 @@ class Trainer():
         if "patch_rays_o" in data:
             patch_rays_o = data["patch_rays_o"].cuda()
             patch_rays_d = data["patch_rays_d"].cuda()
-
+            
         C = imgs.shape[-1]
         if self.is_ndc:
             bg_color = None
@@ -143,7 +145,7 @@ class Trainer():
         else:  # Random bg-color
             bg_color = torch.rand_like(imgs[..., :3])
             imgs = imgs[..., :3] * imgs[..., 3:] + bg_color * (1.0 - imgs[..., 3:])
-
+                        
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             fwd_out = self.model(rays_o, rays_d, grid_id=dset_id, bg_color=bg_color, channels={"rgb"})
             rgb_preds = fwd_out["rgb"]
@@ -335,6 +337,7 @@ class Trainer():
                 pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
                 for img_idx, data in enumerate(dataset):
                     preds = self.eval_step(data, dset_id=dset_id)
+                                        
                     out_metrics = self.evaluate_metrics(
                         data["imgs"], preds, dset_id=dset_id, dset=dataset, img_idx=img_idx, name=None,
                         save_outputs=self.save_outputs)
@@ -376,6 +379,9 @@ class Trainer():
 
     def evaluate_metrics(self, gt, preds: MutableMapping[str, torch.Tensor], dset, dset_id: int, img_idx: int,
                          name: Optional[str] = None, save_outputs: bool = True):
+        
+
+        
         preds_rgb = preds["rgb"].reshape(dset.img_h, dset.img_w, 3).cpu()
         exrdict = {
             "preds": preds_rgb.numpy(),
@@ -535,8 +541,6 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
               or "horns" in dd or "leaves" in dd or "orchids" in dd
               or "room" in dd or "trex" in dd):
             return "llff"
-        elif "sacre" in dd or "notre" in dd or "brandenburg" in dd or "trevi" in dd:
-            return "phototourism"
         else:
             raise RuntimeError(f"data_dir {dd} not recognized as LLFF or Synthetic dataset.")
 
@@ -571,16 +575,6 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
             ts_dsets.append(LLFFDataset(
                 data_dir, split='test', downsample=4, hold_every=hold_every,
                 dset_id=i))
-        elif dset_type == "phototourism":
-            logging.info(f"About to load Phototourism data downsampled by {data_downsample} times.")
-            tr_dset = PhotoTourismDataset(
-                data_dir, split='train', downsample=data_downsample,
-                batch_size=batch_size, patch_size=patch_size, dset_id=i)
-            ts_dset = PhotoTourismDataset(
-                data_dir, split='test', downsample=4, dset_id=i)
-            
-            tr_loader = torch.utils.data.DataLoader(tr_dset, batch_size=1, shuffle=True)
-            return {"ts_dsets" : [tr_dset], "tr_dsets" : [ts_dset], "tr_loader": tr_loader}
         else:
             raise ValueError(dset_type)
 

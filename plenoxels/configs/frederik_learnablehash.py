@@ -7,7 +7,7 @@ config = {
     # Data settings
     "data_resolution": None,
     "data_downsample": 3,
-    "data_dirs": ["/data/DATASETS/SyntheticNerf/lego"],  # CHANGE ME!
+    "data_dirs": ["/work3/frwa/nerf_synthetic/lego"],  # CHANGE ME!
     # Data settings for 360
     "max_tr_frames": None,
     "max_ts_frames": 10,

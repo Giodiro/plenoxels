@@ -107,7 +107,7 @@ class LowrankVideo(LowrankModel):
         rays_d : [batch, 3]
         timestamps : [batch]
         """
-
+        
         rm_out = self.raymarcher.get_intersections2(
             rays_o, rays_d, self.aabb(0), self.resolution(0), perturb=self.training,
             is_ndc=self.is_ndc)
@@ -117,7 +117,7 @@ class LowrankVideo(LowrankModel):
         z_vals = rm_out["z_vals"]                   # [n_rays, n_intrs]
         deltas = rm_out["deltas"]                   # [n_rays, n_intrs]
         n_rays, n_intrs = intersection_pts.shape[:2]
-
+        
         times = timestamps[:, None].repeat(1, n_intrs)[mask]  # [n_rays, n_intrs]
 
         # Normalization (between [-1, 1])

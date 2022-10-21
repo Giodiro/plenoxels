@@ -11,6 +11,7 @@ import torch
 import torch.utils.data
 
 from plenoxels.datasets.video_datasets import Video360Dataset, VideoLLFFDataset
+from plenoxels.datasets.photo_tourism_dataset import PhotoTourismDataset
 from plenoxels.my_tqdm import tqdm
 import cv2
 
@@ -81,6 +82,12 @@ class VideoTrainer(Trainer):
             rays_o = data["rays_o"]
             rays_d = data["rays_d"]
             timestamp = data["timestamps"]
+            
+            if rays_d.ndim == 3:
+                rays_d = rays_d.squeeze()
+                rays_o = rays_o.squeeze()
+                timestamp = timestamp.squeeze()
+                
             preds = defaultdict(list)
             for b in range(math.ceil(rays_o.shape[0] / batch_size)):
                 rays_o_b = rays_o[b * batch_size: (b + 1) * batch_size].cuda()
@@ -112,6 +119,14 @@ class VideoTrainer(Trainer):
             patch_timestamps = patch_timestamps.cuda()
 
         self.optimizer.zero_grad(set_to_none=True)
+        
+        # because the dataloader for phototourism is a bit different 
+        # we have a batch dimension (always 1)
+        if rays_d.ndim == 3:
+            rays_d = rays_d.squeeze()
+            rays_o = rays_o.squeeze()
+            timestamps = timestamps.squeeze()
+            imgs = imgs.squeeze()
 
         C = imgs.shape[-1]
         # Random bg-color
@@ -211,8 +226,13 @@ class VideoTrainer(Trainer):
                 pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
                 for img_idx, data in enumerate(dataset):
                     preds = self.eval_step(data, dset_id=dset_id)
+                    
+                    imgs = data["imgs"]
+                    if imgs.ndim == 3:
+                        imgs = imgs.squeeze()
+                    
                     out_metrics, out_img = self.evaluate_metrics(
-                        data["imgs"], preds, dset_id=dset_id, dset=dataset, img_idx=img_idx, name=None)
+                        imgs, preds, dset_id=dset_id, dset=dataset, img_idx=img_idx, name=None)
                     pred_frames.append(out_img)
                     per_scene_metrics["psnr"] += out_metrics["psnr"]
                     per_scene_metrics["ssim"] += out_metrics["ssim"]
@@ -244,7 +264,13 @@ class VideoTrainer(Trainer):
 
     def evaluate_metrics(self, gt, preds: MutableMapping[str, torch.Tensor], dset, dset_id,
                          img_idx, name=None, save_outputs: bool = True):
-        preds_rgb = preds["rgb"].reshape(dset.img_h, dset.img_w, 3).cpu()
+        
+        if isinstance(dset.img_h, int):
+            img_h, img_w = dset.img_h, dset.img_w  
+        else:
+            img_h, img_w = dset.img_h[img_idx], dset.img_w[img_idx]
+            
+        preds_rgb = preds["rgb"].reshape(img_h, img_w, 3).cpu()
         exrdict = {
             "preds": preds_rgb.numpy(),
         }
@@ -255,12 +281,12 @@ class VideoTrainer(Trainer):
             depth = preds["depth"]
             depth = depth - depth.min()
             depth = depth / depth.max()
-            depth = depth.cpu().reshape(dset.img_h, dset.img_w)[..., None]
+            depth = depth.cpu().reshape(img_h, img_w)[..., None]
             preds["depth"] = depth
             exrdict["depth"] = preds["depth"].numpy()
 
         if gt is not None:
-            gt = gt.reshape(dset.intrinsics.height, dset.intrinsics.width, -1).cpu()
+            gt = gt.reshape(img_h, img_w, -1).cpu()
             if gt.shape[-1] == 4:
                 gt = gt[..., :3] * gt[..., 3:] + (1.0 - gt[..., 3:])
             err = (gt - preds_rgb) ** 2
@@ -305,6 +331,16 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
             data_dir, split='test', downsample=1, resolution=None,
             max_cameras=kwargs.get('max_test_cameras'), max_tsteps=kwargs.get('max_test_tsteps'),
             extra_views=False, batch_size=batch_size)
+    elif "sacre" in data_dir or "notre" in data_dir or "brandenburg" in data_dir or "trevi" in data_dir:
+        logging.info(f"About to load Phototourism data downsampled by {data_downsample} times.")
+        
+        tr_dset = PhotoTourismDataset(data_dir, split='train', downsample=data_downsample, batch_size=batch_size)
+        ts_dset = PhotoTourismDataset(data_dir, split='test', downsample=4, batch_size=batch_size)
+        
+        tr_loader = torch.utils.data.DataLoader(tr_dset, batch_size=1, shuffle=True)
+        
+        return {"ts_dset" : ts_dset, "tr_loader": tr_loader}
+        
     else:
         # For LLFF we downsample both train and test unlike 360.
         # For LLFF the test-set is not time-subsampled!

@@ -263,10 +263,11 @@ class LowrankLearnableHash(LowrankModel):
         """
         rays_o : [batch, 3]
         rays_d : [batch, 3]
-        """
+        """        
         rm_out = self.raymarcher.get_intersections2(
             rays_o, rays_d, self.aabb(grid_id), self.resolution(grid_id), perturb=self.training,
             is_ndc=self.is_ndc)
+        
         rays_d = rm_out["rays_d"]                   # [n_rays, 3]
         intersection_pts = rm_out["intersections"]  # [n_rays, n_intrs, 3]
         mask = rm_out["mask"]                       # [n_rays, n_intrs]
