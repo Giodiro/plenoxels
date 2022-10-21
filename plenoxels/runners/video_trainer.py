@@ -217,9 +217,10 @@ class VideoTrainer(Trainer):
             aabb=dset.scene_bbox,
             len_time=dset.len_time,
             is_ndc=dset.is_ndc,
+            is_contracted=dset.is_contracted,
             **kwargs)
         logging.info(f"Initialized LowrankVideo model with "
-                     f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters.")
+                     f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, using ndc {dset.is_ndc} and contraction {dset.is_contracted}.")
         model.cuda()
         return model
 

@@ -15,6 +15,7 @@ class BaseDataset(Dataset, ABC):
                  scene_bbox: torch.Tensor,
                  split: str,
                  is_ndc: bool,
+                 is_contracted: bool,
                  rays_o: torch.Tensor,
                  rays_d: torch.Tensor,
                  intrinsics: Intrinsics,
@@ -27,6 +28,7 @@ class BaseDataset(Dataset, ABC):
         self.scene_bbox = scene_bbox
         self.split = split
         self.is_ndc = is_ndc
+        self.is_contracted = is_contracted
         self.batch_size = batch_size
         if self.split == 'train':
             assert self.batch_size is not None

@@ -1,7 +1,7 @@
 # configuration file to be used with `main.py` for video training
 config = {
     # "expname": "legovideo20views_regdepthweightedacc_400_0.1_512_3framesreso3rank20",
-    "expname": "downsample4_keyframes4k_isg10k_ist20k_lr0.1_step",
+    "expname": "contracted2e2_downsample4reso300_keyframes6k_isg30k_ist40kalpha0.01_lr0.1_step",
     # "expname": "testspeed",
     # "expname": "testrelu_sameranktimereso128_llff",
     "logdir": "./logs/salmonvideo",
@@ -20,10 +20,10 @@ config = {
     # Data settings for LLFF
     "keyframes": True,
     "isg": True,
-    "ist_step": 10000,
+    "ist_step": 30000,
 
     # Optimization settings
-    "num_steps": 20001,
+    "num_steps": 40001,
     "regnerf_weight_start": 0,
     "regnerf_weight_end": 0.0,
     "regnerf_weight_max_step": 512,
@@ -54,14 +54,14 @@ config = {
     # Model settings
     "sh": True,
     "upsample_time_resolution": [150],
-    "upsample_time_steps": [4000],  # DyNerf does 300K iterations with keyframes, with lr 5e-4
+    "upsample_time_steps": [6000],  # DyNerf does 300K iterations with keyframes, with lr 5e-4
     "grid_config": """
 [
     {
         "input_coordinate_dim": 3,
         "output_coordinate_dim": 5,
         "grid_dimensions": 2,
-        "resolution": [200, 200, 128],
+        "resolution": [300, 300, 128],
         "rank": 30,
         "time_reso": 30,
     },

@@ -18,6 +18,7 @@ class LowrankVideo(LowrankModel):
                  aabb: torch.Tensor,  # [[x_min, y_min, z_min], [x_max, y_max, z_max]]
                  len_time: int,
                  is_ndc: bool,
+                 is_contracted: bool,
                  sh: bool,
                  **kwargs):
         super().__init__()
@@ -29,6 +30,7 @@ class LowrankVideo(LowrankModel):
         self.len_time = len_time
         self.extra_args = kwargs
         self.is_ndc = is_ndc
+        self.is_contracted = is_contracted
         self.raymarcher = RayMarcher(**self.extra_args)
         self.sh = sh
         self.density_act = trunc_exp
@@ -110,7 +112,7 @@ class LowrankVideo(LowrankModel):
 
         rm_out = self.raymarcher.get_intersections2(
             rays_o, rays_d, self.aabb(0), self.resolution(0), perturb=self.training,
-            is_ndc=self.is_ndc)
+            is_ndc=self.is_ndc, is_contracted=self.is_contracted)
         rays_d = rm_out["rays_d"]                   # [n_rays, 3]
         intersection_pts = rm_out["intersections"]  # [n_rays, n_intrs, 3]
         mask = rm_out["mask"]                       # [n_rays, n_intrs]
