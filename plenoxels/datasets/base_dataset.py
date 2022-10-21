@@ -60,8 +60,9 @@ class BaseDataset(Dataset, ABC):
     def get_rand_ids(self, index, weights=None):
         assert self.batch_size is not None, "Can't get rand_ids for test split"
         if weights is not None:
-            if len(weights) >= 16777216:  # 2^24 is the max for torch.multinomial
-                subset = torch.from_numpy(np.random.choice(len(weights), size=16777210))
+            # if len(weights) >= 16777216:  # 2^24 is the max for torch.multinomial
+            if len(weights) > 8000000:  # 2^24 is the max for torch.multinomial
+                subset = torch.from_numpy(np.random.choice(len(weights), size=8000000))
                 samples = torch.multinomial(input=weights[subset], num_samples=self.batch_size, generator=self.generator)
                 return subset[samples]
             return torch.multinomial(input=weights, num_samples=self.batch_size, generator=self.generator)

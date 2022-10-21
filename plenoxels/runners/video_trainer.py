@@ -173,7 +173,7 @@ class VideoTrainer(Trainer):
                                     keyframes=False, isg=isg, ist=ist, 
                                     extra_views=extra_views, batch_size=batch_size)
                 self.train_data_loader = torch.utils.data.DataLoader(
-                    tr_dset, batch_size=None, shuffle=True, num_workers=4,
+                    tr_dset, batch_size=None, shuffle=True, num_workers=2,
                     prefetch_factor=4, pin_memory=True)
                 self.train_datasets = [tr_dset]
                 raise StopIteration  # Whenever we change the dataset
@@ -192,7 +192,7 @@ class VideoTrainer(Trainer):
                                 keyframes=keyframes, isg=False, ist=True, 
                                 extra_views=extra_views, batch_size=batch_size)
             self.train_data_loader = torch.utils.data.DataLoader(
-                tr_dset, batch_size=None, shuffle=True, num_workers=4,
+                tr_dset, batch_size=None, shuffle=True, num_workers=2,
                 prefetch_factor=4, pin_memory=True)
             self.train_datasets = [tr_dset]
             raise StopIteration  # Whenever we change the dataset
@@ -339,6 +339,6 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
         ts_dset = VideoLLFFDataset(data_dir, split='test', downsample=4,
                                    keyframes=False, extra_views=False, batch_size=batch_size)
     tr_loader = torch.utils.data.DataLoader(
-        tr_dset, batch_size=None, shuffle=True, num_workers=4,
+        tr_dset, batch_size=None, shuffle=True, num_workers=2,
         prefetch_factor=4, pin_memory=True)
     return {"tr_loader": tr_loader, "ts_dset": ts_dset}
