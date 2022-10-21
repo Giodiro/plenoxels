@@ -279,14 +279,32 @@ class VideoTrainer(Trainer):
     def write_video_to_file(self, frames, dataset):
         video_file = os.path.join(self.log_dir, f"step{self.global_step}.mp4")
         logging.info(f"Saving video ({len(frames)} frames) to {video_file}")
-        height, width = frames[0].shape[:2]
-        video = cv2.VideoWriter(
-            video_file, cv2.VideoWriter_fourcc(*'mp4v'), 30, (width, height))
-        for img in frames:
-            video.write(img[:, :, ::-1])  # opencv uses BGR instead of RGB
-        cv2.destroyAllWindows()
-        video.release()
-
+        
+        # Photo tourisme the image sizes differs
+        sizes = np.array([frame.shape[:2] for frame in frames])
+        same_size_frames = np.unique(sizes, axis=0).shape[0] == 1
+        if same_size_frames:
+            height, width = frames[0].shape[:2]
+            video = cv2.VideoWriter(
+                video_file, cv2.VideoWriter_fourcc(*'mp4v'), 30, (width, height))
+            for img in frames:
+                video.write(img[:, :, ::-1])  # opencv uses BGR instead of RGB
+            cv2.destroyAllWindows()
+            video.release()
+        else:
+            height = sizes[:,0].max()
+            width = sizes[:, 1].max()
+            video = cv2.VideoWriter(
+                video_file, cv2.VideoWriter_fourcc(*'mp4v'), 5, (width, height))
+            for img in frames:
+                image = np.zeros((height, width, 3), dtype=np.uint8)
+                h, w = img.shape[:2]
+                image[(height-h)//2:(height-h)//2+h, (width-w)//2:(width-w)//2+w, :] = img
+                video.write(image[:, :, ::-1])  # opencv uses BGR instead of RGB
+            cv2.destroyAllWindows()
+            video.release() 
+            
+            
     def evaluate_metrics(self, gt, preds: MutableMapping[str, torch.Tensor], dset, dset_id,
                          img_idx, name=None, save_outputs: bool = True):
         
