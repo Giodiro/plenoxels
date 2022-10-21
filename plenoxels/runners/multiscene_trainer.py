@@ -327,22 +327,21 @@ class Trainer():
                 pb.close()
                 per_scene_metrics["psnr"] /= len(dataset)  # noqa
                 per_scene_metrics["ssim"] /= len(dataset)  # noqa
-                log_text = f"STEP {self.global_step}/{self.num_steps} | scene {dset_id}"
+                log_text = f"step {self.global_step}/{self.num_steps} | scene {dset_id}"
                 log_text += f" | D{dset_id} PSNR: {per_scene_metrics['psnr']:.2f}"
                 log_text += f" | D{dset_id} SSIM: {per_scene_metrics['ssim']:.6f}"
                 logging.info(log_text)
                 val_metrics.append(per_scene_metrics)
 
         df = pd.DataFrame.from_records(val_metrics)
-        df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.num_steps}.csv"))
+        df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
 
     def evaluate_metrics(self, gt, preds: MutableMapping[str, torch.Tensor], dset, dset_id: int, img_idx: int,
                          name: Optional[str] = None, save_outputs: bool = True):
         preds_rgb = (
-            preds["rgb"]
-                .reshape(dset.intrinsics.height, dset.intrinsics.width, 3)
-                .cpu()
-                .clamp(0, 1)
+            preds["rgb"].reshape(dset.intrinsics.height, dset.intrinsics.width, 3)
+                        .cpu()
+                        .clamp(0, 1)
         )
         exrdict = {
             "preds": preds_rgb.numpy(),
@@ -435,7 +434,8 @@ class Trainer():
         eta_min = 0
         lr_sched = None
         max_steps = self.num_steps
-        logging.info(f"Initializing LR Scheduler of type {self.scheduler_type} with {max_steps} maximum steps.")
+        logging.info(f"Initializing LR Scheduler of type {self.scheduler_type} with "
+                     f"{max_steps} maximum steps.")
         if self.scheduler_type == "cosine":
             lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
                 self.optimizer,
@@ -445,15 +445,21 @@ class Trainer():
             lr_sched = get_cosine_schedule_with_warmup(
                 self.optimizer, num_warmup_steps=512, num_training_steps=max_steps)
         elif self.scheduler_type == "step":
+            # lr_sched = torch.optim.lr_scheduler.MultiStepLR(
+            #     self.optimizer,
+            #     milestones=[
+            #         max_steps // 2,
+            #         max_steps * 3 // 4,
+            #         max_steps * 5 // 6,
+            #         max_steps * 9 // 10,
+            #     ],
+            #     gamma=0.33)
             lr_sched = torch.optim.lr_scheduler.MultiStepLR(
                 self.optimizer,
                 milestones=[
                     max_steps // 2,
-                    max_steps * 3 // 4,
-                    max_steps * 5 // 6,
-                    max_steps * 9 // 10,
                 ],
-                gamma=0.33)
+                gamma=0.1)
         return lr_sched
 
     def init_optim(self, **kwargs) -> torch.optim.Optimizer:

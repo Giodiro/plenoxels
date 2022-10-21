@@ -1,26 +1,23 @@
+import gc
 import logging
 import math
 import os
 from collections import defaultdict
 from typing import Dict, Optional, MutableMapping
 
+import cv2
 import numpy as np
 import pandas as pd
-
 import torch
 import torch.nn.functional as F
 import torch.utils.data
 
 from plenoxels.datasets.video_datasets import Video360Dataset, VideoLLFFDataset
-from plenoxels.my_tqdm import tqdm
-import cv2
-
 from plenoxels.ema import EMA
 from plenoxels.models.lowrank_video import LowrankVideo
-from plenoxels.models.utils import compute_tv_norm
-from plenoxels.runners.multiscene_trainer import Trainer
+from plenoxels.my_tqdm import tqdm
 from plenoxels.ops.image import metrics
-from plenoxels.ops.image.io import write_png, write_exr
+from plenoxels.runners.multiscene_trainer import Trainer
 from plenoxels.runners.utils import render_image
 
 
@@ -43,6 +40,7 @@ class VideoTrainer(Trainer):
                  n_samples: int,
                  upsample_time_resolution: [int],
                  upsample_time_steps: [int],
+                 ist_step: int,
                  **kwargs
                  ):
         # Keys we wish to ignore
@@ -71,6 +69,8 @@ class VideoTrainer(Trainer):
         # Override base-class device (which is CPU)
         self.device = device
         self.model.to(device)
+        self.ist_step = ist_step
+        self.plane_tv_weight = kwargs['plane_tv_weight']
         assert len(upsample_time_resolution) == len(upsample_time_steps)
 
     def eval_step(self, data, dset_id=0) -> MutableMapping[str, torch.Tensor]:
@@ -136,6 +136,10 @@ class VideoTrainer(Trainer):
             alive_ray_mask = acc.squeeze(-1) > 0
             # compute loss and add regularizers
             loss = self.criterion(rgb[alive_ray_mask], imgs[alive_ray_mask])
+            plane_tv = None
+            if self.plane_tv_weight > 0:
+                plane_tv = self.model.compute_plane_tv() * self.plane_tv_weight
+                loss = loss + plane_tv
 
         if do_update:
             self.optimizer.zero_grad(set_to_none=True)
@@ -150,6 +154,8 @@ class VideoTrainer(Trainer):
                 self.loss_info["alive_ray_mask"].update(float(alive_ray_mask.long().sum().item()))
                 self.loss_info["n_rendering_samples"].update(float(n_rendering_samples))
                 self.loss_info["n_rays"].update(float(len(imgs)))
+                if plane_tv is not None:
+                    self.loss_info["plane_tv"].update(plane_tv.item())
 
         if do_update:
             self.gscaler.step(self.optimizer)
@@ -169,6 +175,24 @@ class VideoTrainer(Trainer):
                     self.train_data_loader = torch.utils.data.DataLoader(
                         self.train_datasets[0], batch_size=None, num_workers=4,
                         prefetch_factor=4, pin_memory=True)
+
+            if self.global_step == self.ist_step:
+                print(f'deleting pre-ist training data to avoid OOM')
+                datadir = self.train_data_loader.dataset.datadir
+                downsample = self.train_data_loader.dataset.downsample
+                keyframes = self.train_data_loader.dataset.keyframes
+                extra_views = self.train_data_loader.dataset.extra_views
+                batch_size = self.train_data_loader.dataset.batch_size
+                del self.train_data_loader, self.train_datasets
+                gc.collect()
+                print(f'reloading training data with IST importance sampling')
+                tr_dset = VideoLLFFDataset(datadir, split='train', downsample=downsample,
+                                    keyframes=keyframes, isg=False, ist=True,
+                                    extra_views=extra_views, batch_size=batch_size)
+                self.train_data_loader = torch.utils.data.DataLoader(
+                    tr_dset, batch_size=None, shuffle=True, num_workers=4,
+                    prefetch_factor=4, pin_memory=True)
+                self.train_datasets = [tr_dset]
             return scale <= self.gscaler.get_scale()
         return True
 
@@ -327,9 +351,9 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
         # For LLFF the test-set is not time-subsampled!
         logging.info(f"Loading VideoLLFFDataset with downsample={data_downsample}")
         tr_dset = VideoLLFFDataset(data_dir, split='train', downsample=data_downsample,
-                                   keyframes=kwargs.get('keyframes'),
+                                   keyframes=kwargs.get('keyframes'), isg=kwargs.get('isg'),  # Always start without ist
                                    extra_views=regnerf_bool, batch_size=batch_size)
-        ts_dset = VideoLLFFDataset(data_dir, split='test', downsample=data_downsample,
+        ts_dset = VideoLLFFDataset(data_dir, split='test', downsample=4,
                                    keyframes=False, extra_views=False, batch_size=batch_size)
     tr_loader = torch.utils.data.DataLoader(
         tr_dset, batch_size=None, num_workers=4,

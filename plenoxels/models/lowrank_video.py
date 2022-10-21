@@ -6,7 +6,7 @@ from typing import Dict, List, Union, Tuple
 import torch
 import torch.nn.functional as F
 
-from plenoxels.models.utils import grid_sample_wrapper
+from plenoxels.models.utils import grid_sample_wrapper, compute_plane_tv, compute_line_tv
 from .decoders import NNDecoder, SHDecoder
 from .lowrank_model import LowrankModel
 from ..ops.activations import trunc_exp
@@ -72,7 +72,7 @@ class LowrankVideo(LowrankModel):
                          timestamps,
                          return_coords: bool = False
                          ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        grid_space = self.grids  # space: [3, rank * F_dim, reso, reso]
+        grid_space = self.grids  # space: 3 x [1, rank * F_dim, reso, reso]
         grid_time = self.time_coef  # time: [rank * F_dim, time_reso]
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
 
@@ -154,3 +154,12 @@ class LowrankVideo(LowrankModel):
             {"params": [self.features, self.pt_min, self.pt_max], "lr": lr},
         ]
         return params
+
+    def compute_plane_tv(self):
+        grid_space = self.grids  # space: 3 x [1, rank * F_dim, reso, reso]
+        grid_time = self.time_coef  # time: [rank * F_dim, time_reso]
+        total = 0
+        for grid in grid_space:
+            total += compute_plane_tv(grid)
+        total += compute_line_tv(grid_time)
+        return total

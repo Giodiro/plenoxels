@@ -6,12 +6,11 @@ from typing import Optional, Tuple
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 import torch.utils.data
 
+from .base_dataset import BaseDataset
 from .data_loading import parallel_load_images
 from .intrinsics import Intrinsics
-from .base_dataset import BaseDataset
 from .ray_utils import gen_pixel_samples, gen_camera_dirs, add_color_bkgd
 
 
@@ -39,9 +38,16 @@ def _load_renderings(data_dir: str,
     frames = np.take(frames, frame_ids).tolist()
 
     img_poses = parallel_load_images(
-        image_iter=frames, dset_type="synthetic", data_dir=data_dir,
-        out_h=None, out_w=None, downsample=downsample,
-        resolution=(None, None), tqdm_title=f'Loading {split} data')
+        dset_type="synthetic",
+        tqdm_title=f'Loading {split} data',
+        num_images=len(frames),
+        frames=frames,
+        data_dir=data_dir,
+        out_h=None,
+        out_w=None,
+        downsample=downsample,
+        resolution=(None, None),
+    )
     images, camtoworlds = zip(*img_poses)
     images = torch.stack(images, 0).float()  # [N, H, W, 3/4]
     camtoworlds = torch.stack(camtoworlds, 0).float()  # [N, ????]
