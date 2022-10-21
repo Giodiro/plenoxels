@@ -87,12 +87,14 @@ class RayMarcher():
                            resolution: torch.Tensor,
                            perturb: bool = False,
                            is_ndc: bool = False,
+                           is_contracted: bool=False,
                            ) -> Mapping[str, torch.Tensor]:
         dev, dt = rays_o.device, rays_o.dtype
 
-        if is_ndc:
+        if is_ndc or is_contracted:
             near = torch.tensor([0.0], device=dev, dtype=dt)
             far = torch.tensor([1.0], device=dev, dtype=dt)
+            perturb = False # Don't perturb for ndc or contracted scenes
         else:
             inv_rays_d = torch.reciprocal(torch.where(rays_d == 0, torch.full_like(rays_d, 1e-6), rays_d))
             offsets_pos = (aabb[1] - rays_o) * inv_rays_d  # [batch, 3]
@@ -106,9 +108,21 @@ class RayMarcher():
         intersections = self.get_samples2(rays_o, near, far, n_samples, perturb)  # [n_rays, n_samples + 1]
         intersection_mids = 0.5 * (intersections[..., :-1] + intersections[..., 1:])
         deltas = intersections.diff(dim=-1)    # [n_rays, n_samples]
+        if is_contracted: 
+            # Transform to Euclidean distances
+            intersections = 1.0 / (intersections * 5e-3 + (1.0 - intersections) * 1e3)  # ranges from 1e-3 to 2e2
+            # Compute deltas using Euclidean distances
+            deltas = intersections.diff(dim=-1)    # [n_rays, n_samples]
         intersections = intersections[:, :-1]  # [n_rays, n_samples]
         intrs_pts = rays_o[..., None, :] + rays_d[..., None, :] * intersections[..., None]  # [n_rays, n_samples, 3]
+
         mask = ((aabb[0] <= intrs_pts) & (intrs_pts <= aabb[1])).all(dim=-1)  # noqa
+        if is_contracted:
+            # Do the contraction to map Euclidean coordinates into [-2, 2] which is also the aabb for contracted scenes
+            norms = torch.linalg.vector_norm(intrs_pts, dim=-1, keepdim=True).expand(-1, -1, 3)  # [n_rays, n_samples, 3]
+            norm_mask = norms > 1
+            intrs_pts[norm_mask] = (2.0 - 1.0 / norms[norm_mask]) * intrs_pts[norm_mask] / norms[norm_mask]
+            mask = torch.ones_like(mask)  # All points are in-bounds when we do scene contraction
 
         # Normalize rays_d and deltas
         dir_norm = torch.linalg.norm(rays_d, dim=1, keepdim=True)

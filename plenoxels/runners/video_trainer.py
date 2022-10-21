@@ -14,6 +14,7 @@ from plenoxels.datasets.video_datasets import Video360Dataset, VideoLLFFDataset
 from plenoxels.datasets.photo_tourism_dataset import PhotoTourismDataset
 from plenoxels.my_tqdm import tqdm
 import cv2
+import gc
 
 from plenoxels.ema import EMA
 from plenoxels.models.lowrank_video import LowrankVideo
@@ -30,7 +31,7 @@ class VideoTrainer(Trainer):
                  regnerf_weight_start: float,
                  regnerf_weight_end: float,
                  regnerf_weight_max_step: int,
-                 num_epochs: int,
+                 num_steps: int,
                  scheduler_type: Optional[str],
                  optim_type: str,
                  logdir: str,
@@ -55,7 +56,7 @@ class VideoTrainer(Trainer):
                          regnerf_weight_end=regnerf_weight_end,
                          regnerf_weight_max_step=regnerf_weight_max_step,
                          num_batches_per_dset=1,
-                         num_epochs=num_epochs,
+                         num_steps=num_steps,
                          scheduler_type=scheduler_type,
                          optim_type=optim_type,
                          logdir=logdir,
@@ -150,7 +151,10 @@ class VideoTrainer(Trainer):
                     patch_timestamps.reshape(-1), bg_color=1, channels={"depth"})
                 depths = patch_out["depth"].reshape(patch_rays_o.shape[:3])
                 tv = compute_tv_norm(depths, weighting=None)
-            loss = recon_loss + tv * self.cur_regnerf_weight
+            plane_tv = 0
+            if self.plane_tv_weight > 0:
+                plane_tv = self.model.compute_plane_tv()
+            loss = recon_loss + tv * self.cur_regnerf_weight + plane_tv * self.plane_tv_weight
 
         self.gscaler.scale(loss).backward()
         self.gscaler.step(self.optimizer)
@@ -161,6 +165,7 @@ class VideoTrainer(Trainer):
         self.loss_info["mse"].update(recon_loss_val)
         self.loss_info["psnr"].update(-10 * math.log10(recon_loss_val))
         self.loss_info["tv"].update(tv.item() if patch_rays_o is not None else 0.0)
+        self.loss_info["plane_tv"].update(plane_tv.item() if self.plane_tv_weight > 0 else 0.0)
 
         if self.global_step in self.upsample_time_steps:
             # Upsample time resolution
@@ -169,24 +174,43 @@ class VideoTrainer(Trainer):
             self.optimizer = self.init_optim(**self.extra_args)
             # After upsampling time, train with full time data
             if self.train_data_loader.dataset.keyframes:
+                print(f'deleting the keyframe training data to avoid OOM')
+                datadir = self.train_data_loader.dataset.datadir
+                downsample = self.train_data_loader.dataset.downsample
+                isg = self.train_data_loader.dataset.isg
+                ist = self.train_data_loader.dataset.ist
+                extra_views = self.train_data_loader.dataset.extra_views
+                batch_size = self.train_data_loader.dataset.batch_size
+                del self.train_data_loader, self.train_datasets
+                gc.collect()
                 print(f'loading all the training frames')
-                tr_dset = VideoLLFFDataset(self.train_data_loader.dataset.datadir, split='train', downsample=self.train_data_loader.dataset.downsample,
-                                    keyframes=False, isg=self.train_data_loader.dataset.isg, ist=self.train_data_loader.dataset.ist, 
-                                    extra_views=self.train_data_loader.dataset.extra_views, batch_size=self.train_data_loader.dataset.batch_size)
+                tr_dset = VideoLLFFDataset(datadir, split='train', downsample=downsample,
+                                    keyframes=False, isg=isg, ist=ist, 
+                                    extra_views=extra_views, batch_size=batch_size)
                 self.train_data_loader = torch.utils.data.DataLoader(
-                    tr_dset, batch_size=None, shuffle=True, num_workers=4,
+                    tr_dset, batch_size=None, shuffle=True, num_workers=2,
                     prefetch_factor=4, pin_memory=True)
                 self.train_datasets = [tr_dset]
+                raise StopIteration  # Whenever we change the dataset
 
         if self.global_step == self.ist_step:
-            print(f'enabling IST importance sampling')
-            tr_dset = VideoLLFFDataset(self.train_data_loader.dataset.datadir, split='train', downsample=self.train_data_loader.dataset.downsample,
-                                keyframes=self.train_data_loader.dataset.keyframes, isg=False, ist=True, 
-                                extra_views=self.train_data_loader.dataset.extra_views, batch_size=self.train_data_loader.dataset.batch_size)
+            print(f'deleting pre-ist training data to avoid OOM')
+            datadir = self.train_data_loader.dataset.datadir
+            downsample = self.train_data_loader.dataset.downsample
+            keyframes = self.train_data_loader.dataset.keyframes
+            extra_views = self.train_data_loader.dataset.extra_views
+            batch_size = self.train_data_loader.dataset.batch_size
+            del self.train_data_loader, self.train_datasets
+            gc.collect()
+            print(f'reloading training data with IST importance sampling')
+            tr_dset = VideoLLFFDataset(datadir, split='train', downsample=downsample,
+                                keyframes=keyframes, isg=False, ist=True, 
+                                extra_views=extra_views, batch_size=batch_size)
             self.train_data_loader = torch.utils.data.DataLoader(
-                tr_dset, batch_size=None, shuffle=True, num_workers=4,
+                tr_dset, batch_size=None, shuffle=True, num_workers=2,
                 prefetch_factor=4, pin_memory=True)
             self.train_datasets = [tr_dset]
+            raise StopIteration  # Whenever we change the dataset
 
         return scale <= self.gscaler.get_scale()
 
@@ -208,9 +232,10 @@ class VideoTrainer(Trainer):
             aabb=dset.scene_bbox,
             len_time=dset.len_time,
             is_ndc=dset.is_ndc,
+            is_contracted=dset.is_contracted,
             **kwargs)
         logging.info(f"Initialized LowrankVideo model with "
-                     f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters.")
+                     f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, using ndc {dset.is_ndc} and contraction {dset.is_contracted}.")
         model.cuda()
         return model
 
@@ -243,16 +268,16 @@ class VideoTrainer(Trainer):
                     self.write_video_to_file(pred_frames, dataset)
                 per_scene_metrics["psnr"] /= len(dataset)  # noqa
                 per_scene_metrics["ssim"] /= len(dataset)  # noqa
-                log_text = f"EPOCH {self.epoch}/{self.num_epochs} | scene {dset_id}"
+                log_text = f"step {self.global_step}/{self.num_steps} | scene {dset_id}"
                 log_text += f" | D{dset_id} PSNR: {per_scene_metrics['psnr']:.2f}"
                 log_text += f" | D{dset_id} SSIM: {per_scene_metrics['ssim']:.6f}"
                 logging.info(log_text)
                 val_metrics.append(per_scene_metrics)
         df = pd.DataFrame.from_records(val_metrics)
-        df.to_csv(os.path.join(self.log_dir, f"test_metrics_epoch{self.epoch}.csv"))
+        df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
 
     def write_video_to_file(self, frames, dataset):
-        video_file = os.path.join(self.log_dir, f"epoch{self.epoch}.mp4")
+        video_file = os.path.join(self.log_dir, f"step{self.global_step}.mp4")
         logging.info(f"Saving video ({len(frames)} frames) to {video_file}")
         height, width = frames[0].shape[:2]
         video = cv2.VideoWriter(
@@ -295,7 +320,7 @@ class VideoTrainer(Trainer):
             summary["psnr"] = metrics.psnr(preds_rgb, gt)
             summary["ssim"] = metrics.ssim(preds_rgb, gt)
 
-        out_name = f"epoch{self.epoch}-D{dset_id}-{img_idx}"
+        out_name = f"step{self.global_step}-D{dset_id}-{img_idx}"
         if name is not None and name != "":
             out_name += "-" + name
 
@@ -348,9 +373,9 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
         tr_dset = VideoLLFFDataset(data_dir, split='train', downsample=data_downsample,
                                    keyframes=kwargs.get('keyframes'), isg=kwargs.get('isg'),  # Always start without ist
                                    extra_views=regnerf_bool, batch_size=batch_size)
-        ts_dset = VideoLLFFDataset(data_dir, split='test', downsample=data_downsample,
+        ts_dset = VideoLLFFDataset(data_dir, split='test', downsample=4,
                                    keyframes=False, extra_views=False, batch_size=batch_size)
     tr_loader = torch.utils.data.DataLoader(
-        tr_dset, batch_size=None, shuffle=True, num_workers=4,
+        tr_dset, batch_size=None, shuffle=True, num_workers=2,
         prefetch_factor=4, pin_memory=True)
     return {"tr_loader": tr_loader, "ts_dset": ts_dset}

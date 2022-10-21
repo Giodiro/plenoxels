@@ -14,6 +14,7 @@ class BaseDataset(Dataset, ABC):
                  scene_bbox: torch.Tensor,
                  split: str,
                  is_ndc: bool,
+                 is_contracted: bool,
                  rays_o: torch.Tensor,
                  rays_d: torch.Tensor,
                  intrinsics: Intrinsics,
@@ -26,6 +27,7 @@ class BaseDataset(Dataset, ABC):
         self.scene_bbox = scene_bbox
         self.split = split
         self.is_ndc = is_ndc
+        self.is_contracted = is_contracted
         self.batch_size = batch_size
         if self.split == 'train':
             assert self.batch_size is not None
@@ -59,6 +61,11 @@ class BaseDataset(Dataset, ABC):
     def get_rand_ids(self, index, weights=None):
         assert self.batch_size is not None, "Can't get rand_ids for test split"
         if weights is not None:
+            # if len(weights) >= 16777216:  # 2^24 is the max for torch.multinomial
+            if len(weights) > 8000000:  # 2^24 is the max for torch.multinomial
+                subset = torch.from_numpy(np.random.choice(len(weights), size=8000000))
+                samples = torch.multinomial(input=weights[subset], num_samples=self.batch_size, generator=self.generator)
+                return subset[samples]
             return torch.multinomial(input=weights, num_samples=self.batch_size, generator=self.generator)
         assert self.perm is not None, "Call reset_iter"
         return self.perm[index * self.batch_size: (index + 1) * self.batch_size]

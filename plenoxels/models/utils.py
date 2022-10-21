@@ -131,6 +131,13 @@ def compute_plane_tv(t):
     # return torch.mean(loss)
 
 
+def compute_line_tv(t):
+    batch_size, w = t.shape
+    count_w = batch_size * (w - 1)
+    w_tv = torch.square(t[..., 1:] - t[..., :w-1]).sum()
+    return 2 * (w_tv / count_w) 
+
+
 def raw2alpha(sigma, dist):
     alpha = 1 - torch.exp(-sigma * dist)
     T = torch.cat((torch.ones(alpha.shape[0], 1, device=alpha.device),

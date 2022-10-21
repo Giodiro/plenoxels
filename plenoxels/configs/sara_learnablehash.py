@@ -2,14 +2,15 @@
 # the configuration must be specified in a dictionary called `config`.
 import numpy as np
 config = {
-    "expname": "lego_rank10_sh28_meaninit-11",
+    # "expname": "lego_rank10_plenoxelsh28_meaninit-11_downsample3",
+    "expname": "test",
     # "expname": "lowrank_noupsamplelr4e-3_planetvfeats0.04",
     # "logdir": "./logs/fullresofern",
     "logdir": "./logs/sh",
 
     # Data settings
     "data_resolution": None,
-    "data_downsample": 1,
+    "data_downsample": 3,
     "data_dirs": ["/home/sfk/data/nerf_synthetic/lego"],
     # "data_dirs": ["/home/sfk/data/nerf_llff_data/fern"],
     # Data settings for 360
@@ -19,7 +20,7 @@ config = {
     "hold_every": 8,
 
     # Optimization settings
-    "num_epochs": 10,
+    "num_steps": 1000,
     "batch_size": 4096,
     "num_batches_per_dset": 1,
     "scheduler_type": None,
@@ -35,8 +36,8 @@ config = {
 
     # Training settings
     "train_fp16": True,
-    "save_every": 10,
-    "valid_every": 10,
+    "save_every": 500,
+    "valid_every": 500,
     "save_outputs": True,
     "transfer_learning": False,
 

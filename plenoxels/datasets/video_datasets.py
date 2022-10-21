@@ -206,10 +206,12 @@ class VideoLLFFDataset(BaseDataset):
         print("imgs", imgs.shape, "poses", poses.shape)
         rays_o, rays_d, imgs = create_llff_rays(
             imgs=imgs, poses=poses, intrinsics=intrinsics, merge_all=split == 'train')  # [-1, 3]
+        self.is_contracted = True
         super().__init__(datadir=datadir,
                          split=split,
                          scene_bbox=self.init_bbox(),
-                         is_ndc=True,
+                         is_ndc=False,
+                         is_contracted=True,
                          generator=generator,
                          batch_size=batch_size,
                          imgs=imgs,
@@ -241,7 +243,10 @@ class VideoLLFFDataset(BaseDataset):
                  f"time={torch.max(timestamps)}. {intrinsics}")
 
     def init_bbox(self):
-        return torch.tensor([[-2.0, -2.0, -1.0], [2.0, 2.0, 1.0]])
+        if self.is_contracted:
+            return torch.tensor([[-2.0, -2.0, -2.0], [2.0, 2.0, 2.0]])
+        else:
+            return torch.tensor([[-2.0, -2.0, -1.0], [2.0, 2.0, 1.0]])
 
     def __getitem__(self, index):
         if self.isg_weights is not None:
@@ -338,7 +343,7 @@ def dynerf_isg_weight(imgs, median_imgs, gamma):
     return psidiff  # valid probabilities, each in [0, 1]
 
 
-def dynerf_ist_weight(imgs, num_cameras, alpha=0.1):
+def dynerf_ist_weight(imgs, num_cameras, alpha=0.01):
     N, h, w, c = imgs.shape
     frames = imgs.view(num_cameras, -1, h, w, c)  # [num_cameras, num_timesteps, h, w, 3]
     num_timesteps = frames.shape[1]

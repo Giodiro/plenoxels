@@ -5,7 +5,7 @@ import resource
 
 import torch
 from torch.multiprocessing import Pool
-import torchvision
+import torchvision.transforms
 import torchvision.transforms.functional as tf
 from PIL import Image
 import imageio.v3 as iio
@@ -119,6 +119,8 @@ def _load_video_1cam(idx: int,
     for frame_idx, frame in enumerate(all_frames):
         if frame_idx % load_every != 0:
             continue
+        if frame_idx >= 300:  # Only look at the first 10 seconds
+            break
         # Frame is np.ndarray in uint8 dtype (H, W, C)
         imgs.append(
             torch.from_numpy(frame).to(torch.float32).div(255),

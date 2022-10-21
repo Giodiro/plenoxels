@@ -5,7 +5,7 @@ from typing import Dict, List, Union, Sequence, Tuple
 import torch
 import torch.nn.functional as F
 
-from plenoxels.models.utils import grid_sample_wrapper, raw2alpha
+from plenoxels.models.utils import grid_sample_wrapper, compute_plane_tv, compute_line_tv, raw2alpha
 from .decoders import NNDecoder, SHDecoder
 from .lowrank_model import LowrankModel
 from ..raymarching.raymarching import RayMarcher
@@ -18,6 +18,7 @@ class LowrankVideo(LowrankModel):
                  aabb: torch.Tensor,  # [[x_min, y_min, z_min], [x_max, y_max, z_max]]
                  len_time: int,
                  is_ndc: bool,
+                 is_contracted: bool,
                  sh: bool,
                  **kwargs):
         super().__init__()
@@ -29,6 +30,7 @@ class LowrankVideo(LowrankModel):
         self.len_time = len_time
         self.extra_args = kwargs
         self.is_ndc = is_ndc
+        self.is_contracted = is_contracted
         self.raymarcher = RayMarcher(**self.extra_args)
         self.sh = sh
         self.density_act = trunc_exp
@@ -66,7 +68,7 @@ class LowrankVideo(LowrankModel):
                          timestamps,
                          return_coords: bool = False
                          ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        grid_space = self.grids  # space: [3, rank * F_dim, reso, reso]
+        grid_space = self.grids  # space: 3 x [1, rank * F_dim, reso, reso]
         grid_time = self.time_coef  # time: [rank * F_dim, time_reso]
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
 
@@ -110,7 +112,7 @@ class LowrankVideo(LowrankModel):
         
         rm_out = self.raymarcher.get_intersections2(
             rays_o, rays_d, self.aabb(0), self.resolution(0), perturb=self.training,
-            is_ndc=self.is_ndc)
+            is_ndc=self.is_ndc, is_contracted=self.is_contracted)
         rays_d = rm_out["rays_d"]                   # [n_rays, 3]
         intersection_pts = rm_out["intersections"]  # [n_rays, n_intrs, 3]
         mask = rm_out["mask"]                       # [n_rays, n_intrs]
@@ -167,3 +169,11 @@ class LowrankVideo(LowrankModel):
         ]
         return params
 
+    def compute_plane_tv(self):
+        grid_space = self.grids  # space: 3 x [1, rank * F_dim, reso, reso]
+        grid_time = self.time_coef  # time: [rank * F_dim, time_reso]
+        total = 0
+        for grid in grid_space:
+            total += compute_plane_tv(grid)
+        total += compute_line_tv(grid_time)
+        return total
