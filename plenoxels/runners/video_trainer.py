@@ -319,7 +319,13 @@ def reload_dset_no_keyframes(dset):
         new_dset = Video360Dataset(
             datadir=dset.datadir, split=dset.split, color_bkgd_aug=dset.color_bkgd_aug,
             batch_size=dset.batch_size, generator=dset.generator, downsample=dset.downsample,
-            max_cameras=dset.max_cameras, max_tsteps=None, isg=dset.isg
+            max_cameras=dset.max_cameras, max_tsteps=None, isg=False, ist=True,
+        )
+    elif isinstance(dset, VideoLLFFDataset):
+        new_dset = VideoLLFFDataset(
+            datadir=dset.datadir, split=dset.split, keyframes=False,
+            batch_size=dset.batch_size, generator=dset.generator, downsample=dset.downsample,
+            isg=False, ist=True,
         )
     else:
         raise ValueError(dset)
