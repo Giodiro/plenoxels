@@ -74,7 +74,6 @@ class Trainer():
         self.gradient_acc = kwargs.get('gradient_acc', False)
         self.target_sample_batch_size = sample_batch_size
         self.render_n_samples = n_samples
-        self.alpha_threshold = kwargs['alpha_threshold']
         self.cone_angle = kwargs['cone_angle']
         # Set initial batch-size
         for dset in self.train_datasets:
@@ -131,7 +130,7 @@ class Trainer():
                 render_bkgd=data['color_bkgd'],
                 cone_angle=self.cone_angle,
                 render_step_size=self.model.step_size(self.render_n_samples, dset_id),
-                alpha_thresh=self.alpha_threshold,
+                alpha_thresh=self.cur_alpha_threshold(),
             )
         return {
             "rgb": rgb,
@@ -164,7 +163,7 @@ class Trainer():
                 render_bkgd=data["color_bkgd"],
                 cone_angle=self.cone_angle,
                 render_step_size=self.model.step_size(self.render_n_samples, dset_id),
-                alpha_thresh=self.alpha_threshold,
+                alpha_thresh=self.cur_alpha_threshold(),
             )
             if n_rendering_samples == 0:
                 return False
@@ -251,6 +250,10 @@ class Trainer():
                 f"mse/D{dset_id}", self.loss_info[dset_id]["mse"].value, self.global_step)
             progress_bar.set_postfix_str(
                 losses_to_postfix(self.loss_info, lr=self.cur_lr()), refresh=False)
+        if self.global_step == 10_000:
+            self.volume_tv_weight /= 5
+            logging.info(f"Set vol-TV-weight to {self.volume_tv_weight}")
+
 
         progress_bar.update(1)
 
@@ -475,10 +478,17 @@ class Trainer():
             return self.extra_args['density_threshold'] / 10
         return self.extra_args['density_threshold']
 
+    def cur_alpha_threshold(self) -> float:
+        if self.global_step < 512:
+            return self.extra_args['alpha_threshold']
+        return self.extra_args['alpha_threshold']
+
     def cur_max_rays(self) -> int:
         if self.global_step < 512:
             return 15_000
-        return 40_000
+        elif self.global_step < 1024:
+            return 100_000
+        return 1_000_000
 
 
 def losses_to_postfix(losses: List[Dict[str, EMA]], lr: float) -> str:
