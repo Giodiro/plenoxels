@@ -251,7 +251,7 @@ class Trainer():
             progress_bar.set_postfix_str(
                 losses_to_postfix(self.loss_info, lr=self.cur_lr()), refresh=False)
         if self.global_step == 10_000:
-            self.volume_tv_weight /= 5
+            self.volume_tv_weight /= 2
             logging.info(f"Set vol-TV-weight to {self.volume_tv_weight}")
 
 
@@ -315,7 +315,7 @@ class Trainer():
                 val_metrics.append(per_scene_metrics)
 
         df = pd.DataFrame.from_records(val_metrics)
-        df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.num_steps}.csv"))
+        df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
 
     def evaluate_metrics(self, gt, preds: MutableMapping[str, torch.Tensor], dset, dset_id: int, img_idx: int,
                          name: Optional[str] = None, save_outputs: bool = True):
@@ -408,7 +408,7 @@ class Trainer():
             logging.info(f"=> Loaded step {self.global_step} from checkpoints")
 
     def init_loss_info(self):
-        ema_weight = 0.1
+        ema_weight = 1.0
         self.loss_info = [defaultdict(lambda: EMA(ema_weight)) for _ in range(self.num_dsets)]
 
     # noinspection PyUnresolvedReferences,PyProtectedMember
