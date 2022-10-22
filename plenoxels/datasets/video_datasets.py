@@ -43,6 +43,7 @@ class Video360Dataset(BaseDataset):
         self.max_tsteps = max_tsteps
         self.downsample = downsample
         self.near_far = [2.0, 6.0]
+        self.keyframes = split == 'train' and max_tsteps is not None
 
         frames, transform = load_360video_frames(datadir, split, self.max_cameras, self.max_tsteps)
         imgs, poses = load_360_images(frames, datadir, split, self.downsample)
@@ -70,17 +71,6 @@ class Video360Dataset(BaseDataset):
         else:
             self.timestamps = timestamps
 
-        if self.extra_views:
-            extra_poses = generate_hemispherical_orbit(poses, n_frames=120)
-            extra_rays_o, extra_rays_d, _ = create_360_rays(
-                imgs=None, poses=extra_poses, merge_all=False, intrinsics=intrinsics,
-                is_blender_format=True)
-            extra_rays_o = extra_rays_o.view(-1, self.img_h, self.img_w, 3)
-            extra_rays_d = extra_rays_d.view(-1, self.img_h, self.img_w, 3)
-            self.patchloader = PatchLoader(extra_rays_o, extra_rays_d, len_time=self.len_time,
-                                           batch_size=self.batch_size, patch_size=self.patch_size,
-                                           generator=self.generator)
-
         log.info(f"Video360Dataset - Loaded {self.split} set from {self.datadir}: "
                  f"{poses.shape[0]} images of size {self.img_h}x{self.img_w} and "
                  f"{imgs.shape[-1]} channels. "
@@ -92,8 +82,6 @@ class Video360Dataset(BaseDataset):
         if self.split == 'train':
             idxs = self.get_rand_ids(index)
             out["timestamps"] = self.timestamps[idxs]
-            if self.extra_views:
-                out.update(self.patchloader[index])
         else:
             out["timestamps"] = self.timestamps[index]
         return out

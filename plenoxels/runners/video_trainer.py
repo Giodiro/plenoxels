@@ -262,19 +262,21 @@ def losses_to_postfix(loss_dict: Dict[str, EMA]) -> str:
 
 
 def init_dloader_random(worker_id):
-    seed = torch.utils.data.get_worker_info()
+    seed = torch.utils.data.get_worker_info().seed
     torch.manual_seed(seed)
-    np.random.seed(seed)
+    np.random.seed(seed % (2 ** 32 - 1))
 
 
 def init_tr_data(data_downsample, data_dir, **kwargs):
     isg = kwargs.get('isg', False)
     ist = kwargs.get('ist', False)
     keyframes = kwargs.get('keyframes', False)
+    batch_size = kwargs['batch_size']
     if "lego" in data_dir:
         logging.info(f"Loading Video360Dataset with downsample={data_downsample}")
         tr_dset = Video360Dataset(
             data_dir, split='train', downsample=data_downsample,
+            batch_size=batch_size,
             max_cameras=kwargs.get('max_train_cameras'),
             max_tsteps=kwargs.get('max_train_tsteps') if keyframes else None,
             isg=isg,
@@ -286,6 +288,7 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
         logging.info(f"Loading VideoLLFFDataset with downsample={data_downsample}")
         tr_dset = VideoLLFFDataset(
             data_dir, split='train', downsample=data_downsample,
+            batch_size=batch_size,
             keyframes=keyframes,
             isg=isg,  # Always start without ist
             ist=ist,
