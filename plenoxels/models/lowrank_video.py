@@ -72,12 +72,13 @@ class LowrankVideo(LowrankModel):
                          timestamps,
                          return_coords: bool = False
                          ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        grid_space = self.grids  # space: 3 x [1, rank * F_dim, reso, reso]
-        grid_time = self.time_coef  # time: [rank * F_dim, time_reso]
+        grid_space = self.grids      # space: 3 x [1, rank * F_dim, reso, reso]
+        grid_time = self.time_coef   # time: [rank * F_dim, time_reso]
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
+        # timestamps: [n, 1]
 
         # Interpolate in time
-        interp_time = grid_sample_wrapper(grid_time.unsqueeze(0), timestamps[:, None])  # [n, F_dim * rank]
+        interp_time = grid_sample_wrapper(grid_time.unsqueeze(0), timestamps)  # [n, F_dim * rank]
         interp_time = interp_time.view(-1, level_info["output_coordinate_dim"], level_info["rank"][0])  # [n, F_dim, rank]
         # Interpolate in space
         interp = pts

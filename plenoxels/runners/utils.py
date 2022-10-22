@@ -289,14 +289,20 @@ def render_image(
         rays_d = rays_d.reshape([num_rays] + list(rays_d.shape[2:]))
     else:
         num_rays, _ = rays_shape
+    timestamps = timestamps.to(device)
 
     def sigma_fn(t_starts, t_ends, ray_indices):
         ray_indices = ray_indices.long()
         t_origins = chunk_rays_o[ray_indices]
         t_dirs = chunk_rays_d[ray_indices]
         positions = t_origins + t_dirs * (t_starts + t_ends) / 2.0
-        if chunk_timestamps is not None:
-            return radiance_field.query_density(positions, chunk_timestamps)
+        if timestamps is not None:
+            t = (
+                timestamps[ray_indices]
+                if radiance_field.training
+                else timestamps.expand_as(positions[:, :1])
+            )
+            return radiance_field.query_density(positions, t)
         return radiance_field.query_density(positions, grid_id)
 
     def rgb_sigma_fn(t_starts, t_ends, ray_indices):
@@ -304,8 +310,13 @@ def render_image(
         t_origins = chunk_rays_o[ray_indices]
         t_dirs = chunk_rays_d[ray_indices]
         positions = t_origins + t_dirs * (t_starts + t_ends) / 2.0
-        if chunk_timestamps is not None:
-            return radiance_field(positions, t_dirs, chunk_timestamps)
+        if timestamps is not None:
+            t = (
+                timestamps[ray_indices]
+                if radiance_field.training
+                else timestamps.expand_as(positions[:, :1])
+            )
+            return radiance_field(positions, t_dirs, t)
         return radiance_field(positions, t_dirs, grid_id)
 
     results = []
@@ -317,9 +328,6 @@ def render_image(
     for i in range(0, num_rays, chunk):
         chunk_rays_o = rays_o[i: i + chunk].to(device=device)
         chunk_rays_d = rays_d[i: i + chunk].to(device=device)
-        chunk_timestamps = None
-        if timestamps is not None:
-            chunk_timestamps = timestamps[i : i + chunk].to(device=device)
         packed_info, t_starts, t_ends = ray_marching(
             chunk_rays_o,
             chunk_rays_d,
@@ -339,6 +347,7 @@ def render_image(
             t_starts,
             t_ends,
             render_bkgd=render_bkgd.to(device=device),
+            alpha_thre=alpha_thresh,
         )
         chunk_results = [rgb, opacity, depth, len(t_starts)]
         results.append(chunk_results)

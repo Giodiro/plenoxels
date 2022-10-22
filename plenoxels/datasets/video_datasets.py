@@ -27,6 +27,7 @@ class Video360Dataset(BaseDataset):
     max_cameras: Optional[int]
     max_tsteps: Optional[int]
     timestamps: Optional[torch.Tensor]
+    OPENGL_CAMERA: bool = True
 
     def __init__(self,
                  datadir: str,
@@ -76,6 +77,9 @@ class Video360Dataset(BaseDataset):
             self.ist_weights.div_(torch.sum(self.ist_weights))
 
         images = (images * 255).to(torch.uint8)
+        camtoworlds = camtoworlds.to(torch.float32)
+        self.timestamps = timestamps.to(torch.float32)[:, None]
+        self.len_time = 25#int(torch.amax(self.timestamps).item())
         super().__init__(datadir=datadir,
                          split=split,
                          batch_size=batch_size,
@@ -85,8 +89,6 @@ class Video360Dataset(BaseDataset):
                          intrinsics=intrinsics,
                          images=images,
                          camtoworlds=camtoworlds)
-        self.timestamps = timestamps
-        self.len_time = torch.amax(self.timestamps).item()
 
         log.info(f"Video360Dataset - Loaded {self.split} set from {self.datadir}: "
                  f"{self.images.shape[0]} images of size {self.img_h}x{self.img_w} and "
@@ -129,7 +131,6 @@ class Video360Dataset(BaseDataset):
             origins = torch.reshape(origins, (self.intrinsics.height, self.intrinsics.width, 3))
             viewdirs = torch.reshape(viewdirs, (self.intrinsics.height, self.intrinsics.width, 3))
             rgba = torch.reshape(rgba, (self.intrinsics.height, self.intrinsics.width, 4))
-            ts = ts.repeat(ts, self.intrinsics.height * self.intrinsics.width)  # (num_rays)
 
         return {
             "rgba": rgba,        # [h, w, 4] or [num_rays, 4]
@@ -154,8 +155,8 @@ class Video360Dataset(BaseDataset):
 
 def gen_pixel_samples_weighted(num_samples: int, weights: torch.Tensor, intrinsics, generator=None):
     # Sample from isg_weights. rids between [0, N*H*W)
-    if len(weights) >= 16777216:  # 2^24 is the max for torch.multinomial
-        subset = torch.from_numpy(np.random.choice(len(weights), size=16777210)).to(weights)
+    if len(weights) >= 1677721:  # 2^24 is the max for torch.multinomial
+        subset = torch.from_numpy(np.random.choice(len(weights), size=1677721)).to(device=weights.device)
         samples = torch.multinomial(
             input=weights[subset], num_samples=num_samples, generator=generator)
         rids = subset[samples]
@@ -198,11 +199,14 @@ def load_360video_frames(datadir,
     timestamps = sorted(timestamps)
     pose_ids = sorted(pose_ids)
 
-    num_poses = min(len(pose_ids), max_cameras or len(pose_ids))
+    # Subsampling timestamps: always include first and last!
     num_timestamps = min(len(timestamps), max_tsteps or len(timestamps))
-    subsample_time = int(round(len(timestamps) / num_timestamps))
-    subsample_poses = int(round(len(pose_ids) / num_poses))
+    subsample_time = int(math.floor(len(timestamps) / (num_timestamps - 1)))
     timestamps = set(timestamps[::subsample_time])
+    log.info(f"Selected subset of timestamps: {timestamps}")
+
+    num_poses = min(len(pose_ids), max_cameras or len(pose_ids))
+    subsample_poses = int(round(len(pose_ids) / num_poses))
     pose_ids = set(pose_ids[::subsample_poses])
 
     log_txt = f"Subsampling {split}: "
@@ -220,7 +224,7 @@ def load_360video_frames(datadir,
             sub_frames.append(frame)
             camera_ids.append(pose_id)
     # sort sub_frames by camera_id
-    sub_frames = list(zip(*sorted(zip(sub_frames, camera_ids), key=lambda f, cid: cid)))[0]
+    sub_frames = list(zip(*sorted(zip(sub_frames, camera_ids), key=lambda tup: tup[1])))[0]
     num_frames_per_cam = len(sub_frames) // len(np.unique(camera_ids))
 
     # Load images + poses from frames
@@ -235,7 +239,7 @@ def load_360video_frames(datadir,
     # Figure out median image per camera
     median_imgs = (
         images.view(num_frames_per_cam, -1, *images.shape[1:])
-              .median(0)
+              .median(0).values
     )  # [num_cams, H, W, 3/4]
 
     # Load intrinsics
@@ -312,8 +316,11 @@ class VideoLLFFDataset(BaseDataset):
         self.downsample = downsample
         self.near_far = [0.0, 1.0]
         self.keyframes = keyframes
+        self.training = split == 'train'
         if self.keyframes:
             self.keyframes_take_each = 30
+        else:
+            self.keyframes_take_each = 1
 
         images, camtoworlds, intrinsics, timestamps, median_images = load_llffvideo_frames(
             datadir=datadir, split=split, keyframes_take_each=self.keyframes_take_each,

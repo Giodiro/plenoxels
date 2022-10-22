@@ -19,6 +19,7 @@ from plenoxels.my_tqdm import tqdm
 from plenoxels.ops.image import metrics
 from plenoxels.runners.multiscene_trainer import Trainer
 from plenoxels.runners.utils import render_image
+from ..datasets.base_dataset import MultiSceneDataset
 
 
 class VideoTrainer(Trainer):
@@ -64,14 +65,15 @@ class VideoTrainer(Trainer):
                          sample_batch_size=sample_batch_size,
                          n_samples=n_samples,
                          **kwargs)
+        self.ist_step = ist_step
+
         self.upsample_time_resolution = upsample_time_resolution
         self.upsample_time_steps = upsample_time_steps
+        assert len(upsample_time_resolution) == len(upsample_time_steps)
+
         # Override base-class device (which is CPU)
         self.device = device
-        self.model.to(device)
-        self.ist_step = ist_step
-        self.plane_tv_weight = kwargs['plane_tv_weight']
-        assert len(upsample_time_resolution) == len(upsample_time_steps)
+        self.model = self.model.to(self.device)
 
     def eval_step(self, data, dset_id=0) -> MutableMapping[str, torch.Tensor]:
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
@@ -82,12 +84,12 @@ class VideoTrainer(Trainer):
                 data['rays_o'],
                 data['rays_d'],
                 timestamps=data['timestamps'],
-                near_plane=self.train_datasets[0].near,
-                far_plane=self.train_datasets[0].far,
+                near_plane=None,
+                far_plane=None,
                 render_bkgd=data['color_bkgd'],
                 cone_angle=self.cone_angle,
                 render_step_size=self.model.step_size(self.render_n_samples),
-                alpha_thresh=self.alpha_threshold,
+                alpha_thresh=self.cur_alpha_threshold(),
                 device=self.device,
             )
         return {
@@ -96,14 +98,15 @@ class VideoTrainer(Trainer):
         }
 
     def step(self, data, do_update=True):
-        imgs = data["imgs"]
+        imgs = data["pixels"].to(self.device)
+        tstamps = data["timestamps"].to(self.device)
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             # update occupancy grid
             self.occupancy_grids[0].every_n_step(
                 step=self.global_step,
                 occ_eval_fn=lambda x: self.model.query_opacity(
-                    x, data["timestamps"], self.train_datasets[0]
+                    x, tstamps, self.train_datasets[0]
                 ),
                 occ_thre=self.cur_density_threshold(),
             )
@@ -114,14 +117,14 @@ class VideoTrainer(Trainer):
                 0,
                 data["rays_o"],
                 data["rays_d"],
-                timestamps=data["timestamps"],
+                timestamps=tstamps,
                 # rendering options
-                near_plane=self.train_datasets[0].near,
-                far_plane=self.train_datasets[0].far,
+                near_plane=None,
+                far_plane=None,
                 render_bkgd=data["color_bkgd"],
                 cone_angle=self.cone_angle,
                 render_step_size=self.model.step_size(self.render_n_samples),
-                alpha_thresh=self.alpha_threshold,
+                alpha_thresh=self.cur_alpha_threshold(),
                 device=self.device,
             )
             if n_rendering_samples == 0:
@@ -163,7 +166,6 @@ class VideoTrainer(Trainer):
             self.gscaler.update()
 
             if self.global_step in self.upsample_time_steps:
-                print()
                 # Upsample time resolution
                 self.model.upsample_time(self.upsample_time_resolution[self.upsample_time_steps.index(self.global_step)])
                 # Reset optimizer
@@ -177,7 +179,6 @@ class VideoTrainer(Trainer):
                         prefetch_factor=4, pin_memory=True)
 
             if self.global_step == self.ist_step:
-                print(f'deleting pre-ist training data to avoid OOM')
                 datadir = self.train_data_loader.dataset.datadir
                 downsample = self.train_data_loader.dataset.downsample
                 keyframes = self.train_data_loader.dataset.keyframes
@@ -185,7 +186,6 @@ class VideoTrainer(Trainer):
                 batch_size = self.train_data_loader.dataset.batch_size
                 del self.train_data_loader, self.train_datasets
                 gc.collect()
-                print(f'reloading training data with IST importance sampling')
                 tr_dset = VideoLLFFDataset(datadir, split='train', downsample=downsample,
                                     keyframes=keyframes, isg=False, ist=True,
                                     extra_views=extra_views, batch_size=batch_size)
@@ -210,12 +210,12 @@ class VideoTrainer(Trainer):
             print()
             self.save_model()
 
-    def init_epoch_info(self):
-        ema_weight = 0.1
+    def init_loss_info(self):
+        ema_weight = 1.0
         self.loss_info = defaultdict(lambda: EMA(ema_weight))
 
     def init_model(self, **kwargs) -> torch.nn.Module:
-        dset = self.train_data_loader.dataset
+        dset = self.train_datasets[0]
         model = LowrankVideo(
             aabb=dset.scene_bbox,
             len_time=dset.len_time,
@@ -229,6 +229,7 @@ class VideoTrainer(Trainer):
 
     def validate(self):
         val_metrics = []
+        self.model.eval()
         with torch.no_grad():
             dataset = self.test_datasets[0]
             per_scene_metrics = {
@@ -239,7 +240,7 @@ class VideoTrainer(Trainer):
             for img_idx, data in enumerate(dataset):
                 preds = self.eval_step(data, dset_id=0)
                 out_metrics, out_img = self.evaluate_metrics(
-                    data["imgs"], preds, dset=dataset, img_idx=img_idx, name=None)
+                    data["pixels"], preds, dset=dataset, img_idx=img_idx, name=None)
                 pred_frames.append(out_img)
                 per_scene_metrics["psnr"] += out_metrics["psnr"]
                 per_scene_metrics["ssim"] += out_metrics["ssim"]
@@ -270,7 +271,12 @@ class VideoTrainer(Trainer):
 
     def evaluate_metrics(self, gt, preds: MutableMapping[str, torch.Tensor], dset,
                          img_idx, name=None, save_outputs: bool = True):
-        preds_rgb = preds["rgb"].reshape(dset.img_h, dset.img_w, 3).cpu()
+        preds_rgb = (
+            preds["rgb"]
+            .reshape(dset.img_h, dset.img_w, 3)
+            .cpu()
+            .clamp(0, 1)
+        )
         exrdict = {
             "preds": preds_rgb.numpy(),
         }
@@ -308,6 +314,11 @@ class VideoTrainer(Trainer):
         #     write_png(os.path.join(self.log_dir, out_name + ".png"), out_img)
 
         return summary, out_img
+
+    def cur_alpha_threshold(self) -> float:
+        if self.global_step < 512:
+            return 0.0
+        return self.alpha_threshold
 
 
 def losses_to_postfix(loss_dict: Dict[str, EMA]) -> str:
@@ -362,6 +373,6 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
         ts_dset = VideoLLFFDataset(data_dir, split='test', downsample=4,
                                    keyframes=False, batch_size=batch_size)
     tr_loader = torch.utils.data.DataLoader(
-        tr_dset, batch_size=None, num_workers=4,
-        prefetch_factor=4, pin_memory=True)
-    return {"tr_loader": tr_loader, "ts_dset": ts_dset}
+        MultiSceneDataset([tr_dset]), batch_size=None, num_workers=0,
+        prefetch_factor=2, pin_memory=True)
+    return {"tr_loader": tr_loader, "ts_dset": ts_dset, "tr_dset": tr_dset}
