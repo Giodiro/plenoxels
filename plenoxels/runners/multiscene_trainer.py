@@ -11,16 +11,35 @@ import torch.nn.functional as F
 import torch.utils.data
 from torch.utils.tensorboard import SummaryWriter
 
-from nerfacc import ContractionType, OccupancyGrid, ray_marching, rendering
+from nerfacc import ContractionType, OccupancyGrid
+from nerfacc.grid import _meshgrid3d
 from plenoxels.ema import EMA
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_exr, write_png
+from .utils import render_image
 from ..datasets import SyntheticNerfDataset, LLFFDataset
 from ..datasets.base_dataset import MultiSceneDataset
 from ..my_tqdm import tqdm
 from ..utils import parse_optint
 from .utils import get_cosine_schedule_with_warmup
+
+
+class UpsamplingOccupancyGrid(OccupancyGrid):
+    def upsample(self, new_reso: torch.Tensor):
+        old_reso = self.resolution.cpu().tolist()
+        old_occs = self.occs.view(old_reso)
+        new_occs = F.interpolate(
+            old_occs[None, None, ...], size=new_reso[::-1], mode='trilinear', align_corners=True)
+
+        self.num_cells = int(new_reso.prod().item())
+        self._binary = torch.zeros(new_reso.tolist(), dtype=torch.bool)
+        self.resolution = new_reso
+        self.occs = new_occs
+        self.grid_coords = _meshgrid3d(new_reso).reshape(
+            self.num_cells, self.NUM_DIM
+        )
+        self.grid_indices = torch.arange(self.num_cells)
 
 
 class Trainer():
@@ -98,20 +117,21 @@ class Trainer():
         self.train_iterators = None
         self.contraction_type = ContractionType.AABB
 
+        # self.criterion = torch.nn.MSELoss(reduction='mean')
+        self.criterion = torch.nn.SmoothL1Loss(reduction='mean')
+
         self.model = self.init_model(**self.extra_args)
         self.occupancy_grids = self.init_occupancy_grid(**self.extra_args)
         self.optimizer = self.init_optim(**self.extra_args)
         self.scheduler = self.init_lr_scheduler(**self.extra_args)
-        # self.criterion = torch.nn.MSELoss(reduction='mean')
-        self.criterion = torch.nn.SmoothL1Loss(reduction='mean')
         self.gscaler = torch.cuda.amp.GradScaler(enabled=self.train_fp16)
 
         self.device = device
-        self.model.to(device=device)
+        self.model.to(device=self.device)
         for dset in self.train_datasets:
-            dset.to(device=device)
+            dset.to(device=self.device)
         for dset in self.test_datasets:
-            dset.to(device=device)
+            dset.to(device=self.device)
 
     def eval_step(self, data, dset_id) -> MutableMapping[str, torch.Tensor]:
         """
@@ -131,6 +151,7 @@ class Trainer():
                 cone_angle=self.cone_angle,
                 render_step_size=self.model.step_size(self.render_n_samples, dset_id),
                 alpha_thresh=self.cur_alpha_threshold(),
+                device=self.device,
             )
         return {
             "rgb": rgb,
@@ -164,6 +185,7 @@ class Trainer():
                 cone_angle=self.cone_angle,
                 render_step_size=self.model.step_size(self.render_n_samples, dset_id),
                 alpha_thresh=self.cur_alpha_threshold(),
+                device=self.device,
             )
             if n_rendering_samples == 0:
                 return False
@@ -308,7 +330,7 @@ class Trainer():
                 pb.close()
                 per_scene_metrics["psnr"] /= len(dataset)  # noqa
                 per_scene_metrics["ssim"] /= len(dataset)  # noqa
-                log_text = f"STEP {self.global_step}/{self.num_steps} | scene {dset_id}"
+                log_text = f"step {self.global_step}/{self.num_steps} | scene {dset_id}"
                 log_text += f" | D{dset_id} PSNR: {per_scene_metrics['psnr']:.2f}"
                 log_text += f" | D{dset_id} SSIM: {per_scene_metrics['ssim']:.6f}"
                 logging.info(log_text)
@@ -320,10 +342,9 @@ class Trainer():
     def evaluate_metrics(self, gt, preds: MutableMapping[str, torch.Tensor], dset, dset_id: int, img_idx: int,
                          name: Optional[str] = None, save_outputs: bool = True):
         preds_rgb = (
-            preds["rgb"]
-                .reshape(dset.intrinsics.height, dset.intrinsics.width, 3)
-                .cpu()
-                .clamp(0, 1)
+            preds["rgb"].reshape(dset.intrinsics.height, dset.intrinsics.width, 3)
+                        .cpu()
+                        .clamp(0, 1)
         )
         exrdict = {
             "preds": preds_rgb.numpy(),
@@ -416,7 +437,8 @@ class Trainer():
         eta_min = 0
         lr_sched = None
         max_steps = self.num_steps
-        logging.info(f"Initializing LR Scheduler of type {self.scheduler_type} with {max_steps} maximum steps.")
+        logging.info(f"Initializing LR Scheduler of type {self.scheduler_type} with "
+                     f"{max_steps} maximum steps.")
         if self.scheduler_type == "cosine":
             lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
                 self.optimizer,
@@ -426,15 +448,21 @@ class Trainer():
             lr_sched = get_cosine_schedule_with_warmup(
                 self.optimizer, num_warmup_steps=512, num_training_steps=max_steps)
         elif self.scheduler_type == "step":
+            # lr_sched = torch.optim.lr_scheduler.MultiStepLR(
+            #     self.optimizer,
+            #     milestones=[
+            #         max_steps // 2,
+            #         max_steps * 3 // 4,
+            #         max_steps * 5 // 6,
+            #         max_steps * 9 // 10,
+            #     ],
+            #     gamma=0.33)
             lr_sched = torch.optim.lr_scheduler.MultiStepLR(
                 self.optimizer,
                 milestones=[
                     max_steps // 2,
-                    max_steps * 3 // 4,
-                    max_steps * 5 // 6,
-                    max_steps * 9 // 10,
                 ],
-                gamma=0.33)
+                gamma=0.1)
         return lr_sched
 
     def init_optim(self, **kwargs) -> torch.optim.Optimizer:
@@ -555,87 +583,3 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
 def N_to_reso(num_voxels, aabb):
     voxel_size = ((aabb[1] - aabb[0]).prod() / num_voxels).pow(1 / 3)
     return ((aabb[1] - aabb[0]) / voxel_size).long().cpu().tolist()
-
-
-def render_image(
-    # scene
-    radiance_field: torch.nn.Module,
-    occupancy_grid: OccupancyGrid,
-    grid_id: int,
-    rays_o: torch.Tensor,
-    rays_d: torch.Tensor,
-    # rendering options
-    near_plane: Optional[float] = None,
-    far_plane: Optional[float] = None,
-    render_step_size: float = 1e-3,
-    render_bkgd: Optional[torch.Tensor] = None,
-    cone_angle: float = 0.0,
-    alpha_thresh: float = 0.0,
-    # test options
-    test_chunk_size: int = 8192,
-):
-    """Render the pixels of an image."""
-    rays_shape = rays_o.shape
-    if len(rays_shape) == 3:
-        height, width, _ = rays_shape
-        num_rays = height * width
-        rays_o = rays_o.reshape([num_rays] + list(rays_o.shape[2:]))
-        rays_d = rays_d.reshape([num_rays] + list(rays_d.shape[2:]))
-    else:
-        num_rays, _ = rays_shape
-
-    def sigma_fn(t_starts, t_ends, ray_indices):
-        ray_indices = ray_indices.long()
-        t_origins = chunk_rays_o[ray_indices]
-        t_dirs = chunk_rays_d[ray_indices]
-        positions = t_origins + t_dirs * (t_starts + t_ends) / 2.0
-        return radiance_field.query_density(positions, grid_id)
-
-    def rgb_sigma_fn(t_starts, t_ends, ray_indices):
-        ray_indices = ray_indices.long()
-        t_origins = chunk_rays_o[ray_indices]
-        t_dirs = chunk_rays_d[ray_indices]
-        positions = t_origins + t_dirs * (t_starts + t_ends) / 2.0
-        return radiance_field(positions, t_dirs, grid_id)
-
-    results = []
-    chunk = (
-        torch.iinfo(torch.int32).max
-        if radiance_field.training
-        else test_chunk_size
-    )
-    for i in range(0, num_rays, chunk):
-        chunk_rays_o = rays_o[i: i + chunk]
-        chunk_rays_d = rays_d[i: i + chunk]
-        packed_info, t_starts, t_ends = ray_marching(
-            chunk_rays_o,
-            chunk_rays_d,
-            scene_aabb=radiance_field.aabb(grid_id).view(-1),
-            grid=occupancy_grid,
-            sigma_fn=sigma_fn,
-            near_plane=near_plane,
-            far_plane=far_plane,
-            render_step_size=render_step_size,
-            stratified=radiance_field.training,  # add random perturbations
-            cone_angle=cone_angle,
-            alpha_thre=alpha_thresh,
-        )
-        rgb, opacity, depth = rendering(
-            rgb_sigma_fn,
-            packed_info,
-            t_starts,
-            t_ends,
-            render_bkgd=render_bkgd,
-        )
-        chunk_results = [rgb, opacity, depth, len(t_starts)]
-        results.append(chunk_results)
-    colors, opacities, depths, n_rendering_samples = [
-        torch.cat(r, dim=0) if isinstance(r[0], torch.Tensor) else r
-        for r in zip(*results)
-    ]
-    return (
-        colors.view((*rays_shape[:-1], -1)),
-        opacities.view((*rays_shape[:-1], -1)),
-        depths.view((*rays_shape[:-1], -1)),
-        sum(n_rendering_samples),
-    )

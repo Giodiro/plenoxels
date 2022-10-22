@@ -6,12 +6,12 @@ from typing import Optional, Tuple
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 import torch.utils.data
 
+from .base_dataset import BaseDataset
 from .data_loading import parallel_load_images
 from .intrinsics import Intrinsics
-from .base_dataset import BaseDataset
+from .ray_utils import gen_pixel_samples, gen_camera_dirs, add_color_bkgd
 
 
 def _load_renderings(data_dir: str,
@@ -38,9 +38,16 @@ def _load_renderings(data_dir: str,
     frames = np.take(frames, frame_ids).tolist()
 
     img_poses = parallel_load_images(
-        image_iter=frames, dset_type="synthetic", data_dir=data_dir,
-        out_h=None, out_w=None, downsample=downsample,
-        resolution=(None, None), tqdm_title=f'Loading {split} data')
+        dset_type="synthetic",
+        tqdm_title=f'Loading {split} data',
+        num_images=len(frames),
+        frames=frames,
+        data_dir=data_dir,
+        out_h=None,
+        out_w=None,
+        downsample=downsample,
+        resolution=(None, None),
+    )
     images, camtoworlds = zip(*img_poses)
     images = torch.stack(images, 0).float()  # [N, H, W, 3/4]
     camtoworlds = torch.stack(camtoworlds, 0).float()  # [N, ????]
@@ -116,22 +123,7 @@ class SyntheticNerfDataset(BaseDataset):
     def preprocess(self, data):
         """Process the fetched / cached data with randomness."""
         rgba, rays_o, rays_d = data["rgba"], data["rays_o"], data["rays_d"]
-        pixels, alpha = torch.split(rgba, [3, 1], dim=-1)
-
-        if self.training:
-            if self.color_bkgd_aug == "random":
-                color_bkgd = torch.rand(3, device=self.images.device)
-            elif self.color_bkgd_aug == "white":
-                color_bkgd = torch.ones(3, device=self.images.device)
-            elif self.color_bkgd_aug == "black":
-                color_bkgd = torch.zeros(3, device=self.images.device)
-            else:
-                raise ValueError(self.color_bkgd_aug)
-        else:
-            # just use white during inference
-            color_bkgd = torch.ones(3, device=self.images.device)
-
-        pixels = pixels * alpha + color_bkgd * (1.0 - alpha)
+        pixels, color_bkgd = add_color_bkgd(rgba, self.color_bkgd_aug, self.training)
         return {
             "pixels": pixels,  # [n_rays, 3] or [h, w, 3]
             "rays_o": rays_o,  # [n_rays,] or [h, w]
@@ -144,45 +136,13 @@ class SyntheticNerfDataset(BaseDataset):
     def fetch_data(self, index):
         """Fetch the data (it maybe cached for multiple batches)."""
         num_rays = self.batch_size
-
-        if self.training:
-            image_id = torch.randint(
-                0,
-                len(self.images),
-                size=(num_rays,),
-                device=self.images.device,
-            )
-            x = torch.randint(
-                0, self.intrinsics.width, size=(num_rays,), device=self.images.device
-            )
-            y = torch.randint(
-                0, self.intrinsics.height, size=(num_rays,), device=self.images.device
-            )
-        else:
-            image_id = [index]
-            x, y = torch.meshgrid(
-                torch.arange(self.intrinsics.width, device=self.images.device),
-                torch.arange(self.intrinsics.height, device=self.images.device),
-                indexing="xy",
-            )
-            x = x.flatten()
-            y = y.flatten()
-
+        image_id, x, y = gen_pixel_samples(
+            self.training, self.images, index, num_rays, self.intrinsics)
         # generate rays
         rgba = self.images[image_id, y, x] / 255.0  # (num_rays, 4)   this converts to f32
         c2w = self.camtoworlds[image_id]            # (num_rays, 3, 4)
-        camera_dirs = F.pad(
-            torch.stack(
-                [
-                    (x - self.intrinsics.center_x + 0.5) / self.intrinsics.focal_x,
-                    (y - self.intrinsics.center_y + 0.5) / self.intrinsics.focal_y
-                    * (-1.0 if self.OPENGL_CAMERA else 1.0),
-                ],
-                dim=-1,
-            ),
-            (0, 1),
-            value=(-1.0 if self.OPENGL_CAMERA else 1.0),
-        )  # [num_rays, 3]
+        camera_dirs = gen_camera_dirs(
+            x, y, self.intrinsics, self.OPENGL_CAMERA)  # [num_rays, 3]
 
         # [n_cams, height, width, 3]
         directions = (camera_dirs[:, None, :] * c2w[:, :3, :3]).sum(dim=-1)

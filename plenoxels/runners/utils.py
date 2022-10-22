@@ -13,6 +13,7 @@ import torch.utils.data
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
+from nerfacc import OccupancyGrid, ray_marching, rendering
 from plenoxels.nerf_rendering import sigma2alpha, shrgb2rgb
 from plenoxels.datasets.synthetic_nerf_dataset import SyntheticNerfDataset#, get_rays
 
@@ -260,6 +261,108 @@ def user_ask_options(prompt: str, opt1: str, opt2: str) -> str:
             print(f"Invalid option {out}. Please type '{opt1}' or '{opt2}'")
 
 
+def render_image(
+    # scene
+    radiance_field: torch.nn.Module,
+    occupancy_grid: OccupancyGrid,
+    grid_id: int,
+    rays_o: torch.Tensor,
+    rays_d: torch.Tensor,
+    timestamps: Optional[torch.Tensor] = None,
+    # rendering options
+    near_plane: Optional[float] = None,
+    far_plane: Optional[float] = None,
+    render_step_size: float = 1e-3,
+    render_bkgd: Optional[torch.Tensor] = None,
+    cone_angle: float = 0.0,
+    alpha_thresh: float = 0.0,
+    device="cuda:0",
+    # test options
+    test_chunk_size: int = 8192,
+):
+    """Render the pixels of an image."""
+    rays_shape = rays_o.shape
+    if len(rays_shape) == 3:
+        height, width, _ = rays_shape
+        num_rays = height * width
+        rays_o = rays_o.reshape([num_rays] + list(rays_o.shape[2:]))
+        rays_d = rays_d.reshape([num_rays] + list(rays_d.shape[2:]))
+    else:
+        num_rays, _ = rays_shape
+    timestamps = timestamps.to(device)
+
+    def sigma_fn(t_starts, t_ends, ray_indices):
+        ray_indices = ray_indices.long()
+        t_origins = chunk_rays_o[ray_indices]
+        t_dirs = chunk_rays_d[ray_indices]
+        positions = t_origins + t_dirs * (t_starts + t_ends) / 2.0
+        if timestamps is not None:
+            t = (
+                timestamps[ray_indices]
+                if radiance_field.training
+                else timestamps.expand_as(positions[:, :1])
+            )
+            return radiance_field.query_density(positions, t)
+        return radiance_field.query_density(positions, grid_id)
+
+    def rgb_sigma_fn(t_starts, t_ends, ray_indices):
+        ray_indices = ray_indices.long()
+        t_origins = chunk_rays_o[ray_indices]
+        t_dirs = chunk_rays_d[ray_indices]
+        positions = t_origins + t_dirs * (t_starts + t_ends) / 2.0
+        if timestamps is not None:
+            t = (
+                timestamps[ray_indices]
+                if radiance_field.training
+                else timestamps.expand_as(positions[:, :1])
+            )
+            return radiance_field(positions, t_dirs, t)
+        return radiance_field(positions, t_dirs, grid_id)
+
+    results = []
+    chunk = (
+        torch.iinfo(torch.int32).max
+        if radiance_field.training
+        else test_chunk_size
+    )
+    for i in range(0, num_rays, chunk):
+        chunk_rays_o = rays_o[i: i + chunk].to(device=device)
+        chunk_rays_d = rays_d[i: i + chunk].to(device=device)
+        packed_info, t_starts, t_ends = ray_marching(
+            chunk_rays_o,
+            chunk_rays_d,
+            scene_aabb=radiance_field.aabb(grid_id).view(-1),
+            grid=occupancy_grid,
+            sigma_fn=sigma_fn,
+            near_plane=near_plane,
+            far_plane=far_plane,
+            render_step_size=render_step_size,
+            stratified=radiance_field.training,  # add random perturbations
+            cone_angle=cone_angle,
+            alpha_thre=alpha_thresh,
+        )
+        rgb, opacity, depth = rendering(
+            rgb_sigma_fn,
+            packed_info,
+            t_starts,
+            t_ends,
+            render_bkgd=render_bkgd.to(device=device),
+            alpha_thre=alpha_thresh,
+        )
+        chunk_results = [rgb, opacity, depth, len(t_starts)]
+        results.append(chunk_results)
+    colors, opacities, depths, n_rendering_samples = [
+        torch.cat(r, dim=0) if isinstance(r[0], torch.Tensor) else r
+        for r in zip(*results)
+    ]
+    return (
+        colors.view((*rays_shape[:-1], -1)),
+        opacities.view((*rays_shape[:-1], -1)),
+        depths.view((*rays_shape[:-1], -1)),
+        sum(n_rendering_samples),
+    )
+
+
 def get_cosine_schedule_with_warmup(
     optimizer: torch.optim.Optimizer,
     num_warmup_steps: int,
@@ -277,4 +380,3 @@ def get_cosine_schedule_with_warmup(
         return max(1e-5, 0.5 * (1.0 + math.cos(math.pi * ((float(num_cycles) * progress) % 1.0))))
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda, last_epoch)
-
