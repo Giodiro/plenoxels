@@ -1,14 +1,13 @@
 import glob
 import json
 import logging as log
+import math
 import os
 from typing import Optional, List, Tuple, Any
 
-import imageio.v3 as iio
 import numpy as np
 import torch
 import torchvision.transforms
-import torchvision.transforms.functional as tf
 
 from .base_dataset import BaseDataset
 from .data_loading import parallel_load_images
@@ -35,24 +34,18 @@ class Video360Dataset(BaseDataset):
                  datadir: str,
                  split: str,
                  batch_size: Optional[int] = None,
-                 generator: Optional[torch.random.Generator] = None,
                  downsample: float = 1.0,
-                 resolution: Optional[int] = 512,
                  max_cameras: Optional[int] = None,
                  max_tsteps: Optional[int] = None,
-                 extra_views: bool = False,
-                 patch_size: Optional[int] = 8):
-
+                 isg: bool = False,
+                 ist: bool = False,):
         self.max_cameras = max_cameras
         self.max_tsteps = max_tsteps
         self.downsample = downsample
-        self.resolution = (resolution, resolution)
-        self.patch_size = patch_size
         self.near_far = [2.0, 6.0]
-        self.extra_views = split == 'train' and extra_views
 
         frames, transform = load_360video_frames(datadir, split, self.max_cameras, self.max_tsteps)
-        imgs, poses = load_360_images(frames, datadir, split, self.downsample, self.resolution)
+        imgs, poses = load_360_images(frames, datadir, split, self.downsample)
         intrinsics = load_360_intrinsics(transform, imgs, self.downsample)
         rays_o, rays_d, imgs = create_360_rays(
             imgs, poses, merge_all=split == 'train', intrinsics=intrinsics, is_blender_format=True)
@@ -60,12 +53,13 @@ class Video360Dataset(BaseDataset):
                          split=split,
                          batch_size=batch_size,
                          is_ndc=False,
+                         is_contracted=False,
                          scene_bbox=get_360_bbox(datadir),
-                         generator=generator,
                          rays_o=rays_o,
                          rays_d=rays_d,
                          intrinsics=intrinsics,
-                         imgs=imgs)
+                         imgs=imgs,
+                         )
 
         timestamps = [parse_360_file_path(frame['file_path'])[0] for frame in frames]
         timestamps = torch.tensor(timestamps, dtype=torch.int32)
@@ -111,7 +105,7 @@ def parse_360_file_path(fp):
     return timestamp, pose_id
 
 
-def load_360video_frames(datadir, split, max_cameras: int, max_tsteps: int) -> Tuple[Any, Any]:
+def load_360video_frames(datadir, split, max_cameras: int, max_tsteps: Optional[int]) -> Tuple[Any, Any]:
     with open(os.path.join(datadir, f"transforms_{split}.json"), 'r') as f:
         meta = json.load(f)
         frames = meta['frames']
@@ -126,20 +120,16 @@ def load_360video_frames(datadir, split, max_cameras: int, max_tsteps: int) -> T
         pose_ids = sorted(pose_ids)
 
         num_poses = min(len(pose_ids), max_cameras or len(pose_ids))
-        num_timestamps = min(len(timestamps), max_tsteps or len(timestamps))
-        subsample_time = int(round(len(timestamps) / num_timestamps))
         subsample_poses = int(round(len(pose_ids) / num_poses))
-        if subsample_time == 1 and subsample_poses == 1:
-            return frames
-        timestamps = set(timestamps[::subsample_time])
         pose_ids = set(pose_ids[::subsample_poses])
 
-        log_txt = f"Subsampling {split}: "
-        if subsample_time > 1:
-            log_txt += f"time (1 every {subsample_time}) "
-        if subsample_poses > 1:
-            log_txt += f"poses (1 every {subsample_poses})"
-        log.info(log_txt)
+        num_timestamps = min(len(timestamps), max_tsteps or len(timestamps))
+        subsample_time = int(math.floor(len(timestamps) / (num_timestamps - 1)))
+        timestamps = set(timestamps[::subsample_time])
+
+        if subsample_time == 1 and subsample_poses == 1:
+            return frames
+        log.info(f"Selected subset of timestamps: {timestamps}")
 
         sub_frames = []
         for frame in frames:
@@ -160,7 +150,6 @@ class VideoLLFFDataset(BaseDataset):
                  datadir,
                  split: str,
                  batch_size: Optional[int] = None,
-                 generator: Optional[torch.random.Generator] = None,
                  downsample=1.0,
                  keyframes=True,
                  isg=False,
@@ -212,7 +201,6 @@ class VideoLLFFDataset(BaseDataset):
                          scene_bbox=self.init_bbox(),
                          is_ndc=False,
                          is_contracted=True,
-                         generator=generator,
                          batch_size=batch_size,
                          imgs=imgs,
                          rays_o=rays_o,
@@ -346,9 +334,8 @@ def dynerf_isg_weight(imgs, median_imgs, gamma):
 def dynerf_ist_weight(imgs, num_cameras, alpha=0.01):
     N, h, w, c = imgs.shape
     frames = imgs.view(num_cameras, -1, h, w, c)  # [num_cameras, num_timesteps, h, w, 3]
-    num_timesteps = frames.shape[1]
-    shift_left = frames[:,1:,...]  # [num_cameras, num_timesteps - 1, h, w, 3]
-    shift_right = frames[:,0:-1,...]  # [num_cameras, num_timesteps - 1, h, w, 3]
+    shift_left = frames[:, 1:, ...]  # [num_cameras, num_timesteps - 1, h, w, 3]
+    shift_right = frames[:, 0:-1, ...]  # [num_cameras, num_timesteps - 1, h, w, 3]
     shift_right = torch.cat([torch.zeros(num_cameras, 1, h, w, c), shift_right], dim=1)  # [num_cameras, num_timesteps, h, w, 3]
     shift_left = torch.cat([shift_left, torch.zeros(num_cameras, 1, h, w, c)], dim=1)  # [num_cameras, num_timesteps, h, w, 3]
     left_difference = torch.abs(frames - shift_left)

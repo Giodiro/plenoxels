@@ -19,7 +19,6 @@ class BaseDataset(Dataset, ABC):
                  rays_o: torch.Tensor,
                  rays_d: torch.Tensor,
                  intrinsics: Intrinsics,
-                 generator: Optional[torch.random.Generator],
                  batch_size: Optional[int] = None,
                  imgs: Optional[torch.Tensor] = None,
                  ):
@@ -32,14 +31,6 @@ class BaseDataset(Dataset, ABC):
         self.batch_size = batch_size
         if self.split == 'train':
             assert self.batch_size is not None
-
-        if generator is None:
-            seed = int(torch.empty((), dtype=torch.int64).random_().item())
-            self.generator = torch.Generator()
-            self.generator.manual_seed(seed)
-        else:
-            self.generator = generator
-
         self.rays_o = rays_o
         self.rays_d = rays_d
         self.intrinsics = intrinsics
@@ -65,9 +56,9 @@ class BaseDataset(Dataset, ABC):
             # if len(weights) >= 16777216:  # 2^24 is the max for torch.multinomial
             if len(weights) > 8000000:  # 2^24 is the max for torch.multinomial
                 subset = torch.from_numpy(np.random.choice(len(weights), size=8000000))
-                samples = torch.multinomial(input=weights[subset], num_samples=self.batch_size, generator=self.generator)
+                samples = torch.multinomial(input=weights[subset], num_samples=self.batch_size)
                 return subset[samples]
-            return torch.multinomial(input=weights, num_samples=self.batch_size, generator=self.generator)
+            return torch.multinomial(input=weights, num_samples=self.batch_size)
         assert self.perm is not None, "Call reset_iter"
         return self.perm[index * self.batch_size: (index + 1) * self.batch_size]
 
