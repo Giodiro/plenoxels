@@ -3,6 +3,7 @@ import json
 import logging as log
 import math
 import os
+from collections import defaultdict
 from typing import Optional, List, Tuple, Any
 
 import numpy as np
@@ -14,7 +15,7 @@ from .data_loading import parallel_load_images
 from .intrinsics import Intrinsics
 from .llff_dataset import load_llff_poses_helper, create_llff_rays
 from .patchloader import PatchLoader
-from .ray_utils import generate_hemispherical_orbit, generate_spiral_path
+from .ray_utils import generate_spiral_path
 from .synthetic_nerf_dataset import (
     create_360_rays, load_360_images, load_360_intrinsics,
     get_360_bbox
@@ -44,12 +45,30 @@ class Video360Dataset(BaseDataset):
         self.downsample = downsample
         self.near_far = [2.0, 6.0]
         self.keyframes = split == 'train' and max_tsteps is not None
+        if ist and isg:
+            raise ValueError("isg and ist cannot be both set.")
+        self.isg = isg
+        self.ist = ist
 
         frames, transform = load_360video_frames(datadir, split, self.max_cameras, self.max_tsteps)
         imgs, poses = load_360_images(frames, datadir, split, self.downsample)
+        median_imgs = calc_360_camera_medians(frames, imgs)
         intrinsics = load_360_intrinsics(transform, imgs, self.downsample)
         rays_o, rays_d, imgs = create_360_rays(
             imgs, poses, merge_all=split == 'train', intrinsics=intrinsics, is_blender_format=True)
+
+        self.isg_weights = None
+        self.ist_weights = None
+        if self.isg:
+            gamma = 1e-3 if self.keyframes else 2e-2
+            isg_weights = dynerf_isg_weight(imgs, median_imgs, gamma)
+            # Normalize into a probability distribution, to speed up sampling
+            self.isg_weights = (isg_weights.reshape(-1) / torch.sum(isg_weights))
+        elif self.ist:
+            ist_weights = dynerf_ist_weight(imgs, num_cameras=median_imgs.shape[0])
+            # Normalize into a probability distribution, to speed up sampling
+            self.ist_weights = (ist_weights.reshape(-1) / torch.sum(ist_weights))
+
         super().__init__(datadir=datadir,
                          split=split,
                          batch_size=batch_size,
@@ -78,9 +97,13 @@ class Video360Dataset(BaseDataset):
                  f"{intrinsics}")
 
     def __getitem__(self, index):
-        out = super().__getitem__(index)
+        if self.split == 'train' and self.isg_weights is not None:
+            out, idxs = super().__getitem__(index, weights=self.isg_weights, return_idxs=True)
+        elif self.split == 'train' and self.ist_weights is not None:
+            out, idxs = super().__getitem__(index, weights=self.ist_weights, return_idxs=True)
+        else:
+            out, idxs = super().__getitem__(index, return_idxs=True)
         if self.split == 'train':
-            idxs = self.get_rand_ids(index)
             out["timestamps"] = self.timestamps[idxs]
         else:
             out["timestamps"] = self.timestamps[index]
@@ -94,37 +117,53 @@ def parse_360_file_path(fp):
 
 
 def load_360video_frames(datadir, split, max_cameras: int, max_tsteps: Optional[int]) -> Tuple[Any, Any]:
-    with open(os.path.join(datadir, f"transforms_{split}.json"), 'r') as f:
-        meta = json.load(f)
-        frames = meta['frames']
+    with open(os.path.join(datadir, f"transforms_{split}.json"), 'r') as fp:
+        meta = json.load(fp)
+    frames = meta['frames']
 
-        timestamps = set()
-        pose_ids = set()
-        for frame in frames:
-            timestamp, pose_id = parse_360_file_path(frame['file_path'])
-            timestamps.add(timestamp)
-            pose_ids.add(pose_id)
-        timestamps = sorted(timestamps)
-        pose_ids = sorted(pose_ids)
+    timestamps = set()
+    pose_ids = set()
+    fpath2poseid = defaultdict(list)
+    for frame in frames:
+        timestamp, pose_id = parse_360_file_path(frame['file_path'])
+        timestamps.add(timestamp)
+        pose_ids.add(pose_id)
+        fpath2poseid[frame['file_path']].append(pose_id)
+    timestamps = sorted(timestamps)
+    pose_ids = sorted(pose_ids)
 
-        num_poses = min(len(pose_ids), max_cameras or len(pose_ids))
-        subsample_poses = int(round(len(pose_ids) / num_poses))
-        pose_ids = set(pose_ids[::subsample_poses])
+    num_poses = min(len(pose_ids), max_cameras or len(pose_ids))
+    subsample_poses = int(round(len(pose_ids) / num_poses))
+    pose_ids = set(pose_ids[::subsample_poses])
 
-        num_timestamps = min(len(timestamps), max_tsteps or len(timestamps))
-        subsample_time = int(math.floor(len(timestamps) / (num_timestamps - 1)))
-        timestamps = set(timestamps[::subsample_time])
+    num_timestamps = min(len(timestamps), max_tsteps or len(timestamps))
+    subsample_time = int(math.floor(len(timestamps) / (num_timestamps - 1)))
+    timestamps = set(timestamps[::subsample_time])
+    log.info(f"Selected subset of timestamps: {timestamps}")
+    sub_frames = []
+    for frame in frames:
+        timestamp, pose_id = parse_360_file_path(frame['file_path'])
+        if timestamp in timestamps and pose_id in pose_ids:
+            sub_frames.append(frame)
+    # We need frames to be sorted by pose_id
+    sub_frames = sorted(sub_frames, key=lambda f: fpath2poseid[f['file_path']])
 
-        if subsample_time == 1 and subsample_poses == 1:
-            return frames
-        log.info(f"Selected subset of timestamps: {timestamps}")
+    return sub_frames, meta
 
-        sub_frames = []
-        for frame in frames:
-            timestamp, pose_id = parse_360_file_path(frame['file_path'])
-            if timestamp in timestamps and pose_id in pose_ids:
-                sub_frames.append(frame)
-        return sub_frames, meta
+
+def calc_360_camera_medians(frames, imgs):
+    """
+    frames: N
+    imgs: [N, H, W, C]
+    :return
+        median_images [num_poses, H, W, C]
+    """
+    # imgs are sorted by pose_id. We need to find out how many pose_ids there are,
+    # and then reshape and compute medians.
+    num_pose_ids = np.unique([parse_360_file_path(frame['file_path'])[1] for frame in frames])
+    imgs = imgs.view(num_pose_ids, -1, *imgs.shape[1:])
+    median_images = torch.median(imgs, dim=1).values
+    return median_images
 
 
 class VideoLLFFDataset(BaseDataset):
@@ -226,15 +265,12 @@ class VideoLLFFDataset(BaseDataset):
 
     def __getitem__(self, index):
         if self.isg_weights is not None:
-            out, idxs = super().__getitem__(index, weights=self.isg_weights)
+            out, idxs = super().__getitem__(index, weights=self.isg_weights, return_idxs=True)
         elif self.ist_weights is not None:
-            out, idxs = super().__getitem__(index, weights=self.ist_weights)
+            out, idxs = super().__getitem__(index, weights=self.ist_weights, return_idxs=True)
         else:
-            out = super().__getitem__(index)
-            idxs = None
+            out, idxs = super().__getitem__(index, return_idxs=True)
         if self.split == 'train':
-            if idxs is None:
-                idxs = self.get_rand_ids(index)
             out["timestamps"] = self.timestamps[idxs]
             if self.extra_views:
                 out.update(self.patchloader[index])

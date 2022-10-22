@@ -68,7 +68,7 @@ class BaseDataset(Dataset, ABC):
         else:
             return self.num_batches
 
-    def __getitem__(self, index, weights=None):
+    def __getitem__(self, index, weights=None, return_idxs: bool = False):
         if self.split == 'train':
             idxs = self.get_rand_ids(index, weights)
             out = {
@@ -77,7 +77,7 @@ class BaseDataset(Dataset, ABC):
             }
             if self.imgs is not None:
                 out["imgs"] = self.imgs[idxs].contiguous()
-            if weights is not None:
+            if return_idxs:
                 return out, idxs
             return out
         else:
