@@ -2,7 +2,6 @@ from typing import Optional, Mapping
 import logging as log
 
 import torch
-import kaolin.render.spc as spc_render
 
 
 class RayMarcher():
