@@ -1,13 +1,13 @@
 # configuration file to be used with `main.py` for video training
 config = {
     # "expname": "legovideo20views_regdepthweightedacc_400_0.1_512_3framesreso3rank20",
-    "expname": "contracted2e2_downsample4reso300_keyframes6k_isg30k_ist40kalpha0.01_lr0.1_step",
-    # "expname": "testspeed",
+    # "expname": "contracted2e2_downsample4reso300_keyframes6k_isg30k_ist40kalpha0.01_lr0.1_step",
+    "expname": "contracted2-10",
     # "expname": "testrelu_sameranktimereso128_llff",
     "logdir": "./logs/salmonvideo",
 
     # Data settings
-    "data_downsample": 4.0,
+    "data_downsample": 8.0,
     # "data_dirs": ["/home/sfk/data/3DVideo/lego_video"],
     # "data_dirs": ["/home/sfk/data/3DVideo/coffee_martini"],
     "data_dirs": ["/home/sfk/data/3DVideo/flame_salmon_1"],
@@ -23,7 +23,8 @@ config = {
     "ist_step": 30000,
 
     # Optimization settings
-    "num_steps": 40001,
+    # "num_steps": 40001,
+    "num_steps": 20001,
     "regnerf_weight_start": 0,
     "regnerf_weight_end": 0.0,
     "regnerf_weight_max_step": 512,
@@ -45,24 +46,25 @@ config = {
     "save_outputs": True,
 
     # Raymarching settings
-    "raymarch_type": "voxel_size",
+    "raymarch_type": "fixed",
     "num_sample_multiplier": 2,
-    "n_intersections": 128,
-    "spacing_fn": "linear",
-    "single_jitter": True,
+    "n_intersections": 400,
+    "spacing_fn": "log",
+    "single_jitter": False,
 
     # Model settings
     "sh": True,
     "upsample_time_resolution": [150],
-    "upsample_time_steps": [6000],  # DyNerf does 300K iterations with keyframes, with lr 5e-4
+    # "upsample_time_steps": [6000],  # DyNerf does 300K iterations with keyframes, with lr 5e-4
+    "upsample_time_steps": [60000],
     "grid_config": """
 [
     {
         "input_coordinate_dim": 3,
         "output_coordinate_dim": 5,
         "grid_dimensions": 2,
-        "resolution": [300, 300, 128],
-        "rank": 30,
+        "resolution": [200, 200, 128],
+        "rank": 10,
         "time_reso": 30,
     },
     {

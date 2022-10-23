@@ -91,8 +91,9 @@ class RayMarcher():
         if is_contracted:
             near = torch.tensor([2], device=dev, dtype=dt) 
             far = torch.tensor([10.0], device=dev, dtype=dt)
-            self.spacing_fn = torch.log
-            self.inv_spacing_fn = torch.exp
+            # These should be used for sampling, but it's controllable as a parameter in the config so no need to also set it here
+            # self.spacing_fn = torch.log
+            # self.inv_spacing_fn = torch.exp
             dir_norm = torch.linalg.norm(rays_d, dim=1, keepdim=True)
             rays_d = rays_d / dir_norm
             # Note: masking out samples does not work when using scene contraction!

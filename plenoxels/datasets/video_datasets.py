@@ -36,24 +36,37 @@ class Video360Dataset(BaseDataset):
                  split: str,
                  batch_size: Optional[int] = None,
                  downsample: float = 1.0,
+                 keyframes: bool = False, 
                  max_cameras: Optional[int] = None,
                  max_tsteps: Optional[int] = None,
                  isg: bool = False,
-                 ist: bool = False,):
+                 ist: bool = False,
+                 is_contracted: bool = False,):
+        self.keyframes = keyframes
         self.max_cameras = max_cameras
         self.max_tsteps = max_tsteps
         self.downsample = downsample
-        self.near_far = [2.0, 6.0]
-        self.keyframes = split == 'train' and max_tsteps is not None
+        # self.near_far = [2.0, 6.0]
+        # self.keyframes = split == 'train' and max_tsteps is not None
         if ist and isg:
             raise ValueError("isg and ist cannot be both set.")
         self.isg = isg
         self.ist = ist
-
-        frames, transform = load_360video_frames(datadir, split, self.max_cameras, self.max_tsteps)
-        imgs, poses = load_360_images(frames, datadir, split, self.downsample)
-        median_imgs = calc_360_camera_medians(frames, imgs)
-        intrinsics = load_360_intrinsics(transform, imgs, self.downsample)
+        self.is_contracted = is_contracted
+        if self.is_contracted:  # For the DyNerf videos
+            per_cam_poses, per_cam_near_fars, intrinsics, videopaths = load_llffvideo_poses(
+                datadir, downsample=self.downsample, split=split, near_scaling=1.0)
+            poses, imgs, timestamps, median_imgs = load_llffvideo_data(
+                videopaths=videopaths, cam_poses=per_cam_poses, intrinsics=intrinsics, split=split,
+                keyframes=keyframes, keyframes_take_each=30)
+            poses = poses.float()
+        else:
+            frames, transform = load_360video_frames(datadir, split, max_cameras=self.max_cameras, max_tsteps=self.max_tsteps)
+            imgs, poses = load_360_images(frames, datadir, split, self.downsample)
+            median_imgs = calc_360_camera_medians(frames, imgs)
+            timestamps = [parse_360_file_path(frame['file_path'])[0] for frame in frames]
+            timestamps = torch.tensor(timestamps, dtype=torch.int32)
+            intrinsics = load_360_intrinsics(transform, imgs, self.downsample)
         rays_o, rays_d, imgs = create_360_rays(
             imgs, poses, merge_all=split == 'train', intrinsics=intrinsics, is_blender_format=True)
 
@@ -73,16 +86,15 @@ class Video360Dataset(BaseDataset):
                          split=split,
                          batch_size=batch_size,
                          is_ndc=False,
-                         is_contracted=False,
-                         scene_bbox=get_360_bbox(datadir),
+                         is_contracted=self.is_contracted,
+                         scene_bbox=get_360_bbox(datadir, is_contracted=self.is_contracted),
                          rays_o=rays_o,
                          rays_d=rays_d,
                          intrinsics=intrinsics,
                          imgs=imgs,
                          )
 
-        timestamps = [parse_360_file_path(frame['file_path'])[0] for frame in frames]
-        timestamps = torch.tensor(timestamps, dtype=torch.int32)
+        
         self.len_time = torch.amax(timestamps).item()
         if self.split == 'train':
             self.timestamps = timestamps[:, None, None].repeat(
@@ -90,7 +102,7 @@ class Video360Dataset(BaseDataset):
         else:
             self.timestamps = timestamps
 
-        log.info(f"Video360Dataset - Loaded {self.split} set from {self.datadir}: "
+        log.info(f"Video360Dataset contracted{self.is_contracted} - Loaded {self.split} set from {self.datadir}: "
                  f"{poses.shape[0]} images of size {self.img_h}x{self.img_w} and "
                  f"{imgs.shape[-1]} channels. "
                  f"{len(torch.unique(timestamps))} timestamps up to time={torch.max(timestamps)}. "
@@ -102,7 +114,7 @@ class Video360Dataset(BaseDataset):
         elif self.split == 'train' and self.ist_weights is not None:
             out, idxs = super().__getitem__(index, weights=self.ist_weights, return_idxs=True)
         else:
-            out, idxs = super().__getitem__(index, return_idxs=True)
+            out = super().__getitem__(index)
         if self.split == 'train':
             out["timestamps"] = self.timestamps[idxs]
         else:
@@ -191,11 +203,12 @@ class VideoLLFFDataset(BaseDataset):
         :param extra_views:
         """
         self.keyframes = keyframes
+        # self.is_contracted = True  # Use contraction rather than NDC by default
         self.isg = isg
         self.ist = ist
         self.downsample = downsample
         self.patch_size = patch_size
-        self.near_far = [0.0, 1.0]
+        # self.near_far = [0.0, 1.0]
         self.extra_views = split == 'train' and extra_views
         self.patchloader = None
 
@@ -222,12 +235,11 @@ class VideoLLFFDataset(BaseDataset):
         print("imgs", imgs.shape, "poses", poses.shape)
         rays_o, rays_d, imgs = create_llff_rays(
             imgs=imgs, poses=poses, intrinsics=intrinsics, merge_all=split == 'train')  # [-1, 3]
-        self.is_contracted = True
         super().__init__(datadir=datadir,
                          split=split,
                          scene_bbox=self.init_bbox(),
-                         is_ndc=False,
-                         is_contracted=True,
+                         is_ndc=True,
+                        #  is_contracted=self.is_contracted,
                          batch_size=batch_size,
                          imgs=imgs,
                          rays_o=rays_o,

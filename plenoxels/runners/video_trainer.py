@@ -44,9 +44,9 @@ class VideoTrainer(Trainer):
         super().__init__(tr_loader=tr_loader,
                          tr_dsets=[tr_loader.dataset],
                          ts_dsets=[ts_dset],
-                         regnerf_weight_start=0.0,   # regnerf useless
-                         regnerf_weight_end=0.0,     # regnerf useless
-                         regnerf_weight_max_step=0,  # regnerf useless
+                        #  regnerf_weight_start=0.0,   # regnerf useless
+                        #  regnerf_weight_end=0.0,     # regnerf useless
+                        #  regnerf_weight_max_step=0,  # regnerf useless
                          num_batches_per_dset=1,
                          num_steps=num_steps,
                          scheduler_type=scheduler_type,
@@ -283,16 +283,25 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
             ist=ist,
         )
     else:
-        # For LLFF we downsample both train and test unlike 360.
-        # For LLFF the test-set is not time-subsampled!
-        logging.info(f"Loading VideoLLFFDataset with downsample={data_downsample}")
-        tr_dset = VideoLLFFDataset(
+        logging.info(f"Loading contracted Video360Dataset with downsample={data_downsample}")
+        tr_dset = Video360Dataset(
             data_dir, split='train', downsample=data_downsample,
             batch_size=batch_size,
             keyframes=keyframes,
             isg=isg,  # Always start without ist
             ist=ist,
+            is_contracted=True,
         )
+        # For LLFF we downsample both train and test unlike 360.
+        # For LLFF the test-set is not time-subsampled!
+        # logging.info(f"Loading VideoLLFFDataset with downsample={data_downsample}")
+        # tr_dset = VideoLLFFDataset(
+        #     data_dir, split='train', downsample=data_downsample,
+        #     batch_size=batch_size,
+        #     keyframes=keyframes,
+        #     isg=isg,  # Always start without ist
+        #     ist=ist,
+        # )
     tr_loader = torch.utils.data.DataLoader(
         tr_dset, batch_size=None, num_workers=2,
         prefetch_factor=4, pin_memory=True, worker_init_fn=init_dloader_random)
@@ -307,9 +316,12 @@ def init_ts_data(data_dir, **kwargs):
             max_tsteps=kwargs.get('max_test_tsteps'),
         )
     else:
-        ts_dset = VideoLLFFDataset(
-            data_dir, split='test', downsample=4, keyframes=False
+        ts_dset = Video360Dataset(
+            data_dir, split='test', downsample=4, keyframes=False, is_contracted=True
         )
+        # ts_dset = VideoLLFFDataset(
+        #     data_dir, split='test', downsample=4, keyframes=False
+        # )
     return {"ts_dset": ts_dset}
 
 
