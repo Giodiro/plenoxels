@@ -1,4 +1,5 @@
 import glob
+import time
 import json
 import logging as log
 import math
@@ -52,22 +53,34 @@ class Video360Dataset(BaseDataset):
 
         frames, transform = load_360video_frames(datadir, split, self.max_cameras, self.max_tsteps)
         imgs, poses = load_360_images(frames, datadir, split, self.downsample)
-        median_imgs = calc_360_camera_medians(frames, imgs)
+        self.median_imgs = calc_360_camera_medians(frames, imgs)
         intrinsics = load_360_intrinsics(transform, imgs, self.downsample)
+        # create-rays flattens imgs, and rays to N*H*W, C
         rays_o, rays_d, imgs = create_360_rays(
             imgs, poses, merge_all=split == 'train', intrinsics=intrinsics, is_blender_format=True)
 
         self.isg_weights = None
         self.ist_weights = None
         if self.isg:
+            t_s = time.time()
             gamma = 1e-3 if self.keyframes else 2e-2
-            isg_weights = dynerf_isg_weight(imgs, median_imgs, gamma)
+            isg_weights = dynerf_isg_weight(
+                imgs.view(-1, intrinsics.height, intrinsics.width, imgs.shape[-1]),
+                self.median_imgs,
+                gamma)
             # Normalize into a probability distribution, to speed up sampling
             self.isg_weights = (isg_weights.reshape(-1) / torch.sum(isg_weights))
+            t_e = time.time()
+            log.info(f"Computed {self.isg_weights.shape[0]} ISG weights in {t_e - t_s:.2f}s.")
         elif self.ist:
-            ist_weights = dynerf_ist_weight(imgs, num_cameras=median_imgs.shape[0])
+            t_s = time.time()
+            ist_weights = dynerf_ist_weight(
+                imgs.view(-1, intrinsics.height, intrinsics.width, imgs.shape[-1]),
+                num_cameras=self.median_imgs.shape[0])
             # Normalize into a probability distribution, to speed up sampling
             self.ist_weights = (ist_weights.reshape(-1) / torch.sum(ist_weights))
+            t_e = time.time()
+            log.info(f"Computed {self.ist_weights.shape[0]} IST weights in {t_e - t_s:.2f}s.")
 
         super().__init__(datadir=datadir,
                          split=split,
@@ -80,7 +93,6 @@ class Video360Dataset(BaseDataset):
                          intrinsics=intrinsics,
                          imgs=imgs,
                          )
-
         timestamps = [parse_360_file_path(frame['file_path'])[0] for frame in frames]
         timestamps = torch.tensor(timestamps, dtype=torch.int32)
         self.len_time = torch.amax(timestamps).item()
@@ -96,6 +108,22 @@ class Video360Dataset(BaseDataset):
                  f"{len(torch.unique(timestamps))} timestamps up to time={torch.max(timestamps)}. "
                  f"ISG={self.isg} - IST={self.ist} - "
                  f"{intrinsics}")
+
+    def switch_isg2ist(self):
+        del self.isg_weights
+        self.isg_weights = None
+        self.isg = False
+        self.ist = True
+
+        t_s = time.time()
+        ist_weights = dynerf_ist_weight(
+            self.imgs.view(-1, self.img_h, self.img_w, self.imgs.shape[-1]),
+            num_cameras=self.median_imgs.shape[0])
+        # Normalize into a probability distribution, to speed up sampling
+        self.ist_weights = (ist_weights.reshape(-1) / torch.sum(ist_weights))
+        t_e = time.time()
+        log.info(f"Switched from ISG to IST weights (computed in {t_e - t_s:.2f}s).")
+
 
     def __getitem__(self, index):
         if self.split == 'train' and self.isg_weights is not None:
