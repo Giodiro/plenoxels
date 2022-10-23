@@ -42,7 +42,7 @@ class BaseDataset(Dataset, ABC):
             assert len(self.sampling_weights) == self.num_samples, (
                 f"Expected {self.num_samples} sampling weights but given {len(self.sampling_weights)}."
             )
-        self.sampling_batch_size = 80_000_000
+        self.sampling_batch_size = 2_000_000
         self.perm = None
 
     @property

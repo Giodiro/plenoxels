@@ -50,13 +50,18 @@ class Video360Dataset(BaseDataset):
 
         frames, transform = load_360video_frames(datadir, split, self.max_cameras, self.max_tsteps)
         imgs, self.poses = load_360_images(frames, datadir, split, self.downsample)
+
+        t_s = time.time()
         self.median_imgs = calc_360_camera_medians(frames, imgs)
+        t_e = time.time()
+        log.info(f"Computed per-camera medians in {t_e - t_s:.2f}s")
+
         intrinsics = load_360_intrinsics(transform, imgs, self.downsample)
-        imgs = (imgs * 255).to(torch.uint8).view(-1, imgs.shape[-1])
-        # create-rays flattens imgs, and rays to N*H*W, C
-        # TODO: Flatten images
-        # rays_o, rays_d, imgs = create_360_rays(
-        #     imgs, poses, merge_all=split == 'train', intrinsics=intrinsics, is_blender_format=True)
+        imgs = (imgs * 255).to(torch.uint8)
+        if split == 'train':
+            imgs = imgs.view(-1, imgs.shape[-1])
+        else:
+            imgs = imgs.view(-1, intrinsics.height * intrinsics.width, imgs.shape[-1])
         isg_weights = None
         if self.isg:
             t_s = time.time()
@@ -68,7 +73,7 @@ class Video360Dataset(BaseDataset):
             # Normalize into a probability distribution, to speed up sampling
             isg_weights = (isg_weights.reshape(-1) / torch.sum(isg_weights))
             t_e = time.time()
-            log.info(f"Computed {self.isg_weights.shape[0]} ISG weights in {t_e - t_s:.2f}s.")
+            log.info(f"Computed {isg_weights.shape[0]} ISG weights in {t_e - t_s:.2f}s.")
 
         super().__init__(datadir=datadir,
                          split=split,
@@ -92,7 +97,7 @@ class Video360Dataset(BaseDataset):
             self.timestamps = timestamps
 
         log.info(f"Video360Dataset - Loaded {self.split} set from {self.datadir}: "
-                 f"{poses.shape[0]} images of size {self.img_h}x{self.img_w} and "
+                f"{self.poses.shape[0]} images of size {self.img_h}x{self.img_w} and "
                  f"{imgs.shape[-1]} channels. "
                  f"{len(torch.unique(timestamps))} timestamps up to time={torch.max(timestamps)}. "
                  f"ISG={self.isg} - IST={self.ist} - "
@@ -119,10 +124,10 @@ class Video360Dataset(BaseDataset):
         if self.split == 'train':
             index = self.get_rand_ids(index)
             image_id = torch.div(index, h * w, rounding_mode='floor')
-            x = torch.remainder(index, h * w).div(h, rounding_mode='floor')
-            y = torch.remainder(index, h * w).remainder(h)
+            y = torch.remainder(index, h * w).div(w, rounding_mode='floor')
+            x = torch.remainder(index, h * w).remainder(w)
         else:
-            image_id = index
+            image_id = [index]
             x, y = torch.meshgrid(
                 torch.arange(w, device=dev),
                 torch.arange(h, device=dev),
@@ -132,8 +137,8 @@ class Video360Dataset(BaseDataset):
             y = y.flatten()
 
         rgba = self.imgs[index] / 255.0  # (num_rays, 4)   this converts to f32
-        c2w = self.poses[image_id]         # (num_rays, 3, 4)
-        ts = self.timestamps[index]        # (num_rays or 1, )
+        c2w = self.poses[image_id]       # (num_rays, 3, 4)
+        ts = self.timestamps[index]      # (num_rays or 1, )
         camera_dirs = gen_camera_dirs(
             x, y, self.intrinsics, True)  # [num_rays, 3]
 
@@ -145,7 +150,7 @@ class Video360Dataset(BaseDataset):
 
         origins = origins.reshape(-1, 3)
         viewdirs = viewdirs.reshape(-1, 3)
-        rgba = rgba.reshape(-1, 3)
+        rgba = rgba.reshape(-1, rgba.shape[-1])
         return {
             "rays_o": origins,
             "rays_d": viewdirs,
@@ -393,8 +398,8 @@ def dynerf_isg_weight(imgs, median_imgs, gamma):
     # median_imgs is [num_cameras, h, w, 3]
     num_cameras, h, w, c = median_imgs.shape
     differences = median_imgs[:, None, ...] - imgs.view(num_cameras, -1, h, w, c)  # [num_cameras, num_frames, h, w, 3]
-    squarediff = torch.square(differences)
-    psidiff = squarediff / (squarediff + gamma**2)
+    squarediff = torch.square_(differences)
+    psidiff = squarediff.div_(squarediff + gamma**2)
     psidiff = (1./3) * torch.sum(psidiff, dim=-1)  # [num_cameras, num_frames, h, w]
     return psidiff  # valid probabilities, each in [0, 1]
 
