@@ -3,7 +3,7 @@
 import numpy as np
 config = {
     # "expname": "lego_rank10_plenoxelsh28_meaninit-11_downsample3",
-    "expname": "test",
+    "expname": "contracted",
     # "expname": "lowrank_noupsamplelr4e-3_planetvfeats0.04",
     # "logdir": "./logs/fullresofern",
     "logdir": "./logs/sh",
@@ -20,7 +20,7 @@ config = {
     "hold_every": 8,
 
     # Optimization settings
-    "num_steps": 1000,
+    "num_steps": 2501,
     "batch_size": 4096,
     "num_batches_per_dset": 1,
     "scheduler_type": None,
@@ -36,13 +36,13 @@ config = {
 
     # Training settings
     "train_fp16": True,
-    "save_every": 500,
-    "valid_every": 500,
+    "save_every": 2500,
+    "valid_every": 2500,
     "save_outputs": True,
     "transfer_learning": False,
 
     # Raymarching settings
-    "raymarch_type": "voxel_size",
+    "raymarch_type": "fixed",
     "num_sample_multiplier": 2,  # Used when raymarch_type is 'voxel_size'
     "n_intersections": 440,  # Used when raymarch_type is 'fixed'
     "spacing_fn": "linear",
@@ -50,7 +50,7 @@ config = {
 
     # Model settings
     "density_threshold": 1e-4,
-    "dmask_update": [1000],
+    "dmask_update": [100000],  # 1000
     # "upsample_resolution": [3241792, 5832000, 11239424, 16777216],
     # "upsample_steps": [500, 800, 1200, 1500],
     "density_multiplier": 1,

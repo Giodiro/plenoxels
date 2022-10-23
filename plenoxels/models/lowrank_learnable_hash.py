@@ -37,6 +37,7 @@ class LowrankLearnableHash(LowrankModel):
                  grid_config: Union[str, List[Dict]],
                  aabb: List[torch.Tensor],
                  is_ndc: bool,
+                 is_contracted: bool,
                  sh: bool,
                  num_scenes: int = 1,
                  **kwargs):
@@ -48,6 +49,7 @@ class LowrankLearnableHash(LowrankModel):
         self.set_aabb(aabb)
         self.extra_args = kwargs
         self.is_ndc = is_ndc
+        self.is_contracted = is_contracted
         self.sh = sh
         self.density_multiplier = self.extra_args.get("density_multiplier")
         self.transfer_learning = self.extra_args["transfer_learning"]
@@ -266,8 +268,7 @@ class LowrankLearnableHash(LowrankModel):
         """        
         rm_out = self.raymarcher.get_intersections2(
             rays_o, rays_d, self.aabb(grid_id), self.resolution(grid_id), perturb=self.training,
-            is_ndc=self.is_ndc)
-        
+            is_ndc=self.is_ndc, is_contracted=self.is_contracted)
         rays_d = rm_out["rays_d"]                   # [n_rays, 3]
         intersection_pts = rm_out["intersections"]  # [n_rays, n_intrs, 3]
         mask = rm_out["mask"]                       # [n_rays, n_intrs]
@@ -275,7 +276,8 @@ class LowrankLearnableHash(LowrankModel):
         dev = rays_o.device
 
         # Filter intersections which have a low density according to the density mask
-        if self.density_mask[grid_id] is not None:
+        # Contraction does not currently support density masking!
+        if self.density_mask[grid_id] is not None and not self.is_contracted:
             # density_mask needs unnormalized coordinates: normalization happens internally
             # and can be with a different aabb than the current one.
             alpha_mask = self.density_mask[grid_id].sample_density(intersection_pts[mask]) > 0
@@ -329,6 +331,9 @@ class LowrankLearnableHash(LowrankModel):
             depth_map = torch.sum(weight * z_vals, -1)  # [batch_size]
             depth_map = depth_map + (1.0 - acc_map) * rays_d[..., -1]  # Maybe the rays_d is to transform ray depth to absolute depth?
             outputs["depth"] = depth_map
+        outputs["deltas"] = deltas
+        outputs["weight"] = weight
+        outputs["midpoint"] = rm_out["z_mids"]
 
         return outputs
 
