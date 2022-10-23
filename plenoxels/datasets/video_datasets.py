@@ -16,7 +16,7 @@ from .data_loading import parallel_load_images
 from .intrinsics import Intrinsics
 from .llff_dataset import load_llff_poses_helper, create_llff_rays
 from .patchloader import PatchLoader
-from .ray_utils import generate_spiral_path, gen_camera_dirs
+from .ray_utils import generate_spiral_path, gen_camera_dirs, ndc_rays_blender
 from .synthetic_nerf_dataset import (
     create_360_rays, load_360_images, load_360_intrinsics,
     get_360_bbox
@@ -97,7 +97,7 @@ class Video360Dataset(BaseDataset):
             self.timestamps = timestamps
 
         log.info(f"Video360Dataset - Loaded {self.split} set from {self.datadir}: "
-                f"{self.poses.shape[0]} images of size {self.img_h}x{self.img_w} and "
+                 f"{self.poses.shape[0]} images of size {self.img_h}x{self.img_w} and "
                  f"{imgs.shape[-1]} channels. "
                  f"{len(torch.unique(timestamps))} timestamps up to time={torch.max(timestamps)}. "
                  f"ISG={self.isg} - IST={self.ist} - "
@@ -147,14 +147,10 @@ class Video360Dataset(BaseDataset):
         viewdirs = directions / torch.linalg.norm(
             directions, dim=-1, keepdims=True
         )
-
-        origins = origins.reshape(-1, 3)
-        viewdirs = viewdirs.reshape(-1, 3)
-        rgba = rgba.reshape(-1, rgba.shape[-1])
         return {
-            "rays_o": origins,
-            "rays_d": viewdirs,
-            "imgs": rgba,
+            "rays_o": origins.reshape(-1, 3),
+            "rays_d": directions.reshape(-1, 3),
+            "imgs": rgba.reshape(-1, rgba.shape[-1]),
             "timestamps": ts,
         }
 
@@ -228,50 +224,37 @@ class VideoLLFFDataset(BaseDataset):
                  batch_size: Optional[int] = None,
                  downsample=1.0,
                  keyframes=True,
-                 isg=False,
-                 ist=False,
-                 extra_views: bool = False,
-                 patch_size: Optional[int] = 8,):
-        """
-
-        :param datadir:
-        :param split:
-        :param downsample:
-        :param extra_views:
-        """
+                 isg=False,):
         self.keyframes = keyframes
         self.isg = isg
-        self.ist = ist
+        self.ist = False
         self.downsample = downsample
-        self.patch_size = patch_size
         self.near_far = [0.0, 1.0]
-        self.extra_views = split == 'train' and extra_views
-        self.patchloader = None
 
         per_cam_poses, per_cam_near_fars, intrinsics, videopaths = load_llffvideo_poses(
             datadir, downsample=self.downsample, split=split, near_scaling=1.0)
-        poses, imgs, timestamps, median_imgs = load_llffvideo_data(
+        poses, imgs, timestamps, self.median_imgs = load_llffvideo_data(
             videopaths=videopaths, cam_poses=per_cam_poses, intrinsics=intrinsics, split=split,
             keyframes=keyframes, keyframes_take_each=30)
-        gamma = 2e-2
-        if keyframes:
-            gamma = 1e-3
-        self.isg_weights = None
-        self.ist_weights = None
+
+        imgs = (imgs * 255).to(torch.uint8)
+        if split == 'train':
+            imgs = imgs.view(-1, imgs.shape[-1])
+        else:
+            imgs = imgs.view(-1, intrinsics.height * intrinsics.width, imgs.shape[-1])
+        isg_weights = None
         if self.isg:
-            isg_weights = dynerf_isg_weight(imgs, median_imgs, gamma)
-            self.isg_weights = isg_weights.reshape(-1)
-            self.isg_weights = self.isg_weights / torch.sum(isg_weights)  # Normalize into a probability distribution, to speed up sampling
-        if self.ist:
-            ist_weights = dynerf_ist_weight(imgs, num_cameras=median_imgs.shape[0])
-            self.ist_weights = ist_weights.reshape(-1)
-            self.ist_weights = self.ist_weights / torch.sum(ist_weights)  # Normalize into a probability distribution, to speed up sampling
-        print(f'isg is {isg}, ist is {ist}')
-        poses = poses.float()
-        print("imgs", imgs.shape, "poses", poses.shape)
-        rays_o, rays_d, imgs = create_llff_rays(
-            imgs=imgs, poses=poses, intrinsics=intrinsics, merge_all=split == 'train')  # [-1, 3]
-        self.is_contracted = True
+            t_s = time.time()
+            gamma = 1e-3 if self.keyframes else 2e-2
+            isg_weights = dynerf_isg_weight(
+                imgs.view(-1, intrinsics.height, intrinsics.width, imgs.shape[-1]),
+                self.median_imgs,
+                gamma)
+            # Normalize into a probability distribution, to speed up sampling
+            isg_weights = (isg_weights.reshape(-1) / torch.sum(isg_weights))
+            t_e = time.time()
+            log.info(f"Computed {isg_weights.shape[0]} ISG weights in {t_e - t_s:.2f}s.")
+
         super().__init__(datadir=datadir,
                          split=split,
                          scene_bbox=self.init_bbox(),
@@ -279,27 +262,16 @@ class VideoLLFFDataset(BaseDataset):
                          is_contracted=True,
                          batch_size=batch_size,
                          imgs=imgs,
-                         rays_o=rays_o,
-                         rays_d=rays_d,
-                         intrinsics=intrinsics)
-        # self.len_time = torch.amax(timestamps).item()
-        self.len_time = 300 # This is true for the 10-second sequences from DyNerf
+                         rays_o=None,
+                         rays_d=None,
+                         intrinsics=intrinsics,
+                         sampling_weights=isg_weights)
+        self.len_time = 300  # This is true for the 10-second sequences from DyNerf
         if self.split == 'train':
             self.timestamps = timestamps[:, None, None].repeat(
                 1, intrinsics.height, intrinsics.width).reshape(-1)  # [n_frames * h * w]
         else:
             self.timestamps = timestamps
-
-        if self.extra_views:
-            extra_poses = generate_spiral_path(
-                per_cam_poses.numpy(), per_cam_near_fars.numpy(), n_frames=120)
-            extra_rays_o, extra_rays_d, _ = create_llff_rays(
-                imgs=None, poses=extra_poses, intrinsics=intrinsics, merge_all=False)
-            extra_rays_o = extra_rays_o.view(-1, self.img_h, self.img_w, 3)
-            extra_rays_d = extra_rays_d.view(-1, self.img_h, self.img_w, 3)
-            self.patchloader = PatchLoader(extra_rays_o, extra_rays_d, len_time=self.len_time,
-                                           batch_size=self.batch_size, patch_size=self.patch_size,
-                                           generator=self.generator)
 
         log.info(f"VideoLLFFDataset - Loaded {self.split} set from {self.datadir}: "
                  f"{len(poses)} images of shape {self.img_h}x{self.img_w} with {imgs.shape[-1]} "
@@ -312,20 +284,56 @@ class VideoLLFFDataset(BaseDataset):
         else:
             return torch.tensor([[-2.0, -2.0, -1.0], [2.0, 2.0, 1.0]])
 
+    def switch_isg2ist(self):
+        del self.sampling_weights
+        self.isg = False
+        self.ist = True
+        t_s = time.time()
+        ist_weights = dynerf_ist_weight(
+            self.imgs.view(-1, self.img_h, self.img_w, self.imgs.shape[-1]),
+            num_cameras=self.median_imgs.shape[0])
+        # Normalize into a probability distribution, to speed up sampling
+        ist_weights = (ist_weights.reshape(-1) / torch.sum(ist_weights))
+        self.sampling_weights = ist_weights
+        t_e = time.time()
+        log.info(f"Switched from ISG to IST weights (computed in {t_e - t_s:.2f}s).")
+
     def __getitem__(self, index):
-        if self.isg_weights is not None:
-            out, idxs = super().__getitem__(index, weights=self.isg_weights, return_idxs=True)
-        elif self.ist_weights is not None:
-            out, idxs = super().__getitem__(index, weights=self.ist_weights, return_idxs=True)
-        else:
-            out, idxs = super().__getitem__(index, return_idxs=True)
+        h = self.intrinsics.height
+        w = self.intrinsics.width
+        dev = "cpu"
         if self.split == 'train':
-            out["timestamps"] = self.timestamps[idxs]
-            if self.extra_views:
-                out.update(self.patchloader[index])
+            index = self.get_rand_ids(index)
+            image_id = torch.div(index, h * w, rounding_mode='floor')
+            y = torch.remainder(index, h * w).div(w, rounding_mode='floor')
+            x = torch.remainder(index, h * w).remainder(w)
         else:
-            out["timestamps"] = self.timestamps[index]
-        return out
+            image_id = [index]
+            x, y = torch.meshgrid(
+                torch.arange(w, device=dev),
+                torch.arange(h, device=dev),
+                indexing="xy",
+            )
+            x = x.flatten()
+            y = y.flatten()
+
+        rgba = self.imgs[index] / 255.0  # (num_rays, 4)   this converts to f32
+        c2w = self.poses[image_id]       # (num_rays, 3, 4)
+        ts = self.timestamps[index]      # (num_rays or 1, )
+        camera_dirs = gen_camera_dirs(
+            x, y, self.intrinsics, True)  # [num_rays, 3]
+
+        directions = (camera_dirs[:, None, :] * c2w[:, :3, :3]).sum(dim=-1)
+        origins = torch.broadcast_to(c2w[:, :3, -1], directions.shape)
+        origins, directions = ndc_rays_blender(
+            intrinsics=self.intrinsics, near=1.0, rays_o=origins, rays_d=directions)
+
+        return {
+            "rays_o": origins.reshape(-1, 3),
+            "rays_d": directions.reshape(-1, 3),
+            "imgs": rgba.reshape(-1, rgba.shape[-1]),
+            "timestamps": ts,
+        }
 
 
 def load_llffvideo_poses(datadir: str,
@@ -407,12 +415,7 @@ def dynerf_isg_weight(imgs, median_imgs, gamma):
 def dynerf_ist_weight(imgs, num_cameras, alpha=0.01):
     N, h, w, c = imgs.shape
     frames = imgs.view(num_cameras, -1, h, w, c)  # [num_cameras, num_timesteps, h, w, 3]
-    shift_left = frames[:, 1:, ...]  # [num_cameras, num_timesteps - 1, h, w, 3]
-    shift_right = frames[:, 0:-1, ...]  # [num_cameras, num_timesteps - 1, h, w, 3]
-    shift_right = torch.cat([torch.zeros(num_cameras, 1, h, w, c), shift_right], dim=1)  # [num_cameras, num_timesteps, h, w, 3]
-    shift_left = torch.cat([shift_left, torch.zeros(num_cameras, 1, h, w, c)], dim=1)  # [num_cameras, num_timesteps, h, w, 3]
-    left_difference = torch.abs(frames - shift_left)
-    right_difference = torch.abs(frames - shift_right)
-    difference = torch.mean(0.5 * (left_difference + right_difference), dim=-1)  # [num_cameras, num_timesteps, h, w]
-    difference = torch.clamp(difference, min=alpha)
-    return difference
+    left_diff = torch.abs(torch.diff(frames, append=torch.zeros(num_cameras, 1, h, w, c)))
+    right_diff = torch.abs(torch.diff(frames, prepend=torch.zeros(num_cameras, 1, h, w, c)))
+    diff = torch.mean(left_diff.add_(right_diff).mul_(0.5), dim=-1).clamp_(min=alpha)
+    return diff
