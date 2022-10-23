@@ -16,7 +16,7 @@ from .data_loading import parallel_load_images
 from .intrinsics import Intrinsics
 from .llff_dataset import load_llff_poses_helper, create_llff_rays
 from .patchloader import PatchLoader
-from .ray_utils import generate_spiral_path
+from .ray_utils import generate_spiral_path, gen_camera_dirs
 from .synthetic_nerf_dataset import (
     create_360_rays, load_360_images, load_360_intrinsics,
     get_360_bbox
@@ -39,28 +39,25 @@ class Video360Dataset(BaseDataset):
                  downsample: float = 1.0,
                  max_cameras: Optional[int] = None,
                  max_tsteps: Optional[int] = None,
-                 isg: bool = False,
-                 ist: bool = False,):
+                 isg: bool = False):
         self.max_cameras = max_cameras
         self.max_tsteps = max_tsteps
         self.downsample = downsample
         self.near_far = [2.0, 6.0]
         self.keyframes = split == 'train' and max_tsteps is not None
-        if ist and isg:
-            raise ValueError("isg and ist cannot be both set.")
         self.isg = isg
-        self.ist = ist
+        self.ist = False
 
         frames, transform = load_360video_frames(datadir, split, self.max_cameras, self.max_tsteps)
-        imgs, poses = load_360_images(frames, datadir, split, self.downsample)
+        imgs, self.poses = load_360_images(frames, datadir, split, self.downsample)
         self.median_imgs = calc_360_camera_medians(frames, imgs)
         intrinsics = load_360_intrinsics(transform, imgs, self.downsample)
+        imgs = (imgs * 255).to(torch.uint8).view(-1, imgs.shape[-1])
         # create-rays flattens imgs, and rays to N*H*W, C
-        rays_o, rays_d, imgs = create_360_rays(
-            imgs, poses, merge_all=split == 'train', intrinsics=intrinsics, is_blender_format=True)
-
-        self.isg_weights = None
-        self.ist_weights = None
+        # TODO: Flatten images
+        # rays_o, rays_d, imgs = create_360_rays(
+        #     imgs, poses, merge_all=split == 'train', intrinsics=intrinsics, is_blender_format=True)
+        isg_weights = None
         if self.isg:
             t_s = time.time()
             gamma = 1e-3 if self.keyframes else 2e-2
@@ -69,18 +66,9 @@ class Video360Dataset(BaseDataset):
                 self.median_imgs,
                 gamma)
             # Normalize into a probability distribution, to speed up sampling
-            self.isg_weights = (isg_weights.reshape(-1) / torch.sum(isg_weights))
+            isg_weights = (isg_weights.reshape(-1) / torch.sum(isg_weights))
             t_e = time.time()
             log.info(f"Computed {self.isg_weights.shape[0]} ISG weights in {t_e - t_s:.2f}s.")
-        elif self.ist:
-            t_s = time.time()
-            ist_weights = dynerf_ist_weight(
-                imgs.view(-1, intrinsics.height, intrinsics.width, imgs.shape[-1]),
-                num_cameras=self.median_imgs.shape[0])
-            # Normalize into a probability distribution, to speed up sampling
-            self.ist_weights = (ist_weights.reshape(-1) / torch.sum(ist_weights))
-            t_e = time.time()
-            log.info(f"Computed {self.ist_weights.shape[0]} IST weights in {t_e - t_s:.2f}s.")
 
         super().__init__(datadir=datadir,
                          split=split,
@@ -88,10 +76,11 @@ class Video360Dataset(BaseDataset):
                          is_ndc=False,
                          is_contracted=False,
                          scene_bbox=get_360_bbox(datadir),
-                         rays_o=rays_o,
-                         rays_d=rays_d,
+                         rays_o=None,
+                         rays_d=None,
                          intrinsics=intrinsics,
                          imgs=imgs,
+                         sampling_weights=isg_weights
                          )
         timestamps = [parse_360_file_path(frame['file_path'])[0] for frame in frames]
         timestamps = torch.tensor(timestamps, dtype=torch.int32)
@@ -110,34 +99,59 @@ class Video360Dataset(BaseDataset):
                  f"{intrinsics}")
 
     def switch_isg2ist(self):
-        del self.isg_weights
-        self.isg_weights = None
+        del self.sampling_weights
         self.isg = False
         self.ist = True
-
         t_s = time.time()
         ist_weights = dynerf_ist_weight(
             self.imgs.view(-1, self.img_h, self.img_w, self.imgs.shape[-1]),
             num_cameras=self.median_imgs.shape[0])
         # Normalize into a probability distribution, to speed up sampling
-        self.ist_weights = (ist_weights.reshape(-1) / torch.sum(ist_weights))
+        ist_weights = (ist_weights.reshape(-1) / torch.sum(ist_weights))
+        self.sampling_weights = ist_weights
         t_e = time.time()
         log.info(f"Switched from ISG to IST weights (computed in {t_e - t_s:.2f}s).")
 
-
     def __getitem__(self, index):
-        if self.split == 'train' and self.isg_weights is not None:
-            out, idxs = super().__getitem__(index, weights=self.isg_weights, return_idxs=True)
-        elif self.split == 'train' and self.ist_weights is not None:
-            out, idxs = super().__getitem__(index, weights=self.ist_weights, return_idxs=True)
-        else:
-            out, idxs = super().__getitem__(index, return_idxs=True)
-
+        h = self.intrinsics.height
+        w = self.intrinsics.width
+        dev = "cpu"
         if self.split == 'train':
-            out["timestamps"] = self.timestamps[idxs]
+            index = self.get_rand_ids(index)
+            image_id = torch.div(index, h * w, rounding_mode='floor')
+            x = torch.remainder(index, h * w).div(h, rounding_mode='floor')
+            y = torch.remainder(index, h * w).remainder(h)
         else:
-            out["timestamps"] = self.timestamps[index]
-        return out
+            image_id = index
+            x, y = torch.meshgrid(
+                torch.arange(w, device=dev),
+                torch.arange(h, device=dev),
+                indexing="xy",
+            )
+            x = x.flatten()
+            y = y.flatten()
+
+        rgba = self.imgs[index] / 255.0  # (num_rays, 4)   this converts to f32
+        c2w = self.poses[image_id]         # (num_rays, 3, 4)
+        ts = self.timestamps[index]        # (num_rays or 1, )
+        camera_dirs = gen_camera_dirs(
+            x, y, self.intrinsics, True)  # [num_rays, 3]
+
+        directions = (camera_dirs[:, None, :] * c2w[:, :3, :3]).sum(dim=-1)
+        origins = torch.broadcast_to(c2w[:, :3, -1], directions.shape)
+        viewdirs = directions / torch.linalg.norm(
+            directions, dim=-1, keepdims=True
+        )
+
+        origins = origins.reshape(-1, 3)
+        viewdirs = viewdirs.reshape(-1, 3)
+        rgba = rgba.reshape(-1, 3)
+        return {
+            "rays_o": origins,
+            "rays_d": viewdirs,
+            "imgs": rgba,
+            "timestamps": ts,
+        }
 
 
 def parse_360_file_path(fp):

@@ -2,6 +2,7 @@ from typing import Tuple
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from .intrinsics import Intrinsics
 
@@ -246,3 +247,18 @@ def generate_hemispherical_orbit(poses: torch.Tensor, n_frames=120):  # TODO: Ch
 
     render_poses = torch.stack(render_poses, dim=0)
     return render_poses
+
+
+def gen_camera_dirs(x: torch.Tensor, y: torch.Tensor, intrinsics: Intrinsics, opengl_camera: bool):
+    return F.pad(
+        torch.stack(
+            [
+                (x - intrinsics.center_x + 0.5) / intrinsics.focal_x,
+                (y - intrinsics.center_y + 0.5) / intrinsics.focal_y
+                * (-1.0 if opengl_camera else 1.0),
+            ],
+            dim=-1,
+        ),
+        (0, 1),
+        value=(-1.0 if opengl_camera else 1.0),
+    )  # [num_rays, 3]
