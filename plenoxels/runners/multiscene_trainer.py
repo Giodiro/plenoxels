@@ -21,6 +21,7 @@ from ..datasets import SyntheticNerfDataset, LLFFDataset
 from ..datasets.multi_dataset_sampler import MultiSceneSampler
 from ..my_tqdm import tqdm
 from ..utils import parse_optint
+from ..distortion_loss_warp import distortion_loss
 
 
 class Trainer():
@@ -188,6 +189,13 @@ class Trainer():
                     batch_size=self.volume_tv_npts,
                     patch_size=self.volume_tv_patch_size) * self.volume_tv_weight
                 loss = loss + volume_tv
+            floater_loss: Optional[torch.Tensor] = None
+            # if floater_loss > 0:
+            #     midpoint = torch.cat([fwd_out["midpoint"], (2*fwd_out["midpoint"][:,-1] - fwd_out["midpoint"][:,-2])[:,None]], dim=1)
+            #     dt = torch.cat([fwd_out["deltas"], fwd_out["deltas"][:,-2:-1]], dim=1) 
+            #     weight = torch.cat([fwd_out["weight"], 1 - fwd_out["weight"].sum(dim=1, keepdim=True)], dim=1)
+            #     floater_loss = distortion_loss(midpoint, weight, dt) * 1e-2
+            #     loss = loss + floater_loss
 
         self.gscaler.scale(loss).backward()
 
@@ -204,6 +212,8 @@ class Trainer():
             self.loss_info[dset_id]["plane_tv"].update(plane_tv.item())
         if volume_tv is not None:
             self.loss_info[dset_id]["volume_tv"].update(volume_tv.item())
+        if floater_loss is not None:
+            self.loss_info[dset_id]["floater_loss"].update(floater_loss.item())
 
         # Update weights
         if do_update:

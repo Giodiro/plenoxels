@@ -78,7 +78,7 @@ class VideoTrainer(Trainer):
             for b in range(math.ceil(rays_o.shape[0] / batch_size)):
                 rays_o_b = rays_o[b * batch_size: (b + 1) * batch_size].cuda()
                 rays_d_b = rays_d[b * batch_size: (b + 1) * batch_size].cuda()
-                timestamps_d_b = torch.ones(len(rays_o_b)).cuda() * timestamp
+                timestamps_d_b = timestamp.expand(rays_o_b.shape[0]).cuda()
                 if self.is_ndc:
                     bg_color = None
                 else:
@@ -135,21 +135,13 @@ class VideoTrainer(Trainer):
                 data_dir = self.train_datasets[0].datadir
                 del self.train_data_loader, self.train_datasets
                 gc.collect()
-                kwargs = copy(self.extra_args)
-                kwargs.update(keyframes=False)
+                self.extra_args.update(keyframes=False)
                 tr_dd = init_tr_data(data_dir=data_dir, **self.extra_args)
                 self.train_data_loader = tr_dd['tr_loader']
                 self.train_datasets = [tr_dd['tr_dset']]
                 raise StopIteration  # Whenever we change the dataset
         if self.global_step == self.ist_step:
-            data_dir = self.train_datasets[0].datadir
-            del self.train_data_loader, self.train_datasets
-            gc.collect()
-            kwargs = copy(self.extra_args)
-            kwargs.update(isg=False, ist=True)
-            tr_dd = init_tr_data(data_dir=data_dir, **self.extra_args)
-            self.train_data_loader = tr_dd['tr_loader']
-            self.train_datasets = [tr_dd['tr_dset']]
+            self.train_datasets[0].switch_isg2ist()
             raise StopIteration  # Whenever we change the dataset
 
         return scale <= self.gscaler.get_scale()
@@ -269,7 +261,6 @@ def init_dloader_random(worker_id):
 
 def init_tr_data(data_downsample, data_dir, **kwargs):
     isg = kwargs.get('isg', False)
-    ist = kwargs.get('ist', False)
     keyframes = kwargs.get('keyframes', False)
     batch_size = kwargs['batch_size']
     if "lego" in data_dir:
@@ -280,7 +271,6 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
             max_cameras=kwargs.get('max_train_cameras'),
             max_tsteps=kwargs.get('max_train_tsteps') if keyframes else None,
             isg=isg,
-            ist=ist,
         )
     else:
         logging.info(f"Loading contracted Video360Dataset with downsample={data_downsample}")
@@ -288,8 +278,7 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
             data_dir, split='train', downsample=data_downsample,
             batch_size=batch_size,
             keyframes=keyframes,
-            isg=isg,  # Always start without ist
-            ist=ist,
+            isg=isg,  
             is_contracted=True,
         )
         # For LLFF we downsample both train and test unlike 360.

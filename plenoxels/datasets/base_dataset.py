@@ -21,6 +21,7 @@ class BaseDataset(Dataset, ABC):
                  intrinsics: Intrinsics,
                  batch_size: Optional[int] = None,
                  imgs: Optional[torch.Tensor] = None,
+                 sampling_weights: Optional[torch.Tensor] = None,
                  ):
         self.datadir = datadir
         self.name = os.path.basename(self.datadir)
@@ -33,10 +34,15 @@ class BaseDataset(Dataset, ABC):
             assert self.batch_size is not None
         self.rays_o = rays_o
         self.rays_d = rays_d
-        self.intrinsics = intrinsics
         self.imgs = imgs
-        self.num_batches = self.rays_o.shape[0]
-
+        self.num_samples = self.imgs.shape[0]
+        self.intrinsics = intrinsics
+        self.sampling_weights = sampling_weights
+        if self.sampling_weights is not None:
+            assert len(self.sampling_weights) == self.num_samples, (
+                f"Expected {self.num_samples} sampling weights but given {len(self.sampling_weights)}."
+            )
+        self.sampling_batch_size = 2_000_000  # Increase this?
         self.perm = None
 
     @property
@@ -48,43 +54,38 @@ class BaseDataset(Dataset, ABC):
         return self.intrinsics.width
 
     def reset_iter(self):
-        self.perm = torch.randperm(self.num_batches)
+        if self.sampling_weights is None:
+            self.perm = torch.randperm(self.num_samples)
 
-    def get_rand_ids(self, index, weights=None):
+    def get_rand_ids(self, index):
         assert self.batch_size is not None, "Can't get rand_ids for test split"
-        if weights is not None:
-            # if len(weights) >= 16777216:  # 2^24 is the max for torch.multinomial
-            if len(weights) > 8000000:  # 2^24 is the max for torch.multinomial
-                subset = torch.from_numpy(np.random.choice(len(weights), size=8000000))
-                samples = torch.multinomial(input=weights[subset], num_samples=self.batch_size)
+        if self.sampling_weights is not None:
+            num_weights = len(self.sampling_weights)
+            if num_weights > self.sampling_batch_size:
+                # Take a uniform random sample first, then according to the weights
+                subset = torch.randint(0, num_weights, size=(self.sampling_batch_size,), dtype=torch.int64)
+                samples = torch.multinomial(
+                    input=self.sampling_weights[subset], num_samples=self.batch_size)
                 return subset[samples]
-            return torch.multinomial(input=weights, num_samples=self.batch_size)
-        assert self.perm is not None, "Call reset_iter"
+            return torch.multinomial(
+                input=self.sampling_weights, num_samples=self.batch_size)
         return self.perm[index * self.batch_size: (index + 1) * self.batch_size]
 
     def __len__(self):
         if self.split == 'train':
-            return (self.num_batches + self.batch_size - 1) // self.batch_size
+            return (self.num_samples + self.batch_size - 1) // self.batch_size
         else:
-            return self.num_batches
+            return self.num_samples
 
-    def __getitem__(self, index, weights=None, return_idxs: bool = False):
+    def __getitem__(self, index, return_idxs: bool = False):
         if self.split == 'train':
-            idxs = self.get_rand_ids(index, weights)
-            out = {
-                "rays_o": self.rays_o[idxs].contiguous(),
-                "rays_d": self.rays_d[idxs].contiguous(),
-            }
-            if self.imgs is not None:
-                out["imgs"] = self.imgs[idxs].contiguous()
-            if return_idxs:
-                return out, idxs
-            return out
-        else:
-            out = {
-                "rays_o": self.rays_o[index],
-                "rays_d": self.rays_d[index],
-            }
-            if self.imgs is not None:
-                out["imgs"] = self.imgs[index]
-            return out
+            index = self.get_rand_ids(index)
+        out = {
+            "rays_o": self.rays_o[index],
+            "rays_d": self.rays_d[index],
+        }
+        if self.imgs is not None:
+            out["imgs"] = self.imgs[index]
+        if return_idxs:
+            return out, index
+        return out
