@@ -21,7 +21,7 @@ from ..datasets import SyntheticNerfDataset, LLFFDataset
 from ..datasets.multi_dataset_sampler import MultiSceneSampler
 from ..my_tqdm import tqdm
 from ..utils import parse_optint
-from ..distortion_loss_warp import distortion_loss
+#from ..distortion_loss_warp import distortion_loss
 
 
 class Trainer():

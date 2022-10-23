@@ -1,7 +1,7 @@
 # configuration file to be used with `main.py` for normal (or multiscene) training
 # the configuration must be specified in a dictionary called `config`.
 config = {
-    "expname": "phototourism_contrast_bds",
+    "expname": "phototourism_contrast_fixed_bds",
     "logdir": "./logs",
 
     # Data settings
@@ -17,7 +17,7 @@ config = {
     "ist_step": -1,
 
     # Optimization settings
-    "num_steps": 40001,
+    "num_steps": 20001,
     "regnerf_weight_start": 0,
     "regnerf_weight_end": 0.0,
     "regnerf_weight_max_step": 512,
@@ -39,15 +39,14 @@ config = {
     "save_outputs": True,
 
     # Raymarching settings
-    "raymarch_type": "voxel_size",
+    "raymarch_type": "fixed",
     "num_sample_multiplier": 2,  # Used when raymarch_type is 'voxel_size'
     "n_intersections": 400,  # Used when raymarch_type is 'fixed'
     "spacing_fn": "log",
-    "single_jitter": True,
+    "single_jitter": False,
 
     # Model settings
     "sh": True,
-    "density_threshold": 1e-4,
     "dmask_update": [],
     "upsample_steps": [],
     "upsample_time_resolution": [],

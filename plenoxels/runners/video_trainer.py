@@ -138,21 +138,8 @@ class VideoTrainer(Trainer):
             fwd_out = self.model(rays_o, rays_d, timestamps, bg_color=bg_color, channels={"rgb"} , near=near, far=far)
             rgb_preds = fwd_out["rgb"]
             recon_loss = self.criterion(rgb_preds, imgs)
-<<<<<<< HEAD
-
-            tv = 0
-            if patch_rays_o is not None:
-                # Don't randomize bg-color when only interested in depth.
-                patch_out = self.model(
-                    patch_rays_o.reshape(-1, 3), patch_rays_d.reshape(-1, 3),
-                    patch_timestamps.reshape(-1), bg_color=1, channels={"depth"}, near=near, far=far)
-                depths = patch_out["depth"].reshape(patch_rays_o.shape[:3])
-                tv = compute_tv_norm(depths, weighting=None)
-            plane_tv = 0
-=======
             loss = recon_loss
             plane_tv = None
->>>>>>> main
             if self.plane_tv_weight > 0:
                 plane_tv = self.model.compute_plane_tv()
                 loss = loss + plane_tv * self.plane_tv_weight
@@ -340,31 +327,18 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
         logging.info(f"Loading Video360Dataset with downsample={data_downsample}")
         tr_dset = Video360Dataset(
             data_dir, split='train', downsample=data_downsample,
-<<<<<<< HEAD
-            resolution=None,  # Don't use resolution for low-pass filtering any more
-            max_cameras=kwargs.get('max_train_cameras'), max_tsteps=kwargs.get('max_train_tsteps'),
-            extra_views=regnerf_bool, batch_size=batch_size)
-        ts_dset = Video360Dataset(
-            data_dir, split='test', downsample=1, resolution=None,
-            max_cameras=kwargs.get('max_test_cameras'), max_tsteps=kwargs.get('max_test_tsteps'),
-            extra_views=False, batch_size=batch_size)
-    elif "sacre" in data_dir or "notre" in data_dir or "brandenburg" in data_dir or "trevi" in data_dir:
-        logging.info(f"About to load Phototourism data downsampled by {data_downsample} times.")
-        
-        tr_dset = PhotoTourismDataset(data_dir, split='train', downsample=data_downsample, batch_size=batch_size)
-        ts_dset = PhotoTourismDataset(data_dir, split='test', downsample=4, batch_size=batch_size)
-        
-        tr_loader = torch.utils.data.DataLoader(tr_dset, batch_size=1, shuffle=True)
-        
-        return {"ts_dset" : ts_dset, "tr_loader": tr_loader}
-        
-=======
             batch_size=batch_size,
             max_cameras=kwargs.get('max_train_cameras'),
             max_tsteps=kwargs.get('max_train_tsteps') if keyframes else None,
             isg=isg,
         )
->>>>>>> main
+    elif "sacre" in data_dir or "notre" in data_dir or "brandenburg" in data_dir or "trevi" in data_dir:
+        logging.info(f"About to load Phototourism data downsampled by {data_downsample} times.")
+        
+        tr_dset = PhotoTourismDataset(data_dir, split='train', downsample=data_downsample, batch_size=batch_size)        
+        tr_loader = torch.utils.data.DataLoader(tr_dset, batch_size=1, shuffle=True)
+        
+        return {"ts_dset" : tr_dset, "tr_loader": tr_loader}
     else:
         logging.info(f"Loading contracted Video360Dataset with downsample={data_downsample}")
         tr_dset = Video360Dataset(
@@ -397,6 +371,8 @@ def init_ts_data(data_dir, **kwargs):
             max_cameras=kwargs.get('max_test_cameras'),
             max_tsteps=kwargs.get('max_test_tsteps'),
         )
+    elif "sacre" in data_dir or "notre" in data_dir or "brandenburg" in data_dir or "trevi" in data_dir:        
+        ts_dset = PhotoTourismDataset(data_dir, split='test', downsample=4)
     else:
         ts_dset = Video360Dataset(
             data_dir, split='test', downsample=4, keyframes=False, is_contracted=True
