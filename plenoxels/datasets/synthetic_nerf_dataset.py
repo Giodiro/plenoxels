@@ -26,7 +26,6 @@ class SyntheticNerfDataset(BaseDataset):
                  split: str,
                  dset_id: int,
                  batch_size: Optional[int] = None,
-                 generator: Optional[torch.random.Generator] = None,
                  downsample: float = 1.0,
                  resolution: Optional[int] = 512,
                  max_frames: Optional[int] = None,
@@ -52,7 +51,6 @@ class SyntheticNerfDataset(BaseDataset):
                          scene_bbox=get_360_bbox(datadir, is_contracted=False),   # Can set to True to test contraction
                          is_ndc=False,
                          is_contracted=False,  # Can set to True to test contraction
-                         generator=generator,
                          batch_size=batch_size,
                          imgs=imgs,
                          rays_o=rays_o,
@@ -141,7 +139,7 @@ def load_360_frames(datadir, split, max_frames: int) -> Tuple[Any, Any]:
     return frames, meta
 
 
-def load_360_images(frames, datadir, split, downsample, resolution) -> Tuple[torch.Tensor, torch.Tensor]:
+def load_360_images(frames, datadir, split, downsample, resolution=(None, None)) -> Tuple[torch.Tensor, torch.Tensor]:
     img_poses = parallel_load_images(
         dset_type="synthetic",
         tqdm_title=f'Loading {split} data',

@@ -38,9 +38,9 @@ def load_data(is_video: bool, data_downsample, data_dirs, batch_size, **kwargs):
     batch_size = parse_optint(batch_size)
 
     if is_video:
-        return video_trainer.load_data(data_downsample, data_dirs, batch_size, **kwargs)
+        return video_trainer.load_data(data_downsample, data_dirs, batch_size=batch_size, **kwargs)
     else:
-        return multiscene_trainer.load_data(data_downsample, data_dirs, batch_size, **kwargs)
+        return multiscene_trainer.load_data(data_downsample, data_dirs, batch_size=batch_size, **kwargs)
 
 
 def init_trainer(is_video: bool, **kwargs):

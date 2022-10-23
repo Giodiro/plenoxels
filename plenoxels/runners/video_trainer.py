@@ -1,35 +1,29 @@
+import gc
 import logging
 import math
 import os
 from collections import defaultdict
+from copy import copy
 from typing import Dict, Optional, MutableMapping
 
+import cv2
 import numpy as np
 import pandas as pd
-
 import torch
 import torch.utils.data
 
 from plenoxels.datasets.video_datasets import Video360Dataset, VideoLLFFDataset
-from plenoxels.my_tqdm import tqdm
-import cv2
-import gc
-
 from plenoxels.ema import EMA
 from plenoxels.models.lowrank_video import LowrankVideo
-from plenoxels.models.utils import compute_tv_norm
-from plenoxels.runners.multiscene_trainer import Trainer
+from plenoxels.my_tqdm import tqdm
 from plenoxels.ops.image import metrics
-from plenoxels.ops.image.io import write_png, write_exr
+from plenoxels.runners.multiscene_trainer import Trainer
 
 
 class VideoTrainer(Trainer):
     def __init__(self,
                  tr_loader: torch.utils.data.DataLoader,
                  ts_dset: torch.utils.data.TensorDataset,
-                 regnerf_weight_start: float,
-                 regnerf_weight_end: float,
-                 regnerf_weight_max_step: int,
                  num_steps: int,
                  scheduler_type: Optional[str],
                  optim_type: str,
@@ -38,7 +32,6 @@ class VideoTrainer(Trainer):
                  train_fp16: bool,
                  save_every: int,
                  valid_every: int,
-                 save_video: bool,  # TODO: Rationalize parameters for saving
                  save_outputs: bool,
                  upsample_time_resolution: [int],
                  upsample_time_steps: [int],
@@ -51,9 +44,9 @@ class VideoTrainer(Trainer):
         super().__init__(tr_loader=tr_loader,
                          tr_dsets=[tr_loader.dataset],
                          ts_dsets=[ts_dset],
-                         regnerf_weight_start=regnerf_weight_start,
-                         regnerf_weight_end=regnerf_weight_end,
-                         regnerf_weight_max_step=regnerf_weight_max_step,
+                         regnerf_weight_start=0.0,   # regnerf useless
+                         regnerf_weight_end=0.0,     # regnerf useless
+                         regnerf_weight_max_step=0,  # regnerf useless
                          num_batches_per_dset=1,
                          num_steps=num_steps,
                          scheduler_type=scheduler_type,
@@ -66,7 +59,6 @@ class VideoTrainer(Trainer):
                          transfer_learning=False,  # No transfer with video
                          save_outputs=save_outputs,
                          **kwargs)
-        self.save_video = save_video
         self.upsample_time_resolution = upsample_time_resolution
         self.upsample_time_steps = upsample_time_steps
         self.ist_step = ist_step
@@ -102,16 +94,6 @@ class VideoTrainer(Trainer):
         rays_d = data["rays_d"].cuda()
         imgs = data["imgs"].cuda()
         timestamps = data["timestamps"].cuda()
-        patch_rays_o, patch_rays_d, patch_timestamps = None, None, None
-        if "patches" in data:
-            patch_rays_o = data["patch_rays_o"].cuda()
-            patch_rays_d = data["patch_rays_d"].cuda()
-            patch_timestamps = data["patch_timestamps"]
-            # Broadcast timestamps to match rays
-            patch_timestamps = torch.ones(len(patch_timestamps), patch_rays_o.shape[1],
-                                          patch_rays_o.shape[2]) * patch_timestamps[:, None, None]
-            patch_timestamps = patch_timestamps.cuda()
-
         self.optimizer.zero_grad(set_to_none=True)
 
         C = imgs.shape[-1]
@@ -125,21 +107,12 @@ class VideoTrainer(Trainer):
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             fwd_out = self.model(rays_o, rays_d, timestamps, bg_color=bg_color, channels={"rgb"})
             rgb_preds = fwd_out["rgb"]
-
             recon_loss = self.criterion(rgb_preds, imgs)
-
-            tv = 0
-            if patch_rays_o is not None:
-                # Don't randomize bg-color when only interested in depth.
-                patch_out = self.model(
-                    patch_rays_o.reshape(-1, 3), patch_rays_d.reshape(-1, 3),
-                    patch_timestamps.reshape(-1), bg_color=1, channels={"depth"})
-                depths = patch_out["depth"].reshape(patch_rays_o.shape[:3])
-                tv = compute_tv_norm(depths, weighting=None)
-            plane_tv = 0
+            loss = recon_loss
+            plane_tv = None
             if self.plane_tv_weight > 0:
                 plane_tv = self.model.compute_plane_tv()
-            loss = recon_loss + tv * self.cur_regnerf_weight + plane_tv * self.plane_tv_weight
+                loss = loss + plane_tv * self.plane_tv_weight
 
         self.gscaler.scale(loss).backward()
         self.gscaler.step(self.optimizer)
@@ -149,8 +122,8 @@ class VideoTrainer(Trainer):
         recon_loss_val = recon_loss.item()
         self.loss_info["mse"].update(recon_loss_val)
         self.loss_info["psnr"].update(-10 * math.log10(recon_loss_val))
-        self.loss_info["tv"].update(tv.item() if patch_rays_o is not None else 0.0)
-        self.loss_info["plane_tv"].update(plane_tv.item() if self.plane_tv_weight > 0 else 0.0)
+        if plane_tv is not None:
+            self.loss_info["plane_tv"].update(plane_tv.item() if self.plane_tv_weight > 0 else 0.0)
 
         if self.global_step in self.upsample_time_steps:
             # Upsample time resolution
@@ -158,51 +131,30 @@ class VideoTrainer(Trainer):
             # Reset optimizer
             self.optimizer = self.init_optim(**self.extra_args)
             # After upsampling time, train with full time data
-            if self.train_data_loader.dataset.keyframes:
-                print(f'deleting the keyframe training data to avoid OOM')
-                datadir = self.train_data_loader.dataset.datadir
-                downsample = self.train_data_loader.dataset.downsample
-                isg = self.train_data_loader.dataset.isg
-                ist = self.train_data_loader.dataset.ist
-                extra_views = self.train_data_loader.dataset.extra_views
-                batch_size = self.train_data_loader.dataset.batch_size
+            if self.train_datasets[0].keyframes:
+                data_dir = self.train_datasets[0].datadir
                 del self.train_data_loader, self.train_datasets
                 gc.collect()
-                print(f'loading all the training frames')
-                tr_dset = VideoLLFFDataset(datadir, split='train', downsample=downsample,
-                                    keyframes=False, isg=isg, ist=ist, 
-                                    extra_views=extra_views, batch_size=batch_size)
-                self.train_data_loader = torch.utils.data.DataLoader(
-                    tr_dset, batch_size=None, shuffle=True, num_workers=2,
-                    prefetch_factor=4, pin_memory=True)
-                self.train_datasets = [tr_dset]
+                kwargs = copy(self.extra_args)
+                kwargs.update(keyframes=False)
+                tr_dd = init_tr_data(data_dir=data_dir, **self.extra_args)
+                self.train_data_loader = tr_dd['tr_loader']
+                self.train_datasets = [tr_dd['tr_dset']]
                 raise StopIteration  # Whenever we change the dataset
-
         if self.global_step == self.ist_step:
-            print(f'deleting pre-ist training data to avoid OOM')
-            datadir = self.train_data_loader.dataset.datadir
-            downsample = self.train_data_loader.dataset.downsample
-            keyframes = self.train_data_loader.dataset.keyframes
-            extra_views = self.train_data_loader.dataset.extra_views
-            batch_size = self.train_data_loader.dataset.batch_size
+            data_dir = self.train_datasets[0].datadir
             del self.train_data_loader, self.train_datasets
             gc.collect()
-            print(f'reloading training data with IST importance sampling')
-            tr_dset = VideoLLFFDataset(datadir, split='train', downsample=downsample,
-                                keyframes=keyframes, isg=False, ist=True, 
-                                extra_views=extra_views, batch_size=batch_size)
-            self.train_data_loader = torch.utils.data.DataLoader(
-                tr_dset, batch_size=None, shuffle=True, num_workers=2,
-                prefetch_factor=4, pin_memory=True)
-            self.train_datasets = [tr_dset]
+            kwargs = copy(self.extra_args)
+            kwargs.update(isg=False, ist=True)
+            tr_dd = init_tr_data(data_dir=data_dir, **self.extra_args)
+            self.train_data_loader = tr_dd['tr_loader']
+            self.train_datasets = [tr_dd['tr_dset']]
             raise StopIteration  # Whenever we change the dataset
 
         return scale <= self.gscaler.get_scale()
 
     def post_step(self, data, progress_bar):
-        if self.regnerf_weight_start > 0:
-            w = np.clip(self.global_step / (1 if self.regnerf_weight_max_step < 1 else self.regnerf_weight_max_step), 0, 1)
-            self.cur_regnerf_weight = self.regnerf_weight_start * (1 - w) + w * self.regnerf_weight_end
         self.writer.add_scalar(f"mse: ", self.loss_info["mse"].value, self.global_step)
         progress_bar.set_postfix_str(losses_to_postfix(self.loss_info), refresh=False)
         progress_bar.update(1)
@@ -212,7 +164,7 @@ class VideoTrainer(Trainer):
         self.loss_info = defaultdict(lambda: EMA(ema_weight))
 
     def init_model(self, **kwargs) -> torch.nn.Module:
-        dset = self.train_data_loader.dataset
+        dset = self.train_datasets[0]
         model = LowrankVideo(
             aabb=dset.scene_bbox,
             len_time=dset.len_time,
@@ -244,8 +196,7 @@ class VideoTrainer(Trainer):
                     pb.set_postfix_str(f"PSNR={out_metrics['psnr']:.2f}", refresh=False)
                     pb.update(1)
                 pb.close()
-                if self.save_video:
-                    self.write_video_to_file(pred_frames, dataset)
+                self.write_video_to_file(pred_frames, dataset)
                 per_scene_metrics["psnr"] /= len(dataset)  # noqa
                 per_scene_metrics["ssim"] /= len(dataset)  # noqa
                 log_text = f"step {self.global_step}/{self.num_steps} | scene {dset_id}"
@@ -303,10 +254,6 @@ class VideoTrainer(Trainer):
             out_img = torch.cat((out_img, preds["depth"].expand_as(out_img)))
         out_img = (out_img * 255.0).byte().numpy()
 
-        if not self.save_video:
-            write_exr(os.path.join(self.log_dir, out_name + ".exr"), exrdict)
-            write_png(os.path.join(self.log_dir, out_name + ".png"), out_img)
-
         return summary, out_img
 
 
@@ -314,32 +261,60 @@ def losses_to_postfix(loss_dict: Dict[str, EMA]) -> str:
     return ", ".join(f"{lname}={lval}" for lname, lval in loss_dict.items())
 
 
-def load_data(data_downsample, data_dirs, batch_size, **kwargs):
-    assert len(data_dirs) == 1
-    data_dir = data_dirs[0]
-    regnerf_bool = kwargs.get('regnerf_weight_start') > 0
+def init_dloader_random(worker_id):
+    seed = torch.utils.data.get_worker_info().seed
+    torch.manual_seed(seed)
+    np.random.seed(seed % (2 ** 32 - 1))
 
+
+def init_tr_data(data_downsample, data_dir, **kwargs):
+    isg = kwargs.get('isg', False)
+    ist = kwargs.get('ist', False)
+    keyframes = kwargs.get('keyframes', False)
+    batch_size = kwargs['batch_size']
     if "lego" in data_dir:
         logging.info(f"Loading Video360Dataset with downsample={data_downsample}")
         tr_dset = Video360Dataset(
             data_dir, split='train', downsample=data_downsample,
-            resolution=None,  # Don't use resolution for low-pass filtering any more
-            max_cameras=kwargs.get('max_train_cameras'), max_tsteps=kwargs.get('max_train_tsteps'),
-            extra_views=regnerf_bool, batch_size=batch_size)
-        ts_dset = Video360Dataset(
-            data_dir, split='test', downsample=1, resolution=None,
-            max_cameras=kwargs.get('max_test_cameras'), max_tsteps=kwargs.get('max_test_tsteps'),
-            extra_views=False, batch_size=batch_size)
+            batch_size=batch_size,
+            max_cameras=kwargs.get('max_train_cameras'),
+            max_tsteps=kwargs.get('max_train_tsteps') if keyframes else None,
+            isg=isg,
+            ist=ist,
+        )
     else:
         # For LLFF we downsample both train and test unlike 360.
         # For LLFF the test-set is not time-subsampled!
         logging.info(f"Loading VideoLLFFDataset with downsample={data_downsample}")
-        tr_dset = VideoLLFFDataset(data_dir, split='train', downsample=data_downsample,
-                                   keyframes=kwargs.get('keyframes'), isg=kwargs.get('isg'),  # Always start without ist
-                                   extra_views=regnerf_bool, batch_size=batch_size)
-        ts_dset = VideoLLFFDataset(data_dir, split='test', downsample=4,
-                                   keyframes=False, extra_views=False, batch_size=batch_size)
+        tr_dset = VideoLLFFDataset(
+            data_dir, split='train', downsample=data_downsample,
+            batch_size=batch_size,
+            keyframes=keyframes,
+            isg=isg,  # Always start without ist
+            ist=ist,
+        )
     tr_loader = torch.utils.data.DataLoader(
-        tr_dset, batch_size=None, shuffle=True, num_workers=2,
-        prefetch_factor=4, pin_memory=True)
-    return {"tr_loader": tr_loader, "ts_dset": ts_dset}
+        tr_dset, batch_size=None, num_workers=2,
+        prefetch_factor=4, pin_memory=True, worker_init_fn=init_dloader_random)
+    return {"tr_loader": tr_loader, "tr_dset": tr_dset}
+
+
+def init_ts_data(data_dir, **kwargs):
+    if "lego" in data_dir:
+        ts_dset = Video360Dataset(
+            data_dir, split='test', downsample=1,
+            max_cameras=kwargs.get('max_test_cameras'),
+            max_tsteps=kwargs.get('max_test_tsteps'),
+        )
+    else:
+        ts_dset = VideoLLFFDataset(
+            data_dir, split='test', downsample=4, keyframes=False
+        )
+    return {"ts_dset": ts_dset}
+
+
+def load_data(data_downsample, data_dirs, **kwargs):
+    assert len(data_dirs) == 1
+    od = init_tr_data(data_downsample, data_dirs[0], **kwargs)
+    od.update(init_ts_data(data_dirs[0], **kwargs))
+    return od
