@@ -420,10 +420,10 @@ def dynerf_isg_weight(imgs, median_imgs, gamma):
     return psidiff  # valid probabilities, each in [0, 1]
 
 
-def dynerf_ist_weight(imgs, num_cameras, alpha=0.01):
+def dynerf_ist_weight(imgs, num_cameras, alpha=0.02):  # DyNerf uses alpha=0.1
     N, h, w, c = imgs.shape
     frames = imgs.view(num_cameras, -1, h, w, c)  # [num_cameras, num_timesteps, h, w, 3]
-    left_diff = torch.abs(torch.diff(frames, append=torch.zeros(num_cameras, 1, h, w, c)))
-    right_diff = torch.abs(torch.diff(frames, prepend=torch.zeros(num_cameras, 1, h, w, c)))
+    left_diff = torch.abs_(torch.diff(frames, append=torch.zeros(num_cameras, 1, h, w, c), dim=1))
+    right_diff = torch.abs_(torch.diff(frames, prepend=torch.zeros(num_cameras, 1, h, w, c), dim=1))
     diff = torch.mean(left_diff.add_(right_diff).mul_(0.5), dim=-1).clamp_(min=alpha)
     return diff
