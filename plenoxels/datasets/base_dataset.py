@@ -87,4 +87,6 @@ class BaseDataset(Dataset, ABC):
             }
             if self.imgs is not None:
                 out["imgs"] = self.imgs[index]
+            if return_idxs:
+                return out, index
             return out

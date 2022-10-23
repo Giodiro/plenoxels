@@ -94,6 +94,7 @@ class Video360Dataset(BaseDataset):
                  f"{poses.shape[0]} images of size {self.img_h}x{self.img_w} and "
                  f"{imgs.shape[-1]} channels. "
                  f"{len(torch.unique(timestamps))} timestamps up to time={torch.max(timestamps)}. "
+                 f"ISG={self.isg} - IST={self.ist} - "
                  f"{intrinsics}")
 
     def __getitem__(self, index):
@@ -103,6 +104,7 @@ class Video360Dataset(BaseDataset):
             out, idxs = super().__getitem__(index, weights=self.ist_weights, return_idxs=True)
         else:
             out, idxs = super().__getitem__(index, return_idxs=True)
+
         if self.split == 'train':
             out["timestamps"] = self.timestamps[idxs]
         else:
@@ -160,7 +162,7 @@ def calc_360_camera_medians(frames, imgs):
     """
     # imgs are sorted by pose_id. We need to find out how many pose_ids there are,
     # and then reshape and compute medians.
-    num_pose_ids = np.unique([parse_360_file_path(frame['file_path'])[1] for frame in frames])
+    num_pose_ids = len(np.unique([parse_360_file_path(frame['file_path'])[1] for frame in frames]))
     imgs = imgs.view(num_pose_ids, -1, *imgs.shape[1:])
     median_images = torch.median(imgs, dim=1).values
     return median_images

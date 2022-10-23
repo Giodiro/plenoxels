@@ -135,9 +135,8 @@ class VideoTrainer(Trainer):
                 data_dir = self.train_datasets[0].datadir
                 del self.train_data_loader, self.train_datasets
                 gc.collect()
-                kwargs = copy(self.extra_args)
-                kwargs.update(keyframes=False)
-                tr_dd = init_tr_data(data_dir=data_dir, **kwargs)
+                self.extra_args.update(keyframes=False)
+                tr_dd = init_tr_data(data_dir=data_dir, **self.extra_args)
                 self.train_data_loader = tr_dd['tr_loader']
                 self.train_datasets = [tr_dd['tr_dset']]
                 raise StopIteration  # Whenever we change the dataset
@@ -145,9 +144,8 @@ class VideoTrainer(Trainer):
             data_dir = self.train_datasets[0].datadir
             del self.train_data_loader, self.train_datasets
             gc.collect()
-            kwargs = copy(self.extra_args)
-            kwargs.update(isg=False, ist=True)
-            tr_dd = init_tr_data(data_dir=data_dir, **kwargs)
+            self.extra_args.update(isg=False, ist=True)
+            tr_dd = init_tr_data(data_dir=data_dir, **self.extra_args)
             self.train_data_loader = tr_dd['tr_loader']
             self.train_datasets = [tr_dd['tr_dset']]
             raise StopIteration  # Whenever we change the dataset
