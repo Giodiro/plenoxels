@@ -83,11 +83,6 @@ class VideoTrainer(Trainer):
             else:
                 near = None
                 far = None
-            
-            if rays_d.ndim == 3:
-                rays_d = rays_d.squeeze()
-                rays_o = rays_o.squeeze()
-                timestamp = timestamp.squeeze()
                 
             preds = defaultdict(list)
             for b in range(math.ceil(rays_o.shape[0] / batch_size)):

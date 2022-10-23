@@ -1,19 +1,20 @@
 # configuration file to be used with `main.py` for normal (or multiscene) training
 # the configuration must be specified in a dictionary called `config`.
 config = {
-    "expname": "phototourism_contrast_fixed_bds",
+    "expname": "phototourism_contrast_fixed_bds_isg_False",
     "logdir": "./logs",
 
     # Data settings
     "data_resolution": None,
-    "data_downsample": 3,
+    "data_downsample": 1,
     "data_dirs": ["/work3/frwa/data/phototourism/sacre"],  # CHANGE ME!
     # Data settings for 360
     "max_tr_frames": None,
-    "max_ts_frames": 10,
+    "max_ts_frames": None,
     # Data settings for LLFF
-    "hold_every": 8,
+    #"hold_every": 8,
     "keyframes": False,
+    "isg": False,
     "ist_step": -1,
 
     # Optimization settings
@@ -33,8 +34,8 @@ config = {
 
     # Training settings
     "train_fp16": True,
-    "save_every": 5000,
-    "valid_every": 5000,
+    "save_every": 1000,
+    "valid_every": 1000,
     "save_video": True,
     "save_outputs": True,
 
