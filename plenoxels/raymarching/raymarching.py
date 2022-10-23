@@ -88,6 +88,8 @@ class RayMarcher():
                            perturb: bool = False,
                            is_ndc: bool = False,
                            is_contracted: bool=False,
+                           near: Optional[torch.Tensor] = None,
+                           far: Optional[torch.Tensor] = None,
                            ) -> Mapping[str, torch.Tensor]:
         dev, dt = rays_o.device, rays_o.dtype
 
@@ -95,6 +97,8 @@ class RayMarcher():
             near = torch.tensor([0.0], device=dev, dtype=dt)
             far = torch.tensor([1.0], device=dev, dtype=dt)
             perturb = False # Don't perturb for ndc or contracted scenes
+        elif near is not None and far is not None:
+            pass
         else:
             inv_rays_d = torch.reciprocal(torch.where(rays_d == 0, torch.full_like(rays_d, 1e-6), rays_d))
             offsets_pos = (aabb[1] - rays_o) * inv_rays_d  # [batch, 3]

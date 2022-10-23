@@ -84,6 +84,13 @@ class VideoTrainer(Trainer):
             rays_d = data["rays_d"]
             timestamp = data["timestamps"]
             
+            if "bounds" in data:
+                near = data["bounds"][0].cuda()
+                far = data["bounds"][1].cuda()
+            else:
+                near = None
+                far = None
+            
             if rays_d.ndim == 3:
                 rays_d = rays_d.squeeze()
                 rays_o = rays_o.squeeze()
@@ -99,7 +106,7 @@ class VideoTrainer(Trainer):
                 else:
                     bg_color = 1
                 outputs = self.model(rays_o_b, rays_d_b, timestamps_d_b, bg_color=bg_color,
-                                     channels={"rgb", "depth"})
+                                     channels={"rgb", "depth"}, near=near, far=far)
                 for k, v in outputs.items():
                     preds[k].append(v)
         return {k: torch.cat(v, 0) for k, v in preds.items()}
@@ -128,6 +135,13 @@ class VideoTrainer(Trainer):
             rays_o = rays_o.squeeze()
             timestamps = timestamps.squeeze()
             imgs = imgs.squeeze()
+            
+        if "bounds" in data:
+            near = data["bounds"][:, 0].cuda()
+            far = data["bounds"][:, 1].cuda()
+        else:
+            near = None
+            far = None
 
         C = imgs.shape[-1]
         # Random bg-color
@@ -138,7 +152,7 @@ class VideoTrainer(Trainer):
             imgs = imgs[..., :3] * imgs[..., 3:] + bg_color * (1.0 - imgs[..., 3:])
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            fwd_out = self.model(rays_o, rays_d, timestamps, bg_color=bg_color, channels={"rgb"})
+            fwd_out = self.model(rays_o, rays_d, timestamps, bg_color=bg_color, channels={"rgb"} , near=near, far=far)
             rgb_preds = fwd_out["rgb"]
 
             recon_loss = self.criterion(rgb_preds, imgs)
@@ -148,7 +162,7 @@ class VideoTrainer(Trainer):
                 # Don't randomize bg-color when only interested in depth.
                 patch_out = self.model(
                     patch_rays_o.reshape(-1, 3), patch_rays_d.reshape(-1, 3),
-                    patch_timestamps.reshape(-1), bg_color=1, channels={"depth"})
+                    patch_timestamps.reshape(-1), bg_color=1, channels={"depth"}, near=near, far=far)
                 depths = patch_out["depth"].reshape(patch_rays_o.shape[:3])
                 tv = compute_tv_norm(depths, weighting=None)
             plane_tv = 0

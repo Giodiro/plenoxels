@@ -73,6 +73,7 @@ class LowrankVideo(LowrankModel):
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
 
         # Interpolate in time
+        #import pdb; pdb.set_trace()
         interp_time = grid_sample_wrapper(grid_time.unsqueeze(0), timestamps[:, None])  # [n, F_dim * rank]
         interp_time = interp_time.view(-1, level_info["output_coordinate_dim"], level_info["rank"][0])  # [n, F_dim, rank]
         # Interpolate in space
@@ -103,7 +104,7 @@ class LowrankVideo(LowrankModel):
             return out, interp
         return out
 
-    def forward(self, rays_o, rays_d, timestamps, bg_color, channels: Sequence[str] = ("rgb", "depth")):
+    def forward(self, rays_o, rays_d, timestamps, bg_color, channels: Sequence[str] = ("rgb", "depth"), near=None, far=None):
         """
         rays_o : [batch, 3]
         rays_d : [batch, 3]
@@ -112,7 +113,7 @@ class LowrankVideo(LowrankModel):
         
         rm_out = self.raymarcher.get_intersections2(
             rays_o, rays_d, self.aabb(0), self.resolution(0), perturb=self.training,
-            is_ndc=self.is_ndc, is_contracted=self.is_contracted)
+            is_ndc=self.is_ndc, is_contracted=self.is_contracted, near=near, far=far)
         rays_d = rm_out["rays_d"]                   # [n_rays, 3]
         intersection_pts = rm_out["intersections"]  # [n_rays, n_intrs, 3]
         mask = rm_out["mask"]                       # [n_rays, n_intrs]
