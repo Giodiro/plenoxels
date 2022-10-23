@@ -1,7 +1,7 @@
 # configuration file to be used with `main.py` for normal (or multiscene) training
 # the configuration must be specified in a dictionary called `config`.
 config = {
-    "expname": "phototourism_debug",
+    "expname": "phototourism_lookup_time",
     "logdir": "./logs",
 
     # Data settings
@@ -62,7 +62,7 @@ config = {
         "grid_dimensions": 2,
         "resolution": [128, 128, 128],
         "rank": 10,
-        "time_reso": 1158,
+        "time_reso": 1179,
     },
     {
         "input_coordinate_dim": 5,

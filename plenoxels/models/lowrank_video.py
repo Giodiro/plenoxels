@@ -73,10 +73,10 @@ class LowrankVideo(LowrankModel):
         grid_space = self.grids  # space: 3 x [1, rank * F_dim, reso, reso]
         grid_time = self.time_coef  # time: [rank * F_dim, time_reso]
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
-
+        
         # Interpolate in time
         if self.lookup_time:
-            interp_time = grid_time[:, timestamps.long()]
+            interp_time = grid_time[:, timestamps.long()].unsqueeze(0).repeat(pts.shape[0], 1)  # [n, F_dim * rank]
         else:
             interp_time = grid_sample_wrapper(grid_time.unsqueeze(0), timestamps[:, None])  # [n, F_dim * rank]
         interp_time = interp_time.view(-1, level_info["output_coordinate_dim"], level_info["rank"][0])  # [n, F_dim, rank]
@@ -126,10 +126,14 @@ class LowrankVideo(LowrankModel):
         deltas = rm_out["deltas"]                   # [n_rays, n_intrs]
         n_rays, n_intrs = intersection_pts.shape[:2]
         
-        times = timestamps[:, None].repeat(1, n_intrs)[mask]  # [n_rays, n_intrs]
-
-        # Normalization (between [-1, 1])
-        if not self.lookup_time:
+        if self.lookup_time:
+            # assumes all rays are sampled at the same time
+            # speed up look up a quite a bit
+            times = timestamps[0]
+        else:
+            times = timestamps[:, None].repeat(1, n_intrs)[mask]  # [n_rays, n_intrs]
+            # Normalization (between [-1, 1])
+        
             intersection_pts = self.normalize_coords(intersection_pts, 0)
             times = (times * 2 / self.len_time) - 1
 
