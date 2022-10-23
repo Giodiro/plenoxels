@@ -20,6 +20,7 @@ class LowrankVideo(LowrankModel):
                  is_ndc: bool,
                  is_contracted: bool,
                  sh: bool,
+                 lookup_time: bool,
                  **kwargs):
         super().__init__()
         if isinstance(grid_config, str):
@@ -31,6 +32,7 @@ class LowrankVideo(LowrankModel):
         self.extra_args = kwargs
         self.is_ndc = is_ndc
         self.is_contracted = is_contracted
+        self.lookup_time = lookup_time
         self.raymarcher = RayMarcher(**self.extra_args)
         self.sh = sh
         self.density_act = trunc_exp
@@ -73,9 +75,12 @@ class LowrankVideo(LowrankModel):
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
 
         # Interpolate in time
-        #import pdb; pdb.set_trace()
-        interp_time = grid_sample_wrapper(grid_time.unsqueeze(0), timestamps[:, None])  # [n, F_dim * rank]
+        if self.lookup_time:
+            interp_time = grid_time[:, timestamps.long()]
+        else:
+            interp_time = grid_sample_wrapper(grid_time.unsqueeze(0), timestamps[:, None])  # [n, F_dim * rank]
         interp_time = interp_time.view(-1, level_info["output_coordinate_dim"], level_info["rank"][0])  # [n, F_dim, rank]
+        
         # Interpolate in space
         interp = pts
         coo_combs = list(itertools.combinations(
@@ -124,8 +129,9 @@ class LowrankVideo(LowrankModel):
         times = timestamps[:, None].repeat(1, n_intrs)[mask]  # [n_rays, n_intrs]
 
         # Normalization (between [-1, 1])
-        intersection_pts = self.normalize_coords(intersection_pts, 0)
-        times = (times * 2 / self.len_time) - 1
+        if not self.lookup_time:
+            intersection_pts = self.normalize_coords(intersection_pts, 0)
+            times = (times * 2 / self.len_time) - 1
 
         # compute features and render
         features = self.compute_features(intersection_pts[mask], times)

@@ -1,7 +1,7 @@
 # configuration file to be used with `main.py` for normal (or multiscene) training
 # the configuration must be specified in a dictionary called `config`.
 config = {
-    "expname": "phototourism_ndc",
+    "expname": "phototourism_debug",
     "logdir": "./logs",
 
     # Data settings
