@@ -1,6 +1,6 @@
 from typing import Optional, Mapping
 import logging as log
-
+import numpy as np
 import torch
 
 
@@ -46,12 +46,6 @@ class RayMarcher():
             n_intersections = int(((aabb[1] - aabb[0]).square().sum().sqrt() / step_size).item()) + 1
             return n_intersections
 
-    def get_step_size(self, aabb: torch.Tensor, resolution: torch.Tensor) -> float:
-        if self.raymarch_type == "fixed":
-            return (aabb[1] - aabb[0]).square().sum().sqrt() / self.n_intersections
-        elif self.raymarch_type == "voxel_size":
-            return torch.mean((aabb[1] - aabb[0]) / (resolution - 1)) / self.num_sample_multiplier
-
     def get_samples2(self,
                      rays_o: torch.Tensor,
                      near: torch.Tensor,
@@ -90,9 +84,19 @@ class RayMarcher():
                            ) -> Mapping[str, torch.Tensor]:
         dev, dt = rays_o.device, rays_o.dtype
 
-        if is_ndc or is_contracted:
+        if is_ndc:
             near = torch.tensor([0.0], device=dev, dtype=dt)
             far = torch.tensor([1.0], device=dev, dtype=dt)
+            perturb = False # Don't perturb for ndc or contracted scenes
+        if is_contracted:
+            near = torch.tensor([2], device=dev, dtype=dt) 
+            far = torch.tensor([10.0], device=dev, dtype=dt)
+            self.spacing_fn = torch.log
+            self.inv_spacing_fn = torch.exp
+            dir_norm = torch.linalg.norm(rays_d, dim=1, keepdim=True)
+            rays_d = rays_d / dir_norm
+            # Note: masking out samples does not work when using scene contraction!
+            # Note: sampling is really important! You need to cover all the range where stuff is, but not much extra
             perturb = False # Don't perturb for ndc or contracted scenes
         else:
             inv_rays_d = torch.reciprocal(torch.where(rays_d == 0, torch.full_like(rays_d, 1e-6), rays_d))
@@ -105,38 +109,33 @@ class RayMarcher():
 
         n_samples = self.calc_n_samples(aabb, resolution)
         intersections = self.get_samples2(rays_o, near, far, n_samples, perturb)  # [n_rays, n_samples + 1]
-        intersection_mids = 0.5 * (intersections[..., :-1] + intersections[..., 1:])
+        intersection_mids = 0.5 * (intersections[..., :-1] + intersections[..., 1:])  # [n_rays, n_samples]
         deltas = intersections.diff(dim=-1)    # [n_rays, n_samples]
-        if is_contracted: 
-            # Transform to Euclidean distances
-            intersections = 1.0 / (intersections * 5e-3 + (1.0 - intersections) * 1e3)  # ranges from 1e-3 to 2e2
-            # Compute deltas using Euclidean distances
-            deltas = intersections.diff(dim=-1)    # [n_rays, n_samples]
         intersections = intersections[:, :-1]  # [n_rays, n_samples]
         intrs_pts = rays_o[..., None, :] + rays_d[..., None, :] * intersections[..., None]  # [n_rays, n_samples, 3]
 
-        mask = ((aabb[0] <= intrs_pts) & (intrs_pts <= aabb[1])).all(dim=-1)  # noqa
         if is_contracted:
             # Do the contraction to map Euclidean coordinates into [-2, 2] which is also the aabb for contracted scenes
-            norms = torch.linalg.vector_norm(intrs_pts, dim=-1, keepdim=True).expand(-1, -1, 3)  # [n_rays, n_samples, 3]
-            norm_mask = norms > 1
-            intrs_pts[norm_mask] = (2.0 - 1.0 / norms[norm_mask]) * intrs_pts[norm_mask] / norms[norm_mask]
-            mask = torch.ones_like(mask)  # All points are in-bounds when we do scene contraction
+            # Use infinity norm so we map onto the cube instead of the sphere
+            intrs_pts = contract(intrs_pts)
 
+        mask = ((aabb[0] <= intrs_pts) & (intrs_pts <= aabb[1])).all(dim=-1)  # noqa
+        assert torch.min(deltas) > 0, f'min delta is {torch.min(deltas)}, but it should be positive!'
+        if is_contracted:
+            assert torch.min(mask) > 0, f'mask should all be true when using contraction'
+        
         # Normalize rays_d and deltas
-        dir_norm = torch.linalg.norm(rays_d, dim=1, keepdim=True)
-        rays_d = rays_d / dir_norm
+        if not is_contracted:  # Contraction pre-normalizes rays_d so we don't need to do it again
+            dir_norm = torch.linalg.norm(rays_d, dim=1, keepdim=True)
+            rays_d = rays_d / dir_norm
+            deltas = deltas * dir_norm
         if is_ndc:
             # Make deltas linear in disparity, as in the NDC derivation (but not in the NeRF code)
             deltas = 1. / (1 - intersections) - 1. / (1 - intersections + deltas)
-        deltas = deltas * dir_norm
 
         n_rays, n_intersections = intersections.shape[0:2]
         ridx = torch.arange(0, n_rays, device=dev)
         ridx = ridx[..., None].repeat(1, n_intersections)#[mask]
-
-        #deltas = deltas[mask]
-        #intrs_pts = intrs_pts[mask]
 
         return {
             "intersections": intrs_pts,
@@ -147,6 +146,15 @@ class RayMarcher():
             "rays_d": rays_d,
             "mask": mask,
         }
+
+
+# Apply the square (L_infinity norm) version of the scene contraction from MipNeRF360
+def contract(pts):
+    # pts should have shape [n_rays, n_samples, 3]
+    norms = torch.linalg.vector_norm(pts, ord=np.inf, dim=-1, keepdim=True).expand(-1, -1, 3)  # [n_rays, n_samples, 3]
+    norm_mask = norms > 1
+    pts[norm_mask] = (2.0 - 1.0 / norms[norm_mask]) * pts[norm_mask] / norms[norm_mask]
+    return pts
 
 
 def genspace(start, stop, num, fn, inv_fn):

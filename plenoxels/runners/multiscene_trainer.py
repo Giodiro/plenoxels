@@ -50,6 +50,7 @@ class Trainer():
         self.test_datasets = ts_dsets
         self.train_datasets = tr_dsets
         self.is_ndc = self.test_datasets[0].is_ndc
+        self.is_contracted = self.test_datasets[0].is_contracted
 
         self.extra_args = kwargs
         self.num_dsets = len(self.train_datasets)
@@ -481,6 +482,7 @@ class Trainer():
             grid_config=kwargs.pop("grid_config"),
             aabb=aabbs,
             is_ndc=self.is_ndc,  # TODO: This should also be per-scene
+            is_contracted=self.is_contracted,
             **kwargs)
         logging.info(f"Initialized LowrankLearnableHash model with "
                      f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters.")

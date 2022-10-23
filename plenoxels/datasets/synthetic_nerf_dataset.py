@@ -48,8 +48,9 @@ class SyntheticNerfDataset(BaseDataset):
             imgs, poses, merge_all=split == 'train', intrinsics=intrinsics, is_blender_format=True)
         super().__init__(datadir=datadir,
                          split=split,
-                         scene_bbox=get_360_bbox(datadir),
+                         scene_bbox=get_360_bbox(datadir, is_contracted=False),   # Can set to True to test contraction
                          is_ndc=False,
+                         is_contracted=False,  # Can set to True to test contraction
                          batch_size=batch_size,
                          imgs=imgs,
                          rays_o=rays_o,
@@ -77,8 +78,10 @@ class SyntheticNerfDataset(BaseDataset):
         return out
 
 
-def get_360_bbox(datadir):
-    if "ship" in datadir:
+def get_360_bbox(datadir, is_contracted=False):
+    if is_contracted:
+        radius = 2
+    elif "ship" in datadir:
         radius = 1.5
     else:
         radius = 1.3
