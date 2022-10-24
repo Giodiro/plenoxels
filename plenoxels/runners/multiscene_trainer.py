@@ -20,6 +20,7 @@ from ..datasets.multi_dataset_sampler import MultiSceneSampler
 from ..distortion_loss_warp import distortion_loss
 from ..my_tqdm import tqdm
 from ..utils import parse_optint
+from .utils import get_cosine_schedule_with_warmup, get_step_schedule_with_warmup
 
 
 class Trainer():
@@ -435,7 +436,7 @@ class Trainer():
 
     # noinspection PyUnresolvedReferences,PyProtectedMember
     def init_lr_scheduler(self, **kwargs) -> Optional[torch.optim.lr_scheduler._LRScheduler]:
-        eta_min = 0
+        eta_min = 1e-5
         lr_sched = None
         max_steps = self.num_steps
         if self.scheduler_type == "cosine":
@@ -443,17 +444,42 @@ class Trainer():
                 self.optimizer,
                 T_max=max_steps,
                 eta_min=eta_min)
-            logging.info(f"Initialized CosineAnnealing LR Scheduler with {max_steps} maximum steps.")
+            logging.info(f"Initialized CosineAnnealing LR Scheduler with {max_steps} maximum "
+                         f"steps.")
+        elif self.scheduler_type == "warmup_cosine":
+            lr_sched = get_cosine_schedule_with_warmup(
+                self.optimizer,
+                num_warmup_steps=512,
+                num_training_steps=max_steps,
+                eta_min=eta_min)
+            logging.info(f"Initialized CosineAnnealing LR Scheduler with {max_steps} maximum "
+                         f"steps and {512} warmup steps.")
+        elif self.scheduler_type == "step_many":
+            lr_sched = torch.optim.lr_scheduler.MultiStepLR(
+                self.optimizer,
+                milestones=[
+                    max_steps // 2,
+                    max_steps * 3 // 4,
+                    max_steps * 5 // 6,
+                    max_steps * 9 // 10,
+                ],
+                gamma=0.33)
+            logging.info(f"Initialized Many-step LR Scheduler with {max_steps} maximum "
+                         f"steps.")
+        elif self.scheduler_type == "warmup_step_many":
+            lr_sched = get_step_schedule_with_warmup(
+                self.optimizer,
+                num_warmup_steps=512,
+                milestones=[
+                    max_steps // 2,
+                    max_steps * 3 // 4,
+                    max_steps * 5 // 6,
+                    max_steps * 9 // 10,
+                ],
+                gamma=0.33)
+            logging.info(f"Initialized Many-step LR Scheduler with {max_steps} maximum "
+                         f"steps and {512} warmup steps.")
         elif self.scheduler_type == "step":
-            # lr_sched = torch.optim.lr_scheduler.MultiStepLR(
-            #     self.optimizer,
-            #     milestones=[
-            #         max_steps // 2,
-            #         max_steps * 3 // 4,
-            #         max_steps * 5 // 6,
-            #         max_steps * 9 // 10,
-            #     ],
-            #     gamma=0.33)
             lr_sched = torch.optim.lr_scheduler.MultiStepLR(
                 self.optimizer,
                 milestones=[
