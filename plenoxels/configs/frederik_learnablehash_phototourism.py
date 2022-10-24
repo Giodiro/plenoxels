@@ -1,7 +1,7 @@
 # configuration file to be used with `main.py` for normal (or multiscene) training
 # the configuration must be specified in a dictionary called `config`.
 config = {
-    "expname": "phototourism_contrast_fixed_bds_isg_False",
+    "expname": "phototourism_contrast_plane_tv_weight_larger_res",
     "logdir": "./logs",
 
     # Data settings
@@ -22,7 +22,7 @@ config = {
     "regnerf_weight_start": 0,
     "regnerf_weight_end": 0.0,
     "regnerf_weight_max_step": 512,
-    "plane_tv_weight": 0.00,  
+    "plane_tv_weight": 0.0005,  
     "l1density_weight": 0,  # Not used for video yet
     "volume_tv_weight": 0.0,  # Not used for video yet
     "volume_tv_npts": 1024,  # Not used for video yet
@@ -60,7 +60,7 @@ config = {
         "input_coordinate_dim": 3,
         "output_coordinate_dim": 5,
         "grid_dimensions": 2,
-        "resolution": [128, 128, 128],
+        "resolution": [256, 256, 256],
         "rank": 10,
         "time_reso": 1179,
     },
