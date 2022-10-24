@@ -52,8 +52,8 @@ class RayMarcher():
                      far: torch.Tensor,
                      n_samples: int,
                      perturb: bool) -> torch.Tensor:
-        steps = genspace(near,#[..., None],
-                         far,#[..., None],
+        steps = genspace(near,
+                         far,
                          n_samples + 1,
                          fn=self.spacing_fn,
                          inv_fn=self.inv_spacing_fn)  # [n_samples + 1]
@@ -80,14 +80,14 @@ class RayMarcher():
                            resolution: torch.Tensor,
                            perturb: bool = False,
                            is_ndc: bool = False,
-                           is_contracted: bool=False,
+                           is_contracted: bool = False,
                            ) -> Mapping[str, torch.Tensor]:
         dev, dt = rays_o.device, rays_o.dtype
 
         if is_ndc:
             near = torch.tensor([0.0], device=dev, dtype=dt)
             far = torch.tensor([1.0], device=dev, dtype=dt)
-            perturb = False # Don't perturb for ndc or contracted scenes
+            perturb = False  # Don't perturb for ndc or contracted scenes
         if is_contracted:
             near = torch.tensor([3.0], device=dev, dtype=dt) 
             far = torch.tensor([10.0], device=dev, dtype=dt)
@@ -98,8 +98,11 @@ class RayMarcher():
             rays_d = rays_d / dir_norm
             # Note: masking out samples does not work when using scene contraction!
             # Note: sampling is really important! You need to cover all the range where stuff is, but not much extra
-            perturb = False # Don't perturb for ndc or contracted scenes
+            perturb = False  # Don't perturb for ndc or contracted scenes
         else:
+            dir_norm = torch.linalg.norm(rays_d, dim=1, keepdim=True)
+            rays_d = rays_d / dir_norm
+
             inv_rays_d = torch.reciprocal(torch.where(rays_d == 0, torch.full_like(rays_d, 1e-6), rays_d))
             offsets_pos = (aabb[1] - rays_o) * inv_rays_d  # [batch, 3]
             offsets_neg = (aabb[0] - rays_o) * inv_rays_d  # [batch, 3]
@@ -136,7 +139,7 @@ class RayMarcher():
 
         n_rays, n_intersections = intersections.shape[0:2]
         ridx = torch.arange(0, n_rays, device=dev)
-        ridx = ridx[..., None].repeat(1, n_intersections)#[mask]
+        ridx = ridx[..., None].repeat(1, n_intersections)
 
         return {
             "intersections": intrs_pts,
