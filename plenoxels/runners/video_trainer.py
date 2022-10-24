@@ -20,7 +20,7 @@ from plenoxels.models.lowrank_video import LowrankVideo
 from plenoxels.my_tqdm import tqdm
 from plenoxels.ops.image import metrics
 from plenoxels.runners.multiscene_trainer import Trainer
-from plenoxels.distortion_loss_warp import distortion_loss
+#from plenoxels.distortion_loss_warp import distortion_loss
 
 
 class VideoTrainer(Trainer):

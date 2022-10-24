@@ -31,6 +31,7 @@ config = {
     "batch_size": 4096,  
     "optim_type": "adam",
     "lr": 0.1,
+    "floater_loss" : 0.0,
 
     # Training settings
     "train_fp16": True,

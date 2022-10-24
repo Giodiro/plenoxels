@@ -15,12 +15,12 @@ config = {
     "hold_every": 8,
 
     # Optimization settings
-    "num_epochs": 10,
+    "num_steps": 20001,
     "batch_size": 4096,
     "num_batches_per_dset": 1,
     "scheduler_type": None,
     "optim_type": "adam",
-    "lr": 2e-3,
+    "lr": 0.1,
 
     # Regularization settings
     "regnerf_weight_start": 0.0,
@@ -36,6 +36,7 @@ config = {
     "volume_tv_npts": 100,
     "volume_tv_patch_size": 8,
     "volume_tv_what": "Gcoords",
+    "floater_loss":0.0,
 
     # Training settings
     "train_fp16": True,
@@ -45,10 +46,10 @@ config = {
     "transfer_learning": False,
 
     # Raymarching settings
-    "raymarch_type": "voxel_size",
-    "num_sample_multiplier": 1,  # Used when raymarch_type is 'voxel_size'
-    "n_intersections": 440,  # Used when raymarch_type is 'fixed'
-    "spacing_fn": "linear",
+    "raymarch_type": "fixed",
+    "num_sample_multiplier": 2,  # Used when raymarch_type is 'voxel_size'
+    "n_intersections": 400,  # Used when raymarch_type is 'fixed'
+    "spacing_fn": "log",
     "single_jitter": True,
 
     # Model settings

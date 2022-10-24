@@ -17,7 +17,7 @@ from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_exr, write_png
 from ..datasets import SyntheticNerfDataset, LLFFDataset
 from ..datasets.multi_dataset_sampler import MultiSceneSampler
-from ..distortion_loss_warp import distortion_loss
+#from ..distortion_loss_warp import distortion_loss
 from ..my_tqdm import tqdm
 from ..utils import parse_optint
 

@@ -44,7 +44,7 @@ class LLFFDataset(BaseDataset):
         super().__init__(datadir=datadir,
                          split=split,
                          scene_bbox=torch.tensor([[-2, -2, -2], [2, 2, 2]]),
-                         is_ndc=True,
+                         is_ndc=False,
                          batch_size=batch_size,
                          imgs=imgs,
                          rays_o=None,
