@@ -32,6 +32,7 @@ class Trainer():
                  regnerf_weight_start: float,
                  regnerf_weight_end: float,
                  regnerf_weight_max_step: int,
+                 floater_loss: float,
                  plane_tv_weight: float,
                  l1density_weight: float,
                  volume_tv_weight: float,
@@ -56,6 +57,7 @@ class Trainer():
         self.extra_args = kwargs
         self.num_dsets = len(self.train_datasets)
 
+        self.floater_loss = floater_loss
         self.regnerf_weight_start = regnerf_weight_start
         self.regnerf_weight_end = regnerf_weight_end
         self.regnerf_weight_max_step = regnerf_weight_max_step
@@ -190,12 +192,12 @@ class Trainer():
                     patch_size=self.volume_tv_patch_size) * self.volume_tv_weight
                 loss = loss + volume_tv
             floater_loss: Optional[torch.Tensor] = None
-            # if floater_loss > 0:
-            #     midpoint = torch.cat([fwd_out["midpoint"], (2*fwd_out["midpoint"][:,-1] - fwd_out["midpoint"][:,-2])[:,None]], dim=1)
-            #     dt = torch.cat([fwd_out["deltas"], fwd_out["deltas"][:,-2:-1]], dim=1) 
-            #     weight = torch.cat([fwd_out["weight"], 1 - fwd_out["weight"].sum(dim=1, keepdim=True)], dim=1)
-            #     floater_loss = distortion_loss(midpoint, weight, dt) * 1e-2
-            #     loss = loss + floater_loss
+            if self.floater_loss > 0:
+                midpoint = torch.cat([fwd_out["midpoint"], (2*fwd_out["midpoint"][:,-1] - fwd_out["midpoint"][:,-2])[:,None]], dim=1)
+                dt = torch.cat([fwd_out["deltas"], fwd_out["deltas"][:,-2:-1]], dim=1) 
+                weight = torch.cat([fwd_out["weight"], 1 - fwd_out["weight"].sum(dim=1, keepdim=True)], dim=1)
+                floater_loss = distortion_loss(midpoint, weight, dt) * 1e-2
+                loss = loss + floater_loss
 
         self.gscaler.scale(loss).backward()
 

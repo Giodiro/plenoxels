@@ -18,6 +18,7 @@ from plenoxels.models.lowrank_video import LowrankVideo
 from plenoxels.my_tqdm import tqdm
 from plenoxels.ops.image import metrics
 from plenoxels.runners.multiscene_trainer import Trainer
+from plenoxels.distortion_loss_warp import distortion_loss
 
 
 class VideoTrainer(Trainer):
@@ -113,6 +114,13 @@ class VideoTrainer(Trainer):
             if self.plane_tv_weight > 0:
                 plane_tv = self.model.compute_plane_tv()
                 loss = loss + plane_tv * self.plane_tv_weight
+            floater_loss: Optional[torch.Tensor] = None
+            if self.floater_loss > 0:
+                midpoint = torch.cat([fwd_out["midpoint"], (2*fwd_out["midpoint"][:,-1] - fwd_out["midpoint"][:,-2])[:,None]], dim=1)
+                dt = torch.cat([fwd_out["deltas"], fwd_out["deltas"][:,-2:-1]], dim=1) 
+                weight = torch.cat([fwd_out["weight"], 1 - fwd_out["weight"].sum(dim=1, keepdim=True)], dim=1)
+                floater_loss = distortion_loss(midpoint, weight, dt) * 1e-2
+                loss = loss + floater_loss
 
         self.gscaler.scale(loss).backward()
         self.gscaler.step(self.optimizer)
@@ -124,6 +132,8 @@ class VideoTrainer(Trainer):
         self.loss_info["psnr"].update(-10 * math.log10(recon_loss_val))
         if plane_tv is not None:
             self.loss_info["plane_tv"].update(plane_tv.item() if self.plane_tv_weight > 0 else 0.0)
+        if floater_loss is not None:
+            self.loss_info["floater_loss"].update(floater_loss.item())
 
         if self.global_step in self.upsample_time_steps:
             # Upsample time resolution

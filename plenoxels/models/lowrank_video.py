@@ -158,6 +158,9 @@ class LowrankVideo(LowrankModel):
             depth_map = torch.sum(weight * z_vals, -1)  # [batch_size]
             depth_map = depth_map + (1.0 - acc_map) * rays_d[..., -1]  # Maybe the rays_d is to transform ray depth to absolute depth?
             outputs["depth"] = depth_map
+        outputs["deltas"] = deltas
+        outputs["weight"] = weight
+        outputs["midpoint"] = rm_out["z_mids"]
 
         return outputs
 

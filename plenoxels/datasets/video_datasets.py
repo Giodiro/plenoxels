@@ -49,6 +49,7 @@ class Video360Dataset(BaseDataset):
         self.isg = isg
         self.ist = False
         if is_contracted:  # For the DyNerf videos
+            # TODO: actually store these near_fars and use them in raymarching. generally the bounds are about [5, 100] but near can be as low as 3.6 and far can be as high as 118
             per_cam_poses, per_cam_near_fars, intrinsics, videopaths = load_llffvideo_poses(
                 datadir, downsample=self.downsample, split=split, near_scaling=1.0)
             poses, imgs, timestamps, self.median_imgs = load_llffvideo_data(

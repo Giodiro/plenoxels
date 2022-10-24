@@ -89,7 +89,7 @@ class RayMarcher():
             far = torch.tensor([1.0], device=dev, dtype=dt)
             perturb = False # Don't perturb for ndc or contracted scenes
         if is_contracted:
-            near = torch.tensor([2], device=dev, dtype=dt) 
+            near = torch.tensor([3.0], device=dev, dtype=dt) 
             far = torch.tensor([10.0], device=dev, dtype=dt)
             # These should be used for sampling, but it's controllable as a parameter in the config so no need to also set it here
             # self.spacing_fn = torch.log
