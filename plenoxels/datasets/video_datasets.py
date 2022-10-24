@@ -1,29 +1,24 @@
 import glob
-import time
 import json
 import logging as log
 import math
 import os
+import time
 from collections import defaultdict
 from typing import Optional, List, Tuple, Any
 
 import numpy as np
 import torch
-import torchvision.transforms
 
 from .base_dataset import BaseDataset
 from .data_loading import parallel_load_images
 from .intrinsics import Intrinsics
-from .llff_dataset import load_llff_poses_helper, create_llff_rays
-from .patchloader import PatchLoader
-from .ray_utils import generate_spiral_path, gen_camera_dirs, ndc_rays_blender
+from .llff_dataset import load_llff_poses_helper
+from .ray_utils import gen_camera_dirs, ndc_rays_blender
 from .synthetic_nerf_dataset import (
-    create_360_rays, load_360_images, load_360_intrinsics,
+    load_360_images, load_360_intrinsics,
     get_360_bbox
 )
-
-pil2tensor = torchvision.transforms.ToTensor()
-tensor2pil = torchvision.transforms.ToPILImage()
 
 
 class Video360Dataset(BaseDataset):
@@ -49,6 +44,7 @@ class Video360Dataset(BaseDataset):
         self.isg = isg
         self.ist = False
         if is_contracted:  # For the DyNerf videos
+            # TODO: actually store these near_fars and use them in raymarching. generally the bounds are about [5, 100] but near can be as low as 3.6 and far can be as high as 118
             per_cam_poses, per_cam_near_fars, intrinsics, videopaths = load_llffvideo_poses(
                 datadir, downsample=self.downsample, split=split, near_scaling=1.0)
             poses, imgs, timestamps, self.median_imgs = load_llffvideo_data(
@@ -152,9 +148,6 @@ class Video360Dataset(BaseDataset):
 
         directions = (camera_dirs[:, None, :] * c2w[:, :3, :3]).sum(dim=-1)
         origins = torch.broadcast_to(c2w[:, :3, -1], directions.shape)
-        viewdirs = directions / torch.linalg.norm(
-            directions, dim=-1, keepdims=True
-        )
         return {
             "rays_o": origins.reshape(-1, 3),
             "rays_d": directions.reshape(-1, 3),

@@ -1,9 +1,8 @@
 import logging
-from contextlib import ExitStack
 import math
 import os
 from collections import defaultdict
-from typing import Dict, List, Optional, MutableMapping, Union, Any
+from typing import Dict, List, Optional, MutableMapping, Union
 
 import numpy as np
 import pandas as pd
@@ -11,7 +10,6 @@ import torch
 import torch.utils.data
 from torch.utils.tensorboard import SummaryWriter
 
-from torch.profiler import profile, ProfilerActivity, schedule
 from plenoxels.ema import EMA
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash, DensityMask
 from plenoxels.models.utils import compute_tv_norm
@@ -19,9 +17,9 @@ from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_exr, write_png
 from ..datasets import SyntheticNerfDataset, LLFFDataset
 from ..datasets.multi_dataset_sampler import MultiSceneSampler
+from ..distortion_loss_warp import distortion_loss
 from ..my_tqdm import tqdm
 from ..utils import parse_optint
-#from ..distortion_loss_warp import distortion_loss
 
 
 class Trainer():
@@ -32,6 +30,7 @@ class Trainer():
                  regnerf_weight_start: float,
                  regnerf_weight_end: float,
                  regnerf_weight_max_step: int,
+                 floater_loss: float,
                  plane_tv_weight: float,
                  l1density_weight: float,
                  volume_tv_weight: float,
@@ -56,6 +55,7 @@ class Trainer():
         self.extra_args = kwargs
         self.num_dsets = len(self.train_datasets)
 
+        self.floater_loss = floater_loss
         self.regnerf_weight_start = regnerf_weight_start
         self.regnerf_weight_end = regnerf_weight_end
         self.regnerf_weight_max_step = regnerf_weight_max_step
@@ -77,12 +77,7 @@ class Trainer():
         self.save_every = save_every
         self.valid_every = valid_every
         self.save_outputs = save_outputs
-        self.gradient_acc = kwargs.get('gradient_acc', False)
-        # All 'steps' things must be multiplied by the number of datasets
-        # to get consistent amount of training independently of how many dsets.
-        # This is not needed if gradient_acc is set, since in that case the
-        # global_step is only updated once every time we cycle through each scene
-        step_multiplier = 1 if self.gradient_acc else self.num_dsets
+        step_multiplier = self.num_dsets
         self.density_mask_update_steps = [s * step_multiplier for s in kwargs.get('dmask_update', [])]
         self.upsample_steps = [s * step_multiplier for s in kwargs.get('upsample_steps', [])]
         self.upsample_resolution_list = list(kwargs.get('upsample_resolution', []))
@@ -128,7 +123,7 @@ class Trainer():
                     preds[k].append(v)
         return {k: torch.cat(v, 0) for k, v in preds.items()}
 
-    def step(self, data: Dict[str, Union[int, torch.Tensor]], do_update: bool):
+    def step(self, data: Dict[str, Union[int, torch.Tensor]]):
         dset_id = data["dset_id"]
         rays_o = data["rays_o"].cuda()
         rays_d = data["rays_d"].cuda()
@@ -192,12 +187,12 @@ class Trainer():
                     patch_size=self.volume_tv_patch_size) * self.volume_tv_weight
                 loss = loss + volume_tv
             floater_loss: Optional[torch.Tensor] = None
-            # if floater_loss > 0:
-            #     midpoint = torch.cat([fwd_out["midpoint"], (2*fwd_out["midpoint"][:,-1] - fwd_out["midpoint"][:,-2])[:,None]], dim=1)
-            #     dt = torch.cat([fwd_out["deltas"], fwd_out["deltas"][:,-2:-1]], dim=1) 
-            #     weight = torch.cat([fwd_out["weight"], 1 - fwd_out["weight"].sum(dim=1, keepdim=True)], dim=1)
-            #     floater_loss = distortion_loss(midpoint, weight, dt) * 1e-2
-            #     loss = loss + floater_loss
+            if self.floater_loss > 0:
+                midpoint = torch.cat([fwd_out["midpoint"], (2*fwd_out["midpoint"][:,-1] - fwd_out["midpoint"][:,-2])[:,None]], dim=1)
+                dt = torch.cat([fwd_out["deltas"], fwd_out["deltas"][:,-2:-1]], dim=1) 
+                weight = torch.cat([fwd_out["weight"], 1 - fwd_out["weight"].sum(dim=1, keepdim=True)], dim=1)
+                floater_loss = distortion_loss(midpoint, weight, dt) * 1e-2
+                loss = loss + floater_loss
 
         self.gscaler.scale(loss).backward()
 
@@ -218,39 +213,37 @@ class Trainer():
             self.loss_info[dset_id]["floater_loss"].update(floater_loss.item())
 
         # Update weights
-        if do_update:
-            self.gscaler.step(self.optimizer)
-            scale = self.gscaler.get_scale()
-            self.gscaler.update()
-            self.optimizer.zero_grad(set_to_none=True)
+        self.gscaler.step(self.optimizer)
+        scale = self.gscaler.get_scale()
+        self.gscaler.update()
+        self.optimizer.zero_grad(set_to_none=True)
 
-            # Run grid-update routines (masking, shrinking, upscaling)
-            opt_reset_required = False
-            if self.global_step in self.density_mask_update_steps:
-                logging.info(f"Updating alpha-mask for all datasets at step {self.global_step}.")
-                for u_dset_id in range(self.num_dsets):
-                    new_aabb = self.model.update_alpha_mask(grid_id=u_dset_id)
-                    sorted_updates = sorted(self.density_mask_update_steps)
-                    if self.global_step == sorted_updates[0] or self.global_step == sorted_updates[1]:#min(self.density_mask_update_steps):
-                        self.model.shrink(new_aabb, grid_id=u_dset_id)
-                        opt_reset_required = True
-            try:
-                upsample_step_idx = self.upsample_steps.index(self.global_step)  # if not an upsample step will raise
-                new_num_voxels = self.upsample_resolution_list[upsample_step_idx]
-                logging.info(f"Upsampling all datasets at step {self.global_step} to {new_num_voxels} voxels.")
-                for u_dset_id in range(self.num_dsets):
-                    new_reso = N_to_reso(new_num_voxels, self.model.aabb(u_dset_id))
-                    self.model.upsample(new_reso, u_dset_id)
-                opt_reset_required = True
-            except ValueError:
-                pass
+        # Run grid-update routines (masking, shrinking, upscaling)
+        opt_reset_required = False
+        if self.global_step in self.density_mask_update_steps:
+            logging.info(f"Updating alpha-mask for all datasets at step {self.global_step}.")
+            for u_dset_id in range(self.num_dsets):
+                new_aabb = self.model.update_alpha_mask(grid_id=u_dset_id)
+                sorted_updates = sorted(self.density_mask_update_steps)
+                if self.global_step == sorted_updates[0] or self.global_step == sorted_updates[1]:#min(self.density_mask_update_steps):
+                    self.model.shrink(new_aabb, grid_id=u_dset_id)
+                    opt_reset_required = True
+        try:
+            upsample_step_idx = self.upsample_steps.index(self.global_step)  # if not an upsample step will raise
+            new_num_voxels = self.upsample_resolution_list[upsample_step_idx]
+            logging.info(f"Upsampling all datasets at step {self.global_step} to {new_num_voxels} voxels.")
+            for u_dset_id in range(self.num_dsets):
+                new_reso = N_to_reso(new_num_voxels, self.model.aabb(u_dset_id))
+                self.model.upsample(new_reso, u_dset_id)
+            opt_reset_required = True
+        except ValueError:
+            pass
 
-            # We reset the optimizer in case some of the parameters in model were changed.
-            if opt_reset_required:
-                self.optimizer = self.init_optim(**self.extra_args)
+        # We reset the optimizer in case some of the parameters in model were changed.
+        if opt_reset_required:
+            self.optimizer = self.init_optim(**self.extra_args)
 
-            return scale <= self.gscaler.get_scale()
-        return True
+        return scale <= self.gscaler.get_scale()
 
     def post_step(self, data, progress_bar):
         # Anneal regularization weights
@@ -292,20 +285,11 @@ class Trainer():
                 self.global_step += 1
                 # Get a batch of data
                 data = next(batch_iter)
-                # Take a step
-                if self.gradient_acc:
-                    # NOTE: This only works if every scene has the same number of batches,
-                    #       and if the sampler associated to the data loader goes through
-                    #       the scenes cyclically.
-                    do_update = (i + 1) % self.num_dsets == 0
-                else:
-                    do_update = True
-                step_successful = self.step(data, do_update=do_update)
+                step_successful = self.step(data)
                 # Update the progress bar
-                if do_update:
-                    self.post_step(data=data, progress_bar=pb)
-                    if step_successful and self.scheduler is not None:
-                        self.scheduler.step()                
+                self.post_step(data=data, progress_bar=pb)
+                if step_successful and self.scheduler is not None:
+                    self.scheduler.step()
             except StopIteration as e: 
                 logging.info(str(e))
                 print(f'resetting after a full pass through the data, or when the dataset changed')
@@ -562,8 +546,7 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
             logging.info(f"About to load LLFF data downsampled by {data_downsample} times.")
             tr_dsets.append(LLFFDataset(
                 data_dir, split='train', downsample=data_downsample, hold_every=hold_every,
-                extra_views=extra_views, batch_size=batch_size, patch_size=patch_size,
-                dset_id=i))
+                batch_size=batch_size, dset_id=i))
             # Note that LLFF has same downsampling applied to train and test datasets
             ts_dsets.append(LLFFDataset(
                 data_dir, split='test', downsample=4, hold_every=hold_every,
