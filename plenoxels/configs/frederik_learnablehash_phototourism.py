@@ -1,7 +1,7 @@
 # configuration file to be used with `main.py` for normal (or multiscene) training
 # the configuration must be specified in a dictionary called `config`.
 config = {
-    "expname": "phototourism_contrast_plane_tv_weight_larger_res",
+    "expname": "phototourism_contrast_plane_tv_weight_larger_res_long",
     "logdir": "./logs",
 
     # Data settings
@@ -18,7 +18,7 @@ config = {
     "ist_step": -1,
 
     # Optimization settings
-    "num_steps": 20001,
+    "num_steps": 120001,
     "regnerf_weight_start": 0,
     "regnerf_weight_end": 0.0,
     "regnerf_weight_max_step": 512,
