@@ -3,12 +3,12 @@ config = {
     # "expname": "legovideo20views_regdepthweightedacc_400_0.1_512_3framesreso3rank20",
     # "expname": "contracted2e2_downsample4reso300_keyframes6k_isg30k_ist40kalpha0.01_lr0.1_step",
     # "expname": "contracted3-10_keyframes5k_planetv0.0001",
-    "expname": "downsample8reso300sample400contracted3-10_keyframes5k",
+    "expname": "downsample4reso200cubesample800contractedadaptivereciprocal_keyframes20k_isg20k_ist20k",
     # "expname": "testrelu_sameranktimereso128_llff",
     "logdir": "./logs/salmonvideo",
 
     # Data settings
-    "data_downsample": 8.0,
+    "data_downsample": 4.0,
     # "data_dirs": ["/home/sfk/data/3DVideo/lego_video"],
     # "data_dirs": ["/home/sfk/data/3DVideo/coffee_martini"],
     "data_dirs": ["/home/sfk/data/3DVideo/flame_salmon_1"],
@@ -25,7 +25,7 @@ config = {
 
     # Optimization settings
     # "num_steps": 40001,
-    "num_steps": 5001,
+    "num_steps": 60001,
     "floater_loss": 0.0000,
     "regnerf_weight_start": 0,
     "regnerf_weight_end": 0.0,
@@ -50,8 +50,8 @@ config = {
     # Raymarching settings
     "raymarch_type": "fixed",
     "num_sample_multiplier": 2,
-    "n_intersections": 400,
-    "spacing_fn": "log",
+    "n_intersections": 800,
+    "spacing_fn": "reciprocal",
     "single_jitter": False,
 
     # Model settings
@@ -65,7 +65,7 @@ config = {
         "input_coordinate_dim": 3,
         "output_coordinate_dim": 5,
         "grid_dimensions": 2,
-        "resolution": [300, 300, 128],
+        "resolution": [200, 200, 200],
         "rank": 10,
         "time_reso": 30,
     },

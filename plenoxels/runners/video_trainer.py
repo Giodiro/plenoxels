@@ -74,6 +74,7 @@ class VideoTrainer(Trainer):
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             rays_o = data["rays_o"]
             rays_d = data["rays_d"]
+            near_far = data["near_far"]
             timestamp = data["timestamps"]
             preds = defaultdict(list)
             for b in range(math.ceil(rays_o.shape[0] / batch_size)):
@@ -85,7 +86,7 @@ class VideoTrainer(Trainer):
                 else:
                     bg_color = 1
                 outputs = self.model(rays_o_b, rays_d_b, timestamps_d_b, bg_color=bg_color,
-                                     channels={"rgb", "depth"})
+                                     channels={"rgb", "depth"}, near_far=near_far)
                 for k, v in outputs.items():
                     preds[k].append(v)
         return {k: torch.cat(v, 0) for k, v in preds.items()}
@@ -94,6 +95,7 @@ class VideoTrainer(Trainer):
         rays_o = data["rays_o"].cuda()
         rays_d = data["rays_d"].cuda()
         imgs = data["imgs"].cuda()
+        near_far = data["near_far"].cuda()
         timestamps = data["timestamps"].cuda()
         self.optimizer.zero_grad(set_to_none=True)
 
@@ -106,7 +108,7 @@ class VideoTrainer(Trainer):
             imgs = imgs[..., :3] * imgs[..., 3:] + bg_color * (1.0 - imgs[..., 3:])
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            fwd_out = self.model(rays_o, rays_d, timestamps, bg_color=bg_color, channels={"rgb"})
+            fwd_out = self.model(rays_o, rays_d, timestamps, bg_color=bg_color, channels={"rgb"}, near_far=near_far)
             rgb_preds = fwd_out["rgb"]
             recon_loss = self.criterion(rgb_preds, imgs)
             loss = recon_loss

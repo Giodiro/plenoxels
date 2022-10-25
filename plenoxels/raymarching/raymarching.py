@@ -59,7 +59,7 @@ class RayMarcher():
                          inv_fn=self.inv_spacing_fn)  # [n_samples + 1]
 
         sample_shape = list(rays_o.shape[:-1]) + [n_samples + 1]
-        if not perturb:
+        if not perturb and len(steps.shape) != len(sample_shape):
             steps = steps.expand(sample_shape)  # [n_rays, n_samples + 1]
         else:
             mids = 0.5 * (steps[..., 1:] + steps[..., :-1])  # [n_rays?, n_samples]
@@ -81,6 +81,7 @@ class RayMarcher():
                            perturb: bool = False,
                            is_ndc: bool = False,
                            is_contracted: bool=False,
+                           near_far: Optional[torch.Tensor] = None,
                            ) -> Mapping[str, torch.Tensor]:
         dev, dt = rays_o.device, rays_o.dtype
 
@@ -89,11 +90,13 @@ class RayMarcher():
             far = torch.tensor([1.0], device=dev, dtype=dt)
             perturb = False # Don't perturb for ndc or contracted scenes
         if is_contracted:
-            near = torch.tensor([3.0], device=dev, dtype=dt) 
-            far = torch.tensor([10.0], device=dev, dtype=dt)
-            # These should be used for sampling, but it's controllable as a parameter in the config so no need to also set it here
-            # self.spacing_fn = torch.log
-            # self.inv_spacing_fn = torch.exp
+            if near_far is not None:
+                # near_far should have shape [batch, 2]
+                near = torch.tensor(near_far[:, 0], device=dev, dtype=dt)  # [batch]
+                far = torch.tensor(near_far[:, 1], device=dev, dtype=dt)  # [batch]
+            else:
+                near = torch.tensor([3.0], device=dev, dtype=dt) 
+                far = torch.tensor([100.0], device=dev, dtype=dt)
             dir_norm = torch.linalg.norm(rays_d, dim=1, keepdim=True)
             rays_d = rays_d / dir_norm
             # Note: masking out samples does not work when using scene contraction!
@@ -121,7 +124,10 @@ class RayMarcher():
             intrs_pts = contract(intrs_pts)
 
         mask = ((aabb[0] <= intrs_pts) & (intrs_pts <= aabb[1])).all(dim=-1)  # noqa
-        assert torch.min(deltas) > 0, f'min delta is {torch.min(deltas)}, but it should be positive!'
+        # assert torch.min(deltas) > 0, f'min delta is {torch.min(deltas)}, but it should be positive!'
+        if torch.min(deltas) < 0:
+            print(f'found a negative delta! This happened with near {near} and far {far}')
+            mask[deltas < 0] = False
         if is_contracted:
             assert torch.min(mask) > 0, f'mask should all be true when using contraction'
         
@@ -174,9 +180,15 @@ def genspace(start, stop, num, fn, inv_fn):
     Returns:
     A tensor of length `num` spanning [`start`, `stop`], according to `fn`.
     """
+    # t = torch.linspace(0., 1., num, device=start.device)
+    # s = fn(start) * (1. - t) + fn(stop) * t
+
+    # # Apply `inv_fn` and clamp to the range of valid values.
+    # return torch.clip(inv_fn(s), torch.minimum(start, stop), torch.maximum(start, stop))
+
     # Linspace between the curved start and stop values.
-    t = torch.linspace(0., 1., num, device=start.device)
-    s = fn(start) * (1. - t) + fn(stop) * t
+    t = torch.linspace(0., 1., num, device=start.device)[None,:]
+    s = fn(start[:,None]) * (1. - t) + fn(stop[:,None]) * t
 
     # Apply `inv_fn` and clamp to the range of valid values.
-    return torch.clip(inv_fn(s), torch.minimum(start, stop), torch.maximum(start, stop))
+    return torch.clip(inv_fn(s), torch.broadcast_to(torch.minimum(start, stop)[:,None], s.shape), torch.broadcast_to(torch.maximum(start, stop)[:,None], s.shape))
