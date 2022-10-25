@@ -34,9 +34,10 @@ class LLFFDataset(BaseDataset):
         self.dset_id = dset_id
         self.near_far = [0.0, 1.0]
 
-        image_paths, poses, near_fars, intrinsics = load_llff_poses(
-            datadir, downsample=downsample, split=split, hold_every=hold_every, near_scaling=1.0)
+        image_paths, self.poses, near_fars, intrinsics = load_llff_poses(
+            datadir, downsample=downsample, split=split, hold_every=hold_every, near_scaling=0.75)
         imgs = load_llff_images(image_paths, intrinsics, split)
+        imgs = (imgs * 255).to(torch.uint8)
         if split == 'train':
             imgs = imgs.view(-1, imgs.shape[-1])
         else:
@@ -51,7 +52,7 @@ class LLFFDataset(BaseDataset):
                          rays_d=None,
                          intrinsics=intrinsics,
                          is_contracted=True)
-        log.info(f"LLFFDataset - Loaded {split} set from {datadir}: {len(poses)} images of "
+        log.info(f"LLFFDataset - Loaded {split} set from {datadir}: {len(self.poses)} images of "
                  f"shape {self.img_h}x{self.img_w} with {imgs.shape[-1]} channels. {intrinsics}")
 
     def __getitem__(self, index):

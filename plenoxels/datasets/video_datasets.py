@@ -43,14 +43,15 @@ class Video360Dataset(BaseDataset):
         self.downsample = downsample
         self.isg = isg
         self.ist = False
+        self.per_cam_near_fars = None
         if is_contracted:  # For the DyNerf videos
-            # TODO: actually store these near_fars and use them in raymarching. generally the bounds are about [5, 100] but near can be as low as 3.6 and far can be as high as 118
-            per_cam_poses, per_cam_near_fars, intrinsics, videopaths = load_llffvideo_poses(
+            per_cam_poses, self.per_cam_near_fars, intrinsics, videopaths = load_llffvideo_poses(
                 datadir, downsample=self.downsample, split=split, near_scaling=1.0)
             poses, imgs, timestamps, self.median_imgs = load_llffvideo_data(
                 videopaths=videopaths, cam_poses=per_cam_poses, intrinsics=intrinsics, split=split,
                 keyframes=keyframes, keyframes_take_each=30)
             self.poses = poses.float()
+            print(f'per_cam_near_fars is {self.per_cam_near_fars}')
         else:
             frames, transform = load_360video_frames(datadir, split, max_cameras=self.max_cameras, max_tsteps=self.max_tsteps)
             imgs, self.poses = load_360_images(frames, datadir, split, self.downsample)
@@ -139,6 +140,14 @@ class Video360Dataset(BaseDataset):
             )
             x = x.flatten()
             y = y.flatten()
+        near_fars = None
+        if self.per_cam_near_fars is not None:
+            if self.split == 'train':
+                num_frames_per_camera = len(self.imgs) // (len(self.per_cam_near_fars) * h * w)
+                camera_id = torch.div(image_id, num_frames_per_camera, rounding_mode='floor')  # [num_rays]
+                near_fars = self.per_cam_near_fars[camera_id, :]
+            else:
+                near_fars = self.per_cam_near_fars  # Only one test camera
 
         rgba = self.imgs[index] / 255.0  # (num_rays, 4)   this converts to f32
         c2w = self.poses[image_id]       # (num_rays, 3, 4)
@@ -148,11 +157,17 @@ class Video360Dataset(BaseDataset):
 
         directions = (camera_dirs[:, None, :] * c2w[:, :3, :3]).sum(dim=-1)
         origins = torch.broadcast_to(c2w[:, :3, -1], directions.shape)
+        # Not sure what this is for...
+        viewdirs = directions / torch.linalg.norm(
+            directions, dim=-1, keepdims=True
+        )
+
         return {
             "rays_o": origins.reshape(-1, 3),
             "rays_d": directions.reshape(-1, 3),
             "imgs": rgba.reshape(-1, rgba.shape[-1]),
             "timestamps": ts,
+            "near_far": near_fars,
         }
 
 
