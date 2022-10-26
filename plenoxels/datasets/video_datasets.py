@@ -43,6 +43,7 @@ class Video360Dataset(BaseDataset):
         self.downsample = downsample
         self.isg = isg
         self.ist = False
+        self.lookup_time = False
         self.per_cam_near_fars = None
         if is_contracted:  # For the DyNerf videos
             per_cam_poses, self.per_cam_near_fars, intrinsics, videopaths = load_llffvideo_poses(

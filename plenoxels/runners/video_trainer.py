@@ -13,12 +13,13 @@ import torch
 import torch.utils.data
 
 from plenoxels.datasets.video_datasets import Video360Dataset, VideoLLFFDataset
+from plenoxels.datasets.photo_tourism import PhotoTourismDataset
 from plenoxels.ema import EMA
 from plenoxels.models.lowrank_video import LowrankVideo
 from plenoxels.my_tqdm import tqdm
 from plenoxels.ops.image import metrics
 from plenoxels.runners.multiscene_trainer import Trainer
-from plenoxels.distortion_loss_warp import distortion_loss
+#from plenoxels.distortion_loss_warp import distortion_loss
 
 
 class VideoTrainer(Trainer):
@@ -76,6 +77,11 @@ class VideoTrainer(Trainer):
             rays_d = data["rays_d"]
             near_far = data["near_far"]
             timestamp = data["timestamps"]
+            
+            if rays_o.ndim == 3:
+                rays_o = rays_o.squeeze(0)
+                rays_d = rays_d.squeeze(0)
+            
             preds = defaultdict(list)
             for b in range(math.ceil(rays_o.shape[0] / batch_size)):
                 rays_o_b = rays_o[b * batch_size: (b + 1) * batch_size].cuda()
@@ -97,8 +103,16 @@ class VideoTrainer(Trainer):
         imgs = data["imgs"].cuda()
         near_far = data["near_far"].cuda()
         timestamps = data["timestamps"].cuda()
+        
+        if rays_o.ndim == 3:
+            rays_o = rays_o.squeeze(0)
+            rays_d = rays_d.squeeze(0)
+            near_far = near_far.squeeze(0)
+            timestamps = timestamps.squeeze(0)
+            imgs = imgs.squeeze(0)
+        
         self.optimizer.zero_grad(set_to_none=True)
-
+        
         C = imgs.shape[-1]
         # Random bg-color
         if C == 3:
@@ -174,6 +188,7 @@ class VideoTrainer(Trainer):
             len_time=dset.len_time,
             is_ndc=dset.is_ndc,
             is_contracted=dset.is_contracted,
+            lookup_time=dset.lookup_time,
             **kwargs)
         logging.info(f"Initialized LowrankVideo model with "
                      f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, using ndc {dset.is_ndc} and contraction {dset.is_contracted}.")
@@ -214,17 +229,39 @@ class VideoTrainer(Trainer):
     def write_video_to_file(self, frames, dataset):
         video_file = os.path.join(self.log_dir, f"step{self.global_step}.mp4")
         logging.info(f"Saving video ({len(frames)} frames) to {video_file}")
-        height, width = frames[0].shape[:2]
-        video = cv2.VideoWriter(
-            video_file, cv2.VideoWriter_fourcc(*'mp4v'), 30, (width, height))
-        for img in frames:
-            video.write(img[:, :, ::-1])  # opencv uses BGR instead of RGB
-        cv2.destroyAllWindows()
-        video.release()
+        
+        # Photo tourisme the image sizes differs
+        sizes = np.array([frame.shape[:2] for frame in frames])
+        same_size_frames = np.unique(sizes, axis=0).shape[0] == 1
+        if same_size_frames:
+            height, width = frames[0].shape[:2]
+            video = cv2.VideoWriter(
+                video_file, cv2.VideoWriter_fourcc(*'mp4v'), 30, (width, height))
+            for img in frames:
+                video.write(img[:, :, ::-1])  # opencv uses BGR instead of RGB
+            cv2.destroyAllWindows()
+            video.release()
+        else:
+            height = sizes[:,0].max()
+            width = sizes[:, 1].max()
+            video = cv2.VideoWriter(
+                video_file, cv2.VideoWriter_fourcc(*'mp4v'), 5, (width, height))
+            for img in frames:
+                image = np.zeros((height, width, 3), dtype=np.uint8)
+                h, w = img.shape[:2]
+                image[(height-h)//2:(height-h)//2+h, (width-w)//2:(width-w)//2+w, :] = img
+                video.write(image[:, :, ::-1])  # opencv uses BGR instead of RGB
+            cv2.destroyAllWindows()
+            video.release() 
 
     def evaluate_metrics(self, gt, preds: MutableMapping[str, torch.Tensor], dset, dset_id,
                          img_idx, name=None, save_outputs: bool = True):
-        preds_rgb = preds["rgb"].reshape(dset.img_h, dset.img_w, 3).cpu()
+        if isinstance(dset.img_h, int):
+            img_h, img_w = dset.img_h, dset.img_w  
+        else:
+            img_h, img_w = dset.img_h[img_idx], dset.img_w[img_idx]
+            
+        preds_rgb = preds["rgb"].reshape(img_h, img_w, 3).cpu()
         exrdict = {
             "preds": preds_rgb.numpy(),
         }
@@ -235,12 +272,12 @@ class VideoTrainer(Trainer):
             depth = preds["depth"]
             depth = depth - depth.min()
             depth = depth / depth.max()
-            depth = depth.cpu().reshape(dset.img_h, dset.img_w)[..., None]
+            depth = depth.cpu().reshape(img_h, img_w)[..., None]
             preds["depth"] = depth
             exrdict["depth"] = preds["depth"].numpy()
 
         if gt is not None:
-            gt = gt.reshape(dset.intrinsics.height, dset.intrinsics.width, -1).cpu()
+            gt = gt.reshape(img_h, img_w, -1).cpu()
             if gt.shape[-1] == 4:
                 gt = gt[..., :3] * gt[..., 3:] + (1.0 - gt[..., 3:])
             err = (gt - preds_rgb) ** 2
@@ -284,6 +321,16 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
             max_tsteps=kwargs.get('max_train_tsteps') if keyframes else None,
             isg=isg,
         )
+    elif "sacre" in data_dir or "trevi" in data_dir:
+        tr_dset = PhotoTourismDataset(
+            data_dir, split='train', downsample=data_downsample, batch_size=batch_size,
+        )
+        
+        tr_loader = torch.utils.data.DataLoader(
+            tr_dset, batch_size=1, num_workers=2,
+            prefetch_factor=4, pin_memory=True)
+        
+        return {"tr_loader": tr_loader, "tr_dset": tr_dset}
     else:
         logging.info(f"Loading contracted Video360Dataset with downsample={data_downsample}")
         tr_dset = Video360Dataset(
@@ -315,6 +362,10 @@ def init_ts_data(data_dir, **kwargs):
             data_dir, split='test', downsample=1,
             max_cameras=kwargs.get('max_test_cameras'),
             max_tsteps=kwargs.get('max_test_tsteps'),
+        )
+    elif "sacre" in data_dir or "trevi" in data_dir: 
+        ts_dset = PhotoTourismDataset(
+            data_dir, split='test', downsample=1,
         )
     else:
         ts_dset = Video360Dataset(
