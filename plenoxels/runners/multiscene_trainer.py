@@ -210,6 +210,8 @@ class Trainer():
             self.loss_info[dset_id]["volume_tv"].update(volume_tv.item())
         if floater_loss is not None:
             self.loss_info[dset_id]["floater_loss"].update(floater_loss.item())
+        self.loss_info[dset_id]["pt_min"].update(self.model.pt_min)
+        self.loss_info[dset_id]["pt_max"].update(self.model.pt_max)
 
         # Update weights
         self.gscaler.step(self.optimizer)
@@ -483,7 +485,7 @@ class Trainer():
             lr_sched = torch.optim.lr_scheduler.MultiStepLR(
                 self.optimizer,
                 milestones=[
-                    3 * max_steps // 4,
+                    2 * max_steps // 3,
                 ],
                 gamma=0.1)
         return lr_sched

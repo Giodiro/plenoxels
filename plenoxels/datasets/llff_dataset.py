@@ -32,10 +32,10 @@ class LLFFDataset(BaseDataset):
         self.downsample = downsample
         self.hold_every = hold_every
         self.dset_id = dset_id
-        self.near_far = [0.0, 1.0]
 
-        image_paths, self.poses, near_fars, intrinsics = load_llff_poses(
+        image_paths, self.poses, self.per_cam_near_fars, intrinsics = load_llff_poses(
             datadir, downsample=downsample, split=split, hold_every=hold_every, near_scaling=0.75)
+        print(f'self.per_cam_near_fars is {self.per_cam_near_fars}')
         imgs = load_llff_images(image_paths, intrinsics, split)
         imgs = (imgs * 255).to(torch.uint8)
         if split == 'train':
@@ -52,7 +52,7 @@ class LLFFDataset(BaseDataset):
                          rays_d=None,
                          intrinsics=intrinsics,
                          is_contracted=True)
-        log.info(f"LLFFDataset - Loaded {split} set from {datadir}: {len(self.poses)} images of "
+        log.info(f"LLFFDataset contracted {self.is_contracted} - Loaded {split} set from {datadir}: {len(self.poses)} images of "
                  f"shape {self.img_h}x{self.img_w} with {imgs.shape[-1]} channels. {intrinsics}")
 
     def __getitem__(self, index):
@@ -73,6 +73,14 @@ class LLFFDataset(BaseDataset):
             )
             x = x.flatten()
             y = y.flatten()
+        near_fars = None
+        if self.per_cam_near_fars is not None:
+            if self.split == 'train':
+                num_frames_per_camera = len(self.imgs) // (len(self.per_cam_near_fars) * h * w)
+                camera_id = torch.div(image_id, num_frames_per_camera, rounding_mode='floor')  # [num_rays]
+                near_fars = self.per_cam_near_fars[camera_id, :]
+            else:
+                near_fars = self.per_cam_near_fars[image_id[0], :]
 
         rgba = self.imgs[index] / 255.0  # (num_rays, 3)   this converts to f32
         c2w = self.poses[image_id]       # (num_rays, 3, 4)
@@ -86,6 +94,7 @@ class LLFFDataset(BaseDataset):
             "rays_d": directions.reshape(-1, 3),
             "imgs": rgba.reshape(-1, rgba.shape[-1]),
             "dset_id": self.dset_id,
+            "near_far": near_fars,
         }
 
 
@@ -137,6 +146,10 @@ def load_llff_poses(datadir: str, downsample: float, split: str, hold_every: int
     # Take training or test split
     i_test = np.arange(0, poses.shape[0], hold_every)  # [np.argmin(dists)]
     img_list = i_test if split != 'train' else list(set(np.arange(len(poses))) - set(i_test))
+    # If you want to visualize train results
+    # img_list = list(set(np.arange(len(poses))) - set(i_test))  
+    # if split != 'train':
+    #     img_list = img_list[0:5]  # Test on some train images
     img_list = np.asarray(img_list)
 
     image_paths = [image_paths[i] for i in img_list]
