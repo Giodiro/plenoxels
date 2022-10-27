@@ -82,6 +82,7 @@ class Trainer():
         self.density_mask_update_steps = [s * step_multiplier for s in kwargs.get('dmask_update', [])]
         self.upsample_steps = [s * step_multiplier for s in kwargs.get('upsample_steps', [])]
         self.upsample_resolution_list = list(kwargs.get('upsample_resolution', []))
+        self.upsample_F_steps = list(kwargs.get('upsample_F_steps', []))
         assert len(self.upsample_resolution_list) == len(self.upsample_steps), \
             f"Got {len(self.upsample_steps)} upsample_steps and {len(self.upsample_resolution_list)} upsample_resolution."
 
@@ -243,6 +244,10 @@ class Trainer():
             opt_reset_required = True
         except ValueError:
             pass
+        if self.global_step in self.upsample_F_steps:
+            self.model.upsample_F(new_reso = self.model.config[1]["resolution"][0] * 2)  # Double the resolution in each dimension of F
+            self.model.config[1]["resolution"] = [r * 2 for r in self.model.config[1]["resolution"]]  # Update the config
+            opt_reset_required = True
 
         # We reset the optimizer in case some of the parameters in model were changed.
         if opt_reset_required:

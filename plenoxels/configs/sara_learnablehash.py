@@ -3,19 +3,19 @@
 import numpy as np
 config = {
     # "expname": "lego_rank10_plenoxelsh28_meaninit-11_downsample3",
-    "expname": "contracted",
+    "expname": "linearmicrank1prod",
     # "expname": "lowrank_noupsamplelr4e-3_planetvfeats0.04",
     # "logdir": "./logs/fullresofern",
     "logdir": "./logs/sh",
 
     # Data settings
     "data_resolution": None,
-    "data_downsample": 3,
-    "data_dirs": ["/home/sfk/data/nerf_synthetic/lego"],
-    # "data_dirs": ["/home/sfk/data/nerf_llff_data/fern"],
+    "data_downsample": 4,
+    "data_dirs": ["/home/sfk/data/nerf_synthetic/mic"],
+    # "data_dirs": ["/home/sfk/data/nerf_llff_data/room"],
     # Data settings for 360
     "max_tr_frames": 20,
-    "max_ts_frames": 10,
+    "max_ts_frames": 2,
     # Data settings for LLFF
     "hold_every": 8,
 
@@ -33,6 +33,7 @@ config = {
     "plane_tv_weight": 0.0,
     "volume_tv_weight": 0.0,
     "volume_tv_npts": 1024,
+    "floater_loss": 0,
 
     # Training settings
     "train_fp16": True,
@@ -46,13 +47,14 @@ config = {
     "num_sample_multiplier": 2,  # Used when raymarch_type is 'voxel_size'
     "n_intersections": 440,  # Used when raymarch_type is 'fixed'
     "spacing_fn": "linear",
-    "single_jitter": True,
+    "single_jitter": False,
 
     # Model settings
     "density_threshold": 1e-4,
     "dmask_update": [100000],  # 1000
     # "upsample_resolution": [3241792, 5832000, 11239424, 16777216],
     # "upsample_steps": [500, 800, 1200, 1500],
+    "upsample_F_steps": [10, 20],
     "density_multiplier": 1,
     "sh": True,
     "grid_config": """
@@ -66,14 +68,13 @@ config = {
     },
     {
         "input_coordinate_dim": 5,
-        "resolution": [6, 6, 6, 6, 6],
+        "resolution": [4, 4, 4, 4, 4],
         "feature_dim": 28,
-        "init_std": 0.5
+        "init_std": 1
     }
 ]
 """
 }
-
 
 
 
