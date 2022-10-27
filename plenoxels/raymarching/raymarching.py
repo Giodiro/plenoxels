@@ -56,11 +56,11 @@ class RayMarcher():
                          far,
                          n_samples + 1,
                          fn=self.spacing_fn,
-                         inv_fn=self.inv_spacing_fn)  # [n_samples + 1]
+                         inv_fn=self.inv_spacing_fn).squeeze()  # [n_samples + 1]
 
         sample_shape = list(rays_o.shape[:-1]) + [n_samples + 1]
         if not perturb and len(steps.shape) != len(sample_shape):
-            steps = steps.squeeze().expand(sample_shape)  # [n_rays, n_samples + 1]
+            steps = steps.expand(sample_shape)  # [n_rays, n_samples + 1]
         else:
             mids = 0.5 * (steps[..., 1:] + steps[..., :-1])  # [n_rays?, n_samples]
             upper = torch.cat((mids, steps[..., -1:]), dim=-1)  # [n_rays?, n_samples + 1]

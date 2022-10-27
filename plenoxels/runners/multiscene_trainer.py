@@ -126,6 +126,10 @@ class Trainer():
         dset_id = data["dset_id"]
         rays_o = data["rays_o"].cuda()
         rays_d = data["rays_d"].cuda()
+        if "near_far" in data.keys():
+            near_far = data["near_far"].cuda()
+        else:
+            near_far = None
         imgs = data["imgs"].cuda()
         patch_rays_o, patch_rays_d = None, None
         if "patch_rays_o" in data:
@@ -142,7 +146,7 @@ class Trainer():
             imgs = imgs[..., :3] * imgs[..., 3:] + bg_color * (1.0 - imgs[..., 3:])
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            fwd_out = self.model(rays_o, rays_d, grid_id=dset_id, bg_color=bg_color, channels={"rgb"})
+            fwd_out = self.model(rays_o, rays_d, grid_id=dset_id, bg_color=bg_color, channels={"rgb"}, near_far=near_far)
             rgb_preds = fwd_out["rgb"]
             # Reconstruction loss
             recon_loss = self.criterion(rgb_preds, imgs)

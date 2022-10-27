@@ -261,14 +261,15 @@ class LowrankLearnableHash(LowrankModel):
             return density, features
         return density
 
-    def forward(self, rays_o, rays_d, bg_color, grid_id=0, channels: Sequence[str] = ("rgb", "depth")):
+    def forward(self, rays_o, rays_d, bg_color, grid_id=0, channels: Sequence[str] = ("rgb", "depth"), near_far=None):
         """
         rays_o : [batch, 3]
         rays_d : [batch, 3]
+        near_far : [batch, 2]
         """
         rm_out = self.raymarcher.get_intersections2(
             rays_o, rays_d, self.aabb(grid_id), self.resolution(grid_id), perturb=self.training,
-            is_ndc=self.is_ndc, is_contracted=self.is_contracted)
+            is_ndc=self.is_ndc, is_contracted=self.is_contracted, near_far=near_far)
         rays_d = rm_out["rays_d"]                   # [n_rays, 3]
         intersection_pts = rm_out["intersections"]  # [n_rays, n_intrs, 3]
         mask = rm_out["mask"]                       # [n_rays, n_intrs]
