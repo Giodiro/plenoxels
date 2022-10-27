@@ -3,7 +3,7 @@ config = {
     # "expname": "legovideo20views_regdepthweightedacc_400_0.1_512_3framesreso3rank20",
     # "expname": "contracted2e2_downsample4reso300_keyframes6k_isg30k_ist40kalpha0.01_lr0.1_step",
     # "expname": "contracted3-10_keyframes5k_planetv0.0001",
-    "expname": "downsample4reso200cubesample800contractedadaptivereciprocal_keyframes20k_isg20k_ist20k",
+    "expname": "downsample4reso300cubesample800contractedadaptivereciprocal_keyframes50k_isg50k_rank30_planetv0.001",
     # "expname": "testrelu_sameranktimereso128_llff",
     "logdir": "./logs/salmonvideo",
 
@@ -21,16 +21,16 @@ config = {
     # Data settings for LLFF
     "keyframes": True,
     "isg": True,
-    "ist_step": 40000,
+    "ist_step": -1,
 
     # Optimization settings
     # "num_steps": 40001,
-    "num_steps": 60001,
+    "num_steps": 100001,
     "floater_loss": 0.0000,
     "regnerf_weight_start": 0,
     "regnerf_weight_end": 0.0,
     "regnerf_weight_max_step": 512,
-    "plane_tv_weight": 0.000,  
+    "plane_tv_weight": 0.001,  
     "l1density_weight": 0,  # Not used for video yet
     "volume_tv_weight": 0.0,  # Not used for video yet
     "volume_tv_npts": 1024,  # Not used for video yet
@@ -42,8 +42,8 @@ config = {
     
     # Training settings
     "train_fp16": True,
-    "save_every": 5000,
-    "valid_every": 5000,
+    "save_every": 10000,
+    "valid_every": 10000,
     "save_video": True,
     "save_outputs": True,
 
@@ -58,15 +58,15 @@ config = {
     "sh": True,
     "upsample_time_resolution": [150],
     # "upsample_time_steps": [6000],  # DyNerf does 300K iterations with keyframes, with lr 5e-4
-    "upsample_time_steps": [40000],
+    "upsample_time_steps": [50000],
     "grid_config": """
 [
     {
         "input_coordinate_dim": 3,
         "output_coordinate_dim": 5,
         "grid_dimensions": 2,
-        "resolution": [200, 200, 200],
-        "rank": 10,
+        "resolution": [300, 300, 300],
+        "rank": 30,
         "time_reso": 30,
     },
     {
