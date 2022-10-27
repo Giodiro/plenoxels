@@ -92,11 +92,13 @@ class RayMarcher():
         if is_contracted:
             if near_far is not None:
                 # near_far should have shape [batch, 2]
-                near = torch.tensor(near_far[:, 0], device=dev, dtype=dt)  # [batch]
-                far = torch.tensor(near_far[:, 1], device=dev, dtype=dt)  # [batch]
+                # for test the shape is [1, 2], but result is the same due to broadcasting in genspace
+                near, far = torch.split(near_far, [1, 1], dim=-1)
+                near = near.view(-1)
+                far = far.view(-1)
             else:
-                near = torch.tensor([3.0], device=dev, dtype=dt) 
-                far = torch.tensor([100.0], device=dev, dtype=dt)
+                near = torch.tensor([1.3], device=dev, dtype=dt)
+                far = torch.tensor([6.7], device=dev, dtype=dt)
             dir_norm = torch.linalg.norm(rays_d, dim=1, keepdim=True)
             rays_d = rays_d / dir_norm
             # Note: masking out samples does not work when using scene contraction!
@@ -127,13 +129,12 @@ class RayMarcher():
             intrs_pts = contract(intrs_pts)
 
         mask = ((aabb[0] <= intrs_pts) & (intrs_pts <= aabb[1])).all(dim=-1)  # noqa
-        # assert torch.min(deltas) > 0, f'min delta is {torch.min(deltas)}, but it should be positive!'
         if torch.min(deltas) < 0:
             print(f'found a negative delta! This happened with near {near} and far {far}')
             mask[deltas < 0] = False
         if is_contracted:
             assert torch.min(mask) > 0, f'mask should all be true when using contraction'
-        
+
         # Normalize rays_d and deltas
         if not is_contracted:  # Contraction pre-normalizes rays_d so we don't need to do it again
             dir_norm = torch.linalg.norm(rays_d, dim=1, keepdim=True)

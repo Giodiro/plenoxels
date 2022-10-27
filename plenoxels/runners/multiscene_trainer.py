@@ -17,7 +17,7 @@ from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_exr, write_png
 from ..datasets import SyntheticNerfDataset, LLFFDataset
 from ..datasets.multi_dataset_sampler import MultiSceneSampler
-from ..distortion_loss_warp import distortion_loss
+#from ..distortion_loss_warp import distortion_loss
 from ..my_tqdm import tqdm
 from ..utils import parse_optint
 from .utils import get_cosine_schedule_with_warmup, get_step_schedule_with_warmup
@@ -188,7 +188,7 @@ class Trainer():
             floater_loss: Optional[torch.Tensor] = None
             if self.floater_loss > 0:
                 midpoint = torch.cat([fwd_out["midpoint"], (2*fwd_out["midpoint"][:,-1] - fwd_out["midpoint"][:,-2])[:,None]], dim=1)
-                dt = torch.cat([fwd_out["deltas"], fwd_out["deltas"][:,-2:-1]], dim=1) 
+                dt = torch.cat([fwd_out["deltas"], fwd_out["deltas"][:,-2:-1]], dim=1)
                 weight = torch.cat([fwd_out["weight"], 1 - fwd_out["weight"].sum(dim=1, keepdim=True)], dim=1)
                 floater_loss = distortion_loss(midpoint, weight, dt) * 1e-2
                 loss = loss + floater_loss
@@ -261,7 +261,7 @@ class Trainer():
         self.init_epoch_info()
         self.model.train()
 
-  
+
     def train(self):
         """Override this if some very specific training procedure is needed."""
         if self.global_step is None:
@@ -289,7 +289,7 @@ class Trainer():
                 self.post_step(data=data, progress_bar=pb)
                 if step_successful and self.scheduler is not None:
                     self.scheduler.step()
-            except StopIteration as e: 
+            except StopIteration as e:
                 logging.info(str(e))
                 print(f'resetting after a full pass through the data, or when the dataset changed')
                 self.pre_epoch()
@@ -486,6 +486,8 @@ class Trainer():
                     3 * max_steps // 4,
                 ],
                 gamma=0.1)
+        elif self.scheduler_type is not None:
+            raise ValueError(self.scheduler_type)
         return lr_sched
 
     def init_optim(self, **kwargs) -> torch.optim.Optimizer:

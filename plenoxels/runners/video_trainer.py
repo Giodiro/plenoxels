@@ -18,7 +18,7 @@ from plenoxels.models.lowrank_video import LowrankVideo
 from plenoxels.my_tqdm import tqdm
 from plenoxels.ops.image import metrics
 from plenoxels.runners.multiscene_trainer import Trainer
-from plenoxels.distortion_loss_warp import distortion_loss
+#from plenoxels.distortion_loss_warp import distortion_loss
 
 
 class VideoTrainer(Trainer):
@@ -74,7 +74,7 @@ class VideoTrainer(Trainer):
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             rays_o = data["rays_o"]
             rays_d = data["rays_d"]
-            near_far = data["near_far"]
+            near_far = data["near_far"].cuda()
             timestamp = data["timestamps"]
             preds = defaultdict(list)
             for b in range(math.ceil(rays_o.shape[0] / batch_size)):
@@ -119,7 +119,7 @@ class VideoTrainer(Trainer):
             floater_loss: Optional[torch.Tensor] = None
             if self.floater_loss > 0:
                 midpoint = torch.cat([fwd_out["midpoint"], (2*fwd_out["midpoint"][:,-1] - fwd_out["midpoint"][:,-2])[:,None]], dim=1)
-                dt = torch.cat([fwd_out["deltas"], fwd_out["deltas"][:,-2:-1]], dim=1) 
+                dt = torch.cat([fwd_out["deltas"], fwd_out["deltas"][:,-2:-1]], dim=1)
                 weight = torch.cat([fwd_out["weight"], 1 - fwd_out["weight"].sum(dim=1, keepdim=True)], dim=1)
                 floater_loss = distortion_loss(midpoint, weight, dt) * 1e-2
                 loss = loss + floater_loss
@@ -160,7 +160,7 @@ class VideoTrainer(Trainer):
 
     def post_step(self, data, progress_bar):
         self.writer.add_scalar(f"mse: ", self.loss_info["mse"].value, self.global_step)
-        progress_bar.set_postfix_str(losses_to_postfix(self.loss_info), refresh=False)
+        progress_bar.set_postfix_str(losses_to_postfix(self.loss_info, lr=self.cur_lr()), refresh=False)
         progress_bar.update(1)
 
     def init_epoch_info(self):
@@ -261,8 +261,12 @@ class VideoTrainer(Trainer):
         return summary, out_img
 
 
-def losses_to_postfix(loss_dict: Dict[str, EMA]) -> str:
-    return ", ".join(f"{lname}={lval}" for lname, lval in loss_dict.items())
+def losses_to_postfix(loss_dict: Dict[str, EMA], lr: Optional[float]) -> str:
+    pfix = [f"{lname}={lval}" for lname, lval in loss_dict.items()]
+    if lr is not None:
+        pfix.append(f"lr={lr:.2e}")
+    return "  ".join(pfix)
+
 
 
 def init_dloader_random(worker_id):
@@ -290,7 +294,7 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
             data_dir, split='train', downsample=data_downsample,
             batch_size=batch_size,
             keyframes=keyframes,
-            isg=isg,  
+            isg=isg,
             is_contracted=True,
         )
         # For LLFF we downsample both train and test unlike 360.

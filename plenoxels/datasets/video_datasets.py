@@ -32,11 +32,12 @@ class Video360Dataset(BaseDataset):
                  split: str,
                  batch_size: Optional[int] = None,
                  downsample: float = 1.0,
-                 keyframes: bool = False, 
+                 keyframes: bool = False,
                  max_cameras: Optional[int] = None,
                  max_tsteps: Optional[int] = None,
                  isg: bool = False,
-                 is_contracted: bool = False,):
+                 is_contracted: bool = False,
+                 is_ndc: bool = False):
         self.keyframes = keyframes
         self.max_cameras = max_cameras
         self.max_tsteps = max_tsteps
@@ -44,21 +45,33 @@ class Video360Dataset(BaseDataset):
         self.isg = isg
         self.ist = False
         self.per_cam_near_fars = None
-        if is_contracted:  # For the DyNerf videos
+        dset_type = None
+        if is_contracted and is_ndc:
+            raise ValueError("Options 'is_contracted' and 'is_ndc' are exclusive.")
+        if "lego" in datadir:
+            dset_type = "synthetic"
+        else:
+            dset_type = "llff"
+
+        if dset_type == "llff":
             per_cam_poses, self.per_cam_near_fars, intrinsics, videopaths = load_llffvideo_poses(
                 datadir, downsample=self.downsample, split=split, near_scaling=1.0)
             poses, imgs, timestamps, self.median_imgs = load_llffvideo_data(
                 videopaths=videopaths, cam_poses=per_cam_poses, intrinsics=intrinsics, split=split,
                 keyframes=keyframes, keyframes_take_each=30)
             self.poses = poses.float()
+            self.per_cam_near_fars = self.per_cam_near_fars.float()
             print(f'per_cam_near_fars is {self.per_cam_near_fars}')
-        else:
+        elif dset_type == "synthetic":
             frames, transform = load_360video_frames(datadir, split, max_cameras=self.max_cameras, max_tsteps=self.max_tsteps)
             imgs, self.poses = load_360_images(frames, datadir, split, self.downsample)
             self.median_imgs = calc_360_camera_medians(frames, imgs)
             timestamps = [parse_360_file_path(frame['file_path'])[0] for frame in frames]
             timestamps = torch.tensor(timestamps, dtype=torch.int32)
             intrinsics = load_360_intrinsics(transform, imgs, self.downsample)
+        else:
+            raise ValueError(datadir)
+
 
         imgs = (imgs * 255).to(torch.uint8)
         if split == 'train':
@@ -81,7 +94,7 @@ class Video360Dataset(BaseDataset):
         super().__init__(datadir=datadir,
                          split=split,
                          batch_size=batch_size,
-                         is_ndc=False,
+                         is_ndc=is_ndc,
                          is_contracted=is_contracted,
                          scene_bbox=get_360_bbox(datadir, is_contracted=is_contracted),
                          rays_o=None,
@@ -91,9 +104,9 @@ class Video360Dataset(BaseDataset):
                          sampling_weights=isg_weights
                          )
 
-        if "lego" in datadir:
+        if dset_type == "synthetic":
             self.len_time = torch.amax(timestamps).item()
-        else:
+        elif dset_type == "llff":
             self.len_time = 300
         if self.split == 'train':
             self.timestamps = timestamps[:, None, None].repeat(
@@ -101,7 +114,7 @@ class Video360Dataset(BaseDataset):
         else:
             self.timestamps = timestamps
 
-        log.info(f"Video360Dataset contracted{self.is_contracted} - Loaded {self.split} set from {self.datadir}: "
+        log.info(f"VideoDataset contracted={self.is_contracted}, ndc={self.is_ndc} - Loaded {self.split} set from {self.datadir}: "
                  f"{self.poses.shape[0]} images of size {self.img_h}x{self.img_w} and "
                  f"{imgs.shape[-1]} channels. "
                  f"{len(torch.unique(timestamps))} timestamps up to time={self.len_time}. "
@@ -157,11 +170,9 @@ class Video360Dataset(BaseDataset):
 
         directions = (camera_dirs[:, None, :] * c2w[:, :3, :3]).sum(dim=-1)
         origins = torch.broadcast_to(c2w[:, :3, -1], directions.shape)
-        # Not sure what this is for...
-        viewdirs = directions / torch.linalg.norm(
-            directions, dim=-1, keepdims=True
-        )
-
+        if self.is_ndc:
+            origins, directions = ndc_rays_blender(
+                intrinsics=self.intrinsics, near=1.0, rays_o=origins, rays_d=directions)
         return {
             "rays_o": origins.reshape(-1, 3),
             "rays_d": directions.reshape(-1, 3),
