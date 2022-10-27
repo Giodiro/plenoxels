@@ -75,13 +75,13 @@ class VideoTrainer(Trainer):
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             rays_o = data["rays_o"]
             rays_d = data["rays_d"]
-            near_far = data["near_far"].cuda()
+            near_far = data["near_far"].cuda() if data["near_far"] is not None else None
             timestamp = data["timestamps"]
-            
+
             if rays_o.ndim == 3:
                 rays_o = rays_o.squeeze(0)
                 rays_d = rays_d.squeeze(0)
-            
+
             preds = defaultdict(list)
             for b in range(math.ceil(rays_o.shape[0] / batch_size)):
                 rays_o_b = rays_o[b * batch_size: (b + 1) * batch_size].cuda()
@@ -101,18 +101,18 @@ class VideoTrainer(Trainer):
         rays_o = data["rays_o"].cuda()
         rays_d = data["rays_d"].cuda()
         imgs = data["imgs"].cuda()
-        near_far = data["near_far"].cuda()
+        near_far = data["near_far"].cuda() if data["near_far"] is not None else None
         timestamps = data["timestamps"].cuda()
-        
+
         if rays_o.ndim == 3:
             rays_o = rays_o.squeeze(0)
             rays_d = rays_d.squeeze(0)
-            near_far = near_far.squeeze(0)
+            near_far = near_far.squeeze(0) if near_far is not None else None
             timestamps = timestamps.squeeze(0)
             imgs = imgs.squeeze(0)
-        
+
         self.optimizer.zero_grad(set_to_none=True)
-        
+
         C = imgs.shape[-1]
         # Random bg-color
         if C == 3:
@@ -229,7 +229,7 @@ class VideoTrainer(Trainer):
     def write_video_to_file(self, frames, dataset):
         video_file = os.path.join(self.log_dir, f"step{self.global_step}.mp4")
         logging.info(f"Saving video ({len(frames)} frames) to {video_file}")
-        
+
         # Photo tourisme the image sizes differs
         sizes = np.array([frame.shape[:2] for frame in frames])
         same_size_frames = np.unique(sizes, axis=0).shape[0] == 1
@@ -252,15 +252,15 @@ class VideoTrainer(Trainer):
                 image[(height-h)//2:(height-h)//2+h, (width-w)//2:(width-w)//2+w, :] = img
                 video.write(image[:, :, ::-1])  # opencv uses BGR instead of RGB
             cv2.destroyAllWindows()
-            video.release() 
+            video.release()
 
     def evaluate_metrics(self, gt, preds: MutableMapping[str, torch.Tensor], dset, dset_id,
                          img_idx, name=None, save_outputs: bool = True):
         if isinstance(dset.img_h, int):
-            img_h, img_w = dset.img_h, dset.img_w  
+            img_h, img_w = dset.img_h, dset.img_w
         else:
             img_h, img_w = dset.img_h[img_idx], dset.img_w[img_idx]
-            
+
         preds_rgb = preds["rgb"].reshape(img_h, img_w, 3).cpu()
         exrdict = {
             "preds": preds_rgb.numpy(),
@@ -329,11 +329,11 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
         tr_dset = PhotoTourismDataset(
             data_dir, split='train', downsample=data_downsample, batch_size=batch_size,
         )
-        
+
         tr_loader = torch.utils.data.DataLoader(
             tr_dset, batch_size=1, num_workers=2,
             prefetch_factor=4, pin_memory=True)
-        
+
         return {"tr_loader": tr_loader, "tr_dset": tr_dset}
     else:
         logging.info(f"Loading contracted Video360Dataset with downsample={data_downsample}")
@@ -367,7 +367,7 @@ def init_ts_data(data_dir, **kwargs):
             max_cameras=kwargs.get('max_test_cameras'),
             max_tsteps=kwargs.get('max_test_tsteps'),
         )
-    elif "sacre" in data_dir or "trevi" in data_dir: 
+    elif "sacre" in data_dir or "trevi" in data_dir:
         ts_dset = PhotoTourismDataset(
             data_dir, split='test', downsample=1,
         )
