@@ -56,7 +56,7 @@ class RayMarcher():
                          far,
                          n_samples + 1,
                          fn=self.spacing_fn,
-                         inv_fn=self.inv_spacing_fn)  # [n_samples + 1]
+                         inv_fn=self.inv_spacing_fn).squeeze()  # [n_samples + 1]
 
         sample_shape = list(rays_o.shape[:-1]) + [n_samples + 1]
         if not perturb and len(steps.shape) != len(sample_shape):
@@ -88,7 +88,6 @@ class RayMarcher():
         if is_ndc:
             near = torch.tensor([0.0], device=dev, dtype=dt)
             far = torch.tensor([1.0], device=dev, dtype=dt)
-            perturb = False  # Don't perturb for ndc or contracted scenes
         if is_contracted:
             if near_far is not None:
                 # near_far should have shape [batch, 2]
@@ -103,11 +102,9 @@ class RayMarcher():
             rays_d = rays_d / dir_norm
             # Note: masking out samples does not work when using scene contraction!
             # Note: sampling is really important! You need to cover all the range where stuff is, but not much extra
-            perturb = False  # Don't perturb for ndc or contracted scenes
         else:
             dir_norm = torch.linalg.norm(rays_d, dim=1, keepdim=True)
             rays_d = rays_d / dir_norm
-
             inv_rays_d = torch.reciprocal(torch.where(rays_d == 0, torch.full_like(rays_d, 1e-6), rays_d))
             offsets_pos = (aabb[1] - rays_o) * inv_rays_d  # [batch, 3]
             offsets_neg = (aabb[0] - rays_o) * inv_rays_d  # [batch, 3]
@@ -130,7 +127,7 @@ class RayMarcher():
 
         mask = ((aabb[0] <= intrs_pts) & (intrs_pts <= aabb[1])).all(dim=-1)  # noqa
         if torch.min(deltas) < 0:
-            print(f'found a negative delta! This happened with near {near} and far {far}')
+            # print(f'found a negative delta! This happened with near {near} and far {far}')
             mask[deltas < 0] = False
         if is_contracted:
             assert torch.min(mask) > 0, f'mask should all be true when using contraction'

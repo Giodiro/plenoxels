@@ -44,6 +44,7 @@ class Video360Dataset(BaseDataset):
         self.downsample = downsample
         self.isg = isg
         self.ist = False
+        self.lookup_time = False
         self.per_cam_near_fars = None
         dset_type = None
         if is_contracted and is_ndc:
@@ -439,7 +440,8 @@ def dynerf_isg_weight(imgs, median_imgs, gamma):
     return psidiff  # valid probabilities, each in [0, 1]
 
 
-def dynerf_ist_weight(imgs, num_cameras, alpha=0.02):  # DyNerf uses alpha=0.1
+# TODO: debug IST; it seems to hurt rather than help
+def dynerf_ist_weight(imgs, num_cameras, alpha=0.1):  # DyNerf uses alpha=0.1
     N, h, w, c = imgs.shape
     frames = imgs.view(num_cameras, -1, h, w, c)  # [num_cameras, num_timesteps, h, w, 3]
     left_diff = torch.abs_(torch.diff(frames, append=torch.zeros(num_cameras, 1, h, w, c), dim=1))

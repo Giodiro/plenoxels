@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import kaolin.render.spc as spc_render
+import numpy as np
 
 from plenoxels.models.utils import grid_sample_wrapper, compute_plane_tv, raw2alpha
 from .decoders import NNDecoder, SHDecoder
@@ -223,6 +224,33 @@ class LowrankLearnableHash(LowrankModel):
             torch.tensor(new_reso, dtype=torch.long, device=grid_data.device), grid_id)
         log.info(f"Upsampled scene {grid_id} to resolution={new_reso}")
 
+    @torch.no_grad()
+    def upsample_F(self, new_reso):
+        grid_info = self.config[1]
+        new_size = [self.features.shape[0]] + [new_reso] * grid_info["input_coordinate_dim"]
+        if grid_info["input_coordinate_dim"] == 1:
+            coords = torch.tensor(np.mgrid[-1:1:new_reso*1j], device=self.features.device, dtype=torch.float32)
+        elif grid_info["input_coordinate_dim"] == 2:
+            coords = torch.tensor(np.mgrid[-1:1:new_reso*1j, -1:1:new_reso*1j], device=self.features.device, dtype=torch.float32)
+        elif grid_info["input_coordinate_dim"] == 3:
+            coords = torch.tensor(np.mgrid[-1:1:new_reso*1j, -1:1:new_reso*1j, -1:1:new_reso*1j], device=self.features.device, dtype=torch.float32)
+        elif grid_info["input_coordinate_dim"] == 4:
+            coords = torch.tensor(np.mgrid[-1:1:new_reso*1j, -1:1:new_reso*1j, -1:1:new_reso*1j, -1:1:new_reso*1j], device=self.features.device, dtype=torch.float32)
+        elif grid_info["input_coordinate_dim"] == 5:
+            coords = torch.tensor(np.mgrid[-1:1:new_reso*1j, -1:1:new_reso*1j, -1:1:new_reso*1j, -1:1:new_reso*1j, -1:1:new_reso*1j], device=self.features.device, dtype=torch.float32)
+        elif grid_info["input_coordinate_dim"] == 6:
+            coords = torch.tensor(np.mgrid[-1:1:new_reso*1j, -1:1:new_reso*1j, -1:1:new_reso*1j, -1:1:new_reso*1j, -1:1:new_reso*1j, -1:1:new_reso*1j], device=self.features.device, dtype=torch.float32)
+        else:
+            assert False, "feature upsampling not supported above 6 dimensions"
+        # coords shape is [dim] + [new_reso]*dim, e.g. [5, 8, 8, 8, 8, 8]
+        # self.features shape is [feature_dim] + [old_reso]*dim, e.g. [28, 4, 4, 4, 4, 4]
+        # Reshape coords into [batch, 1, ..., n, grid_dim] as expected by grid_sample_wrapper
+        coords = coords.view(coords.shape[0], -1)  # [dim, new_reso**dim]
+        coords = torch.permute(coords, (1, 0))[None,:,:]  # [1, new_reso**dim, dim]
+        self.features.data = grid_sample_wrapper(self.features[None,...], coords).permute(1, 0).view(new_size)
+        print(f'upsampled feature grid to shape {new_size}')
+
+
     def get_points_on_grid(self, aabb, grid_size, max_voxels: Optional[int] = None):
         """
         Returns points from a regularly spaced grids of size grid_size.
@@ -261,14 +289,15 @@ class LowrankLearnableHash(LowrankModel):
             return density, features
         return density
 
-    def forward(self, rays_o, rays_d, bg_color, grid_id=0, channels: Sequence[str] = ("rgb", "depth")):
+    def forward(self, rays_o, rays_d, bg_color, grid_id=0, channels: Sequence[str] = ("rgb", "depth"), near_far=None):
         """
         rays_o : [batch, 3]
         rays_d : [batch, 3]
+        near_far : [batch, 2]
         """
         rm_out = self.raymarcher.get_intersections2(
             rays_o, rays_d, self.aabb(grid_id), self.resolution(grid_id), perturb=self.training,
-            is_ndc=self.is_ndc, is_contracted=self.is_contracted)
+            is_ndc=self.is_ndc, is_contracted=self.is_contracted, near_far=near_far)
         rays_d = rm_out["rays_d"]                   # [n_rays, 3]
         intersection_pts = rm_out["intersections"]  # [n_rays, n_intrs, 3]
         mask = rm_out["mask"]                       # [n_rays, n_intrs]

@@ -82,6 +82,7 @@ class Trainer():
         self.density_mask_update_steps = [s * step_multiplier for s in kwargs.get('dmask_update', [])]
         self.upsample_steps = [s * step_multiplier for s in kwargs.get('upsample_steps', [])]
         self.upsample_resolution_list = list(kwargs.get('upsample_resolution', []))
+        self.upsample_F_steps = list(kwargs.get('upsample_F_steps', []))
         assert len(self.upsample_resolution_list) == len(self.upsample_steps), \
             f"Got {len(self.upsample_steps)} upsample_steps and {len(self.upsample_resolution_list)} upsample_resolution."
 
@@ -126,6 +127,10 @@ class Trainer():
         dset_id = data["dset_id"]
         rays_o = data["rays_o"].cuda()
         rays_d = data["rays_d"].cuda()
+        if "near_far" in data.keys():
+            near_far = data["near_far"].cuda()
+        else:
+            near_far = None
         imgs = data["imgs"].cuda()
         patch_rays_o, patch_rays_d = None, None
         if "patch_rays_o" in data:
@@ -142,7 +147,7 @@ class Trainer():
             imgs = imgs[..., :3] * imgs[..., 3:] + bg_color * (1.0 - imgs[..., 3:])
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            fwd_out = self.model(rays_o, rays_d, grid_id=dset_id, bg_color=bg_color, channels={"rgb"})
+            fwd_out = self.model(rays_o, rays_d, grid_id=dset_id, bg_color=bg_color, channels={"rgb"}, near_far=near_far)
             rgb_preds = fwd_out["rgb"]
             # Reconstruction loss
             recon_loss = self.criterion(rgb_preds, imgs)
@@ -210,6 +215,8 @@ class Trainer():
             self.loss_info[dset_id]["volume_tv"].update(volume_tv.item())
         if floater_loss is not None:
             self.loss_info[dset_id]["floater_loss"].update(floater_loss.item())
+        self.loss_info[dset_id]["pt_min"].update(self.model.pt_min)
+        self.loss_info[dset_id]["pt_max"].update(self.model.pt_max)
 
         # Update weights
         self.gscaler.step(self.optimizer)
@@ -237,6 +244,10 @@ class Trainer():
             opt_reset_required = True
         except ValueError:
             pass
+        if self.global_step in self.upsample_F_steps:
+            self.model.upsample_F(new_reso = self.model.config[1]["resolution"][0] * 2)  # Double the resolution in each dimension of F
+            self.model.config[1]["resolution"] = [r * 2 for r in self.model.config[1]["resolution"]]  # Update the config
+            opt_reset_required = True
 
         # We reset the optimizer in case some of the parameters in model were changed.
         if opt_reset_required:
@@ -483,7 +494,7 @@ class Trainer():
             lr_sched = torch.optim.lr_scheduler.MultiStepLR(
                 self.optimizer,
                 milestones=[
-                    3 * max_steps // 4,
+                    2 * max_steps // 3,
                 ],
                 gamma=0.1)
         elif self.scheduler_type is not None:
