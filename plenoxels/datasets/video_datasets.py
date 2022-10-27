@@ -440,11 +440,18 @@ def dynerf_isg_weight(imgs, median_imgs, gamma):
     return psidiff  # valid probabilities, each in [0, 1]
 
 
-# TODO: debug IST; it seems to hurt rather than help
-def dynerf_ist_weight(imgs, num_cameras, alpha=0.1):  # DyNerf uses alpha=0.1
+def dynerf_ist_weight(imgs, num_cameras, alpha=0.1, frame_shift=25):  # alpha and frame_shift values from DyNerf
     N, h, w, c = imgs.shape
     frames = imgs.view(num_cameras, -1, h, w, c)  # [num_cameras, num_timesteps, h, w, 3]
-    left_diff = torch.abs_(torch.diff(frames, append=torch.zeros(num_cameras, 1, h, w, c), dim=1))
-    right_diff = torch.abs_(torch.diff(frames, prepend=torch.zeros(num_cameras, 1, h, w, c), dim=1))
-    diff = torch.mean(left_diff.add_(right_diff).mul_(0.5), dim=-1).clamp_(min=alpha)
+    diffs = []
+    shifts = list(range(frame_shift + 1))[1:]
+    for shift in shifts:
+        shift_left = torch.cat([frames[:,shift:,...], torch.zeros(num_cameras, shift, h, w, c)], dim=1)
+        shift_right = torch.cat([torch.zeros(num_cameras, shift, h, w, c), frames[:,:-shift,...]], dim=1)
+        diffs.append(torch.abs_(shift_left - frames))
+        diffs.append(torch.abs_(shift_right - frames))
+    diffs = torch.stack(diffs).squeeze()  # [frame_shift * 2, num_timesteps, h, w, 3]
+    diff = torch.mean(diffs, dim=-1)  # [frame_shift * 2, num_timesteps, h, w]
+    diff, _ = torch.max(diff, dim=0)  # [num_timesteps, h, w] 
+    diff = diff.clamp_(min=alpha)
     return diff

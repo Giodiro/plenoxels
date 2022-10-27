@@ -165,6 +165,10 @@ class VideoTrainer(Trainer):
                 tr_dd = init_tr_data(data_dir=data_dir, **self.extra_args)
                 self.train_data_loader = tr_dd['tr_loader']
                 self.train_datasets = [tr_dd['tr_dset']]
+                ts_dset = Video360Dataset(
+                    data_dir, split='test', downsample=4, keyframes=False, is_contracted=self.test_datasets[0].is_contracted
+                )
+                self.test_datasets = [ts_dset]
                 raise StopIteration  # Whenever we change the dataset
         if self.global_step == self.ist_step:
             self.train_datasets[0].switch_isg2ist()
@@ -373,7 +377,7 @@ def init_ts_data(data_dir, **kwargs):
         )
     else:
         ts_dset = Video360Dataset(
-            data_dir, split='test', downsample=4, keyframes=False, is_contracted=True
+            data_dir, split='test', downsample=4, keyframes=kwargs.get('keyframes', False), is_contracted=True
         )
         # ts_dset = VideoLLFFDataset(
         #     data_dir, split='test', downsample=4, keyframes=False
