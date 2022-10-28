@@ -28,7 +28,7 @@ class LowrankVideo(LowrankModel):
         else:
             self.config: List[Dict] = grid_config
         self.set_aabb(aabb, 0)
-        self.len_time = len_time
+        self.len_time = len_time  # maximum timestep - used for normalization
         self.extra_args = kwargs
         self.is_ndc = is_ndc
         self.is_contracted = is_contracted
@@ -53,6 +53,8 @@ class LowrankVideo(LowrankModel):
             else:
                 gpdesc = self.init_grid_param(grid_config, is_video=True, grid_level=li, use_F=self.use_F)
                 self.set_resolution(gpdesc.reso, 0)
+                self.register_buffer(
+                    'time_resolution', torch.tensor(gpdesc.time_coef.shape[-1], dtype=torch.int32))
                 self.grids = gpdesc.grid_coefs
                 self.time_coef = gpdesc.time_coef  # [out_dim * rank, time_reso]
         if self.sh:
@@ -64,11 +66,13 @@ class LowrankVideo(LowrankModel):
 
     @torch.no_grad()
     def upsample_time(self, new_reso):
-        old_reso = self.time_coef.shape[-1]
-        grid_data = self.time_coef.data
         self.time_coef = torch.nn.Parameter(
-            F.interpolate(self.time_coef.data[:,None,:], size=(new_reso), mode='linear', align_corners=True).squeeze())
-        log.info(f"Upsampled time resolution from {old_reso} to {new_reso}")
+            F.interpolate(self.time_coef.data[:, None, :], size=(new_reso), mode='linear',
+                          align_corners=True).squeeze())
+        log.info(f"Upsampled time resolution from {self.time_resolution} to {new_reso}")
+        if not isinstance(new_reso, torch.Tensor):
+            new_reso = torch.tensor(new_reso, dtype=torch.int32)
+        self.time_resolution = new_reso
 
     def compute_features(self,
                          pts,

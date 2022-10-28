@@ -88,7 +88,7 @@ class RayMarcher():
         if is_ndc:
             near = torch.tensor([0.0], device=dev, dtype=dt)
             far = torch.tensor([1.0], device=dev, dtype=dt)
-        if is_contracted:
+        elif is_contracted:
             if near_far is not None:
                 # near_far should have shape [batch, 2]
                 # for test the shape is [1, 2], but result is the same due to broadcasting in genspace

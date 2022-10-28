@@ -301,13 +301,26 @@ class VideoTrainer(Trainer):
 
         return summary, out_img
 
+    def load_model(self, checkpoint_data):
+        for k, v in checkpoint_data['model'].items():
+            if 'time_resolution' in k:
+                self.model.upsample_time(v.cpu())
+        self.model.load_state_dict(checkpoint_data["model"])
+        logging.info("=> Loaded model state from checkpoint")
+        self.optimizer.load_state_dict(checkpoint_data["optimizer"])
+        logging.info("=> Loaded optimizer state from checkpoint")
+        if self.scheduler is not None:
+            self.scheduler.load_state_dict(checkpoint_data['scheduler'])
+            logging.info("=> Loaded scheduler state from checkpoint")
+        self.global_step = checkpoint_data["global_step"]
+        logging.info(f"=> Loaded step {self.global_step} from checkpoints")
+
 
 def losses_to_postfix(loss_dict: Dict[str, EMA], lr: Optional[float]) -> str:
     pfix = [f"{lname}={lval}" for lname, lval in loss_dict.items()]
     if lr is not None:
         pfix.append(f"lr={lr:.2e}")
     return "  ".join(pfix)
-
 
 
 def init_dloader_random(worker_id):
