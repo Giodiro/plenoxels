@@ -79,8 +79,29 @@ class LowrankModel(ABC, nn.Module):
         features = nn.Parameter(
             torch.empty([grid_config["feature_dim"]] + reso[::-1]))
         if sh:
-            nn.init.zeros_(features)
-            features[-1].data.fill_(grid_config["init_std"])  # here init_std is repurposed as the sigma initialization
+            if reso[0] > 2:
+                nn.init.zeros_(features)
+                features[-1].data.fill_(grid_config["init_std"])  # here init_std is repurposed as the sigma initialization
+            elif reso[0] == 2:
+                # Make each feature a standard basis vector
+                # Feature shape is [feature_dim] + [2]*d
+                nn.init.uniform_(features, a=0, b=0.1) 
+                feats = features.data.view(grid_config["feature_dim"], -1).permute(1, 0)  # [feature_dim, num_features]
+                for i in range(grid_config["feature_dim"]-1):
+                    feats[i] = basis_vector(grid_config["feature_dim"], i, dense=False)
+                # For trying a fixed/nonlearnable F
+                # nn.init.uniform_(features, a=0, b=0)  # for learnable, works well to have a=0, b=0.1
+                # feats = features.data.view(grid_config["feature_dim"], -1).permute(1, 0)  # [feature_dim, num_features]
+                # for i in range(grid_config["feature_dim"]-1):
+                #     feats[i] = basis_vector(grid_config["feature_dim"], i, dense=True)
+                # extra_sigma_vals = [-100, 100, 1000, -1000]
+                # k = 0
+                # for j in range(grid_config["feature_dim"], len(feats)):
+                #     feats[j] = basis_vector(grid_config["feature_dim"], i) * extra_sigma_vals[k]
+                #     k = k + 1
+                # feats[grid_config["feature_dim"]]
+                print(feats)
+                features.data = feats.permute(0, 1).reshape([grid_config["feature_dim"]] + reso[::-1])
         else:
             nn.init.normal_(features, mean=0.0, std=grid_config["init_std"])
         return features
@@ -132,3 +153,10 @@ def to_list(el, list_len, name: Optional[str] = None) -> Sequence:
     if len(el) != list_len:
         raise ValueError(f"Length of {name} is incorrect. Expected {list_len} but found {len(el)}")
     return el
+
+def basis_vector(n, k, dense=True):
+    vector = torch.zeros(n)
+    vector[k] = 1
+    if dense:
+        vector[-1] = 10
+    return vector
