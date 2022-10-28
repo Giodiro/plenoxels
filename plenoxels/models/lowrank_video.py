@@ -44,7 +44,6 @@ class LowrankVideo(LowrankModel):
         assert len(self.config) == 2
         for li, grid_config in enumerate(self.config):
             if "feature_dim" in grid_config:
-                # TODO: we don't need these features if use_F is False
                 self.features = None
                 self.feature_dim = grid_config["feature_dim"]
                 if self.use_F:
