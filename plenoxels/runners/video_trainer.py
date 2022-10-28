@@ -165,10 +165,10 @@ class VideoTrainer(Trainer):
                 tr_dd = init_tr_data(data_dir=data_dir, **self.extra_args)
                 self.train_data_loader = tr_dd['tr_loader']
                 self.train_datasets = [tr_dd['tr_dset']]
-                ts_dset = Video360Dataset(
-                    data_dir, split='test', downsample=4, keyframes=False, is_contracted=self.test_datasets[0].is_contracted
-                )
-                self.test_datasets = [ts_dset]
+                # ts_dset = Video360Dataset(  @sara why is the test-set being reloaded? If useful make use of the init_ts_data function
+                #     data_dir, split='test', downsample=4, keyframes=False, is_contracted=self.test_datasets[0].is_contracted
+                # )
+                # self.test_datasets = [ts_dset]
                 raise StopIteration  # Whenever we change the dataset
         if self.global_step == self.ist_step:
             self.train_datasets[0].switch_isg2ist()
@@ -331,6 +331,7 @@ def init_dloader_random(worker_id):
 
 def init_tr_data(data_downsample, data_dir, **kwargs):
     isg = kwargs.get('isg', False)
+    ist = kwargs.get('ist', False)
     keyframes = kwargs.get('keyframes', False)
     batch_size = kwargs['batch_size']
     if "lego" in data_dir:
@@ -340,37 +341,26 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
             batch_size=batch_size,
             max_cameras=kwargs.get('max_train_cameras'),
             max_tsteps=kwargs.get('max_train_tsteps') if keyframes else None,
-            isg=isg,
+            isg=isg, keyframes=keyframes, is_contracted=False, is_ndc=False
         )
+        if ist:
+            tr_dset.switch_isg2ist()  # this should only happen in case we're reloading
     elif "sacre" in data_dir or "trevi" in data_dir:
         tr_dset = PhotoTourismDataset(
             data_dir, split='train', downsample=data_downsample, batch_size=batch_size,
         )
-
         tr_loader = torch.utils.data.DataLoader(
             tr_dset, batch_size=1, num_workers=2,
             prefetch_factor=4, pin_memory=True)
-
         return {"tr_loader": tr_loader, "tr_dset": tr_dset}
     else:
         logging.info(f"Loading contracted Video360Dataset with downsample={data_downsample}")
         tr_dset = Video360Dataset(
-            data_dir, split='train', downsample=data_downsample,
-            batch_size=batch_size,
-            keyframes=keyframes,
-            isg=isg,
-            is_contracted=True,
+            data_dir, split='train', downsample=data_downsample, batch_size=batch_size,
+            keyframes=keyframes, isg=isg, is_contracted=True, is_ndc=False
         )
-        # For LLFF we downsample both train and test unlike 360.
-        # For LLFF the test-set is not time-subsampled!
-        # logging.info(f"Loading VideoLLFFDataset with downsample={data_downsample}")
-        # tr_dset = VideoLLFFDataset(
-        #     data_dir, split='train', downsample=data_downsample,
-        #     batch_size=batch_size,
-        #     keyframes=keyframes,
-        #     isg=isg,  # Always start without ist
-        #     ist=ist,
-        # )
+        if ist:
+            tr_dset.switch_isg2ist()  # this should only happen in case we're reloading
     tr_loader = torch.utils.data.DataLoader(
         tr_dset, batch_size=None, num_workers=2,
         prefetch_factor=4, pin_memory=True, worker_init_fn=init_dloader_random)
@@ -390,11 +380,9 @@ def init_ts_data(data_dir, **kwargs):
         )
     else:
         ts_dset = Video360Dataset(
-            data_dir, split='test', downsample=4, keyframes=kwargs.get('keyframes', False), is_contracted=True
+            data_dir, split='test', downsample=4, keyframes=kwargs.get('keyframes', False),
+            is_contracted=True
         )
-        # ts_dset = VideoLLFFDataset(
-        #     data_dir, split='test', downsample=4, keyframes=False
-        # )
     return {"ts_dset": ts_dset}
 
 
@@ -403,3 +391,16 @@ def load_data(data_downsample, data_dirs, **kwargs):
     od = init_tr_data(data_downsample, data_dirs[0], **kwargs)
     od.update(init_ts_data(data_dirs[0], **kwargs))
     return od
+
+
+def load_video_model(config, state):
+    if state is not None:
+        global_step = state['global_step']
+        if global_step > config['upsample_time_steps'][0]:
+            config.update(keyframes=False)
+    data = load_data(**config)
+    config.update(data)
+    model = VideoTrainer(**config)
+    if state is not None:
+        model.load_model(state)
+    return model, config
