@@ -440,18 +440,19 @@ def dynerf_isg_weight(imgs, median_imgs, gamma):
     return psidiff  # valid probabilities, each in [0, 1]
 
 
-def dynerf_ist_weight(imgs, num_cameras, alpha=0.1, frame_shift=25):  # alpha and frame_shift values from DyNerf
+def dynerf_ist_weight(imgs, num_cameras, alpha=0.1, frame_shift=25):  # DyNerf uses alpha=0.1
     N, h, w, c = imgs.shape
     frames = imgs.view(num_cameras, -1, h, w, c)  # [num_cameras, num_timesteps, h, w, 3]
-    diffs = []
+    max_diff = None
     shifts = list(range(frame_shift + 1))[1:]
     for shift in shifts:
         shift_left = torch.cat([frames[:,shift:,...], torch.zeros(num_cameras, shift, h, w, c)], dim=1)
         shift_right = torch.cat([torch.zeros(num_cameras, shift, h, w, c), frames[:,:-shift,...]], dim=1)
-        diffs.append(torch.abs_(shift_left - frames))
-        diffs.append(torch.abs_(shift_right - frames))
-    diffs = torch.stack(diffs).squeeze()  # [frame_shift * 2, num_timesteps, h, w, 3]
-    diff = torch.mean(diffs, dim=-1)  # [frame_shift * 2, num_timesteps, h, w]
-    diff, _ = torch.max(diff, dim=0)  # [num_timesteps, h, w] 
-    diff = diff.clamp_(min=alpha)
-    return diff
+        mymax = torch.maximum(torch.abs_(shift_left - frames), torch.abs_(shift_right - frames))
+        if max_diff is None:
+            max_diff = mymax
+        else:
+            max_diff = torch.maximum(max_diff, mymax)  # [num_timesteps, h, w, 3]
+    max_diff = torch.mean(max_diff, dim=-1)  # [num_timesteps, h, w]
+    max_diff = max_diff.clamp_(min=alpha)
+    return max_diff

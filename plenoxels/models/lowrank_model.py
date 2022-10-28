@@ -140,13 +140,18 @@ class LowrankModel(ABC, nn.Module):
                 grid_coefs.append(
                     nn.Parameter(nn.init.uniform_(torch.empty(
                         [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb[::-1]]
-                    ), a=0.1, b=0.1)))  # Really we want the harmonics to init to 0, but hopefully this is ok
+                    ), a=0.1, b=0.2)))  # Kinda random
 
         if is_video:  
             time_reso = int(grid_config["time_reso"])
-            time_coef = nn.Parameter(nn.init.uniform_(
+            if use_F:
+                time_coef = nn.Parameter(nn.init.uniform_(
+                    torch.empty([out_dim * rank[0], time_reso]),
+                    a=-1.0, b=1.0))  # if time init is fixed at 1, then it learns a static video
+            else:
+                time_coef = nn.Parameter(nn.init.uniform_(
                 torch.empty([out_dim * rank[0], time_reso]),
-                a=1.0, b=1.0))  # testing if time init should be fixed at 1, instead of uniform [-1, 1]
+                a=0.1, b=0.2))  # Kinda random
             return GridParamDescription(
                 grid_coefs=grid_coefs, reso=pt_reso, time_reso=time_reso, time_coef=time_coef)
         return GridParamDescription(
