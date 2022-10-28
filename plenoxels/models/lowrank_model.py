@@ -107,7 +107,7 @@ class LowrankModel(ABC, nn.Module):
         return features
 
     @staticmethod
-    def init_grid_param(grid_config, is_video: bool, grid_level: int) -> GridParamDescription:
+    def init_grid_param(grid_config, is_video: bool, grid_level: int, use_F: bool = True) -> GridParamDescription:
         out_dim: int = grid_config["output_coordinate_dim"]
         grid_nd: int = grid_config["grid_dimensions"]
         reso: List[int] = grid_config["resolution"]
@@ -123,17 +123,24 @@ class LowrankModel(ABC, nn.Module):
         assert in_dim == grid_config["input_coordinate_dim"]
         if grid_level == 0:
             assert in_dim == 3
-        assert out_dim in {1, 2, 3, 4, 5, 6, 7}
+        if use_F:
+            assert out_dim in {1, 2, 3, 4, 5, 6, 7}
         assert grid_nd <= in_dim
         if grid_nd == in_dim:
             assert all(r == 1 for r in rank)
         coo_combs = list(itertools.combinations(range(in_dim), grid_nd))
         grid_coefs = nn.ParameterList()
         for ci, coo_comb in enumerate(coo_combs):
-            grid_coefs.append(
-                nn.Parameter(nn.init.uniform_(torch.empty(
-                    [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb[::-1]]
-                ), a=-1.0, b=1.0)))
+            if use_F:
+                grid_coefs.append(
+                    nn.Parameter(nn.init.uniform_(torch.empty(
+                        [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb[::-1]]
+                    ), a=-1.0, b=1.0)))
+            else:
+                grid_coefs.append(
+                    nn.Parameter(nn.init.uniform_(torch.empty(
+                        [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb[::-1]]
+                    ), a=0.1, b=0.1)))  # Really we want the harmonics to init to 0, but hopefully this is ok
 
         if is_video:  
             time_reso = int(grid_config["time_reso"])
