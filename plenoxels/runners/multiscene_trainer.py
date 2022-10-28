@@ -62,7 +62,7 @@ class Trainer():
         self.regnerf_weight_max_step = regnerf_weight_max_step
         self.cur_regnerf_weight = self.regnerf_weight_start
         self.plane_tv_weight = plane_tv_weight
-        self.plane_tv_what = kwargs.get('plane_tv_what', 'features')
+        self.plane_tv_what = kwargs.get('plane_tv_what', 'Gcoords')
         self.l1density_weight = l1density_weight
         self.volume_tv_weight = volume_tv_weight
         self.volume_tv_npts = volume_tv_npts

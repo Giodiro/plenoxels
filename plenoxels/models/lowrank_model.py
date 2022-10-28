@@ -79,14 +79,35 @@ class LowrankModel(ABC, nn.Module):
         features = nn.Parameter(
             torch.empty([grid_config["feature_dim"]] + reso[::-1]))
         if sh:
-            nn.init.zeros_(features)
-            features[-1].data.fill_(grid_config["init_std"])  # here init_std is repurposed as the sigma initialization
+            if reso[0] > 2:
+                nn.init.zeros_(features)
+                features[-1].data.fill_(grid_config["init_std"])  # here init_std is repurposed as the sigma initialization
+            elif reso[0] == 2:
+                # Make each feature a standard basis vector
+                # Feature shape is [feature_dim] + [2]*d
+                nn.init.uniform_(features, a=0, b=0.1) 
+                feats = features.data.view(grid_config["feature_dim"], -1).permute(1, 0)  # [feature_dim, num_features]
+                for i in range(grid_config["feature_dim"]-1):
+                    feats[i] = basis_vector(grid_config["feature_dim"], i, dense=False)
+                # For trying a fixed/nonlearnable F
+                # nn.init.uniform_(features, a=0, b=0)  # for learnable, works well to have a=0, b=0.1
+                # feats = features.data.view(grid_config["feature_dim"], -1).permute(1, 0)  # [feature_dim, num_features]
+                # for i in range(grid_config["feature_dim"]-1):
+                #     feats[i] = basis_vector(grid_config["feature_dim"], i, dense=True)
+                # extra_sigma_vals = [-100, 100, 1000, -1000]
+                # k = 0
+                # for j in range(grid_config["feature_dim"], len(feats)):
+                #     feats[j] = basis_vector(grid_config["feature_dim"], i) * extra_sigma_vals[k]
+                #     k = k + 1
+                # feats[grid_config["feature_dim"]]
+                print(feats)
+                features.data = feats.permute(0, 1).reshape([grid_config["feature_dim"]] + reso[::-1])
         else:
             nn.init.normal_(features, mean=0.0, std=grid_config["init_std"])
         return features
 
     @staticmethod
-    def init_grid_param(grid_config, is_video: bool, grid_level: int) -> GridParamDescription:
+    def init_grid_param(grid_config, is_video: bool, grid_level: int, use_F: bool = True) -> GridParamDescription:
         out_dim: int = grid_config["output_coordinate_dim"]
         grid_nd: int = grid_config["grid_dimensions"]
         reso: List[int] = grid_config["resolution"]
@@ -102,23 +123,30 @@ class LowrankModel(ABC, nn.Module):
         assert in_dim == grid_config["input_coordinate_dim"]
         if grid_level == 0:
             assert in_dim == 3
-        assert out_dim in {1, 2, 3, 4, 5, 6, 7}
+        if use_F:
+            assert out_dim in {1, 2, 3, 4, 5, 6, 7}
         assert grid_nd <= in_dim
         if grid_nd == in_dim:
             assert all(r == 1 for r in rank)
         coo_combs = list(itertools.combinations(range(in_dim), grid_nd))
         grid_coefs = nn.ParameterList()
         for ci, coo_comb in enumerate(coo_combs):
-            grid_coefs.append(
-                nn.Parameter(nn.init.uniform_(torch.empty(
-                    [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb[::-1]]
-                ), a=-1.0, b=1.0)))
+            if use_F:
+                grid_coefs.append(
+                    nn.Parameter(nn.init.uniform_(torch.empty(
+                        [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb[::-1]]
+                    ), a=-1.0, b=1.0)))
+            else:
+                grid_coefs.append(
+                    nn.Parameter(nn.init.uniform_(torch.empty(
+                        [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb[::-1]]
+                    ), a=0.1, b=0.1)))  # Really we want the harmonics to init to 0, but hopefully this is ok
 
         if is_video:  
             time_reso = int(grid_config["time_reso"])
             time_coef = nn.Parameter(nn.init.uniform_(
                 torch.empty([out_dim * rank[0], time_reso]),
-                a=-1.0, b=1.0))
+                a=1.0, b=1.0))  # testing if time init should be fixed at 1, instead of uniform [-1, 1]
             return GridParamDescription(
                 grid_coefs=grid_coefs, reso=pt_reso, time_reso=time_reso, time_coef=time_coef)
         return GridParamDescription(
@@ -132,3 +160,10 @@ def to_list(el, list_len, name: Optional[str] = None) -> Sequence:
     if len(el) != list_len:
         raise ValueError(f"Length of {name} is incorrect. Expected {list_len} but found {len(el)}")
     return el
+
+def basis_vector(n, k, dense=True):
+    vector = torch.zeros(n)
+    vector[k] = 1
+    if dense:
+        vector[-1] = 10
+    return vector

@@ -3,7 +3,7 @@
 import numpy as np
 config = {
     # "expname": "lego_rank10_plenoxelsh28_meaninit-11_downsample3",
-    "expname": "linearmicrank1prod",
+    "expname": "legoF2_planetv0.001_lr0.1rank2",
     # "expname": "lowrank_noupsamplelr4e-3_planetvfeats0.04",
     # "logdir": "./logs/fullresofern",
     "logdir": "./logs/sh",
@@ -11,26 +11,26 @@ config = {
     # Data settings
     "data_resolution": None,
     "data_downsample": 4,
-    "data_dirs": ["/home/sfk/data/nerf_synthetic/mic"],
+    "data_dirs": ["/home/sfk/data/nerf_synthetic/lego"],
     # "data_dirs": ["/home/sfk/data/nerf_llff_data/room"],
     # Data settings for 360
-    "max_tr_frames": 20,
-    "max_ts_frames": 2,
+    "max_tr_frames": None,
+    "max_ts_frames": 10,
     # Data settings for LLFF
     "hold_every": 8,
 
     # Optimization settings
-    "num_steps": 2501,
+    "num_steps": 10001,
     "batch_size": 4096,
     "num_batches_per_dset": 1,
     "scheduler_type": None,
     "optim_type": "adam",
-    "lr": 1e-2,
+    "lr": 1e-1,
     "regnerf_weight_start": 0,
     "regnerf_weight_end": 0.0,
     "regnerf_weight_max_step": 512,
     "l1density_weight": 0,
-    "plane_tv_weight": 0.0,
+    "plane_tv_weight": 0.001,
     "volume_tv_weight": 0.0,
     "volume_tv_npts": 1024,
     "floater_loss": 0,
@@ -54,9 +54,10 @@ config = {
     "dmask_update": [100000],  # 1000
     # "upsample_resolution": [3241792, 5832000, 11239424, 16777216],
     # "upsample_steps": [500, 800, 1200, 1500],
-    "upsample_F_steps": [10, 20],
+    "upsample_F_steps": [],
     "density_multiplier": 1,
     "sh": True,
+    "use_F": True,
     "grid_config": """
 [
     {
@@ -64,11 +65,11 @@ config = {
         "output_coordinate_dim": 5,
         "grid_dimensions": 2,
         "resolution": [128, 128, 128],
-        "rank": 10,
+        "rank": 2,
     },
     {
         "input_coordinate_dim": 5,
-        "resolution": [4, 4, 4, 4, 4],
+        "resolution": [2, 2, 2, 2, 2],
         "feature_dim": 28,
         "init_std": 1
     }
