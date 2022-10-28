@@ -28,7 +28,7 @@ class LowrankVideo(LowrankModel):
         else:
             self.config: List[Dict] = grid_config
         self.set_aabb(aabb, 0)
-        self.len_time = len_time
+        self.len_time = len_time  # maximum timestep - used for normalization
         self.extra_args = kwargs
         self.is_ndc = is_ndc
         self.is_contracted = is_contracted
@@ -38,16 +38,23 @@ class LowrankVideo(LowrankModel):
         self.density_act = trunc_exp
         self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
         self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
+        self.use_F = self.extra_args["use_F"]
 
         # For now, only allow a single index grid and a single feature grid, not multiple layers
         assert len(self.config) == 2
         for li, grid_config in enumerate(self.config):
             if "feature_dim" in grid_config:
-                self.features = self.init_features_param(grid_config, self.sh)
-                self.feature_dim = self.features.shape[0]
+                # TODO: we don't need these features if use_F is False
+                self.features = None
+                self.feature_dim = grid_config["feature_dim"]
+                if self.use_F:
+                    self.features = self.init_features_param(grid_config, self.sh)
+                    self.feature_dim = self.features.shape[0]
             else:
-                gpdesc = self.init_grid_param(grid_config, is_video=True, grid_level=li)
+                gpdesc = self.init_grid_param(grid_config, is_video=True, grid_level=li, use_F=self.use_F)
                 self.set_resolution(gpdesc.reso, 0)
+                self.register_buffer(
+                    'time_resolution', torch.tensor(gpdesc.time_coef.shape[-1], dtype=torch.int32))
                 self.grids = gpdesc.grid_coefs
                 self.time_coef = gpdesc.time_coef  # [out_dim * rank, time_reso]
         if self.sh:
@@ -59,11 +66,13 @@ class LowrankVideo(LowrankModel):
 
     @torch.no_grad()
     def upsample_time(self, new_reso):
-        old_reso = self.time_coef.shape[-1]
-        grid_data = self.time_coef.data
         self.time_coef = torch.nn.Parameter(
-            F.interpolate(self.time_coef.data[:,None,:], size=(new_reso), mode='linear', align_corners=True).squeeze())
-        log.info(f"Upsampled time resolution from {old_reso} to {new_reso}")
+            F.interpolate(self.time_coef.data[:, None, :], size=(new_reso), mode='linear',
+                          align_corners=True).squeeze())
+        log.info(f"Upsampled time resolution from {self.time_resolution} to {new_reso}")
+        if not isinstance(new_reso, torch.Tensor):
+            new_reso = torch.tensor(new_reso, dtype=torch.int32)
+        self.time_resolution = new_reso
 
     def compute_features(self,
                          pts,
@@ -99,12 +108,15 @@ class LowrankVideo(LowrankModel):
         # Combine space and time over rank
         interp = (interp_space * interp_time).mean(dim=-1)  # [n, F_dim]
 
-        # Learned normalization
-        if interp.numel() > 0:
-            interp = (interp - self.pt_min) / (self.pt_max - self.pt_min)
-            interp = interp * 2 - 1
+        if self.use_F:
+            # Learned normalization
+            if interp.numel() > 0:
+                interp = (interp - self.pt_min) / (self.pt_max - self.pt_min)
+                interp = interp * 2 - 1
 
-        out = grid_sample_wrapper(self.features, interp).view(-1, self.feature_dim)
+            out = grid_sample_wrapper(self.features, interp).view(-1, self.feature_dim)
+        else:
+            out = interp
         if return_coords:
             return out, interp
         return out
@@ -178,11 +190,18 @@ class LowrankVideo(LowrankModel):
         return outputs
 
     def get_params(self, lr):
-        params = [
-            {"params": self.decoder.parameters(), "lr": lr},
-            {"params": self.grids.parameters(), "lr": lr},
-            {"params": [self.features, self.pt_min, self.pt_max], "lr": lr},
-        ]
+        if self.use_F:
+            params = [
+                {"params": self.decoder.parameters(), "lr": lr},
+                {"params": self.grids.parameters(), "lr": lr},
+                {"params": [self.features, self.pt_min, self.pt_max], "lr": lr},
+            ]
+        else:
+            params = [
+                {"params": self.decoder.parameters(), "lr": lr},
+                {"params": self.grids.parameters(), "lr": lr},
+                # {"params": [self.features, self.pt_min, self.pt_max], "lr": lr},
+            ]
         return params
 
     def compute_plane_tv(self):

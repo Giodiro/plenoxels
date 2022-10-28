@@ -56,6 +56,7 @@ class LowrankLearnableHash(LowrankModel):
         self.density_multiplier = self.extra_args.get("density_multiplier")
         self.transfer_learning = self.extra_args["transfer_learning"]
         self.alpha_mask_threshold = self.extra_args["density_threshold"]
+        self.use_F = self.extra_args["use_F"]
 
         self.density_act = lambda x: trunc_exp(x - 1)
         self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
@@ -69,10 +70,11 @@ class LowrankLearnableHash(LowrankModel):
             grids = nn.ModuleList()
             for li, grid_config in enumerate(self.config):
                 if "feature_dim" in grid_config and si == 0:  # Only make one set of features
+                    # TODO: we don't need these features if use_F is False
                     self.features = self.init_features_param(grid_config, self.sh)
                     self.feature_dim = self.features.shape[0]
                 else:
-                    gpdesc = self.init_grid_param(grid_config, is_video=False, grid_level=li)
+                    gpdesc = self.init_grid_param(grid_config, is_video=False, grid_level=li, use_F=self.use_F)
                     if li == 0:
                         self.set_resolution(gpdesc.reso, grid_id=si)
                     grids.append(gpdesc.grid_coefs)
@@ -121,16 +123,18 @@ class LowrankLearnableHash(LowrankModel):
                         grid_sample_wrapper(grid[ci], interp[..., coo_comb]).view(
                             -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
             interp = interp_out.mean(dim=-1)
-
-        if interp.numel() > 0:
-            interp = (interp - self.pt_min) / (self.pt_max - self.pt_min)
-            interp = interp * 2 - 1
-        #interp = interp / (interp.norm(dim=-1, keepdim=True) + 1e-6)
-
-        out = grid_sample_wrapper(self.features.to(dtype=interp.dtype), interp).view(-1, self.feature_dim)
         
+        if self.use_F:
+            if interp.numel() > 0:
+                interp = (interp - self.pt_min) / (self.pt_max - self.pt_min)
+                interp = interp * 2 - 1
+
+            out = grid_sample_wrapper(self.features.to(dtype=interp.dtype), interp).view(-1, self.feature_dim)
+        else:
+            out = interp
+            
         self.timer["compute_features"] = time.time() - t
-        
+            
         if return_coords:
             return out, interp
         return out
