@@ -28,9 +28,6 @@ class Trainer():
                  tr_loader: torch.utils.data.DataLoader,
                  ts_dsets: List[torch.utils.data.TensorDataset],
                  tr_dsets: List[torch.utils.data.TensorDataset],
-                 regnerf_weight_start: float,
-                 regnerf_weight_end: float,
-                 regnerf_weight_max_step: int,
                  plane_tv_weight: float,
                  l1density_weight: float,
                  volume_tv_weight: float,
@@ -54,10 +51,6 @@ class Trainer():
         self.extra_args = kwargs
         self.num_dsets = len(self.train_datasets)
 
-        self.regnerf_weight_start = regnerf_weight_start
-        self.regnerf_weight_end = regnerf_weight_end
-        self.regnerf_weight_max_step = regnerf_weight_max_step
-        self.cur_regnerf_weight = self.regnerf_weight_start
         self.plane_tv_weight = plane_tv_weight
         self.plane_tv_what = kwargs.get('plane_tv_what', 'features')
         self.l1density_weight = l1density_weight
@@ -98,8 +91,8 @@ class Trainer():
         self.model = self.init_model(**self.extra_args)
         self.optimizer = self.init_optim(**self.extra_args)
         self.scheduler = self.init_lr_scheduler(**self.extra_args)
-        self.criterion = torch.nn.MSELoss(reduction='mean')
-        #self.criterion = torch.nn.SmoothL1Loss(reduction='mean')
+        #self.criterion = torch.nn.MSELoss(reduction='mean')
+        self.criterion = torch.nn.SmoothL1Loss(reduction='mean')
         self.gscaler = torch.cuda.amp.GradScaler(enabled=self.train_fp16)
 
     def eval_step(self, data, dset_id) -> MutableMapping[str, torch.Tensor]:
@@ -155,24 +148,6 @@ class Trainer():
                 l1density = self.model.compute_l1density(
                     max_voxels=100_000, grid_id=dset_id) * self.l1density_weight
                 loss = loss + l1density
-            depth_tv: Optional[torch.Tensor] = None
-            if self.cur_regnerf_weight > 0:
-                ps = patch_rays_o.shape[1]  # patch-size
-                out = self.model(
-                    patch_rays_o.reshape(-1, 3), patch_rays_d.reshape(-1, 3), bg_color=None,
-                    channels={"depth", "rgb"}, grid_id=dset_id)
-                reshape_to_patch = lambda x, dim: x.reshape(-1, ps, ps, dim)
-                depths = reshape_to_patch(out["depth"], 1)
-                #if self.global_step > 2000:
-                #    torch.save(depths.detach().cpu(), "depths8.pt")
-                #    rgbs = reshape_to_patch(out["rgb"], 3)
-                #    torch.save(rgbs.detach().cpu(), "rgbs8.pt")
-                #    raise RuntimeError()
-                # NOTE: the weighting below is never applied in RegNerf (the constant in front of it is set to 0)
-                # with torch.autograd.no_grad():
-                #     weighting = reshape_to_patch(out["alpha"], 1)[:, :-1, :-1]
-                depth_tv = compute_tv_norm(depths, 'l2', None) * self.cur_regnerf_weight
-                loss = loss + depth_tv
             plane_tv: Optional[torch.Tensor] = None
             if self.plane_tv_weight > 0:
                 plane_tv = self.model.compute_plane_tv(
@@ -197,8 +172,6 @@ class Trainer():
         self.loss_info[dset_id]["psnr"].update(-10 * math.log10(recon_loss_val))
         if l1density is not None:
             self.loss_info[dset_id]["l1_density"].update(l1density.item())
-        if depth_tv is not None:
-            self.loss_info[dset_id]["depth_tv"].update(depth_tv.item())
         if plane_tv is not None:
             self.loss_info[dset_id]["plane_tv"].update(plane_tv.item())
         if volume_tv is not None:
@@ -240,11 +213,9 @@ class Trainer():
         return True
 
     def post_step(self, data, progress_bar):
-        # Anneal regularization weights
-        if self.regnerf_weight_start > 0:
-            w = np.clip(self.global_step / (1 if self.regnerf_weight_max_step < 1 else self.regnerf_weight_max_step), 0, 1)
-            self.cur_regnerf_weight = self.regnerf_weight_start * (1 - w) + w * self.regnerf_weight_end
-
+        if self.global_step == 12000:
+            self.plane_tv_weight /= 5
+            logging.info("Resetting plane-TV weight to %f" % (self.plane_tv_weight))
         dset_id = data["dset_id"]
         self.writer.add_scalar(f"mse/D{dset_id}", self.loss_info[dset_id]["mse"].value, self.global_step)
         progress_bar.set_postfix_str(losses_to_postfix(self.loss_info, lr=self.cur_lr()), refresh=False)
@@ -293,7 +264,7 @@ class Trainer():
     #                     do_update = (i + 1) % self.num_dsets == 0
     #                 else:
     #                     do_update = True
-               
+
     #                 step_successful = self.step(data, do_update=do_update)
     #                 if do_update:
     #                     self.post_step(data=data, progress_bar=pb)
@@ -341,8 +312,8 @@ class Trainer():
                 if do_update:
                     self.post_step(data=data, progress_bar=pb)
                     if step_successful and self.scheduler is not None:
-                        self.scheduler.step()                
-            except StopIteration as e: 
+                        self.scheduler.step()
+            except StopIteration as e:
                 logging.info(str(e))
                 print(f'resetting after a full pass through the data, or when the dataset changed')
                 self.pre_epoch()
@@ -402,7 +373,9 @@ class Trainer():
 
     def evaluate_metrics(self, gt, preds: MutableMapping[str, torch.Tensor], dset, dset_id: int, img_idx: int,
                          name: Optional[str] = None, save_outputs: bool = True):
-        preds_rgb = preds["rgb"].reshape(dset.img_h, dset.img_w, 3).cpu()
+        preds_rgb = (
+            preds["rgb"].reshape(dset.img_h, dset.img_w, 3).cpu().clamp(0, 1)
+        )
         exrdict = {
             "preds": preds_rgb.numpy(),
         }
@@ -484,7 +457,7 @@ class Trainer():
             logging.info(f"=> Loaded step {self.global_step} from checkpoints")
 
     def init_epoch_info(self):
-        ema_weight = 0.1
+        ema_weight = 1.0
         self.loss_info = [defaultdict(lambda: EMA(ema_weight)) for _ in range(self.num_dsets)]
 
     # noinspection PyUnresolvedReferences,PyProtectedMember
@@ -563,10 +536,7 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
             raise RuntimeError(f"data_dir {dd} not recognized as LLFF or Synthetic dataset.")
 
     data_resolution = parse_optint(kwargs.get('data_resolution'))
-    regnerf_weight = float(kwargs.get('regnerf_weight_start'))
     num_batches_per_dataset = int(kwargs['num_batches_per_dset'])
-    extra_views = regnerf_weight > 0
-    patch_size = 8
 
     tr_dsets, ts_dsets = [], []
     for i, data_dir in enumerate(data_dirs):
@@ -577,8 +547,8 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
             logging.info(f"About to load data at reso={data_resolution}, downsample={data_downsample}")
             tr_dsets.append(SyntheticNerfDataset(
                 data_dir, split='train', downsample=data_downsample, resolution=data_resolution,
-                max_frames=max_tr_frames, extra_views=extra_views, batch_size=batch_size,
-                patch_size=patch_size, dset_id=i))
+                max_frames=max_tr_frames, extra_views=False, batch_size=batch_size,
+                patch_size=1, dset_id=i))
             ts_dsets.append(SyntheticNerfDataset(
                 data_dir, split='test', downsample=1, resolution=800, max_frames=max_ts_frames,
                 dset_id=i))
@@ -587,7 +557,7 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
             logging.info(f"About to load LLFF data downsampled by {data_downsample} times.")
             tr_dsets.append(LLFFDataset(
                 data_dir, split='train', downsample=data_downsample, hold_every=hold_every,
-                extra_views=extra_views, batch_size=batch_size, patch_size=patch_size,
+                extra_views=False, batch_size=batch_size, patch_size=1,
                 dset_id=i))
             # Note that LLFF has same downsampling applied to train and test datasets
             ts_dsets.append(LLFFDataset(

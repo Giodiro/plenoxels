@@ -1,14 +1,14 @@
 # configuration file to be used with `main.py` for normal (or multiscene) training
 # the configuration must be specified in a dictionary called `config`.
 config = {
-    "expname": "materials_test",
+    "expname": "fern_test",
     "logdir": "./logs",
 
     # Data settings
     "data_resolution": None,
-    "data_downsample": 1,
-    "data_dirs": ["/data/DATASETS/SyntheticNerf/materials"],
-    #"data_dirs": ["/data/DATASETS/LLFF/fern"],
+    "data_downsample": 4,
+    #"data_dirs": ["/data/DATASETS/SyntheticNerf/materials"],
+    "data_dirs": ["/data/DATASETS/LLFF/fern"],
     # Data settings for 360
     "max_tr_frames": 100,
     "max_ts_frames": 10,
@@ -16,18 +16,14 @@ config = {
     "hold_every": 8,
 
     # Optimization settings
-    "num_epochs": 10,
+    "num_steps": 31501,
     "batch_size": 4096,
     "num_batches_per_dset": 1,
     "scheduler_type": "step",
     "optim_type": "adam",
-    "lr": 2e-2,
+    "lr": 4e-2,
 
-    "regnerf_weight_start": 0.0,
-    "regnerf_weight_end": 0.0,
-    "regnerf_weight_max_step": 700,
-
-    "plane_tv_weight": 0.0005,
+    "plane_tv_weight": 0.004,
     "plane_tv_what": "Gcoords",
 
     "l1density_weight": 0.000,
@@ -39,8 +35,8 @@ config = {
 
     # Training settings
     "train_fp16": True,
-    "save_every": 10,
-    "valid_every": 1,
+    "save_every": 30000,
+    "valid_every": 3150,
     "save_outputs": True,
     "transfer_learning": False,
 
@@ -53,12 +49,12 @@ config = {
 
     # Model settings
     "sh": True,
-    "density_threshold": 4e-4,
-    "dmask_update": [3500, 5500],
-    "upsample_steps": [7000,10000],#,4000,5500], #[500, 800, 1200, 1500, 2000],
+    "density_threshold": 1e-3,
+    "dmask_update": [],#3500, 5500],
+    "upsample_steps": [],#7000,10000],#,4000,5500], #[500, 800, 1200, 1500, 2000],
     #"dmask_update": [2000, 4000],
-    #"upsample_steps": [2000, 3000, 4000, 5500, 7000],
-    "upsample_resolution": [6941900, 23292360],#, 78205680, 261365436], #[3241792, 5832000, 11239424, 16777216, 27000000], #[4410944, 11239424, 32768000, 91125000],
+    #"upsample_steps": [2000, 30 4000, 5500, 7000],
+    "upsample_resolution": [],# 23292360],#, 78205680, 261365436], #[3241792, 5832000, 11239424, 16777216, 27000000], #[4410944, 11239424, 32768000, 91125000],
     "density_multiplier": 1,
     "grid_config": """
 [
@@ -66,15 +62,14 @@ config = {
         "input_coordinate_dim": 3,
         "output_coordinate_dim": 5,
         "grid_dimensions": 2,
-        "resolution": [128, 128, 128],
+        "resolution": [256, 256, 128],
         "rank": 10,
-        "init_std": 0.2,
     },
     {
         "input_coordinate_dim": 5,
-        "resolution": [6, 6, 6, 6, 6],
+        "resolution": [4, 4, 4, 4, 4],
         "feature_dim": 28,
-        "init_std": 0.001,
+        "init_std": 0.01,
     }
 ]
 """

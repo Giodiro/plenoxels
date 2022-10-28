@@ -89,21 +89,21 @@ class SHDecoder(BaseDecoder):
         print(f'using spherical harmonic degree {sh_degree}, which corresponds to {feature_dim} features')
         self.sh_degree = sh_degree + 1
         self.sh_dim = (feature_dim - 1) // 3
-        # self.direction_encoder = tcnn.Encoding(
-        #     n_input_dims=3,
-        #     encoding_config={
-        #         "otype": "SphericalHarmonics",
-        #         "degree": self.sh_degree,
-        #     },
-        # )
+        self.direction_encoder = tcnn.Encoding(
+            n_input_dims=3,
+            encoding_config={
+                "otype": "SphericalHarmonics",
+                "degree": self.sh_degree,
+            },
+        )
 
     def compute_density(self, features, rays_d, **kwargs):
         return features[..., -1].view(-1, 1)
 
     def compute_color(self, features, rays_d):
         color_features = features[..., :-1]
-        sh_mult = eval_sh_bases(self.sh_dim, rays_d)[:, None, :]  # [batch, 1, harmonic_components]
-        # sh_mult = self.direction_encoder(rays_d)[:, None, :]  # [batch, 1, harmonic_components]
+        # sh_mult = eval_sh_bases(self.sh_dim, rays_d)[:, None, :]  # [batch, 1, harmonic_components]
+        sh_mult = self.direction_encoder(rays_d)[:, None, :]  # [batch, 1, harmonic_components]
         rgb = color_features.view(color_features.shape[0], 3, sh_mult.shape[-1])  # [batch, 3, harmonic_components]
         return torch.sum(sh_mult * rgb, dim=-1)  # [batch, 3]
 

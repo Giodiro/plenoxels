@@ -79,7 +79,7 @@ class LowrankModel(ABC, nn.Module):
         features = nn.Parameter(
             torch.empty([grid_config["feature_dim"]] + reso[::-1]))
         if sh:
-            nn.init.zeros_(features)
+            nn.init.normal_(features, mean=0.5, std=0.5)
             features[-1].data.fill_(grid_config["init_std"])  # here init_std is repurposed as the sigma initialization
         else:
             nn.init.normal_(features, mean=0.0, std=grid_config["init_std"])
@@ -114,7 +114,7 @@ class LowrankModel(ABC, nn.Module):
                     [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb[::-1]]
                 ), a=-1.0, b=1.0)))
 
-        if is_video:  
+        if is_video:
             time_reso = int(grid_config["time_reso"])
             time_coef = nn.Parameter(nn.init.uniform_(
                 torch.empty([out_dim * rank[0], time_reso]),

@@ -116,6 +116,7 @@ class LowrankLearnableHash(LowrankModel):
         if interp.numel() > 0:
             interp = (interp - self.pt_min) / (self.pt_max - self.pt_min)
             interp = interp * 2 - 1
+        #interp = interp / torch.linalg.vector_norm(interp.detach(), ord=2, dim=1, keepdim=True)
 
         out = grid_sample_wrapper(self.features.to(dtype=interp.dtype), interp).view(-1, self.feature_dim)
         if return_coords:
@@ -134,7 +135,8 @@ class LowrankLearnableHash(LowrankModel):
         pts = self.get_points_on_grid(aabb, grid_size, max_voxels=None)
         density = self.query_density(pts, grid_id).view(-1)
 
-        alpha = 1.0 - torch.exp(-density * step_size * self.density_multiplier).view(grid_size_l)  # [gs0, gs1, gs2]
+        #alpha = 1.0 - torch.exp(-density * step_size * self.density_multiplier).view(grid_size_l)  # [gs0, gs1, gs2]
+        alpha = (density * step_size * self.density_multiplier).view(grid_size_l)  # [gs0, gs1, gs2]
         pts = pts.view(grid_size_l + [3])  # [gs0, gs1, gs2, 3]
 
         # Transpose to get correct Depth, Height, Width format
@@ -312,7 +314,7 @@ class LowrankLearnableHash(LowrankModel):
         rgb_masked = self.decoder.compute_color(features, rays_d=masked_rays_d_rep)
         rgb = torch.zeros(n_rays, n_intrs, 3, device=dev, dtype=rgb_masked.dtype)
         rgb[mask] = rgb_masked
-        rgb = torch.sigmoid(rgb)
+        #rgb = torch.sigmoid(rgb)
 
         # Confirmed that torch.sum(weight, -1) matches 1-transmission[:,-1]
         acc_map = 1 - transmission[:, -1]
