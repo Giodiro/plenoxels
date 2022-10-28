@@ -3,7 +3,7 @@ config = {
     # "expname": "legovideo20views_regdepthweightedacc_400_0.1_512_3framesreso3rank20",
     # "expname": "contracted2e2_downsample4reso300_keyframes6k_isg30k_ist40kalpha0.01_lr0.1_step",
     # "expname": "contracted3-10_keyframes5k_planetv0.0001",
-    "expname": "downsample4reso300cubesample800contractedadaptivereciprocal_keyframes50k_isg50k_rank30_planetv0.001",
+    "expname": "noF_downsample4reso300cubesample800contractedadaptivereciprocal_keyframes20k_isg20k_ist20k_rank10_planetv0.001_timeinit1",
     # "expname": "testrelu_sameranktimereso128_llff",
     "logdir": "./logs/salmonvideo",
 
@@ -21,11 +21,11 @@ config = {
     # Data settings for LLFF
     "keyframes": True,
     "isg": True,
-    "ist_step": -1,
+    "ist_step": 40000,
 
     # Optimization settings
     # "num_steps": 40001,
-    "num_steps": 100001,
+    "num_steps": 60001,
     "floater_loss": 0.0000,
     "regnerf_weight_start": 0,
     "regnerf_weight_end": 0.0,
@@ -35,10 +35,10 @@ config = {
     "volume_tv_weight": 0.0,  # Not used for video yet
     "volume_tv_npts": 1024,  # Not used for video yet
     "volume_tv_what": "Gcoords",  # Not used for video yet
-    "scheduler_type": None, # "step"
+    "scheduler_type": "step", # "step"
     "batch_size": 4096,  
     "optim_type": "adam",
-    "lr": 0.1,
+    "lr": 0.01,
     
     # Training settings
     "train_fp16": True,
@@ -58,20 +58,21 @@ config = {
     "sh": True,
     "upsample_time_resolution": [150],
     # "upsample_time_steps": [6000],  # DyNerf does 300K iterations with keyframes, with lr 5e-4
-    "upsample_time_steps": [50000],
+    "upsample_time_steps": [20000],
+    "use_F": False,
     "grid_config": """
 [
     {
         "input_coordinate_dim": 3,
-        "output_coordinate_dim": 5,
+        "output_coordinate_dim": 28,
         "grid_dimensions": 2,
         "resolution": [300, 300, 300],
-        "rank": 30,
+        "rank": 5,
         "time_reso": 30,
     },
     {
-        "input_coordinate_dim": 5,
-        "resolution": [6, 6, 6, 6, 6],
+        "input_coordinate_dim": 1,
+        "resolution": [3, 3],
         "feature_dim": 28,
         "init_std": 0.001
     }

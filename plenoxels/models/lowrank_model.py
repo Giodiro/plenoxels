@@ -146,7 +146,7 @@ class LowrankModel(ABC, nn.Module):
             time_reso = int(grid_config["time_reso"])
             time_coef = nn.Parameter(nn.init.uniform_(
                 torch.empty([out_dim * rank[0], time_reso]),
-                a=-1.0, b=1.0))
+                a=1.0, b=1.0))  # testing if time init should be fixed at 1, instead of uniform [-1, 1]
             return GridParamDescription(
                 grid_coefs=grid_coefs, reso=pt_reso, time_reso=time_reso, time_coef=time_coef)
         return GridParamDescription(
