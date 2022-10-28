@@ -62,7 +62,7 @@ class Video360Dataset(BaseDataset):
                 keyframes=keyframes, keyframes_take_each=30)
             self.poses = poses.float()
             self.per_cam_near_fars = self.per_cam_near_fars.float()
-            print(f'per_cam_near_fars is {self.per_cam_near_fars}')
+            log.info(f'per_cam_near_fars is {self.per_cam_near_fars}')
         elif dset_type == "synthetic":
             frames, transform = load_360video_frames(datadir, split, max_cameras=self.max_cameras, max_tsteps=self.max_tsteps)
             imgs, self.poses = load_360_images(frames, datadir, split, self.downsample)
@@ -73,12 +73,12 @@ class Video360Dataset(BaseDataset):
         else:
             raise ValueError(datadir)
 
-
         imgs = (imgs * 255).to(torch.uint8)
         if split == 'train':
             imgs = imgs.view(-1, imgs.shape[-1])
         else:
             imgs = imgs.view(-1, intrinsics.height * intrinsics.width, imgs.shape[-1])
+
         isg_weights = None
         if self.isg:
             t_s = time.time()

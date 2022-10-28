@@ -63,7 +63,7 @@ class BaseDataset(Dataset, ABC):
             num_weights = len(self.sampling_weights)
             if num_weights > self.sampling_batch_size:
                 # Take a uniform random sample first, then according to the weights
-                subset = torch.randint(0, num_weights, size=(self.sampling_batch_size,), dtype=torch.int64)
+                subset = torch.randint(0, num_weights, size=(self.sampling_batch_size,), dtype=torch.int64, device=self.sampling_weights.device)
                 samples = torch.multinomial(
                     input=self.sampling_weights[subset], num_samples=self.batch_size)
                 return subset[samples]

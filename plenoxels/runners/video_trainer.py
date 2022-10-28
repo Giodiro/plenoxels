@@ -94,7 +94,7 @@ class VideoTrainer(Trainer):
                 outputs = self.model(rays_o_b, rays_d_b, timestamps_d_b, bg_color=bg_color,
                                      channels={"rgb", "depth"}, near_far=near_far)
                 for k, v in outputs.items():
-                    preds[k].append(v)
+                    preds[k].append(v.cpu())
         return {k: torch.cat(v, 0) for k, v in preds.items()}
 
     def step(self, data, do_update=True):
@@ -324,6 +324,7 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
             max_cameras=kwargs.get('max_train_cameras'),
             max_tsteps=kwargs.get('max_train_tsteps') if keyframes else None,
             isg=isg,
+            is_contracted=False, is_ndc=False,
         )
     elif "sacre" in data_dir or "trevi" in data_dir:
         tr_dset = PhotoTourismDataset(
@@ -339,21 +340,9 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
         logging.info(f"Loading contracted Video360Dataset with downsample={data_downsample}")
         tr_dset = Video360Dataset(
             data_dir, split='train', downsample=data_downsample,
-            batch_size=batch_size,
-            keyframes=keyframes,
-            isg=isg,
-            is_contracted=True,
+            batch_size=batch_size, keyframes=keyframes, isg=isg,
+            is_contracted=True, is_ndc=False,
         )
-        # For LLFF we downsample both train and test unlike 360.
-        # For LLFF the test-set is not time-subsampled!
-        # logging.info(f"Loading VideoLLFFDataset with downsample={data_downsample}")
-        # tr_dset = VideoLLFFDataset(
-        #     data_dir, split='train', downsample=data_downsample,
-        #     batch_size=batch_size,
-        #     keyframes=keyframes,
-        #     isg=isg,  # Always start without ist
-        #     ist=ist,
-        # )
     tr_loader = torch.utils.data.DataLoader(
         tr_dset, batch_size=None, num_workers=2,
         prefetch_factor=4, pin_memory=True, worker_init_fn=init_dloader_random)
@@ -366,6 +355,7 @@ def init_ts_data(data_dir, **kwargs):
             data_dir, split='test', downsample=1,
             max_cameras=kwargs.get('max_test_cameras'),
             max_tsteps=kwargs.get('max_test_tsteps'),
+            is_contracted=False, is_ndc=False,
         )
     elif "sacre" in data_dir or "trevi" in data_dir:
         ts_dset = PhotoTourismDataset(
@@ -373,11 +363,9 @@ def init_ts_data(data_dir, **kwargs):
         )
     else:
         ts_dset = Video360Dataset(
-            data_dir, split='test', downsample=4, keyframes=False, is_contracted=True
+            data_dir, split='test', downsample=4, keyframes=False, is_contracted=True,
+            is_ndc=False,
         )
-        # ts_dset = VideoLLFFDataset(
-        #     data_dir, split='test', downsample=4, keyframes=False
-        # )
     return {"ts_dset": ts_dset}
 
 
