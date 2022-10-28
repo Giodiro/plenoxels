@@ -270,6 +270,7 @@ def render_image(
     rays_d: torch.Tensor,
     timestamps: Optional[torch.Tensor] = None,
     # rendering options
+    aabb: Optional[torch.Tensor] = None,
     near_plane: Optional[float] = None,
     far_plane: Optional[float] = None,
     render_step_size: float = 1e-3,
@@ -289,7 +290,8 @@ def render_image(
         rays_d = rays_d.reshape([num_rays] + list(rays_d.shape[2:]))
     else:
         num_rays, _ = rays_shape
-    timestamps = timestamps.to(device)
+    if timestamps is not None:
+        timestamps = timestamps.to(device)
 
     def sigma_fn(t_starts, t_ends, ray_indices):
         ray_indices = ray_indices.long()
@@ -331,7 +333,7 @@ def render_image(
         packed_info, t_starts, t_ends = ray_marching(
             chunk_rays_o,
             chunk_rays_d,
-            scene_aabb=radiance_field.aabb(grid_id).view(-1),
+            scene_aabb=aabb,
             grid=occupancy_grid,
             sigma_fn=sigma_fn,
             near_plane=near_plane,
@@ -346,7 +348,7 @@ def render_image(
             packed_info,
             t_starts,
             t_ends,
-            render_bkgd=render_bkgd.to(device=device),
+            render_bkgd=render_bkgd.to(device=device) if render_bkgd is not None else None,
             alpha_thre=alpha_thresh,
         )
         chunk_results = [rgb, opacity, depth, len(t_starts)]
@@ -380,3 +382,20 @@ def get_cosine_schedule_with_warmup(
         return max(1e-5, 0.5 * (1.0 + math.cos(math.pi * ((float(num_cycles) * progress) % 1.0))))
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda, last_epoch)
+
+
+def get_step_schedule_with_warmup(
+    optimizer: torch.optim.Optimizer,
+    milestones,
+    gamma: float,
+    last_epoch: int = -1,
+):
+    def lr_lambda(current_step):
+        out = 1.0
+        for m in milestones:
+            if current_step < m:
+                break
+            out *= gamma
+        return out
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda, last_epoch)
+

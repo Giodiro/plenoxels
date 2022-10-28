@@ -22,7 +22,7 @@ from ..datasets import SyntheticNerfDataset, LLFFDataset
 from ..datasets.base_dataset import MultiSceneDataset
 from ..my_tqdm import tqdm
 from ..utils import parse_optint
-from .utils import get_cosine_schedule_with_warmup
+from .utils import get_cosine_schedule_with_warmup, get_step_schedule_with_warmup
 
 
 class UpsamplingOccupancyGrid(OccupancyGrid):
@@ -116,6 +116,7 @@ class Trainer():
         self.loss_info = None
         self.train_iterators = None
         self.contraction_type = ContractionType.AABB
+        self.is_unbounded = self.contraction_type != ContractionType.AABB
 
         # self.criterion = torch.nn.MSELoss(reduction='mean')
         self.criterion = torch.nn.SmoothL1Loss(reduction='mean')
@@ -145,8 +146,11 @@ class Trainer():
                 dset_id,
                 data['rays_o'],
                 data['rays_d'],
+                aabb=self.model.aabb(dset_id).view(-1),
                 near_plane=self.train_datasets[dset_id].near,
                 far_plane=self.train_datasets[dset_id].far,
+                #near_plane=None,
+                #far_plane=None,
                 render_bkgd=data['color_bkgd'],
                 cone_angle=self.cone_angle,
                 render_step_size=self.model.step_size(self.render_n_samples, dset_id),
@@ -179,6 +183,7 @@ class Trainer():
                 data["rays_o"],
                 data["rays_d"],
                 # rendering options
+                aabb=self.model.aabb(dset_id).view(-1),
                 near_plane=self.train_datasets[dset_id].near,
                 far_plane=self.train_datasets[dset_id].far,
                 render_bkgd=data["color_bkgd"],
@@ -318,6 +323,17 @@ class Trainer():
                     "dset_id": dset_id,
                 }
                 pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
+                dset = self.train_datasets[0]
+                dset.training = False
+                dset.split = 'test'
+                data = dset[0]
+                preds = self.eval_step(data, dset_id=0)
+                out_metrics = self.evaluate_metrics(
+                    data['pixels'], preds, dset_id=0, dset=dset, img_idx=0, name='train',
+                    save_outputs=True)
+                print('train psnr', out_metrics['psnr'])
+                dset.training = True
+                dset.split = 'train'
                 for img_idx, data in enumerate(dataset):
                     preds = self.eval_step(data, dset_id=dset_id)
                     out_metrics = self.evaluate_metrics(
@@ -448,21 +464,24 @@ class Trainer():
             lr_sched = get_cosine_schedule_with_warmup(
                 self.optimizer, num_warmup_steps=512, num_training_steps=max_steps)
         elif self.scheduler_type == "step":
-            # lr_sched = torch.optim.lr_scheduler.MultiStepLR(
-            #     self.optimizer,
-            #     milestones=[
-            #         max_steps // 2,
-            #         max_steps * 3 // 4,
-            #         max_steps * 5 // 6,
-            #         max_steps * 9 // 10,
-            #     ],
-            #     gamma=0.33)
             lr_sched = torch.optim.lr_scheduler.MultiStepLR(
                 self.optimizer,
                 milestones=[
                     max_steps // 2,
+                    max_steps * 3 // 4,
+                    max_steps * 5 // 6,
+                    max_steps * 9 // 10,
                 ],
-                gamma=0.1)
+                gamma=0.33)
+        elif self.scheduler_type == "warmup_step":
+            lr_sched = get_step_schedule_with_warmup(
+                self.optimizer, milestones=[
+                    max_steps // 2,
+                    max_steps * 3 // 4,
+                    max_steps * 5 // 6,
+                    max_steps * 9 // 10,
+                ],
+                gamma=0.33)
         return lr_sched
 
     def init_optim(self, **kwargs) -> torch.optim.Optimizer:
