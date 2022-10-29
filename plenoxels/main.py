@@ -83,15 +83,23 @@ def main():
     is_video = "keyframes" in config
 
     pprint.pprint(config)
-    data = load_data(is_video, **config)
-    config.update(data)
-    trainer: multiscene_trainer.Trainer = init_trainer(is_video, **config)
-    if trainer.transfer_learning:
-        # We have reloaded the model learned from args.log_dir
-        assert args.log_dir is not None and os.path.isdir(args.log_dir)
-    if args.log_dir is not None:
-        checkpoint_path = os.path.join(args.log_dir, "model.pth")
-        trainer.load_model(torch.load(checkpoint_path))
+
+    if is_video:
+        state = None
+        if args.log_dir is not None:
+            checkpoint_path = os.path.join(args.log_dir, "model.pth")
+            state = torch.load(checkpoint_path)
+        trainer, config = video_trainer.load_video_model(config, state)
+    else:
+        data = load_data(is_video, **config)
+        config.update(data)
+        trainer: multiscene_trainer.Trainer = init_trainer(is_video, **config)
+        if trainer.transfer_learning:
+            # We have reloaded the model learned from args.log_dir
+            assert args.log_dir is not None and os.path.isdir(args.log_dir)
+        if args.log_dir is not None:
+            checkpoint_path = os.path.join(args.log_dir, "model.pth")
+            trainer.load_model(torch.load(checkpoint_path))
 
     if args.validate_only:
         assert args.log_dir is not None and os.path.isdir(args.log_dir)

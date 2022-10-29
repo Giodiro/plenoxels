@@ -122,6 +122,20 @@ class Video360Dataset(BaseDataset):
                  f"ISG={self.isg} - IST={self.ist} - "
                  f"{intrinsics}")
 
+    def enable_isg(self):
+        self.isg = True
+        self.ist = False
+        t_s = time.time()
+        gamma = 1e-3 if self.keyframes else 2e-2
+        isg_weights = dynerf_isg_weight(
+            self.imgs.view(-1, self.img_h, self.img_w, self.imgs.shape[-1]),
+            self.median_imgs, gamma)
+        # Normalize into a probability distribution, to speed up sampling
+        isg_weights = (isg_weights.reshape(-1) / torch.sum(isg_weights))
+        self.sampling_weights = isg_weights
+        t_e = time.time()
+        log.info(f"Enabled ISG weights (computed in {t_e - t_s:.2f}s).")
+
     def switch_isg2ist(self):
         del self.sampling_weights
         self.isg = False
@@ -440,18 +454,19 @@ def dynerf_isg_weight(imgs, median_imgs, gamma):
     return psidiff  # valid probabilities, each in [0, 1]
 
 
-def dynerf_ist_weight(imgs, num_cameras, alpha=0.1, frame_shift=25):  # alpha and frame_shift values from DyNerf
+def dynerf_ist_weight(imgs, num_cameras, alpha=0.1, frame_shift=25):  # DyNerf uses alpha=0.1
     N, h, w, c = imgs.shape
     frames = imgs.view(num_cameras, -1, h, w, c)  # [num_cameras, num_timesteps, h, w, 3]
-    diffs = []
+    max_diff = None
     shifts = list(range(frame_shift + 1))[1:]
     for shift in shifts:
         shift_left = torch.cat([frames[:,shift:,...], torch.zeros(num_cameras, shift, h, w, c)], dim=1)
         shift_right = torch.cat([torch.zeros(num_cameras, shift, h, w, c), frames[:,:-shift,...]], dim=1)
-        diffs.append(torch.abs_(shift_left - frames))
-        diffs.append(torch.abs_(shift_right - frames))
-    diffs = torch.stack(diffs).squeeze()  # [frame_shift * 2, num_timesteps, h, w, 3]
-    diff = torch.mean(diffs, dim=-1)  # [frame_shift * 2, num_timesteps, h, w]
-    diff, _ = torch.max(diff, dim=0)  # [num_timesteps, h, w] 
-    diff = diff.clamp_(min=alpha)
-    return diff
+        mymax = torch.maximum(torch.abs_(shift_left - frames), torch.abs_(shift_right - frames))
+        if max_diff is None:
+            max_diff = mymax
+        else:
+            max_diff = torch.maximum(max_diff, mymax)  # [num_timesteps, h, w, 3]
+    max_diff = torch.mean(max_diff, dim=-1)  # [num_timesteps, h, w]
+    max_diff = max_diff.clamp_(min=alpha)
+    return max_diff

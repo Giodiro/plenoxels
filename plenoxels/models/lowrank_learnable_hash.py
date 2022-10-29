@@ -7,6 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import kaolin.render.spc as spc_render
 import numpy as np
+import time
 
 from plenoxels.models.utils import grid_sample_wrapper, compute_plane_tv, raw2alpha
 from .decoders import NNDecoder, SHDecoder
@@ -60,6 +61,9 @@ class LowrankLearnableHash(LowrankModel):
         self.density_act = lambda x: trunc_exp(x - 1)
         self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
         self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
+        
+        
+        self.timer = {}
 
         self.scene_grids = nn.ModuleList()
         for si in range(num_scenes):
@@ -95,6 +99,8 @@ class LowrankLearnableHash(LowrankModel):
         :param return_coords:
         :return:
         """
+        t = time.time()
+        
         grids: nn.ModuleList = self.scene_grids[grid_id]  # noqa
         grids_info = self.config
 
@@ -117,7 +123,7 @@ class LowrankLearnableHash(LowrankModel):
                         grid_sample_wrapper(grid[ci], interp[..., coo_comb]).view(
                             -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
             interp = interp_out.mean(dim=-1)
-
+        
         if self.use_F:
             if interp.numel() > 0:
                 interp = (interp - self.pt_min) / (self.pt_max - self.pt_min)
@@ -126,6 +132,9 @@ class LowrankLearnableHash(LowrankModel):
             out = grid_sample_wrapper(self.features.to(dtype=interp.dtype), interp).view(-1, self.feature_dim)
         else:
             out = interp
+            
+        self.timer["compute_features"] = time.time() - t
+            
         if return_coords:
             return out, interp
         return out
@@ -300,6 +309,9 @@ class LowrankLearnableHash(LowrankModel):
         rays_d : [batch, 3]
         near_far : [batch, 2]
         """
+        
+        t = time.time()
+        
         rm_out = self.raymarcher.get_intersections2(
             rays_o, rays_d, self.aabb(grid_id), self.resolution(grid_id), perturb=self.training,
             is_ndc=self.is_ndc, is_contracted=self.is_contracted, near_far=near_far)
@@ -333,6 +345,9 @@ class LowrankLearnableHash(LowrankModel):
             if "alpha" in channels:
                 outputs["alpha"] = torch.zeros(n_rays, 1, device=dev, dtype=rays_o.dtype)
             return outputs
+        
+        self.timer["raymarcher"] = time.time() - t
+        t = time.time()
 
         # compute features and render
         outputs = {}
@@ -345,6 +360,9 @@ class LowrankLearnableHash(LowrankModel):
         density[mask] = density_masked.view(-1)
 
         alpha, weight, transmission = raw2alpha(density, deltas * self.density_multiplier)  # Each is shape [batch_size, n_samples]
+        
+        self.timer["density"] = time.time() - t
+        t = time.time()
 
         rgb_masked = self.decoder.compute_color(features, rays_d=masked_rays_d_rep)
         rgb = torch.zeros(n_rays, n_intrs, 3, device=dev, dtype=rgb_masked.dtype)
@@ -353,6 +371,9 @@ class LowrankLearnableHash(LowrankModel):
 
         # Confirmed that torch.sum(weight, -1) matches 1-transmission[:,-1]
         acc_map = 1 - transmission[:, -1]
+        
+        self.timer["color"] = time.time() - t
+        t = time.time()
 
         if "rgb" in channels:
             rgb_map = torch.sum(weight[..., None] * rgb, -2)
@@ -368,6 +389,8 @@ class LowrankLearnableHash(LowrankModel):
         outputs["deltas"] = deltas
         outputs["weight"] = weight
         outputs["midpoint"] = rm_out["z_mids"]
+        
+        self.timer["render"] = time.time() - t
 
         return outputs
 

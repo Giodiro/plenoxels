@@ -3,7 +3,8 @@
 import numpy as np
 config = {
     # "expname": "lego_rank10_plenoxelsh28_meaninit-11_downsample3",
-    "expname": "legoF2_planetv0.001_lr0.1rank2",
+    # "expname": "legoF2_planetv0.001_lr0.1rank2",
+    "expname": "timetrial",
     # "expname": "lowrank_noupsamplelr4e-3_planetvfeats0.04",
     # "logdir": "./logs/fullresofern",
     "logdir": "./logs/sh",
@@ -45,7 +46,7 @@ config = {
     # Raymarching settings
     "raymarch_type": "fixed",
     "num_sample_multiplier": 2,  # Used when raymarch_type is 'voxel_size'
-    "n_intersections": 440,  # Used when raymarch_type is 'fixed'
+    "n_intersections": 800,  # Used when raymarch_type is 'fixed'
     "spacing_fn": "linear",
     "single_jitter": False,
 
@@ -57,12 +58,12 @@ config = {
     "upsample_F_steps": [],
     "density_multiplier": 1,
     "sh": True,
-    "use_F": True,
+    "use_F": False,
     "grid_config": """
 [
     {
         "input_coordinate_dim": 3,
-        "output_coordinate_dim": 5,
+        "output_coordinate_dim": 28,
         "grid_dimensions": 2,
         "resolution": [128, 128, 128],
         "rank": 2,
@@ -71,7 +72,7 @@ config = {
         "input_coordinate_dim": 5,
         "resolution": [2, 2, 2, 2, 2],
         "feature_dim": 28,
-        "init_std": 1
+        "init_std": 0.001
     }
 ]
 """

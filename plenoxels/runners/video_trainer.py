@@ -16,6 +16,7 @@ from plenoxels.datasets.video_datasets import Video360Dataset, VideoLLFFDataset
 from plenoxels.datasets.photo_tourism import PhotoTourismDataset
 from plenoxels.ema import EMA
 from plenoxels.models.lowrank_video import LowrankVideo
+from plenoxels.models.lowrank_appearance import LowrankAppearance
 from plenoxels.my_tqdm import tqdm
 from plenoxels.ops.image import metrics
 from plenoxels.runners.multiscene_trainer import Trainer
@@ -37,6 +38,7 @@ class VideoTrainer(Trainer):
                  save_outputs: bool,
                  upsample_time_resolution: [int],
                  upsample_time_steps: [int],
+                 isg_step: int,
                  ist_step: int,
                  **kwargs
                  ):
@@ -64,6 +66,7 @@ class VideoTrainer(Trainer):
         self.upsample_time_resolution = upsample_time_resolution
         self.upsample_time_steps = upsample_time_steps
         self.ist_step = ist_step
+        self.isg_step = isg_step
         assert len(upsample_time_resolution) == len(upsample_time_steps)
 
     def eval_step(self, data, dset_id) -> MutableMapping[str, torch.Tensor]:
@@ -165,11 +168,14 @@ class VideoTrainer(Trainer):
                 tr_dd = init_tr_data(data_dir=data_dir, **self.extra_args)
                 self.train_data_loader = tr_dd['tr_loader']
                 self.train_datasets = [tr_dd['tr_dset']]
-                ts_dset = Video360Dataset(
-                    data_dir, split='test', downsample=4, keyframes=False, is_contracted=self.test_datasets[0].is_contracted
-                )
-                self.test_datasets = [ts_dset]
+                # ts_dset = Video360Dataset(  @sara why is the test-set being reloaded? If useful make use of the init_ts_data function
+                #     data_dir, split='test', downsample=4, keyframes=False, is_contracted=self.test_datasets[0].is_contracted
+                # )
+                # self.test_datasets = [ts_dset]
                 raise StopIteration  # Whenever we change the dataset
+        if self.global_step == self.isg_step:
+            self.train_datasets[0].enable_isg()
+            raise StopIteration  # Whenever we change the dataset
         if self.global_step == self.ist_step:
             self.train_datasets[0].switch_isg2ist()
             raise StopIteration  # Whenever we change the dataset
@@ -187,15 +193,27 @@ class VideoTrainer(Trainer):
 
     def init_model(self, **kwargs) -> torch.nn.Module:
         dset = self.train_datasets[0]
-        model = LowrankVideo(
-            aabb=dset.scene_bbox,
-            len_time=dset.len_time,
-            is_ndc=dset.is_ndc,
-            is_contracted=dset.is_contracted,
-            lookup_time=dset.lookup_time,
-            **kwargs)
-        logging.info(f"Initialized LowrankVideo model with "
-                     f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, using ndc {dset.is_ndc} and contraction {dset.is_contracted}.")
+        data_dir = self.train_datasets[0].datadir
+        if "sacre" in data_dir or "trevi" in data_dir: # This is untested but should be ok
+            model = LowrankAppearance(
+                aabb=dset.scene_bbox,
+                len_time=dset.len_time,
+                is_ndc=dset.is_ndc,
+                is_contracted=dset.is_contracted,
+                lookup_time=dset.lookup_time,
+                **kwargs)
+            logging.info(f"Initialized LowrankAppearance model with "
+                    f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, using ndc {dset.is_ndc} and contraction {dset.is_contracted}.")
+        else:
+            model = LowrankVideo(
+                aabb=dset.scene_bbox,
+                len_time=dset.len_time,
+                is_ndc=dset.is_ndc,
+                is_contracted=dset.is_contracted,
+                lookup_time=dset.lookup_time,
+                **kwargs)
+            logging.info(f"Initialized LowrankVideo model with "
+                        f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, using ndc {dset.is_ndc} and contraction {dset.is_contracted}.")
         model.cuda()
         return model
 
@@ -301,13 +319,26 @@ class VideoTrainer(Trainer):
 
         return summary, out_img
 
+    def load_model(self, checkpoint_data):
+        for k, v in checkpoint_data['model'].items():
+            if 'time_resolution' in k:
+                self.model.upsample_time(v.cpu())
+        self.model.load_state_dict(checkpoint_data["model"])
+        logging.info("=> Loaded model state from checkpoint")
+        self.optimizer.load_state_dict(checkpoint_data["optimizer"])
+        logging.info("=> Loaded optimizer state from checkpoint")
+        if self.scheduler is not None:
+            self.scheduler.load_state_dict(checkpoint_data['scheduler'])
+            logging.info("=> Loaded scheduler state from checkpoint")
+        self.global_step = checkpoint_data["global_step"]
+        logging.info(f"=> Loaded step {self.global_step} from checkpoints")
+
 
 def losses_to_postfix(loss_dict: Dict[str, EMA], lr: Optional[float]) -> str:
     pfix = [f"{lname}={lval}" for lname, lval in loss_dict.items()]
     if lr is not None:
         pfix.append(f"lr={lr:.2e}")
     return "  ".join(pfix)
-
 
 
 def init_dloader_random(worker_id):
@@ -318,6 +349,7 @@ def init_dloader_random(worker_id):
 
 def init_tr_data(data_downsample, data_dir, **kwargs):
     isg = kwargs.get('isg', False)
+    ist = kwargs.get('ist', False)
     keyframes = kwargs.get('keyframes', False)
     batch_size = kwargs['batch_size']
     if "lego" in data_dir:
@@ -327,26 +359,26 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
             batch_size=batch_size,
             max_cameras=kwargs.get('max_train_cameras'),
             max_tsteps=kwargs.get('max_train_tsteps') if keyframes else None,
-            isg=isg,
-            is_contracted=False, is_ndc=False,
+            isg=isg, keyframes=keyframes, is_contracted=False, is_ndc=False
         )
+        if ist:
+            tr_dset.switch_isg2ist()  # this should only happen in case we're reloading
     elif "sacre" in data_dir or "trevi" in data_dir:
         tr_dset = PhotoTourismDataset(
             data_dir, split='train', downsample=data_downsample, batch_size=batch_size,
         )
-
         tr_loader = torch.utils.data.DataLoader(
             tr_dset, batch_size=1, num_workers=2,
             prefetch_factor=4, pin_memory=True)
-
         return {"tr_loader": tr_loader, "tr_dset": tr_dset}
     else:
         logging.info(f"Loading contracted Video360Dataset with downsample={data_downsample}")
         tr_dset = Video360Dataset(
-            data_dir, split='train', downsample=data_downsample,
-            batch_size=batch_size, keyframes=keyframes, isg=isg,
-            is_contracted=True, is_ndc=False,
+            data_dir, split='train', downsample=data_downsample, batch_size=batch_size,
+            keyframes=keyframes, isg=isg, is_contracted=True, is_ndc=False
         )
+        if ist:
+            tr_dset.switch_isg2ist()  # this should only happen in case we're reloading
     tr_loader = torch.utils.data.DataLoader(
         tr_dset, batch_size=None, num_workers=2,
         prefetch_factor=4, pin_memory=True, worker_init_fn=init_dloader_random)
@@ -367,8 +399,8 @@ def init_ts_data(data_dir, **kwargs):
         )
     else:
         ts_dset = Video360Dataset(
-            data_dir, split='test', downsample=4, keyframes=kwargs.get('keyframes', False), is_contracted=True,
-            is_ndc=False,
+            data_dir, split='test', downsample=4, keyframes=kwargs.get('keyframes', False),
+            is_contracted=True
         )
     return {"ts_dset": ts_dset}
 
@@ -378,3 +410,16 @@ def load_data(data_downsample, data_dirs, **kwargs):
     od = init_tr_data(data_downsample, data_dirs[0], **kwargs)
     od.update(init_ts_data(data_dirs[0], **kwargs))
     return od
+
+
+def load_video_model(config, state):
+    if state is not None:
+        global_step = state['global_step']
+        if global_step > config['upsample_time_steps'][0]:
+            config.update(keyframes=False)
+    data = load_data(**config)
+    config.update(data)
+    model = VideoTrainer(**config)
+    if state is not None:
+        model.load_model(state)
+    return model, config

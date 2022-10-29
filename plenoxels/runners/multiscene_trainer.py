@@ -21,7 +21,7 @@ from ..datasets.multi_dataset_sampler import MultiSceneSampler
 from ..my_tqdm import tqdm
 from ..utils import parse_optint
 from .utils import get_cosine_schedule_with_warmup, get_step_schedule_with_warmup
-
+import time
 
 class Trainer():
     def __init__(self,
@@ -100,6 +100,7 @@ class Trainer():
         self.criterion = torch.nn.MSELoss(reduction='mean')
         #self.criterion = torch.nn.SmoothL1Loss(reduction='mean')
         self.gscaler = torch.cuda.amp.GradScaler(enabled=self.train_fp16)
+        self.timer = {"step_prepare": 0, "step_model": 0, "step_loss" : 0, "step_backprop": 0, "step_remaining":0}
 
     def eval_step(self, data, dset_id) -> MutableMapping[str, torch.Tensor]:
         """
@@ -124,6 +125,9 @@ class Trainer():
         return {k: torch.cat(v, 0) for k, v in preds.items()}
 
     def step(self, data: Dict[str, Union[int, torch.Tensor]]):
+        
+        t_step_prepare = time.time()
+        
         dset_id = data["dset_id"]
         rays_o = data["rays_o"].cuda()
         rays_d = data["rays_d"].cuda()
@@ -145,9 +149,18 @@ class Trainer():
         else:  # Random bg-color
             bg_color = torch.rand_like(imgs[..., :3])
             imgs = imgs[..., :3] * imgs[..., 3:] + bg_color * (1.0 - imgs[..., 3:])
+        
+        self.timer["step_prepare"] = time.time() - t_step_prepare 
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
+            
+            t_step_model = time.time()
+            
             fwd_out = self.model(rays_o, rays_d, grid_id=dset_id, bg_color=bg_color, channels={"rgb"}, near_far=near_far)
+            
+            self.timer["step_model"] = time.time() - t_step_model
+            t_step_loss = time.time()
+            
             rgb_preds = fwd_out["rgb"]
             # Reconstruction loss
             recon_loss = self.criterion(rgb_preds, imgs)
@@ -197,7 +210,9 @@ class Trainer():
                 weight = torch.cat([fwd_out["weight"], 1 - fwd_out["weight"].sum(dim=1, keepdim=True)], dim=1)
                 floater_loss = distortion_loss(midpoint, weight, dt) * 1e-2
                 loss = loss + floater_loss
-
+                
+            self.timer["step_loss"] = time.time() - t_step_loss
+        t_step_backprop = time.time()
         self.gscaler.scale(loss).backward()
 
         # Report on losses
@@ -223,6 +238,9 @@ class Trainer():
         scale = self.gscaler.get_scale()
         self.gscaler.update()
         self.optimizer.zero_grad(set_to_none=True)
+        
+        self.timer["step_backprop"] = time.time() - t_step_backprop
+        t_step_remainder = time.time()
 
         # Run grid-update routines (masking, shrinking, upscaling)
         opt_reset_required = False
@@ -252,6 +270,8 @@ class Trainer():
         # We reset the optimizer in case some of the parameters in model were changed.
         if opt_reset_required:
             self.optimizer = self.init_optim(**self.extra_args)
+            
+        self.timer["step_remaining"] = time.time() - t_step_remainder
 
         return scale <= self.gscaler.get_scale()
 
@@ -263,6 +283,13 @@ class Trainer():
 
         dset_id = data["dset_id"]
         self.writer.add_scalar(f"mse/D{dset_id}", self.loss_info[dset_id]["mse"].value, self.global_step)
+        
+        for key in self.timer:
+            self.writer.add_scalar(f"timer/{key}", self.timer[key], self.global_step)
+            
+        for key in self.model.timer:
+            self.writer.add_scalar(f"timer/{key}", self.model.timer[key], self.global_step)
+        
         progress_bar.set_postfix_str(losses_to_postfix(self.loss_info, lr=self.cur_lr()), refresh=False)
         progress_bar.update(1)
 
@@ -294,7 +321,11 @@ class Trainer():
                     self.model.train()
                 self.global_step += 1
                 # Get a batch of data
+                
+                t_data = time.time()
                 data = next(batch_iter)
+                self.timer["data"] = time.time() - t_data
+                
                 step_successful = self.step(data)
                 # Update the progress bar
                 self.post_step(data=data, progress_bar=pb)
@@ -494,7 +525,7 @@ class Trainer():
             lr_sched = torch.optim.lr_scheduler.MultiStepLR(
                 self.optimizer,
                 milestones=[
-                    2 * max_steps // 3,
+                    max_steps // 2,
                 ],
                 gamma=0.1)
         elif self.scheduler_type is not None:

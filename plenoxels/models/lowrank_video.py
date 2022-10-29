@@ -19,7 +19,6 @@ class LowrankVideo(LowrankModel):
                  len_time: int,
                  is_ndc: bool,
                  is_contracted: bool,
-                 lookup_time: bool,
                  sh: bool,
                  **kwargs):
         super().__init__()
@@ -28,11 +27,10 @@ class LowrankVideo(LowrankModel):
         else:
             self.config: List[Dict] = grid_config
         self.set_aabb(aabb, 0)
-        self.len_time = len_time
+        self.len_time = len_time  # maximum timestep - used for normalization
         self.extra_args = kwargs
         self.is_ndc = is_ndc
         self.is_contracted = is_contracted
-        self.lookup_time = lookup_time
         self.raymarcher = RayMarcher(**self.extra_args)
         self.sh = sh
         self.density_act = trunc_exp
@@ -44,50 +42,44 @@ class LowrankVideo(LowrankModel):
         assert len(self.config) == 2
         for li, grid_config in enumerate(self.config):
             if "feature_dim" in grid_config:
-                # TODO: we don't need these features if use_F is False
                 self.features = None
                 self.feature_dim = grid_config["feature_dim"]
                 if self.use_F:
                     self.features = self.init_features_param(grid_config, self.sh)
                     self.feature_dim = self.features.shape[0]
             else:
-                gpdesc = self.init_grid_param(grid_config, is_video=True, grid_level=li, use_F=self.use_F)
+                gpdesc = self.init_grid_param(grid_config, grid_level=li, use_F=self.use_F, is_video=True, is_appearance=False)
                 self.set_resolution(gpdesc.reso, 0)
                 self.grids = gpdesc.grid_coefs
-                self.time_coef = gpdesc.time_coef  # [out_dim * rank, time_reso]
+                for i in range(len(self.grids)):
+                    print(f'grid {i} has shape {self.grids[i].shape}')
         if self.sh:
             self.decoder = SHDecoder(feature_dim=self.feature_dim)
         else:
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
-        log.info(f"Initialized LowrankVideo. "
-                 f"time-reso={self.time_coef.shape[1]} - decoder={self.decoder}")
+        log.info(f"Initialized LowrankVideo - decoder={self.decoder}")
 
     @torch.no_grad()
+    # TODO: need to update this. Or just remove it as an option and start with higher resolution time
     def upsample_time(self, new_reso):
-        old_reso = self.time_coef.shape[-1]
-        grid_data = self.time_coef.data
         self.time_coef = torch.nn.Parameter(
-            F.interpolate(self.time_coef.data[:,None,:], size=(new_reso), mode='linear', align_corners=True).squeeze())
-        log.info(f"Upsampled time resolution from {old_reso} to {new_reso}")
+            F.interpolate(self.time_coef.data[:, None, :], size=(new_reso), mode='linear',
+                          align_corners=True).squeeze())
+        log.info(f"Upsampled time resolution from {self.time_resolution} to {new_reso}")
+        if not isinstance(new_reso, torch.Tensor):
+            new_reso = torch.tensor(new_reso, dtype=torch.int32)
+        self.time_resolution = new_reso
 
     def compute_features(self,
-                         pts,
-                         timestamps,
+                         pts,  # [batch, 3]
+                         timestamps,  # [batch]
                          return_coords: bool = False
                          ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        grid_space = self.grids  # space: 3 x [1, rank * F_dim, reso, reso]
-        grid_time = self.time_coef  # time: [rank * F_dim, time_reso]
+        grid_space = self.grids  # space: 6 x [1, rank * F_dim, reso, reso] where the reso can be different in different grids and dimensions
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
-
-        # Interpolate in time
-        if self.lookup_time:
-            interp_time = grid_time[:, timestamps.long()].unsqueeze(0).repeat(pts.shape[0], 1)  # [n, F_dim * rank]
-        else:
-            interp_time = grid_sample_wrapper(grid_time.unsqueeze(0), timestamps[:, None])  # [n, F_dim * rank]
-            
-        interp_time = interp_time.view(-1, level_info["output_coordinate_dim"], level_info["rank"][0])  # [n, F_dim, rank]
-        # Interpolate in space
-        interp = pts
+        # Interpolate in space and time
+        interp = torch.cat([pts, timestamps[:,None]], dim=-1)  # [batch, 4] for xyzt
+        
         coo_combs = list(itertools.combinations(
             range(interp.shape[-1]),
             level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
@@ -101,8 +93,7 @@ class LowrankVideo(LowrankModel):
                 interp_space = interp_space * (
                     grid_sample_wrapper(grid_space[ci], interp[..., coo_comb]).view(
                         -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
-        # Combine space and time over rank
-        interp = (interp_space * interp_time).mean(dim=-1)  # [n, F_dim]
+        interp = interp_space.mean(dim=-1)  # Mean over rank
 
         if self.use_F:
             # Learned normalization
@@ -135,17 +126,11 @@ class LowrankVideo(LowrankModel):
         deltas = rm_out["deltas"]                   # [n_rays, n_intrs]
         n_rays, n_intrs = intersection_pts.shape[:2]
 
+        times = timestamps[:, None].repeat(1, n_intrs)[mask]  # [n_rays * n_intrs]
 
-        if self.lookup_time:
-            # assumes all rays are sampled at the same time
-            # speed up look up a quite a bit
-            times = timestamps[0]
-        else:
-            times = timestamps[:, None].repeat(1, n_intrs)[mask]  # [n_rays, n_intrs]
-
-            # Normalization (between [-1, 1])
-            intersection_pts = self.normalize_coords(intersection_pts, 0)
-            times = (times * 2 / self.len_time) - 1
+        # Normalization (between [-1, 1])
+        intersection_pts = self.normalize_coords(intersection_pts, 0)
+        times = (times * 2 / self.len_time) - 1
 
         # compute features and render
         features = self.compute_features(intersection_pts[mask], times)
@@ -202,9 +187,7 @@ class LowrankVideo(LowrankModel):
 
     def compute_plane_tv(self):
         grid_space = self.grids  # space: 3 x [1, rank * F_dim, reso, reso]
-        grid_time = self.time_coef  # time: [rank * F_dim, time_reso]
         total = 0
         for grid in grid_space:
             total += compute_plane_tv(grid)
-        total += compute_line_tv(grid_time)
         return total
