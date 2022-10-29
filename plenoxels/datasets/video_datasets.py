@@ -122,6 +122,20 @@ class Video360Dataset(BaseDataset):
                  f"ISG={self.isg} - IST={self.ist} - "
                  f"{intrinsics}")
 
+    def enable_isg(self):
+        self.isg = True
+        self.ist = False
+        t_s = time.time()
+        gamma = 1e-3 if self.keyframes else 2e-2
+        isg_weights = dynerf_isg_weight(
+            self.imgs.view(-1, self.img_h, self.img_w, self.imgs.shape[-1]),
+            self.median_imgs, gamma)
+        # Normalize into a probability distribution, to speed up sampling
+        isg_weights = (isg_weights.reshape(-1) / torch.sum(isg_weights))
+        self.sampling_weights = isg_weights
+        t_e = time.time()
+        log.info(f"Enabled ISG weights (computed in {t_e - t_s:.2f}s).")
+
     def switch_isg2ist(self):
         del self.sampling_weights
         self.isg = False

@@ -525,7 +525,7 @@ class Trainer():
             lr_sched = torch.optim.lr_scheduler.MultiStepLR(
                 self.optimizer,
                 milestones=[
-                    2 * max_steps // 3,
+                    max_steps // 2,
                 ],
                 gamma=0.1)
         elif self.scheduler_type is not None:

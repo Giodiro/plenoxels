@@ -16,6 +16,7 @@ from plenoxels.datasets.video_datasets import Video360Dataset, VideoLLFFDataset
 from plenoxels.datasets.photo_tourism import PhotoTourismDataset
 from plenoxels.ema import EMA
 from plenoxels.models.lowrank_video import LowrankVideo
+from plenoxels.models.lowrank_appearance import LowrankAppearance
 from plenoxels.my_tqdm import tqdm
 from plenoxels.ops.image import metrics
 from plenoxels.runners.multiscene_trainer import Trainer
@@ -37,6 +38,7 @@ class VideoTrainer(Trainer):
                  save_outputs: bool,
                  upsample_time_resolution: [int],
                  upsample_time_steps: [int],
+                 isg_step: int,
                  ist_step: int,
                  **kwargs
                  ):
@@ -64,6 +66,7 @@ class VideoTrainer(Trainer):
         self.upsample_time_resolution = upsample_time_resolution
         self.upsample_time_steps = upsample_time_steps
         self.ist_step = ist_step
+        self.isg_step = isg_step
         assert len(upsample_time_resolution) == len(upsample_time_steps)
 
     def eval_step(self, data, dset_id) -> MutableMapping[str, torch.Tensor]:
@@ -170,6 +173,9 @@ class VideoTrainer(Trainer):
                 # )
                 # self.test_datasets = [ts_dset]
                 raise StopIteration  # Whenever we change the dataset
+        if self.global_step == self.isg_step:
+            self.train_datasets[0].enable_isg()
+            raise StopIteration  # Whenever we change the dataset
         if self.global_step == self.ist_step:
             self.train_datasets[0].switch_isg2ist()
             raise StopIteration  # Whenever we change the dataset
@@ -187,15 +193,27 @@ class VideoTrainer(Trainer):
 
     def init_model(self, **kwargs) -> torch.nn.Module:
         dset = self.train_datasets[0]
-        model = LowrankVideo(
-            aabb=dset.scene_bbox,
-            len_time=dset.len_time,
-            is_ndc=dset.is_ndc,
-            is_contracted=dset.is_contracted,
-            lookup_time=dset.lookup_time,
-            **kwargs)
-        logging.info(f"Initialized LowrankVideo model with "
-                     f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, using ndc {dset.is_ndc} and contraction {dset.is_contracted}.")
+        data_dir = self.train_datasets[0].datadir
+        if "sacre" in data_dir or "trevi" in data_dir: # This is untested but should be ok
+            model = LowrankAppearance(
+                aabb=dset.scene_bbox,
+                len_time=dset.len_time,
+                is_ndc=dset.is_ndc,
+                is_contracted=dset.is_contracted,
+                lookup_time=dset.lookup_time,
+                **kwargs)
+            logging.info(f"Initialized LowrankAppearance model with "
+                    f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, using ndc {dset.is_ndc} and contraction {dset.is_contracted}.")
+        else:
+            model = LowrankVideo(
+                aabb=dset.scene_bbox,
+                len_time=dset.len_time,
+                is_ndc=dset.is_ndc,
+                is_contracted=dset.is_contracted,
+                lookup_time=dset.lookup_time,
+                **kwargs)
+            logging.info(f"Initialized LowrankVideo model with "
+                        f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, using ndc {dset.is_ndc} and contraction {dset.is_contracted}.")
         model.cuda()
         return model
 
