@@ -15,13 +15,13 @@ from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash, Densit
 from plenoxels.models.utils import compute_tv_norm
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_exr, write_png
+from .timer import CudaTimer
 from ..datasets import SyntheticNerfDataset, LLFFDataset
 from ..datasets.multi_dataset_sampler import MultiSceneSampler
 #from ..distortion_loss_warp import distortion_loss
 from ..my_tqdm import tqdm
 from ..utils import parse_optint
 from .utils import get_cosine_schedule_with_warmup, get_step_schedule_with_warmup
-import time
 
 class Trainer():
     def __init__(self,
@@ -93,6 +93,7 @@ class Trainer():
         self.global_step = None
         self.loss_info = None
         self.train_iterators = None
+        self.timer = CudaTimer(enabled=False)
 
         self.model = self.init_model(**self.extra_args)
         self.optimizer = self.init_optim(**self.extra_args)
@@ -100,7 +101,6 @@ class Trainer():
         self.criterion = torch.nn.MSELoss(reduction='mean')
         #self.criterion = torch.nn.SmoothL1Loss(reduction='mean')
         self.gscaler = torch.cuda.amp.GradScaler(enabled=self.train_fp16)
-        self.timer = {"step_prepare": 0, "step_model": 0, "step_loss" : 0, "step_backprop": 0, "step_remaining":0}
 
     def eval_step(self, data, dset_id) -> MutableMapping[str, torch.Tensor]:
         """
@@ -125,16 +125,11 @@ class Trainer():
         return {k: torch.cat(v, 0) for k, v in preds.items()}
 
     def step(self, data: Dict[str, Union[int, torch.Tensor]]):
-        
-        t_step_prepare = time.time()
-        
+        self.timer.reset()
         dset_id = data["dset_id"]
         rays_o = data["rays_o"].cuda()
         rays_d = data["rays_d"].cuda()
-        if "near_far" in data.keys():
-            near_far = data["near_far"].cuda()
-        else:
-            near_far = None
+        near_far = data["near_far"].cuda() if "near_far" in data else None
         imgs = data["imgs"].cuda()
         patch_rays_o, patch_rays_d = None, None
         if "patch_rays_o" in data:
@@ -149,18 +144,11 @@ class Trainer():
         else:  # Random bg-color
             bg_color = torch.rand_like(imgs[..., :3])
             imgs = imgs[..., :3] * imgs[..., 3:] + bg_color * (1.0 - imgs[..., 3:])
-        
-        self.timer["step_prepare"] = time.time() - t_step_prepare 
+        self.timer.check("step_prepare")
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            
-            t_step_model = time.time()
-            
             fwd_out = self.model(rays_o, rays_d, grid_id=dset_id, bg_color=bg_color, channels={"rgb"}, near_far=near_far)
-            
-            self.timer["step_model"] = time.time() - t_step_model
-            t_step_loss = time.time()
-            
+            self.timer.check("step_model")
             rgb_preds = fwd_out["rgb"]
             # Reconstruction loss
             recon_loss = self.criterion(rgb_preds, imgs)
@@ -179,14 +167,6 @@ class Trainer():
                     channels={"depth", "rgb"}, grid_id=dset_id)
                 reshape_to_patch = lambda x, dim: x.reshape(-1, ps, ps, dim)
                 depths = reshape_to_patch(out["depth"], 1)
-                #if self.global_step > 2000:
-                #    torch.save(depths.detach().cpu(), "depths8.pt")
-                #    rgbs = reshape_to_patch(out["rgb"], 3)
-                #    torch.save(rgbs.detach().cpu(), "rgbs8.pt")
-                #    raise RuntimeError()
-                # NOTE: the weighting below is never applied in RegNerf (the constant in front of it is set to 0)
-                # with torch.autograd.no_grad():
-                #     weighting = reshape_to_patch(out["alpha"], 1)[:, :-1, :-1]
                 depth_tv = compute_tv_norm(depths, 'l2', None) * self.cur_regnerf_weight
                 loss = loss + depth_tv
             plane_tv: Optional[torch.Tensor] = None
@@ -210,9 +190,7 @@ class Trainer():
                 weight = torch.cat([fwd_out["weight"], 1 - fwd_out["weight"].sum(dim=1, keepdim=True)], dim=1)
                 floater_loss = distortion_loss(midpoint, weight, dt) * 1e-2
                 loss = loss + floater_loss
-                
-            self.timer["step_loss"] = time.time() - t_step_loss
-        t_step_backprop = time.time()
+            self.timer.check("step_loss")
         self.gscaler.scale(loss).backward()
 
         # Report on losses
@@ -238,9 +216,7 @@ class Trainer():
         scale = self.gscaler.get_scale()
         self.gscaler.update()
         self.optimizer.zero_grad(set_to_none=True)
-        
-        self.timer["step_backprop"] = time.time() - t_step_backprop
-        t_step_remainder = time.time()
+        self.timer.check("step_backprop")
 
         # Run grid-update routines (masking, shrinking, upscaling)
         opt_reset_required = False
@@ -271,8 +247,7 @@ class Trainer():
         if opt_reset_required:
             self.optimizer = self.init_optim(**self.extra_args)
             
-        self.timer["step_remaining"] = time.time() - t_step_remainder
-
+        self.timer.check("step_remaining")
         return scale <= self.gscaler.get_scale()
 
     def post_step(self, data, progress_bar):
@@ -283,12 +258,11 @@ class Trainer():
 
         dset_id = data["dset_id"]
         self.writer.add_scalar(f"mse/D{dset_id}", self.loss_info[dset_id]["mse"].value, self.global_step)
-        
-        for key in self.timer:
-            self.writer.add_scalar(f"timer/{key}", self.timer[key], self.global_step)
-            
-        for key in self.model.timer:
-            self.writer.add_scalar(f"timer/{key}", self.model.timer[key], self.global_step)
+
+        for key in self.timer.timings:
+            self.writer.add_scalar(f"timer/{key}", self.timer.timings[key], self.global_step)
+        for key in self.model.timer.timings:
+            self.writer.add_scalar(f"timer/{key}", self.model.timer.timings[key], self.global_step)
         
         progress_bar.set_postfix_str(losses_to_postfix(self.loss_info, lr=self.cur_lr()), refresh=False)
         progress_bar.update(1)
@@ -298,7 +272,6 @@ class Trainer():
             d.reset_iter()
         self.init_epoch_info()
         self.model.train()
-
 
     def train(self):
         """Override this if some very specific training procedure is needed."""
@@ -321,11 +294,11 @@ class Trainer():
                     self.model.train()
                 self.global_step += 1
                 # Get a batch of data
-                
-                t_data = time.time()
+
+                self.timer.reset()
                 data = next(batch_iter)
-                self.timer["data"] = time.time() - t_data
-                
+                self.timer.check("data")
+
                 step_successful = self.step(data)
                 # Update the progress bar
                 self.post_step(data=data, progress_bar=pb)

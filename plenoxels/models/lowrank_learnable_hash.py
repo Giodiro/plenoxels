@@ -5,15 +5,14 @@ import logging as log
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import kaolin.render.spc as spc_render
 import numpy as np
-import time
 
 from plenoxels.models.utils import grid_sample_wrapper, compute_plane_tv, raw2alpha
 from .decoders import NNDecoder, SHDecoder
 from ..ops.activations import trunc_exp
 from ..raymarching.raymarching import RayMarcher
 from .lowrank_model import LowrankModel
+from ..runners.timer import CudaTimer
 
 
 class DensityMask(nn.Module):
@@ -62,8 +61,7 @@ class LowrankLearnableHash(LowrankModel):
         self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
         self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
         
-        
-        self.timer = {}
+        self.timer = CudaTimer(enabled=False)
 
         self.scene_grids = nn.ModuleList()
         for si in range(num_scenes):
@@ -99,8 +97,6 @@ class LowrankLearnableHash(LowrankModel):
         :param return_coords:
         :return:
         """
-        t = time.time()
-        
         grids: nn.ModuleList = self.scene_grids[grid_id]  # noqa
         grids_info = self.config
 
@@ -132,9 +128,7 @@ class LowrankLearnableHash(LowrankModel):
             out = grid_sample_wrapper(self.features.to(dtype=interp.dtype), interp).view(-1, self.feature_dim)
         else:
             out = interp
-            
-        self.timer["compute_features"] = time.time() - t
-            
+
         if return_coords:
             return out, interp
         return out
@@ -262,8 +256,7 @@ class LowrankLearnableHash(LowrankModel):
         coords = coords.view(coords.shape[0], -1)  # [dim, new_reso**dim]
         coords = torch.permute(coords, (1, 0))[None,:,:]  # [1, new_reso**dim, dim]
         self.features.data = grid_sample_wrapper(self.features[None,...], coords).permute(1, 0).view(new_size)
-        print(f'upsampled feature grid to shape {new_size}')
-
+        log.info(f'upsampled feature grid to shape {new_size}')
 
     def get_points_on_grid(self, aabb, grid_size, max_voxels: Optional[int] = None):
         """
@@ -309,9 +302,7 @@ class LowrankLearnableHash(LowrankModel):
         rays_d : [batch, 3]
         near_far : [batch, 2]
         """
-        
-        t = time.time()
-        
+        self.timer.reset()
         rm_out = self.raymarcher.get_intersections2(
             rays_o, rays_d, self.aabb(grid_id), self.resolution(grid_id), perturb=self.training,
             is_ndc=self.is_ndc, is_contracted=self.is_contracted, near_far=near_far)
@@ -346,9 +337,7 @@ class LowrankLearnableHash(LowrankModel):
                 outputs["alpha"] = torch.zeros(n_rays, 1, device=dev, dtype=rays_o.dtype)
             return outputs
         
-        self.timer["raymarcher"] = time.time() - t
-        t = time.time()
-
+        self.timer.check("raymarcher")
         # compute features and render
         outputs = {}
         z_vals = rm_out["z_vals"]  # [batch_size, n_samples]
@@ -360,9 +349,7 @@ class LowrankLearnableHash(LowrankModel):
         density[mask] = density_masked.view(-1)
 
         alpha, weight, transmission = raw2alpha(density, deltas * self.density_multiplier)  # Each is shape [batch_size, n_samples]
-        
-        self.timer["density"] = time.time() - t
-        t = time.time()
+        self.timer.check("density")
 
         rgb_masked = self.decoder.compute_color(features, rays_d=masked_rays_d_rep)
         rgb = torch.zeros(n_rays, n_intrs, 3, device=dev, dtype=rgb_masked.dtype)
@@ -371,9 +358,7 @@ class LowrankLearnableHash(LowrankModel):
 
         # Confirmed that torch.sum(weight, -1) matches 1-transmission[:,-1]
         acc_map = 1 - transmission[:, -1]
-        
-        self.timer["color"] = time.time() - t
-        t = time.time()
+        self.timer.check("color")
 
         if "rgb" in channels:
             rgb_map = torch.sum(weight[..., None] * rgb, -2)
@@ -390,7 +375,7 @@ class LowrankLearnableHash(LowrankModel):
         outputs["weight"] = weight
         outputs["midpoint"] = rm_out["z_mids"]
         
-        self.timer["render"] = time.time() - t
+        self.timer.check("render")
 
         return outputs
 
@@ -458,7 +443,6 @@ class LowrankLearnableHash(LowrankModel):
         params = [
             {"params": self.scene_grids.parameters(), "lr": lr},
             {"params": [self.pt_min, self.pt_max], "lr": lr},
-            #{"params": self.bn.parameters(), "lr": lr},
         ]
         if not self.transfer_learning:
             params += [
