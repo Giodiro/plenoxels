@@ -65,13 +65,30 @@ class PhotoTourismDataset(torch.utils.data.Dataset):
         self.files = self.files[~self.files['id'].isnull()] # remove data without id
         self.files.reset_index(inplace=True, drop=True)
         
-        self.files = self.files[self.files["split"]==split]
         
+        # the first N idx are for training, the rest are for testing
+        # we therefore need to know how many training frames there are
+        # such that the test frames can get unique time/appearance indices
+        if split == 'test':
+            
+            train_files = self.files[self.files["split"]=='train']
+        
+            train_imagepaths = sorted((Path(datadir) / "dense" / "images").glob("*.jpg"))
+            imkey = np.array([os.path.basename(im) for im in train_imagepaths])
+            idx = np.in1d(imkey, train_files["filename"])
+        
+            train_imagepaths = np.array(train_imagepaths)[idx]
+            self.n_train_images = len(train_imagepaths)
+            
+        
+        self.files = self.files[self.files["split"]==split]
+    
         self.imagepaths = sorted((Path(datadir) / "dense" / "images").glob("*.jpg"))
         imkey = np.array([os.path.basename(im) for im in self.imagepaths])
         idx = np.in1d(imkey, self.files["filename"])
-        
+    
         self.imagepaths = np.array(self.imagepaths)[idx]
+            
         self.poses = np.load(Path(datadir) / "c2w_mats.npy")[idx]
         self.kinvs = np.load(Path(datadir) / "kinv_mats.npy")[idx]
         self.bounds = np.load(Path(datadir) / "bds.npy")[idx]
@@ -91,6 +108,10 @@ class PhotoTourismDataset(torch.utils.data.Dataset):
 
         self.len_time = len(self.imagepaths)
         # self.len_time = 300  # This is true for the 10-second sequences from DyNerf
+        
+        if split == "test":
+            print(f"==> there are {self.n_train_images} training images and {self.len_time} test images")
+            print(f"==> in total there are {self.n_train_images + self.len_time} images")
 
     def __len__(self):
         return len(self.imagepaths)
@@ -103,7 +124,7 @@ class PhotoTourismDataset(torch.utils.data.Dataset):
         image = imageio.imread(self.imagepaths[idx])
         image = image[..., :3]/255.
         image = torch.as_tensor(image, dtype=torch.float)
-
+        
         scale = 0.05
         pose = self.poses[idx]
         pose = torch.as_tensor(pose, dtype=torch.float)
@@ -122,16 +143,8 @@ class PhotoTourismDataset(torch.utils.data.Dataset):
             mid = image.shape[1]//2
             
             image_left = image[:, :mid, :].reshape(-1, 3)
-            
-            
-            #image = image[:, mid:, :]
-            
             rays_o_left = rays_o[:, :mid, :].reshape(-1, 3)
-            #rays_o = rays_o[:, mid:, :]
-            
             rays_d_left = rays_d[:, :mid, :].reshape(-1, 3)
-            #rays_d = rays_d[:, mid:, :]
-            
         
         rays_o = rays_o.reshape(-1, 3)
         rays_d = rays_d.reshape(-1, 3)
@@ -146,7 +159,7 @@ class PhotoTourismDataset(torch.utils.data.Dataset):
             timestamp = torch.tensor(idx).expand(len(rays_o))
             bound = bound.expand(len(rays_o), 2)
         else:
-            timestamp = torch.tensor(idx)
+            timestamp = torch.tensor(idx + self.n_train_images)
             bound = bound.expand(1, 2)
             
         out = {"rays_o" : rays_o, "rays_d": rays_d, "imgs": image, "near_far" : bound, "timestamps": timestamp}

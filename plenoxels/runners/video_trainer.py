@@ -235,16 +235,16 @@ class VideoTrainer(Trainer):
             imgs = imgs.squeeze(0)
 
         for b in range(math.ceil(rays_o.shape[0] / batch_size)):
-            print("batch ->", b)
             rays_o_b = rays_o[b * batch_size: (b + 1) * batch_size].cuda()
             rays_d_b = rays_d[b * batch_size: (b + 1) * batch_size].cuda()
             imgs_b  = imgs[b * batch_size: (b + 1) * batch_size].cuda()
-            timestamps_d_b = timestamp.expand(rays_o_b.shape[0]).cuda()
-                    
+            timestamps_b = timestamp.expand(rays_o_b.shape[0]).cuda()
+            near_far_b = near_far.expand(rays_o_b.shape[0], 2).cuda()
+            
             with torch.cuda.amp.autocast(enabled=self.train_fp16):
                         
-                fwd_out = self.model(rays_o_b, rays_d_b, timestamps_d_b, bg_color=1,
-                                     channels={"rgb"}, near_far=near_far)
+                fwd_out = self.model(rays_o_b, rays_d_b, timestamps_b, bg_color=1,
+                                     channels={"rgb"}, near_far=near_far_b)
                 rgb_preds = fwd_out["rgb"]
                 recon_loss = self.criterion(rgb_preds, imgs_b)
                 loss = recon_loss
@@ -258,20 +258,27 @@ class VideoTrainer(Trainer):
                         
         
     def optimize_appearance_codes(self):
-                
-        self.model.features.requires_grad_(False)
-        self.model.gpdesc.requires_grad_(False)
-        self.model.gpdesc.time_coef.requires_grad_(True)
         
-        self.appearance_optimizer = torch.optim.Adam(params=[self.model.gpdesc.time_coef], lr=1e-1)
+        # turn gradients off for anything but appearance codes
+        if self.model.use_F:
+            self.model.features.requires_grad_(False)
+            
+        self.model.grids.requires_grad_(False)
+        self.model.time_coef.requires_grad_(True)
+        
+        self.appearance_optimizer = torch.optim.Adam(params=[self.model.time_coef], lr=1e-1)
         
         for dset_id, dataset in enumerate(self.test_datasets):
             pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
             for img_idx, data in enumerate(dataset):
                 self.optimize_appearance_step(data, dset_id=dset_id)
-
-        self.model.features.requires_grad_(True)
-        self.model.gpdesc.requires_grad_(True)
+                pb.update(1)
+            pb.close()
+        # turn gradients on
+        if self.model.use_F:
+            self.model.features.requires_grad_(True)
+        self.model.grids.requires_grad_(True)
+        self.model.time_coef.requires_grad_(True)
 
     def validate(self):
         
@@ -297,6 +304,7 @@ class VideoTrainer(Trainer):
                     pb.set_postfix_str(f"PSNR={out_metrics['psnr']:.2f}", refresh=False)
                     pb.update(1)
                 pb.close()
+                
                 self.write_video_to_file(pred_frames, dataset)
                 per_scene_metrics["psnr"] /= len(dataset)  # noqa
                 per_scene_metrics["ssim"] /= len(dataset)  # noqa
@@ -311,7 +319,7 @@ class VideoTrainer(Trainer):
     def write_video_to_file(self, frames, dataset):
         video_file = os.path.join(self.log_dir, f"step{self.global_step}.mp4")
         logging.info(f"Saving video ({len(frames)} frames) to {video_file}")
-
+        
         # Photo tourisme the image sizes differs
         sizes = np.array([frame.shape[:2] for frame in frames])
         same_size_frames = np.unique(sizes, axis=0).shape[0] == 1
@@ -362,11 +370,24 @@ class VideoTrainer(Trainer):
             gt = gt.reshape(img_h, img_w, -1).cpu()
             if gt.shape[-1] == 4:
                 gt = gt[..., :3] * gt[..., 3:] + (1.0 - gt[..., 3:])
-            err = (gt - preds_rgb) ** 2
-            exrdict["err"] = err.numpy()
-            summary["mse"] = torch.mean(err)
-            summary["psnr"] = metrics.psnr(preds_rgb, gt)
-            summary["ssim"] = metrics.ssim(preds_rgb, gt)
+            
+            # if phototourism then only compute metrics on the right side of the image
+            if hasattr(self.model, "appearance_code"):
+                mid = gt.shape[1] // 2
+                gt_right = gt[:, mid:]
+                preds_rgb_right = preds_rgb[:, mid:]
+                
+                err = (gt_right - preds_rgb_right) ** 2
+                exrdict["err"] = err.numpy()
+                summary["mse"] = torch.mean(err)
+                summary["psnr"] = metrics.psnr(preds_rgb_right, gt_right)
+                summary["ssim"] = metrics.ssim(preds_rgb_right, gt_right)
+            else:
+                err = (gt - preds_rgb) ** 2
+                exrdict["err"] = err.numpy()
+                summary["mse"] = torch.mean(err)
+                summary["psnr"] = metrics.psnr(preds_rgb, gt)
+                summary["ssim"] = metrics.ssim(preds_rgb, gt)
 
         out_name = f"step{self.global_step}-D{dset_id}-{img_idx}"
         if name is not None and name != "":

@@ -39,6 +39,7 @@ class LowrankAppearance(LowrankModel):
         self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
         self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
         self.use_F = self.extra_args["use_F"]
+        self.appearance_code = True
 
         # For now, only allow a single index grid and a single feature grid, not multiple layers
         assert len(self.config) == 2
@@ -63,16 +64,6 @@ class LowrankAppearance(LowrankModel):
         log.info(f"Initialized LowrankAppearance. "
                  f"time-reso={self.time_coef.shape[1]} - decoder={self.decoder}")
 
-    @torch.no_grad()
-    def upsample_time(self, new_reso):
-        self.time_coef = torch.nn.Parameter(
-            F.interpolate(self.time_coef.data[:, None, :], size=(new_reso), mode='linear',
-                          align_corners=True).squeeze())
-        log.info(f"Upsampled time resolution from {self.time_resolution} to {new_reso}")
-        if not isinstance(new_reso, torch.Tensor):
-            new_reso = torch.tensor(new_reso, dtype=torch.int32)
-        self.time_resolution = new_reso
-
     def compute_features(self,
                          pts,
                          timestamps,
@@ -82,13 +73,9 @@ class LowrankAppearance(LowrankModel):
         grid_time = self.time_coef  # time: [rank * F_dim, time_reso]
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
 
-        # Interpolate in time
-        if self.lookup_time:
-            interp_time = grid_time[:, timestamps.long()].unsqueeze(0).repeat(pts.shape[0], 1)  # [n, F_dim * rank]
-        else:
-            interp_time = grid_sample_wrapper(grid_time.unsqueeze(0), timestamps[:, None])  # [n, F_dim * rank]
-            
+        interp_time = grid_time[:, timestamps.long()].unsqueeze(0).repeat(pts.shape[0], 1)  # [n, F_dim * rank]
         interp_time = interp_time.view(-1, level_info["output_coordinate_dim"], level_info["rank"][0])  # [n, F_dim, rank]
+        
         # Interpolate in space
         interp = pts
         coo_combs = list(itertools.combinations(
@@ -138,17 +125,9 @@ class LowrankAppearance(LowrankModel):
         deltas = rm_out["deltas"]                   # [n_rays, n_intrs]
         n_rays, n_intrs = intersection_pts.shape[:2]
 
-
-        if self.lookup_time:
-            # assumes all rays are sampled at the same time
-            # speed up look up a quite a bit
-            times = timestamps[0]
-        else:
-            times = timestamps[:, None].repeat(1, n_intrs)[mask]  # [n_rays, n_intrs]
-
-            # Normalization (between [-1, 1])
-            intersection_pts = self.normalize_coords(intersection_pts, 0)
-            times = (times * 2 / self.len_time) - 1
+        # assumes all rays are sampled at the same time
+        # speed up look up a quite a bit
+        times = timestamps[0]
 
         # compute features and render
         features = self.compute_features(intersection_pts[mask], times)
@@ -194,20 +173,22 @@ class LowrankAppearance(LowrankModel):
                 {"params": self.decoder.parameters(), "lr": lr},
                 {"params": self.grids.parameters(), "lr": lr},
                 {"params": [self.features, self.pt_min, self.pt_max], "lr": lr},
+                {"params": self.time_coef, "lr": lr},
             ]
         else:
             params = [
                 {"params": self.decoder.parameters(), "lr": lr},
                 {"params": self.grids.parameters(), "lr": lr},
+                {"params": self.time_coef, "lr": lr},
                 # {"params": [self.features, self.pt_min, self.pt_max], "lr": lr},
             ]
         return params
 
     def compute_plane_tv(self):
         grid_space = self.grids  # space: 3 x [1, rank * F_dim, reso, reso]
-        grid_time = self.time_coef  # time: [rank * F_dim, time_reso]
+        #grid_time = self.time_coef  # time: [rank * F_dim, time_reso]
         total = 0
         for grid in grid_space:
             total += compute_plane_tv(grid)
-        total += compute_line_tv(grid_time)
+        #total += compute_line_tv(grid_time)
         return total

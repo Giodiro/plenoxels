@@ -1,7 +1,7 @@
 # configuration file to be used with `main.py` for video training
 config = {
 
-    "expname": "no_F_test",
+    "expname": "optimizer_appearance_code",
     "logdir": "./logs/trevi",
 
     # Data settings
@@ -39,8 +39,8 @@ config = {
     
     # Training settings
     "train_fp16": False,
-    "save_every": 10,
-    "valid_every": 10,
+    "save_every": 5000,
+    "valid_every": 5000,
     "save_video": True,
     "save_outputs": True,
 
@@ -57,13 +57,14 @@ config = {
     "upsample_time_resolution": [],
     # "upsample_time_steps": [6000],  # DyNerf does 300K iterations with keyframes, with lr 5e-4
     "upsample_time_steps": [],
+    #"upsample_resolution": [],
     "grid_config": """
 [
     {
         "input_coordinate_dim": 3,
         "output_coordinate_dim": 28,
         "grid_dimensions": 2,
-        "resolution": [200, 200, 200],
+        "resolution": [256, 256, 256],
         "rank": 2,
         "time_reso": 3191,
     },
