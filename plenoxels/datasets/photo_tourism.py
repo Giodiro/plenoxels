@@ -4,6 +4,8 @@ from pathlib import Path
 import imageio
 from typing import Optional
 import os
+import glob
+import pandas as pd
 
 def get_rays_tourism(H, W, kinv, pose):
     """
@@ -56,20 +58,33 @@ class PhotoTourismDataset(torch.utils.data.Dataset):
         self.name = os.path.basename(datadir)
         self.datadir = datadir
 
+        # read all files in the tsv first (split to train and test later)
+        tsv = glob.glob(os.path.join(self.datadir, '*.tsv'))[0]
+        self.scene_name = os.path.basename(tsv)[:-4]
+        self.files = pd.read_csv(tsv, sep='\t')
+        self.files = self.files[~self.files['id'].isnull()] # remove data without id
+        self.files.reset_index(inplace=True, drop=True)
+        
+        self.files = self.files[self.files["split"]==split]
+        
         self.imagepaths = sorted((Path(datadir) / "dense" / "images").glob("*.jpg"))
-        self.poses = np.load(Path(datadir) / "c2w_mats.npy")
-        self.kinvs = np.load(Path(datadir) / "kinv_mats.npy")
-        self.bounds = np.load(Path(datadir) / "bds.npy")
-        res = np.load(Path(datadir) / "res_mats.npy")
+        imkey = np.array([os.path.basename(im) for im in self.imagepaths])
+        idx = np.in1d(imkey, self.files["filename"])
+        
+        self.imagepaths = np.array(self.imagepaths)[idx]
+        self.poses = np.load(Path(datadir) / "c2w_mats.npy")[idx]
+        self.kinvs = np.load(Path(datadir) / "kinv_mats.npy")[idx]
+        self.bounds = np.load(Path(datadir) / "bds.npy")[idx]
+        res = np.load(Path(datadir) / "res_mats.npy")[idx]
         
         # first 20 images are test, next 5 for validation and the rest for training.
         # https://github.com/tancik/learnit/issues/3
-        splits = {
-            "test": (self.imagepaths[:20], self.poses[:20], self.kinvs[:20], self.bounds[:20], res[:20]),
+        #splits = {
+            #"test": (self.imagepaths[:20], self.poses[:20], self.kinvs[:20], self.bounds[:20], res[:20]),
             #"val": (all_imagepaths[20:25], all_poses[20:25], all_kinvs[20:25], all_bounds[20:25]),
-            "train": (self.imagepaths, self.poses, self.kinvs, self.bounds, res)
-        }
-        self.imagepaths, self.poses, self.kinvs, self.bounds, res = splits[split]
+            #"train": (self.imagepaths, self.poses, self.kinvs, self.bounds, res)
+        #}
+        # self.imagepaths, self.poses, self.kinvs, self.bounds, res = splits[split]
 
         self.img_w = res[:, 0]
         self.img_h = res[:, 1]
