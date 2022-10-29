@@ -216,8 +216,68 @@ class VideoTrainer(Trainer):
                         f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, using ndc {dset.is_ndc} and contraction {dset.is_contracted}.")
         model.cuda()
         return model
+    
+    def optimize_appearance_step(self, data, dset_id):
+        
+        batch_size = self.train_datasets[dset_id].batch_size
+    
+        rays_o = data["rays_o_left"]
+        rays_d = data["rays_d_left"]
+        imgs = data["imgs_left"]
+        near_far = data["near_far"].cuda() if data["near_far"] is not None else None
+        timestamp = data["timestamps"]
+
+        if rays_o.ndim == 3:
+            rays_o = rays_o.squeeze(0)
+            rays_d = rays_d.squeeze(0)
+            near_far = near_far.squeeze(0) if near_far is not None else None
+            timestamps = timestamps.squeeze(0)
+            imgs = imgs.squeeze(0)
+
+        for b in range(math.ceil(rays_o.shape[0] / batch_size)):
+            print("batch ->", b)
+            rays_o_b = rays_o[b * batch_size: (b + 1) * batch_size].cuda()
+            rays_d_b = rays_d[b * batch_size: (b + 1) * batch_size].cuda()
+            imgs_b  = imgs[b * batch_size: (b + 1) * batch_size].cuda()
+            timestamps_d_b = timestamp.expand(rays_o_b.shape[0]).cuda()
+                    
+            with torch.cuda.amp.autocast(enabled=self.train_fp16):
+                        
+                fwd_out = self.model(rays_o_b, rays_d_b, timestamps_d_b, bg_color=1,
+                                     channels={"rgb"}, near_far=near_far)
+                rgb_preds = fwd_out["rgb"]
+                recon_loss = self.criterion(rgb_preds, imgs_b)
+                loss = recon_loss
+                
+                self.gscaler.scale(loss).backward()
+                self.gscaler.step(self.appearance_optimizer)
+                scale = self.gscaler.get_scale()
+                self.gscaler.update()
+                
+                self.appearance_optimizer.zero_grad(set_to_none=True)
+                        
+        
+    def optimize_appearance_codes(self):
+                
+        self.model.features.requires_grad_(False)
+        self.model.gpdesc.requires_grad_(False)
+        self.model.gpdesc.time_coef.requires_grad_(True)
+        
+        self.appearance_optimizer = torch.optim.Adam(params=[self.model.gpdesc.time_coef], lr=1e-1)
+        
+        for dset_id, dataset in enumerate(self.test_datasets):
+            pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
+            for img_idx, data in enumerate(dataset):
+                self.optimize_appearance_step(data, dset_id=dset_id)
+
+        self.model.features.requires_grad_(True)
+        self.model.gpdesc.requires_grad_(True)
 
     def validate(self):
+        
+        if hasattr(self.model, "appearance_code"):
+            self.optimize_appearance_codes()
+        
         val_metrics = []
         with torch.no_grad():
             for dset_id, dataset in enumerate(self.test_datasets):

@@ -54,6 +54,7 @@ class PhotoTourismDataset(torch.utils.data.Dataset):
         self.batch_size = batch_size
         self.training = split == 'train'
         self.name = os.path.basename(datadir)
+        self.datadir = datadir
 
         self.imagepaths = sorted((Path(datadir) / "dense" / "images").glob("*.jpg"))
         self.poses = np.load(Path(datadir) / "c2w_mats.npy")
@@ -99,8 +100,23 @@ class PhotoTourismDataset(torch.utils.data.Dataset):
         bound = self.bounds[idx]
         bound = torch.as_tensor(bound, dtype=torch.float)
         bound = bound * torch.as_tensor([0.9, 1.2]) * scale
-        
+        #TODO: histoggram of image resolutions 
         rays_o, rays_d = get_rays_tourism(image.shape[0], image.shape[1], kinv, pose)
+        
+        if not self.training:
+            mid = image.shape[1]//2
+            
+            image_left = image[:, :mid, :].reshape(-1, 3)
+            
+            
+            #image = image[:, mid:, :]
+            
+            rays_o_left = rays_o[:, :mid, :].reshape(-1, 3)
+            #rays_o = rays_o[:, mid:, :]
+            
+            rays_d_left = rays_d[:, :mid, :].reshape(-1, 3)
+            #rays_d = rays_d[:, mid:, :]
+            
         
         rays_o = rays_o.reshape(-1, 3)
         rays_d = rays_d.reshape(-1, 3)
@@ -118,5 +134,12 @@ class PhotoTourismDataset(torch.utils.data.Dataset):
             timestamp = torch.tensor(idx)
             bound = bound.expand(1, 2)
             
-        return {"rays_o" : rays_o, "rays_d": rays_d, "imgs": image, "near_far" : bound, "timestamps": timestamp}
+        out = {"rays_o" : rays_o, "rays_d": rays_d, "imgs": image, "near_far" : bound, "timestamps": timestamp}
+        
+        if not self.training:
+            out["rays_o_left"] = rays_o_left
+            out["rays_d_left"] = rays_d_left
+            out["imgs_left"] =  image_left
+        
+        return out
     
