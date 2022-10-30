@@ -234,10 +234,13 @@ class VideoTrainer(Trainer):
             timestamps = timestamps.squeeze(0)
             imgs = imgs.squeeze(0)
 
-        for b in range(math.ceil(rays_o.shape[0] / batch_size)):
-            rays_o_b = rays_o[b * batch_size: (b + 1) * batch_size].cuda()
-            rays_d_b = rays_d[b * batch_size: (b + 1) * batch_size].cuda()
-            imgs_b  = imgs[b * batch_size: (b + 1) * batch_size].cuda()
+        # here we shuffle the rays to make optimization more stable
+        n_steps = math.ceil(rays_o.shape[0] / batch_size)
+        idx = torch.randperm(rays_o.shape[0])
+        for b in range(n_steps):
+            rays_o_b = rays_o[idx[b * batch_size: (b + 1) * batch_size]].cuda()
+            rays_d_b = rays_d[idx[b * batch_size: (b + 1) * batch_size]].cuda()
+            imgs_b  = imgs[idx[b * batch_size: (b + 1) * batch_size]].cuda()
             timestamps_b = timestamp.expand(rays_o_b.shape[0]).cuda()
             near_far_b = near_far.expand(rays_o_b.shape[0], 2).cuda()
             
@@ -266,7 +269,7 @@ class VideoTrainer(Trainer):
         self.model.grids.requires_grad_(False)
         self.model.time_coef.requires_grad_(True)
         
-        self.appearance_optimizer = torch.optim.Adam(params=[self.model.time_coef], lr=1e-1)
+        self.appearance_optimizer = torch.optim.Adam(params=[self.model.time_coef], lr=1e-4)
         
         for dset_id, dataset in enumerate(self.test_datasets):
             pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")

@@ -7,6 +7,12 @@ import os
 import glob
 import pandas as pd
 
+train_images = {"sacre" : 1179,
+            "trevi" : 1689}
+
+test_images = {"sacre" : 21,
+            "trevi" : 19}
+
 def get_rays_tourism(H, W, kinv, pose):
     """
     phototourism camera intrinsics are defined by H, W and kinv.
@@ -69,18 +75,8 @@ class PhotoTourismDataset(torch.utils.data.Dataset):
         # the first N idx are for training, the rest are for testing
         # we therefore need to know how many training frames there are
         # such that the test frames can get unique time/appearance indices
-        if split == 'test':
-            
-            train_files = self.files[self.files["split"]=='train']
-        
-            train_imagepaths = sorted((Path(datadir) / "dense" / "images").glob("*.jpg"))
-            imkey = np.array([os.path.basename(im) for im in train_imagepaths])
-            idx = np.in1d(imkey, train_files["filename"])
-        
-            train_imagepaths = np.array(train_imagepaths)[idx]
-            self.n_train_images = len(train_imagepaths)
-            
-        
+        self.n_train_images = train_images[self.name]
+             
         self.files = self.files[self.files["split"]==split]
     
         self.imagepaths = sorted((Path(datadir) / "dense" / "images").glob("*.jpg"))
@@ -94,24 +90,11 @@ class PhotoTourismDataset(torch.utils.data.Dataset):
         self.bounds = np.load(Path(datadir) / "bds.npy")[idx]
         res = np.load(Path(datadir) / "res_mats.npy")[idx]
         
-        # first 20 images are test, next 5 for validation and the rest for training.
-        # https://github.com/tancik/learnit/issues/3
-        #splits = {
-            #"test": (self.imagepaths[:20], self.poses[:20], self.kinvs[:20], self.bounds[:20], res[:20]),
-            #"val": (all_imagepaths[20:25], all_poses[20:25], all_kinvs[20:25], all_bounds[20:25]),
-            #"train": (self.imagepaths, self.poses, self.kinvs, self.bounds, res)
-        #}
-        # self.imagepaths, self.poses, self.kinvs, self.bounds, res = splits[split]
-
         self.img_w = res[:, 0]
         self.img_h = res[:, 1]
 
-        self.len_time = len(self.imagepaths)
-        # self.len_time = 300  # This is true for the 10-second sequences from DyNerf
-        
-        if split == "test":
-            print(f"==> there are {self.n_train_images} training images and {self.len_time} test images")
-            print(f"==> in total there are {self.n_train_images + self.len_time} images")
+        self.len_time = train_images[self.name] + test_images[self.name]
+        print(f"==> in total there are {self.len_time} images")
 
     def __len__(self):
         return len(self.imagepaths)

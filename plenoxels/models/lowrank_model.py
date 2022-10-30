@@ -110,8 +110,7 @@ class LowrankModel(ABC, nn.Module):
     def init_grid_param(grid_config, is_video: bool, is_appearance: bool, grid_level: int, use_F: bool = True) -> GridParamDescription:
         out_dim: int = grid_config["output_coordinate_dim"]
         grid_nd: int = grid_config["grid_dimensions"]
-        if is_video and is_appearance:
-            raise ValueError("Video and appearance embedding are mutually exclusive.")
+
         reso: List[int] = grid_config["resolution"]
         try:
             in_dim = len(reso)
@@ -127,7 +126,7 @@ class LowrankModel(ABC, nn.Module):
             if is_video:
                 assert in_dim == 4
             else:
-                assert in_dim == 3
+                assert in_dim == 3 or in_dim == 4
         if use_F:
             assert out_dim in {1, 2, 3, 4, 5, 6, 7}
         assert grid_nd <= in_dim
@@ -137,16 +136,23 @@ class LowrankModel(ABC, nn.Module):
         grid_coefs = nn.ParameterList()
         for ci, coo_comb in enumerate(coo_combs):
             if use_F:
-                grid_coefs.append(
-                    nn.Parameter(nn.init.uniform_(torch.empty(
-                        [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb[::-1]]
-                    ), a=-1.0, b=1.0)))
+                # if appearance and time plane, then init as ones (static).
+                if is_appearance and 3 in coo_comb:
+                    grid_coefs.append(
+                        nn.Parameter(nn.init.ones_(torch.empty(
+                            [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb[::-1]]
+                        ))))
+                else:
+                    grid_coefs.append(
+                        nn.Parameter(nn.init.uniform_(torch.empty(
+                            [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb[::-1]]
+                        ), a=-1.0, b=1.0)))
             else:
                 grid_coefs.append(
                     nn.Parameter(nn.init.uniform_(torch.empty(
                         [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb[::-1]]
                     ), a=0.1, b=0.2)))  # Kinda random
-
+        
         if is_appearance:  
             time_reso = int(grid_config["time_reso"])
             if use_F:
@@ -154,9 +160,7 @@ class LowrankModel(ABC, nn.Module):
                     torch.empty([out_dim * rank[0], time_reso]),
                     a=-1.0, b=1.0))  # if time init is fixed at 1, then it learns a static video
             else:
-                time_coef = nn.Parameter(nn.init.uniform_(
-                torch.empty([out_dim * rank[0], time_reso]),
-                a=0.1, b=0.2))  # Kinda random
+                time_coef = nn.Parameter(nn.init.ones_(torch.empty([out_dim * rank[0], time_reso])))  # no time dependence
             return GridParamDescription(
                 grid_coefs=grid_coefs, reso=pt_reso, time_reso=time_reso, time_coef=time_coef)
         return GridParamDescription(

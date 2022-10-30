@@ -1,7 +1,7 @@
 # configuration file to be used with `main.py` for video training
 config = {
 
-    "expname": "optimizer_appearance_code",
+    "expname": "model_transient_regions",
     "logdir": "./logs/trevi",
 
     # Data settings
@@ -61,12 +61,12 @@ config = {
     "grid_config": """
 [
     {
-        "input_coordinate_dim": 3,
+        "input_coordinate_dim": 4,
         "output_coordinate_dim": 28,
         "grid_dimensions": 2,
-        "resolution": [256, 256, 256],
+        "resolution": [512, 512, 512, 1708], 
         "rank": 2,
-        "time_reso": 3191,
+        "time_reso": 1708,
     },
     {
         "input_coordinate_dim": 5,
@@ -77,4 +77,5 @@ config = {
 ]
 """
 }
-# trevi : 1169
+# trevi : 1708
+# sacre : 1200
