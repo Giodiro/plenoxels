@@ -12,8 +12,8 @@ from plenoxels.datasets.photo_tourism import PhotoTourismDataset
 from plenoxels.ops.image import metrics
 from plenoxels.models.utils import grid_sample_wrapper, compute_plane_tv, compute_line_tv, raw2alpha
 
-checkpoint_path = "logs/trevi/tv_0.05_appearance_code_wo_density_longer_test_time_optim_rank_1/model.pth"
-save_dir = "logs/trevi_rank_vis/05_appearance_code_wo_density_longer_test_time_optim_rank_1/"
+checkpoint_path = "logs/trevi/tv_0.05_appearance_code_wo_density_longer_test_time_optim_rank_1_ndc/model.pth"
+save_dir = "logs/trevi_rank_vis/05_appearance_code_wo_density_longer_test_time_optim_rank_1_ndc_2/"
 os.makedirs(save_dir, exist_ok=True)
 
 ranks = [0, 1, "avg"]
