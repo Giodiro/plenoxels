@@ -1,7 +1,7 @@
 # configuration file to be used with `main.py` for normal (or multiscene) training
 # the configuration must be specified in a dictionary called `config`.
 config = {
-    "expname": "l1_plane_density_01_l1_plane_color_01",
+    "expname": "rank_1_l1_plane_density_00008_l1_plane_color_00_tv_001",
     "logdir": "./logs/lego",
 
     # Data settings
@@ -27,9 +27,9 @@ config = {
     "regnerf_weight_end": 0.0,
     "floater_loss" : 0.0,
     "regnerf_weight_max_step": 700,
-    "l1_plane_density_reg": 0.1,
-    "l1_plane_color_reg": 0.1,
-    "plane_tv_weight": 0.0,
+    "l1_plane_density_reg": 0.0008,
+    "l1_plane_color_reg": 0.0,
+    "plane_tv_weight": 0.001,
     "plane_tv_what": "Gcoords",
 
     "l1density_weight": 0.000,
@@ -69,7 +69,7 @@ config = {
         "output_coordinate_dim": 28,
         "grid_dimensions": 2,
         "resolution": [512, 512, 512], 
-        "rank": 3,
+        "rank": 1,
     },
     {
         "input_coordinate_dim": 5,

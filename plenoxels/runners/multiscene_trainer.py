@@ -9,7 +9,7 @@ import pandas as pd
 import torch
 import torch.utils.data
 from torch.utils.tensorboard import SummaryWriter
-import cv2
+import matplotlib.pyplot as plt
 
 from plenoxels.ema import EMA
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash, DensityMask
@@ -376,22 +376,37 @@ class Trainer():
             # visualize planes
             if self.save_outputs:                
                 out_name = f"step{self.global_step}-D{dset_id}"
+                rank = self.model.config[0]["rank"][0]
+                dim = self.model.config[0]["output_coordinate_dim"]
+                n_planes = len(self.model.scene_grids[0][0])
+                
+                fig, ax = plt.subplots(nrows=n_planes, ncols=2*rank, figsize=(3*n_planes,3*2*rank))
                 for plane_idx, grid in enumerate(self.model.scene_grids[0][0]):
                     _, c, h, w = grid.data.shape
-                    rank = self.model.config[0]["rank"][0]
-                    dim = self.model.config[0]["output_coordinate_dim"]
+
                     grid = grid.data.view(dim, rank, h, w)
                     for r in range(rank):
-                        density = grid[-1, r, :, :]
-                        density = ((density - density.min())/(density.max() - density.min()) * 255).cpu().numpy().astype(np.uint8)
-                        cv2.imwrite(os.path.join(self.log_dir, f"{out_name}-density-plane-{plane_idx}-rank_{r}.png"), density)
+                        density = grid[-1, r, :, :].cpu().numpy()
+
+                        im = ax[plane_idx, r].imshow(density)
+                        ax[plane_idx, r].axis("off")
+                        plt.colorbar(im, ax=ax[plane_idx, r], aspect=20, fraction=0.04)
 
                         rays_d = torch.ones((h*w, 3), device=grid.device)
                         rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
                         features = grid[:, r, :, :].view(dim, h*w).permute(1,0)
                         color = self.model.decoder.compute_color(features, rays_d) * 255
                         color = color.view(h, w, 3).cpu().numpy().astype(np.uint8)
-                        cv2.imwrite(os.path.join(self.log_dir, f"{out_name}-color-plane-{plane_idx}-rank_{r}.png"), color)
+                        
+                        im = ax[plane_idx, r+rank].imshow(color)
+                        ax[plane_idx, r+rank].axis("off")
+                        plt.colorbar(im, ax=ax[plane_idx, r+rank], aspect=20, fraction=0.04)
+                        
+                fig.tight_layout()
+                plt.savefig(os.path.join(self.log_dir, f"{out_name}-planes.png"))
+                plt.cla()
+                plt.clf()
+                plt.close()
 
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
