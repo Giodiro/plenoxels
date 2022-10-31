@@ -40,8 +40,8 @@ config = {
 
     # Training settings
     "train_fp16": True,
-    "save_every": 5000,
-    "valid_every": 5000,
+    "save_every": 1000,
+    "valid_every": 1000,
     "save_outputs": True,
     "transfer_learning": False,
 
@@ -68,7 +68,7 @@ config = {
         "output_coordinate_dim": 28,
         "grid_dimensions": 2,
         "resolution": [512, 512, 512], 
-        "rank": 1,
+        "rank": 3,
     },
     {
         "input_coordinate_dim": 5,
