@@ -151,7 +151,7 @@ class LowrankModel(ABC, nn.Module):
                 grid_coefs.append(
                     nn.Parameter(nn.init.uniform_(torch.empty(
                         [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb[::-1]]
-                    ), a=0.1, b=0.2)))  # Kinda random
+                    ), a=0.1, b=0.5)))  
         
         if is_appearance:  
             time_reso = int(grid_config["time_reso"])
