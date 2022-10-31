@@ -1,7 +1,7 @@
 # configuration file to be used with `main.py` for video training
 config = {
 
-    "expname": "model_transient_regions",
+    "expname": "tv_0.05_appearance_code_wo_density_longer_test_time_optim_rank_1_ndc_scale_0.2",
     "logdir": "./logs/trevi",
 
     # Data settings
@@ -21,12 +21,12 @@ config = {
 
     # Optimization settings
     # "num_steps": 40001,
-    "num_steps": 60001,
+    "num_steps": 100001,
     "floater_loss": 0.0000,
     "regnerf_weight_start": 0,
     "regnerf_weight_end": 0.0,
     "regnerf_weight_max_step": 512,
-    "plane_tv_weight": 0.000,  
+    "plane_tv_weight": 0.05,  
     "l1density_weight": 0,  # Not used for video yet
     "volume_tv_weight": 0.0,  # Not used for video yet
     "volume_tv_npts": 1024,  # Not used for video yet
@@ -39,15 +39,15 @@ config = {
     
     # Training settings
     "train_fp16": False,
-    "save_every": 5000,
-    "valid_every": 5000,
+    "save_every": 50000,
+    "valid_every": 50000,
     "save_video": True,
     "save_outputs": True,
 
     # Raymarching settings
     "raymarch_type": "fixed",
     "num_sample_multiplier": 2,
-    "n_intersections": 800,
+    "n_intersections": 400,
     "spacing_fn": "linear",
     "single_jitter": False,
     
@@ -65,7 +65,7 @@ config = {
         "output_coordinate_dim": 28,
         "grid_dimensions": 2,
         "resolution": [512, 512, 512, 1708], 
-        "rank": 2,
+        "rank": 1,
         "time_reso": 1708,
     },
     {

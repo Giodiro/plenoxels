@@ -155,11 +155,17 @@ class LowrankModel(ABC, nn.Module):
         
         if is_appearance:  
             time_reso = int(grid_config["time_reso"])
+                            
             if use_F:
                 time_coef = nn.Parameter(nn.init.uniform_(
                     torch.empty([out_dim * rank[0], time_reso]),
                     a=-1.0, b=1.0))  # if time init is fixed at 1, then it learns a static video
             else:
+                
+                # if sh + density in grid, then we do not want appearance code to influence density
+                if out_dim == 28:
+                    out_dim = out_dim - 1
+                
                 time_coef = nn.Parameter(nn.init.ones_(torch.empty([out_dim * rank[0], time_reso])))  # no time dependence
             return GridParamDescription(
                 grid_coefs=grid_coefs, reso=pt_reso, time_reso=time_reso, time_coef=time_coef)

@@ -73,8 +73,14 @@ class LowrankAppearance(LowrankModel):
         grid_time = self.time_coef  # time: [rank * F_dim, time_reso]
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
 
+        dim = level_info["output_coordinate_dim"] - 1 if level_info["output_coordinate_dim"] == 28 else level_info["output_coordinate_dim"]
+
         interp_time = grid_time[:, timestamps.long()].unsqueeze(0).repeat(pts.shape[0], 1)  # [n, F_dim * rank]
-        interp_time = interp_time.view(-1, level_info["output_coordinate_dim"], level_info["rank"][0])  # [n, F_dim, rank]
+        interp_time = interp_time.view(-1, dim, level_info["rank"][0])  # [n, F_dim, rank]
+        
+        # add density one to appearance code
+        if level_info["output_coordinate_dim"] == 28:
+             interp_time = torch.cat([interp_time, torch.ones_like(interp_time[:, 0:1, :])], dim=1)
         
         # Interpolate in space
         interp = pts
@@ -187,8 +193,16 @@ class LowrankAppearance(LowrankModel):
     def compute_plane_tv(self):
         grid_space = self.grids  # space: 3 x [1, rank * F_dim, reso, reso]
         #grid_time = self.time_coef  # time: [rank * F_dim, time_reso]
+        
+        if len(grid_space) == 6:
+            # only use tv on spatial planes
+            grid_ids = [0,1,3]
+        else:
+            grid_ids = list(range(len(grid_space)))
+        
         total = 0
-        for grid in grid_space:
+        for grid_id in grid_ids:
+            grid = grid_space[grid_id]
             total += compute_plane_tv(grid)
         #total += compute_line_tv(grid_time)
         return total
