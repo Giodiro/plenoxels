@@ -336,7 +336,7 @@ class VideoTrainer(Trainer):
             if self.save_outputs:
                 out_name = f"step{self.global_step}-D{dset_id}"
                 for plane_idx, grid in enumerate(self.model.grids):
-                    _, c, h, w = grid.data
+                    _, c, h, w = grid.data.shape
                     
                     density = grid.data[:, -1:, ...]
                     density = ((density[0, 0, ...] - density.min())/(density.max() - density.min()) * 255).cpu().numpy().astype(np.uint8)
