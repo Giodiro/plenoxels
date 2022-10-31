@@ -1,7 +1,7 @@
 # configuration file to be used with `main.py` for video training
 config = {
 
-    "expname": "tv_0.05_appearance_code_wo_density_longer_test_time_optim_rank_1_ndc_scale_0.2",
+    "expname": "debug",
     "logdir": "./logs/trevi",
 
     # Data settings
@@ -39,9 +39,10 @@ config = {
     
     # Training settings
     "train_fp16": False,
-    "save_every": 50000,
-    "valid_every": 50000,
+    "save_every": 10,
+    "valid_every": 10,
     "save_video": True,
+    "add_rank_steps": [100],
     "save_outputs": True,
 
     # Raymarching settings

@@ -336,6 +336,24 @@ class VideoTrainer(Trainer):
                 val_metrics.append(per_scene_metrics)
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
+        
+        with torch.no_grad():
+            # visualize planes
+            if self.save_outputs:
+                out_name = f"step{self.global_step}-D{dset_id}"
+                for plane_idx, grid in enumerate(self.model.grids):
+                    _, c, h, w = grid.data
+                    
+                    density = grid.data[:, -1:, ...]
+                    density = ((density[0, 0, ...] - density.min())/(density.max() - density.min()) * 255).cpu().numpy().astype(np.uint8)
+                    cv2.imwrite(os.path.join(self.log_dir, f"{out_name}-density-plane-{plane_idx}.png"), density)
+                    
+                    rays_d = torch.ones((grid.data.view(-1, 28).shape[0], 3), device=grid.data.device).view(-1,3)
+                    rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
+                    features = grid.data.view(c, h*w).permute(1,0)
+                    color = self.model.decoder.compute_color(features, rays_d) * 255
+                    color = color.view(grid.data.shape[2], grid.data.shape[3], 3).cpu().numpy().astype(np.uint8)
+                    cv2.imwrite(os.path.join(self.log_dir, f"{out_name}-color-plane-{plane_idx}.png"), color)
 
     def write_video_to_file(self, frames, dataset):
         video_file = os.path.join(self.log_dir, f"step{self.global_step}.mp4")

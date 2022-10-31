@@ -72,7 +72,7 @@ class LowrankLearnableHash(LowrankModel):
                     self.features = self.init_features_param(grid_config, self.sh)
                     self.feature_dim = self.features.shape[0]
                 else:
-                    gpdesc = self.init_grid_param(grid_config, is_video=False, grid_level=li, use_F=self.use_F)
+                    gpdesc = self.init_grid_param(grid_config, is_video=False, grid_level=li, use_F=self.use_F, is_appearance=False)
                     if li == 0:
                         self.set_resolution(gpdesc.reso, grid_id=si)
                     grids.append(gpdesc.grid_coefs)
