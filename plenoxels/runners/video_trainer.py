@@ -223,9 +223,7 @@ class VideoTrainer(Trainer):
         model.cuda()
         return model
 
-    def optimize_appearance_step(self, data, dset_id):
-        batch_size = self.train_datasets[dset_id].batch_size
-
+    def optimize_appearance_step(self, data, batch_size, im_id):
         rays_o = data["rays_o_left"]
         rays_d = data["rays_d_left"]
         imgs = data["imgs_left"]
@@ -241,42 +239,55 @@ class VideoTrainer(Trainer):
 
         # here we shuffle the rays to make optimization more stable
         n_steps = math.ceil(rays_o.shape[0] / batch_size)
-        idx = torch.randperm(rays_o.shape[0])
-        for b in range(n_steps):
-            rays_o_b = rays_o[idx[b * batch_size: (b + 1) * batch_size]].cuda()
-            rays_d_b = rays_d[idx[b * batch_size: (b + 1) * batch_size]].cuda()
-            imgs_b  = imgs[idx[b * batch_size: (b + 1) * batch_size]].cuda()
-            timestamps_b = timestamp.expand(rays_o_b.shape[0]).cuda()
-            near_far_b = near_far.expand(rays_o_b.shape[0], 2).cuda()
+        epochs = 10
+        for n in range(epochs):
+            idx = torch.randperm(rays_o.shape[0])
+            for b in range(n_steps):
+                rays_o_b = rays_o[idx[b * batch_size: (b + 1) * batch_size]].cuda()
+                rays_d_b = rays_d[idx[b * batch_size: (b + 1) * batch_size]].cuda()
+                imgs_b  = imgs[idx[b * batch_size: (b + 1) * batch_size]].cuda()
+                timestamps_b = timestamp.expand(rays_o_b.shape[0]).cuda()
+                near_far_b = near_far.expand(rays_o_b.shape[0], 2).cuda()
 
-            with torch.cuda.amp.autocast(enabled=self.train_fp16):
-                fwd_out = self.model(rays_o_b, rays_d_b, timestamps_b, bg_color=1,
-                                     channels={"rgb"}, near_far=near_far_b)
-                rgb_preds = fwd_out["rgb"]
-                recon_loss = self.criterion(rgb_preds, imgs_b)
-                loss = recon_loss
+                with torch.cuda.amp.autocast(enabled=self.train_fp16):
+                    fwd_out = self.model(rays_o_b, rays_d_b, timestamps_b, bg_color=1,
+                                        channels={"rgb"}, near_far=near_far_b)
+                    rgb_preds = fwd_out["rgb"]
+                    recon_loss = self.criterion(rgb_preds, imgs_b)
+                    loss = recon_loss
 
-                self.gscaler.scale(loss).backward()
-                self.gscaler.step(self.appearance_optimizer)
-                scale = self.gscaler.get_scale()
-                self.gscaler.update()
+                    self.gscaler.scale(loss).backward()
+                    self.gscaler.step(self.appearance_optimizer)
+                    scale = self.gscaler.get_scale()
+                    self.gscaler.update()
 
-                self.appearance_optimizer.zero_grad(set_to_none=True)
+                    self.appearance_optimizer.zero_grad(set_to_none=True)
+
+                    self.writer.add_scalar(f"appearance_loss_{self.global_step}/recon_loss_{im_id}", recon_loss.item(), b + n * n_steps)
 
     def optimize_appearance_codes(self):
-        """ turn gradients off for anything but appearance codes """
+        # turn gradients off for anything but appearance codes
         if self.model.use_F:
             self.model.features.requires_grad_(False)
 
         self.model.grids.requires_grad_(False)
         self.model.time_coef.requires_grad_(True)
 
-        self.appearance_optimizer = torch.optim.Adam(params=[self.model.time_coef], lr=1e-4)
+        self.appearance_optimizer = torch.optim.Adam(params=[self.model.time_coef], lr=1e-3)
 
         for dset_id, dataset in enumerate(self.test_datasets):
             pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
+
+            # reset the appearance codes for
+            test_frames = self.test_datasets[0].__len__()
+            mask = torch.ones_like(self.model.time_coef)
+            mask[: , -test_frames:] = 0
+            self.model.time_coef.data = self.model.time_coef.data * mask + abs(1 - mask)
+
+            batch_size = self.train_datasets[dset_id].batch_size
+
             for img_idx, data in enumerate(dataset):
-                self.optimize_appearance_step(data, dset_id=dset_id)
+                self.optimize_appearance_step(data, batch_size, img_idx)
                 pb.update(1)
             pb.close()
         # turn gradients on
