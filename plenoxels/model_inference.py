@@ -6,13 +6,14 @@ import itertools
 from collections import defaultdict
 sys.path.append(os.path.abspath(os.path.join('..')))
 import cv2
+import numpy as np
 from plenoxels.models.lowrank_appearance import LowrankAppearance
 from plenoxels.datasets.photo_tourism import PhotoTourismDataset
 from plenoxels.ops.image import metrics
 from plenoxels.models.utils import grid_sample_wrapper, compute_plane_tv, compute_line_tv, raw2alpha
 
-checkpoint_path = "logs/trevi/tv_0.05_appearance_code_wo_density_longer_test_time_optim/model.pth"
-save_dir = "logs/trevi_rank_vis/05_appearance_code_wo_density_longer_test_time_optim/"
+checkpoint_path = "logs/trevi/tv_0.05_appearance_code_wo_density_longer_test_time_optim_rank_1/model.pth"
+save_dir = "logs/trevi_rank_vis/05_appearance_code_wo_density_longer_test_time_optim_rank_1/"
 os.makedirs(save_dir, exist_ok=True)
 
 ranks = [0, 1, "avg"]
@@ -130,9 +131,10 @@ def compute_features(self,
             interp_space = interp_space * (
                 grid_sample_wrapper(grid_space[ci], interp[..., coo_comb]).view(
                     -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
+            
     # Combine space and time over rank
     interp = (interp_space * interp_time)  # [n, F_dim]
-    print("==> rank_idx ", rank_idx)
+    
     if rank_idx == "avg":
         out = interp.mean(dim=-1)  # [n, F_dim]
     else:
@@ -141,7 +143,7 @@ def compute_features(self,
 
 LowrankAppearance.compute_features = compute_features
 
-grid_config = '[{"input_coordinate_dim": 4, "output_coordinate_dim": 28, "grid_dimensions" : 2, "resolution": [512, 512, 512, 1708], "rank": 2, "time_reso" : 1708}, {"input_coordinate_dim": 5, "resolution": [6, 6, 6, 6, 6], "feature_dim": 28, "init_std": 0.001}]'
+grid_config = '[{"input_coordinate_dim": 4, "output_coordinate_dim": 28, "grid_dimensions" : 2, "resolution": [512, 512, 512, 1708], "rank": 1, "time_reso" : 1708}, {"input_coordinate_dim": 5, "resolution": [6, 6, 6, 6, 6], "feature_dim": 28, "init_std": 0.001}]'
 model = LowrankAppearance(grid_config, 
                 aabb=torch.tensor([[-2., -2., -2.], [2., 2., 2.]]), 
                 len_time=1708, 
@@ -160,9 +162,54 @@ model = model.cuda()
 checkpoint = torch.load(checkpoint_path)
 model.load_state_dict(checkpoint['model'])
 
-test_dataset = PhotoTourismDataset("/work3/frwa/data/phototourism/trevi", "test")
-train_dataset = PhotoTourismDataset("/work3/frwa/data/phototourism/trevi", "train")
+# store original parameters
+parameters = [grid.data for grid in model.grids]
 
+for plane_idx, grid in enumerate(model.grids):
+    print("Plane", plane_idx, grid.shape)
+    density = grid.data[:, -1:, ...]
+    density = ((density[0, 0, ...] - density.min())/(density.max() - density.min()) * 255).cpu().numpy().astype(np.uint8)
+    cv2.imwrite(f"{save_dir}density_{plane_idx}.png", density)
+    
+
+# visualize time grid
+train_dataset = PhotoTourismDataset("/work3/frwa/data/phototourism/trevi", "train")
+train_dataset.training = False
+rank_idx = "avg"
+with torch.no_grad():
+    for img_idx, data in enumerate(train_dataset):
+        print("==> im idx ", img_idx)
+        # turn spatial grids off
+        for plane_idx in [0, 1, 3]:
+            model.grids[plane_idx].data = torch.ones_like(parameters[plane_idx])
+            
+        # turn time grids on        
+        for plane_idx in [2, 4, 5]:
+            model.grids[plane_idx].data = parameters[plane_idx]
+        
+        data["timestamps"] = data["timestamps"] - train_dataset.n_train_images 
+        preds = eval_step(data, model)
+        summary, out_img = evaluate_metrics(data["imgs"], preds, dset=train_dataset, img_idx=img_idx)
+        cv2.imwrite(f"{save_dir}{img_idx}_spatial.png", out_img)
+
+        # turn time grids off        
+        for plane_idx in [2, 4, 5]:
+            model.grids[plane_idx].data = torch.ones_like(parameters[plane_idx])
+            
+        # turn spatial grids on        
+        for plane_idx in [0, 1, 3]:
+            model.grids[plane_idx].data = parameters[plane_idx]
+            
+        preds = eval_step(data, model)
+        summary, out_img = evaluate_metrics(data["imgs"], preds, dset=train_dataset, img_idx=img_idx)
+        cv2.imwrite(f"{save_dir}{img_idx}_time.png", out_img)
+    
+        if img_idx >= 2:
+            break
+        
+#visualize rank
+
+test_dataset = PhotoTourismDataset("/work3/frwa/data/phototourism/trevi", "test")
 with torch.no_grad():
     for img_idx, data in enumerate(test_dataset):
         for rank_idx in ranks:
@@ -170,4 +217,5 @@ with torch.no_grad():
             summary, out_img = evaluate_metrics(data["imgs"], preds, dset=test_dataset, img_idx=img_idx)
             cv2.imwrite(f"{save_dir}{img_idx}_{rank_idx}.png", out_img)
 
-import pdb; pdb.set_trace()
+
+
