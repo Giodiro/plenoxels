@@ -399,6 +399,28 @@ class LowrankLearnableHash(LowrankModel):
         # Compute density on the grid
         density = self.query_density(pts, grid_id)
         return torch.mean(torch.abs(density))
+    
+    def compute_l1_plane_density_reg(self, grid_id):
+        grids: nn.ModuleList = self.scene_grids[grid_id]
+        total = 0
+        for grid_ls in grids:
+            for grid in grid_ls:
+                grid = grid.view(self.feature_dim, -1, grid.shape[-2], grid.shape[-1])
+                for r in range(grid.shape[1]):
+                    total += torch.abs(grid[-1, r ,...]).mean()
+        
+        return total
+    
+    def compute_l1_plane_color_reg(self, grid_id):
+        grids: nn.ModuleList = self.scene_grids[grid_id]
+        total = 0
+        for grid_ls in grids:
+            for grid in grid_ls:
+                grid = grid.view(self.feature_dim, -1, grid.shape[-2], grid.shape[-1])
+                for r in range(grid.shape[1]):
+                    total += torch.abs(grid[:-1, r ,...]).mean()
+        
+        return total
 
     def compute_3d_tv(self, grid_id, what='Gcoords', batch_size=100, patch_size=3):
         aabb = self.aabb(grid_id)

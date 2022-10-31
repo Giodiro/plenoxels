@@ -34,6 +34,8 @@ class Trainer():
                  regnerf_weight_max_step: int,
                  floater_loss: float,
                  plane_tv_weight: float,
+                 l1_plane_color_reg: float,
+                 l1_plane_density_reg: float,
                  l1density_weight: float,
                  volume_tv_weight: float,
                  volume_tv_npts: int,
@@ -64,6 +66,8 @@ class Trainer():
         self.regnerf_weight_max_step = regnerf_weight_max_step
         self.cur_regnerf_weight = self.regnerf_weight_start
         self.plane_tv_weight = plane_tv_weight
+        self.l1_plane_color_reg = l1_plane_color_reg
+        self.l1_plane_density_reg = l1_plane_density_reg
         self.plane_tv_what = kwargs.get('plane_tv_what', 'Gcoords')
         self.l1density_weight = l1density_weight
         self.volume_tv_weight = volume_tv_weight
@@ -171,6 +175,14 @@ class Trainer():
                 depths = reshape_to_patch(out["depth"], 1)
                 depth_tv = compute_tv_norm(depths, 'l2', None) * self.cur_regnerf_weight
                 loss = loss + depth_tv
+            l1_density: Optional[torch.Tensor] = None
+            if self.l1_plane_density_reg > 0:
+                l1_density = self.model.compute_l1_plane_density_reg(grid_id=dset_id) * self.l1_plane_density_reg
+                loss = loss + l1_density
+            l1_color: Optional[torch.Tensor] = None
+            if self.l1_plane_color_reg > 0:
+                l1_color = self.model.compute_l1_plane_color_reg(grid_id=dset_id) * self.l1_plane_color_reg
+                loss = loss + l1_color
             plane_tv: Optional[torch.Tensor] = None
             if self.plane_tv_weight > 0:
                 plane_tv = self.model.compute_plane_tv(
