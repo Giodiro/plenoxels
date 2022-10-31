@@ -47,11 +47,8 @@ class VideoTrainer(Trainer):
         kwargs.pop('transfer_learning', None)
         kwargs.pop('num_batches_per_dset', None)
         super().__init__(tr_loader=tr_loader,
-                         tr_dsets=[tr_loader.dataset],
+                         tr_dsets=[tr_loader.dataset if tr_loader is not None else None],
                          ts_dsets=[ts_dset],
-                        #  regnerf_weight_start=0.0,   # regnerf useless
-                        #  regnerf_weight_end=0.0,     # regnerf useless
-                        #  regnerf_weight_max_step=0,  # regnerf useless
                          num_batches_per_dset=1,
                          num_steps=num_steps,
                          scheduler_type=scheduler_type,
@@ -76,7 +73,7 @@ class VideoTrainer(Trainer):
         Note that here `data` contains a whole image. we need to split it up before tracing
         for memory constraints.
         """
-        batch_size = self.train_datasets[dset_id].batch_size
+        batch_size = self.eval_batch_size
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             rays_o = data["rays_o"]
             rays_d = data["rays_d"]
@@ -133,8 +130,8 @@ class VideoTrainer(Trainer):
             loss = recon_loss
             plane_tv = None
             if self.plane_tv_weight > 0:
-                plane_tv = self.model.compute_plane_tv()
-                loss = loss + plane_tv * self.plane_tv_weight
+                plane_tv = self.model.compute_plane_tv() * self.plane_tv_weight
+                loss = loss + plane_tv
             floater_loss: Optional[torch.Tensor] = None
             if self.floater_loss > 0:
                 midpoint = torch.cat([fwd_out["midpoint"], (2*fwd_out["midpoint"][:,-1] - fwd_out["midpoint"][:,-2])[:,None]], dim=1)
@@ -174,7 +171,7 @@ class VideoTrainer(Trainer):
                 self.train_data_loader = tr_dd['tr_loader']
                 self.train_datasets = [tr_dd['tr_dset']]
                 # Reload the test dataset also, since it should not use keyframes once the train set is full-time
-                ts_dset = Video360Dataset(  
+                ts_dset = Video360Dataset(
                     data_dir, split='test', downsample=4, keyframes=False, is_contracted=self.test_datasets[0].is_contracted
                 )
                 self.test_datasets = [ts_dset]
@@ -190,6 +187,9 @@ class VideoTrainer(Trainer):
 
     def post_step(self, data, progress_bar):
         self.writer.add_scalar(f"mse: ", self.loss_info["mse"].value, self.global_step)
+        if self.global_step == 15_000:
+            self.plane_tv_weight /= 10
+            logging.info(f"Modified plane_tv_weight to {self.plane_tv_weight}")
         progress_bar.set_postfix_str(losses_to_postfix(self.loss_info, lr=self.cur_lr()), refresh=False)
         progress_bar.update(1)
 
@@ -198,33 +198,32 @@ class VideoTrainer(Trainer):
         self.loss_info = defaultdict(lambda: EMA(ema_weight))
 
     def init_model(self, **kwargs) -> torch.nn.Module:
-        dset = self.train_datasets[0]
-        data_dir = self.train_datasets[0].datadir
+        dset = self.test_datasets[0]
+        data_dir = dset.datadir
         if "sacre" in data_dir or "trevi" in data_dir: # This is untested but should be ok
             model = LowrankAppearance(
                 aabb=dset.scene_bbox,
                 len_time=dset.len_time,
-                is_ndc=dset.is_ndc,
-                is_contracted=dset.is_contracted,
+                is_ndc=self.is_ndc,
+                is_contracted=self.is_contracted,
                 lookup_time=dset.lookup_time,
                 **kwargs)
             logging.info(f"Initialized LowrankAppearance model with "
-                    f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, using ndc {dset.is_ndc} and contraction {dset.is_contracted}.")
+                    f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, using ndc {self.is_ndc} and contraction {self.is_contracted}.")
         else:
             model = LowrankVideo(
                 aabb=dset.scene_bbox,
                 len_time=dset.len_time,
-                is_ndc=dset.is_ndc,
-                is_contracted=dset.is_contracted,
+                is_ndc=self.is_ndc,
+                is_contracted=self.is_contracted,
                 lookup_time=dset.lookup_time,
                 **kwargs)
             logging.info(f"Initialized LowrankVideo model with "
-                        f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, using ndc {dset.is_ndc} and contraction {dset.is_contracted}.")
+                        f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, using ndc {self.is_ndc} and contraction {self.is_contracted}.")
         model.cuda()
         return model
-    
+
     def optimize_appearance_step(self, data, batch_size, im_id):
-            
         rays_o = data["rays_o_left"]
         rays_d = data["rays_d_left"]
         imgs = data["imgs_left"]
@@ -240,7 +239,6 @@ class VideoTrainer(Trainer):
 
         # here we shuffle the rays to make optimization more stable
         n_steps = math.ceil(rays_o.shape[0] / batch_size)
-        
         epochs = 10
         for n in range(epochs):
             idx = torch.randperm(rays_o.shape[0])
@@ -250,47 +248,44 @@ class VideoTrainer(Trainer):
                 imgs_b  = imgs[idx[b * batch_size: (b + 1) * batch_size]].cuda()
                 timestamps_b = timestamp.expand(rays_o_b.shape[0]).cuda()
                 near_far_b = near_far.expand(rays_o_b.shape[0], 2).cuda()
-                
+
                 with torch.cuda.amp.autocast(enabled=self.train_fp16):
-                            
                     fwd_out = self.model(rays_o_b, rays_d_b, timestamps_b, bg_color=1,
                                         channels={"rgb"}, near_far=near_far_b)
                     rgb_preds = fwd_out["rgb"]
                     recon_loss = self.criterion(rgb_preds, imgs_b)
                     loss = recon_loss
-                    
+
                     self.gscaler.scale(loss).backward()
                     self.gscaler.step(self.appearance_optimizer)
                     scale = self.gscaler.get_scale()
                     self.gscaler.update()
-                    
+
                     self.appearance_optimizer.zero_grad(set_to_none=True)
-                    
+
                     self.writer.add_scalar(f"appearance_loss_{self.global_step}/recon_loss_{im_id}", recon_loss.item(), b + n * n_steps)
-                        
 
     def optimize_appearance_codes(self):
-                
         # turn gradients off for anything but appearance codes
         if self.model.use_F:
             self.model.features.requires_grad_(False)
-            
+
         self.model.grids.requires_grad_(False)
         self.model.time_coef.requires_grad_(True)
-        
+
         self.appearance_optimizer = torch.optim.Adam(params=[self.model.time_coef], lr=1e-3)
-        
+
         for dset_id, dataset in enumerate(self.test_datasets):
             pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
-            
-            # reset the appearance codes for 
+
+            # reset the appearance codes for
             test_frames = self.test_datasets[0].__len__()
             mask = torch.ones_like(self.model.time_coef)
             mask[: , -test_frames:] = 0
             self.model.time_coef.data = self.model.time_coef.data * mask + abs(1 - mask)
-                        
+
             batch_size = self.train_datasets[dset_id].batch_size
-            
+
             for img_idx, data in enumerate(dataset):
                 self.optimize_appearance_step(data, batch_size, img_idx)
                 pb.update(1)
@@ -302,10 +297,9 @@ class VideoTrainer(Trainer):
         self.model.time_coef.requires_grad_(True)
 
     def validate(self):
-        
         if hasattr(self.model, "appearance_code"):
             self.optimize_appearance_codes()
-        
+
         val_metrics = []
         with torch.no_grad():
             for dset_id, dataset in enumerate(self.test_datasets):
@@ -325,7 +319,7 @@ class VideoTrainer(Trainer):
                     pb.set_postfix_str(f"PSNR={out_metrics['psnr']:.2f}", refresh=False)
                     pb.update(1)
                 pb.close()
-                
+
                 self.write_video_to_file(pred_frames, dataset)
                 per_scene_metrics["psnr"] /= len(dataset)  # noqa
                 per_scene_metrics["ssim"] /= len(dataset)  # noqa
@@ -358,7 +352,7 @@ class VideoTrainer(Trainer):
     def write_video_to_file(self, frames, dataset):
         video_file = os.path.join(self.log_dir, f"step{self.global_step}.mp4")
         logging.info(f"Saving video ({len(frames)} frames) to {video_file}")
-        
+
         # Photo tourisme the image sizes differs
         sizes = np.array([frame.shape[:2] for frame in frames])
         same_size_frames = np.unique(sizes, axis=0).shape[0] == 1
@@ -409,13 +403,13 @@ class VideoTrainer(Trainer):
             gt = gt.reshape(img_h, img_w, -1).cpu()
             if gt.shape[-1] == 4:
                 gt = gt[..., :3] * gt[..., 3:] + (1.0 - gt[..., 3:])
-            
+
             # if phototourism then only compute metrics on the right side of the image
             if hasattr(self.model, "appearance_code"):
                 mid = gt.shape[1] // 2
                 gt_right = gt[:, mid:]
                 preds_rgb_right = preds_rgb[:, mid:]
-                
+
                 err = (gt_right - preds_rgb_right) ** 2
                 exrdict["err"] = err.numpy()
                 summary["mse"] = torch.mean(err)
@@ -448,7 +442,7 @@ class VideoTrainer(Trainer):
         self.optimizer.load_state_dict(checkpoint_data["optimizer"])
         logging.info("=> Loaded optimizer state from checkpoint")
         if self.scheduler is not None:
-            self.scheduler.load_state_dict(checkpoint_data['scheduler'])
+            self.scheduler.load_state_dict(checkpoint_data['lr_scheduler'])
             logging.info("=> Loaded scheduler state from checkpoint")
         self.global_step = checkpoint_data["global_step"]
         logging.info(f"=> Loaded step {self.global_step} from checkpoints")
@@ -524,19 +518,23 @@ def init_ts_data(data_dir, **kwargs):
     return {"ts_dset": ts_dset}
 
 
-def load_data(data_downsample, data_dirs, **kwargs):
+def load_data(data_downsample, data_dirs, validate_only, **kwargs):
     assert len(data_dirs) == 1
-    od = init_tr_data(data_downsample, data_dirs[0], **kwargs)
+    od = {}
+    if not validate_only:
+        od.update(init_tr_data(data_downsample, data_dirs[0], **kwargs))
+    else:
+        od.update(tr_loader=None, tr_dset=None)
     od.update(init_ts_data(data_dirs[0], **kwargs))
     return od
 
 
-def load_video_model(config, state):
+def load_video_model(config, state, validate_only):
     if state is not None:
         global_step = state['global_step']
         if global_step > config['upsample_time_steps'][0]:
             config.update(keyframes=False)
-    data = load_data(**config)
+    data = load_data(**config, validate_only=validate_only)
     config.update(data)
     model = VideoTrainer(**config)
     if state is not None:

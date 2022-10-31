@@ -53,6 +53,7 @@ class Trainer():
         self.train_datasets = tr_dsets
         self.is_ndc = self.test_datasets[0].is_ndc
         self.is_contracted = self.test_datasets[0].is_contracted
+        self.eval_batch_size = kwargs.get('eval_batch_size', 8192)
 
         self.extra_args = kwargs
         self.num_dsets = len(self.train_datasets)
@@ -108,7 +109,7 @@ class Trainer():
         Note that here `data` contains a whole image. we need to split it up before tracing
         for memory constraints.
         """
-        batch_size = self.train_datasets[dset_id].batch_size
+        batch_size = self.eval_batch_size
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             rays_o = data["rays_o"]
             rays_d = data["rays_d"]
@@ -247,7 +248,7 @@ class Trainer():
         # We reset the optimizer in case some of the parameters in model were changed.
         if opt_reset_required:
             self.optimizer = self.init_optim(**self.extra_args)
-            
+
         self.timer.check("step_remaining")
         return scale <= self.gscaler.get_scale()
 
@@ -264,7 +265,7 @@ class Trainer():
             self.writer.add_scalar(f"timer/{key}", self.timer.timings[key], self.global_step)
         for key in self.model.timer.timings:
             self.writer.add_scalar(f"timer/{key}", self.model.timer.timings[key], self.global_step)
-        
+
         progress_bar.set_postfix_str(losses_to_postfix(self.loss_info, lr=self.cur_lr()), refresh=False)
         progress_bar.update(1)
 
@@ -531,7 +532,7 @@ class Trainer():
         return optim
 
     def init_model(self, **kwargs) -> torch.nn.Module:
-        aabbs = [d.scene_bbox for d in self.train_datasets]
+        aabbs = [d.scene_bbox for d in self.test_datasets]
         model = LowrankLearnableHash(
             num_scenes=self.num_dsets,
             grid_config=kwargs.pop("grid_config"),
