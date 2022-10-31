@@ -37,6 +37,8 @@ class LowrankVideo(LowrankModel):
         self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
         self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
         self.use_F = self.extra_args["use_F"]
+        self.trainable_rank = 1
+        self.hooks = None
 
         # For now, only allow a single index grid and a single feature grid, not multiple layers
         assert len(self.config) == 2
@@ -57,10 +59,11 @@ class LowrankVideo(LowrankModel):
             self.decoder = SHDecoder(feature_dim=self.feature_dim)
         else:
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
+        self.update_trainable_rank()
         log.info(f"Initialized LowrankVideo - decoder={self.decoder}")
 
     @torch.no_grad()
-    # TODO: need to update this. Or just remove it as an option and start with higher resolution time
+    # TODO: need to update this. Or just remove it as an option and always start with higher time resolution
     def upsample_time(self, new_reso):
         self.time_coef = torch.nn.Parameter(
             F.interpolate(self.time_coef.data[:, None, :], size=(new_reso), mode='linear',
@@ -181,7 +184,6 @@ class LowrankVideo(LowrankModel):
             params = [
                 {"params": self.decoder.parameters(), "lr": lr},
                 {"params": self.grids.parameters(), "lr": lr},
-                # {"params": [self.features, self.pt_min, self.pt_max], "lr": lr},
             ]
         return params
 
@@ -191,3 +193,22 @@ class LowrankVideo(LowrankModel):
         for grid in grid_space:
             total += compute_plane_tv(grid)
         return total
+
+    def update_trainable_rank(self):
+        # Remove any existing hooks
+        if self.hooks is not None:
+            for hook in self.hooks:
+                hook.remove()
+        # Create new hooks, with gradient masks that reflect the current trainable rank
+        self.hooks = []
+        for grid in self.grids:
+            hook = grid.register_hook(lambda grad: grad_mask(grad, self.feature_dim, self.trainable_rank))
+            self.hooks.append(hook)
+        print(f'set trainable rank to {self.trainable_rank}')
+
+def grad_mask(grad, feature_dim, trainable_rank):
+    # Each grid is shape [1, features * rank, reso, reso]
+    mask = torch.zeros_like(grad).view(1, feature_dim, -1, grad.shape[2], grad.shape[3])
+    mask[:,:,0:trainable_rank,...] = 1.0
+    mask = mask.view(1, -1, grad.shape[2], grad.shape[3]).float().to(grad.device)
+    return grad * mask

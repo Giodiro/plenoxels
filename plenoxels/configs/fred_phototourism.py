@@ -1,7 +1,7 @@
 # configuration file to be used with `main.py` for video training
 config = {
 
-    "expname": "default_linear_sampling_init_ones",
+    "expname": "model_transient_regions",
     "logdir": "./logs/trevi",
 
     # Data settings
@@ -9,14 +9,15 @@ config = {
     "data_dirs": ["/work3/frwa/data/phototourism/trevi"],
 
     # Data settings for 360
-    "max_train_cameras": 20,
-    "max_test_cameras": 1,
-    "max_train_tsteps": 2,
-    "max_test_tsteps": 2,
+    #"max_train_cameras": 20,
+    #"max_test_cameras": 1,
+    #"max_train_tsteps": 2,
+    #"max_test_tsteps": 2,
     # Data settings for LLFF
     "keyframes": False,
     "isg": False,
     "ist_step": -1,
+    "isg_step": -1,
 
     # Optimization settings
     # "num_steps": 40001,
@@ -30,15 +31,16 @@ config = {
     "volume_tv_weight": 0.0,  # Not used for video yet
     "volume_tv_npts": 1024,  # Not used for video yet
     "volume_tv_what": "Gcoords",  # Not used for video yet
-    "scheduler_type": None, # "step"
+    "scheduler_type": "cosine",
     "batch_size": 4096,  
     "optim_type": "adam",
-    "lr": 0.1,
+    "lr": 0.01,
+    "use_F": False,
     
     # Training settings
-    "train_fp16": True,
-    "save_every": 1000,
-    "valid_every": 1000,
+    "train_fp16": False,
+    "save_every": 5000,
+    "valid_every": 5000,
     "save_video": True,
     "save_outputs": True,
 
@@ -48,21 +50,23 @@ config = {
     "n_intersections": 800,
     "spacing_fn": "linear",
     "single_jitter": False,
+    
 
     # Model settings
     "sh": True,
     "upsample_time_resolution": [],
     # "upsample_time_steps": [6000],  # DyNerf does 300K iterations with keyframes, with lr 5e-4
     "upsample_time_steps": [],
+    #"upsample_resolution": [],
     "grid_config": """
 [
     {
-        "input_coordinate_dim": 3,
-        "output_coordinate_dim": 5,
+        "input_coordinate_dim": 4,
+        "output_coordinate_dim": 28,
         "grid_dimensions": 2,
-        "resolution": [200, 200, 200],
-        "rank": 10,
-        "time_reso": 3191,
+        "resolution": [512, 512, 512, 1708], 
+        "rank": 2,
+        "time_reso": 1708,
     },
     {
         "input_coordinate_dim": 5,
@@ -73,4 +77,5 @@ config = {
 ]
 """
 }
-# trevi : 1169
+# trevi : 1708
+# sacre : 1200

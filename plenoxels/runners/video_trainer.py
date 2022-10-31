@@ -38,6 +38,7 @@ class VideoTrainer(Trainer):
                  save_outputs: bool,
                  upsample_time_resolution: [int],
                  upsample_time_steps: [int],
+                 add_rank_steps: [int],
                  isg_step: int,
                  ist_step: int,
                  **kwargs
@@ -65,6 +66,7 @@ class VideoTrainer(Trainer):
                          **kwargs)
         self.upsample_time_resolution = upsample_time_resolution
         self.upsample_time_steps = upsample_time_steps
+        self.add_rank_steps = add_rank_steps
         self.ist_step = ist_step
         self.isg_step = isg_step
         assert len(upsample_time_resolution) == len(upsample_time_steps)
@@ -154,6 +156,9 @@ class VideoTrainer(Trainer):
         if floater_loss is not None:
             self.loss_info["floater_loss"].update(floater_loss.item())
 
+        if self.global_step in self.add_rank_steps:
+            self.model.trainable_rank = self.model.trainable_rank + 1
+            self.model.update_trainable_rank()
         if self.global_step in self.upsample_time_steps:
             # Upsample time resolution
             self.model.upsample_time(self.upsample_time_resolution[self.upsample_time_steps.index(self.global_step)])
@@ -168,10 +173,11 @@ class VideoTrainer(Trainer):
                 tr_dd = init_tr_data(data_dir=data_dir, **self.extra_args)
                 self.train_data_loader = tr_dd['tr_loader']
                 self.train_datasets = [tr_dd['tr_dset']]
-                # ts_dset = Video360Dataset(  @sara why is the test-set being reloaded? If useful make use of the init_ts_data function
-                #     data_dir, split='test', downsample=4, keyframes=False, is_contracted=self.test_datasets[0].is_contracted
-                # )
-                # self.test_datasets = [ts_dset]
+                # Reload the test dataset also, since it should not use keyframes once the train set is full-time
+                ts_dset = Video360Dataset(  
+                    data_dir, split='test', downsample=4, keyframes=False, is_contracted=self.test_datasets[0].is_contracted
+                )
+                self.test_datasets = [ts_dset]
                 raise StopIteration  # Whenever we change the dataset
         if self.global_step == self.isg_step:
             self.train_datasets[0].enable_isg()
@@ -216,8 +222,78 @@ class VideoTrainer(Trainer):
                         f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, using ndc {dset.is_ndc} and contraction {dset.is_contracted}.")
         model.cuda()
         return model
+    
+    def optimize_appearance_step(self, data, dset_id):
+        
+        batch_size = self.train_datasets[dset_id].batch_size
+    
+        rays_o = data["rays_o_left"]
+        rays_d = data["rays_d_left"]
+        imgs = data["imgs_left"]
+        near_far = data["near_far"].cuda() if data["near_far"] is not None else None
+        timestamp = data["timestamps"]
+
+        if rays_o.ndim == 3:
+            rays_o = rays_o.squeeze(0)
+            rays_d = rays_d.squeeze(0)
+            near_far = near_far.squeeze(0) if near_far is not None else None
+            timestamps = timestamps.squeeze(0)
+            imgs = imgs.squeeze(0)
+
+        # here we shuffle the rays to make optimization more stable
+        n_steps = math.ceil(rays_o.shape[0] / batch_size)
+        idx = torch.randperm(rays_o.shape[0])
+        for b in range(n_steps):
+            rays_o_b = rays_o[idx[b * batch_size: (b + 1) * batch_size]].cuda()
+            rays_d_b = rays_d[idx[b * batch_size: (b + 1) * batch_size]].cuda()
+            imgs_b  = imgs[idx[b * batch_size: (b + 1) * batch_size]].cuda()
+            timestamps_b = timestamp.expand(rays_o_b.shape[0]).cuda()
+            near_far_b = near_far.expand(rays_o_b.shape[0], 2).cuda()
+            
+            with torch.cuda.amp.autocast(enabled=self.train_fp16):
+                        
+                fwd_out = self.model(rays_o_b, rays_d_b, timestamps_b, bg_color=1,
+                                     channels={"rgb"}, near_far=near_far_b)
+                rgb_preds = fwd_out["rgb"]
+                recon_loss = self.criterion(rgb_preds, imgs_b)
+                loss = recon_loss
+                
+                self.gscaler.scale(loss).backward()
+                self.gscaler.step(self.appearance_optimizer)
+                scale = self.gscaler.get_scale()
+                self.gscaler.update()
+                
+                self.appearance_optimizer.zero_grad(set_to_none=True)
+                        
+        
+    def optimize_appearance_codes(self):
+        
+        # turn gradients off for anything but appearance codes
+        if self.model.use_F:
+            self.model.features.requires_grad_(False)
+            
+        self.model.grids.requires_grad_(False)
+        self.model.time_coef.requires_grad_(True)
+        
+        self.appearance_optimizer = torch.optim.Adam(params=[self.model.time_coef], lr=1e-4)
+        
+        for dset_id, dataset in enumerate(self.test_datasets):
+            pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
+            for img_idx, data in enumerate(dataset):
+                self.optimize_appearance_step(data, dset_id=dset_id)
+                pb.update(1)
+            pb.close()
+        # turn gradients on
+        if self.model.use_F:
+            self.model.features.requires_grad_(True)
+        self.model.grids.requires_grad_(True)
+        self.model.time_coef.requires_grad_(True)
 
     def validate(self):
+        
+        if hasattr(self.model, "appearance_code"):
+            self.optimize_appearance_codes()
+        
         val_metrics = []
         with torch.no_grad():
             for dset_id, dataset in enumerate(self.test_datasets):
@@ -237,6 +313,7 @@ class VideoTrainer(Trainer):
                     pb.set_postfix_str(f"PSNR={out_metrics['psnr']:.2f}", refresh=False)
                     pb.update(1)
                 pb.close()
+                
                 self.write_video_to_file(pred_frames, dataset)
                 per_scene_metrics["psnr"] /= len(dataset)  # noqa
                 per_scene_metrics["ssim"] /= len(dataset)  # noqa
@@ -251,7 +328,7 @@ class VideoTrainer(Trainer):
     def write_video_to_file(self, frames, dataset):
         video_file = os.path.join(self.log_dir, f"step{self.global_step}.mp4")
         logging.info(f"Saving video ({len(frames)} frames) to {video_file}")
-
+        
         # Photo tourisme the image sizes differs
         sizes = np.array([frame.shape[:2] for frame in frames])
         same_size_frames = np.unique(sizes, axis=0).shape[0] == 1
@@ -302,11 +379,24 @@ class VideoTrainer(Trainer):
             gt = gt.reshape(img_h, img_w, -1).cpu()
             if gt.shape[-1] == 4:
                 gt = gt[..., :3] * gt[..., 3:] + (1.0 - gt[..., 3:])
-            err = (gt - preds_rgb) ** 2
-            exrdict["err"] = err.numpy()
-            summary["mse"] = torch.mean(err)
-            summary["psnr"] = metrics.psnr(preds_rgb, gt)
-            summary["ssim"] = metrics.ssim(preds_rgb, gt)
+            
+            # if phototourism then only compute metrics on the right side of the image
+            if hasattr(self.model, "appearance_code"):
+                mid = gt.shape[1] // 2
+                gt_right = gt[:, mid:]
+                preds_rgb_right = preds_rgb[:, mid:]
+                
+                err = (gt_right - preds_rgb_right) ** 2
+                exrdict["err"] = err.numpy()
+                summary["mse"] = torch.mean(err)
+                summary["psnr"] = metrics.psnr(preds_rgb_right, gt_right)
+                summary["ssim"] = metrics.ssim(preds_rgb_right, gt_right)
+            else:
+                err = (gt - preds_rgb) ** 2
+                exrdict["err"] = err.numpy()
+                summary["mse"] = torch.mean(err)
+                summary["psnr"] = metrics.psnr(preds_rgb, gt)
+                summary["ssim"] = metrics.ssim(preds_rgb, gt)
 
         out_name = f"step{self.global_step}-D{dset_id}-{img_idx}"
         if name is not None and name != "":
