@@ -365,7 +365,7 @@ class Trainer():
             if self.save_outputs:                
                 for plane_idx, grid in enumerate(self.model.scene_grids[0][0]):
                     out_name = f"step{self.global_step}-D{dset_id}"
-                    _, c, h, w = grid.data
+                    _, c, h, w = grid.data.shape
                     
                     density = grid.data[:, -1:, ...]
                     density = ((density[0, 0, ...] - density.min())/(density.max() - density.min()) * 255).cpu().numpy().astype(np.uint8)
