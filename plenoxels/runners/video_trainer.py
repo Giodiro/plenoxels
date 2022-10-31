@@ -38,6 +38,7 @@ class VideoTrainer(Trainer):
                  save_outputs: bool,
                  upsample_time_resolution: [int],
                  upsample_time_steps: [int],
+                 add_rank_steps: [int],
                  isg_step: int,
                  ist_step: int,
                  **kwargs
@@ -65,6 +66,7 @@ class VideoTrainer(Trainer):
                          **kwargs)
         self.upsample_time_resolution = upsample_time_resolution
         self.upsample_time_steps = upsample_time_steps
+        self.add_rank_steps = add_rank_steps
         self.ist_step = ist_step
         self.isg_step = isg_step
         assert len(upsample_time_resolution) == len(upsample_time_steps)
@@ -154,6 +156,9 @@ class VideoTrainer(Trainer):
         if floater_loss is not None:
             self.loss_info["floater_loss"].update(floater_loss.item())
 
+        if self.global_step in self.add_rank_steps:
+            self.model.trainable_rank = self.model.trainable_rank + 1
+            self.model.update_trainable_rank()
         if self.global_step in self.upsample_time_steps:
             # Upsample time resolution
             self.model.upsample_time(self.upsample_time_resolution[self.upsample_time_steps.index(self.global_step)])
@@ -168,10 +173,11 @@ class VideoTrainer(Trainer):
                 tr_dd = init_tr_data(data_dir=data_dir, **self.extra_args)
                 self.train_data_loader = tr_dd['tr_loader']
                 self.train_datasets = [tr_dd['tr_dset']]
-                # ts_dset = Video360Dataset(  @sara why is the test-set being reloaded? If useful make use of the init_ts_data function
-                #     data_dir, split='test', downsample=4, keyframes=False, is_contracted=self.test_datasets[0].is_contracted
-                # )
-                # self.test_datasets = [ts_dset]
+                # Reload the test dataset also, since it should not use keyframes once the train set is full-time
+                ts_dset = Video360Dataset(  
+                    data_dir, split='test', downsample=4, keyframes=False, is_contracted=self.test_datasets[0].is_contracted
+                )
+                self.test_datasets = [ts_dset]
                 raise StopIteration  # Whenever we change the dataset
         if self.global_step == self.isg_step:
             self.train_datasets[0].enable_isg()
