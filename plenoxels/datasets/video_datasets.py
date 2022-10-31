@@ -108,7 +108,7 @@ class Video360Dataset(BaseDataset):
         if dset_type == "synthetic":
             self.len_time = torch.amax(timestamps).item()
         elif dset_type == "llff":
-            self.len_time = 300
+            self.len_time = 299
         if self.split == 'train':
             self.timestamps = timestamps[:, None, None].repeat(
                 1, intrinsics.height, intrinsics.width).reshape(-1)  # [n_frames * h * w]
