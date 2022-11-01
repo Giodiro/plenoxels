@@ -23,6 +23,7 @@ config = {
     "optim_type": "adam",
     "lr": 1e-2,
 
+    # Regularization
     "floater_loss": 0,
     "plane_tv_weight": 0.000,
     "plane_tv_what": "Gcoords",
@@ -50,15 +51,16 @@ config = {
 
     # Model settings
     "sh": True,
+    "sh_decoder_type": "manual",  # can be 'tcnn' or 'manual'
     "density_threshold": 4e-4,
-    "dmask_update": [],#3500, 5500],
-    "upsample_steps": [],#7000,10000],#,4000,5500], #[500, 800, 1200, 1500, 2000],
+    "dmask_update": [],
+    "upsample_steps": [],
     #"dmask_update": [2000, 4000],
     #"upsample_steps": [2000, 3000, 4000, 5500, 7000],
-    "upsample_resolution": [],#6941900, 23292360],#, 78205680, 261365436], #[3241792, 5832000, 11239424, 16777216, 27000000], #[4410944, 11239424, 32768000, 91125000],
+    "upsample_resolution": [],
     "density_multiplier": 1,
     "use_F": False,
-    "density_activation": "trunc_exp",
+    "density_activation": "trunc_exp",  # can be 'relu' or 'trunc_exp'
 
     "grid_config": """
 [

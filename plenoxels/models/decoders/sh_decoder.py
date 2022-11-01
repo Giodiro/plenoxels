@@ -80,8 +80,9 @@ def eval_sh_bases(basis_dim : int, dirs : torch.Tensor):
                     result[..., 24] = SH_C4[8] * (xx * (xx - 3 * yy) - yy * (3 * xx - yy))
     return result
 
+
 class SHDecoder(BaseDecoder):
-    def __init__(self, feature_dim: int):
+    def __init__(self, feature_dim: int, decoder_type: str = 'manual'):
         super().__init__()
         sh_degree = int(round(np.sqrt((feature_dim - 1) / 3) - 1))
         if feature_dim - 1 != ((sh_degree + 1) ** 2) * 3:
@@ -89,21 +90,29 @@ class SHDecoder(BaseDecoder):
         print(f'using spherical harmonic degree {sh_degree}, which corresponds to {feature_dim} features')
         self.sh_degree = sh_degree + 1
         self.sh_dim = (feature_dim - 1) // 3
-        self.direction_encoder = tcnn.Encoding(
-            n_input_dims=3,
-            encoding_config={
-                "otype": "SphericalHarmonics",
-                "degree": self.sh_degree,
-            },
-        )
+        if decoder_type not in {'manual', 'tcnn'}:
+            raise ValueError(
+                f"SH decoder type must be either 'manual' or 'tcnn', but found {decoder_type}.")
+        self.decoder_type = decoder_type
+        self.direction_encoder = None
+        if self.decoder_type == 'tcnn':
+            self.direction_encoder = tcnn.Encoding(
+                n_input_dims=3,
+                encoding_config={
+                    "otype": "SphericalHarmonics",
+                    "degree": self.sh_degree,
+                },
+            )
 
     def compute_density(self, features, rays_d, **kwargs):
         return features[..., -1].view(-1, 1)
 
     def compute_color(self, features, rays_d):
         color_features = features[..., :-1]
-        #sh_mult = eval_sh_bases(self.sh_dim, rays_d)[:, None, :]  # [batch, 1, harmonic_components]
-        sh_mult = self.direction_encoder(rays_d)[:, None, :]  # [batch, 1, harmonic_components]
+        if self.decoder_type == 'tcnn':
+            sh_mult = self.direction_encoder(rays_d)[:, None, :]  # [batch, 1, harmonic_components]
+        else:
+            sh_mult = eval_sh_bases(self.sh_dim, rays_d)[:, None, :]  # [batch, 1, harmonic_components]
         rgb = color_features.view(color_features.shape[0], 3, sh_mult.shape[-1])  # [batch, 3, harmonic_components]
         return torch.sum(sh_mult * rgb, dim=-1)  # [batch, 3]
 

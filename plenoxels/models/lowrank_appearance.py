@@ -62,7 +62,9 @@ class LowrankAppearance(LowrankModel):
                 self.grids = gpdesc.grid_coefs
                 self.time_coef = gpdesc.time_coef  # [out_dim * rank, time_reso]
         if self.sh:
-            self.decoder = SHDecoder(feature_dim=self.feature_dim)
+            self.decoder = SHDecoder(
+                feature_dim=self.feature_dim,
+                decoder_type=self.extra_args.get('sh_decoder_type', 'manual'))
         else:
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
         log.info(f"Initialized LowrankAppearance. "
