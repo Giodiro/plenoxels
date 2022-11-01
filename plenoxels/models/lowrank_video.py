@@ -20,6 +20,7 @@ class LowrankVideo(LowrankModel):
                  is_ndc: bool,
                  is_contracted: bool,
                  sh: bool,
+                 use_trainable_rank: bool = False,
                  **kwargs):
         super().__init__()
         if isinstance(grid_config, str):
@@ -37,7 +38,7 @@ class LowrankVideo(LowrankModel):
         self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
         self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
         self.use_F = self.extra_args["use_F"]
-        self.trainable_rank = 1
+        self.trainble_rank = None
         self.hooks = None
 
         # For now, only allow a single index grid and a single feature grid, not multiple layers
@@ -59,7 +60,10 @@ class LowrankVideo(LowrankModel):
             self.decoder = SHDecoder(feature_dim=self.feature_dim)
         else:
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
-        self.update_trainable_rank()
+        
+        if use_trainable_rank:
+            self.trainable_rank = 1
+            self.update_trainable_rank()
         log.info(f"Initialized LowrankVideo - decoder={self.decoder}")
 
     @torch.no_grad()
