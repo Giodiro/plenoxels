@@ -166,11 +166,24 @@ model.load_state_dict(checkpoint['model'])
 parameters = [grid.data for grid in model.grids]
 
 for plane_idx, grid in enumerate(model.grids):
-    print("Plane", plane_idx, grid.shape)
-    density = grid.data[:, -1:, ...]
-    density = ((density[0, 0, ...] - density.min())/(density.max() - density.min()) * 255).cpu().numpy().astype(np.uint8)
-    cv2.imwrite(f"{save_dir}density_{plane_idx}.png", density)
+                    
+    _, c, h, w = grid.data.shape
+    rank = model.config[0]["rank"][0]
+    dim = model.config[0]["output_coordinate_dim"]
+    grid = grid.data.view(dim, rank, h, w)
+    for r in range(rank):
+        
+        density = grid[-1, r, :, :]
+        density = ((density - density.min())/(density.max() - density.min()) * 255).cpu().numpy().astype(np.uint8)
+        cv2.imwrite(os.path.join(save_dir, f"density-plane-{plane_idx}-rank_{r}.png"), density)
     
+        rays_d = torch.ones((h*w, 3), device=grid.device)
+        rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
+        features = grid[:, r, :, :].view(dim, h*w).permute(1,0)
+        color = model.decoder.compute_color(features, rays_d) * 255
+        color = color.view(h, w, 3).cpu().numpy().astype(np.uint8)
+        cv2.imwrite(os.path.join(save_dir, f"color-plane-{plane_idx}-rank_{r}.png"), color)
+
 
 # visualize time grid
 train_dataset = PhotoTourismDataset("/work3/frwa/data/phototourism/trevi", "train")

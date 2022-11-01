@@ -9,7 +9,7 @@ import pandas as pd
 import torch
 import torch.utils.data
 from torch.utils.tensorboard import SummaryWriter
-import cv2
+import matplotlib.pyplot as plt
 
 from plenoxels.ema import EMA
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash, DensityMask
@@ -34,6 +34,9 @@ class Trainer():
                  regnerf_weight_max_step: int,
                  floater_loss: float,
                  plane_tv_weight: float,
+                 time_smoothness_weight: float,
+                 l1_plane_color_reg: float,
+                 l1_plane_density_reg: float,
                  l1density_weight: float,
                  volume_tv_weight: float,
                  volume_tv_npts: int,
@@ -64,6 +67,9 @@ class Trainer():
         self.regnerf_weight_max_step = regnerf_weight_max_step
         self.cur_regnerf_weight = self.regnerf_weight_start
         self.plane_tv_weight = plane_tv_weight
+        self.time_smoothness_weight = time_smoothness_weight
+        self.l1_plane_color_reg = l1_plane_color_reg
+        self.l1_plane_density_reg = l1_plane_density_reg
         self.plane_tv_what = kwargs.get('plane_tv_what', 'Gcoords')
         self.l1density_weight = l1density_weight
         self.volume_tv_weight = volume_tv_weight
@@ -171,6 +177,14 @@ class Trainer():
                 depths = reshape_to_patch(out["depth"], 1)
                 depth_tv = compute_tv_norm(depths, 'l2', None) * self.cur_regnerf_weight
                 loss = loss + depth_tv
+            l1_density: Optional[torch.Tensor] = None
+            if self.l1_plane_density_reg > 0:
+                l1_density = self.model.compute_l1_plane_density_reg(grid_id=dset_id) * self.l1_plane_density_reg
+                loss = loss + l1_density
+            l1_color: Optional[torch.Tensor] = None
+            if self.l1_plane_color_reg > 0:
+                l1_color = self.model.compute_l1_plane_color_reg(grid_id=dset_id) * self.l1_plane_color_reg
+                loss = loss + l1_color
             plane_tv: Optional[torch.Tensor] = None
             if self.plane_tv_weight > 0:
                 plane_tv = self.model.compute_plane_tv(
@@ -363,20 +377,38 @@ class Trainer():
 
             # visualize planes
             if self.save_outputs:                
-                for plane_idx, grid in enumerate(self.model.scene_grids[0][0]):
-                    out_name = f"step{self.global_step}-D{dset_id}"
-                    _, c, h, w = grid.data.shape
-                    
-                    density = grid.data[:, -1:, ...]
-                    density = ((density[0, 0, ...] - density.min())/(density.max() - density.min()) * 255).cpu().numpy().astype(np.uint8)
-                    cv2.imwrite(os.path.join(self.log_dir, f"{out_name}-density-plane-{plane_idx}.png"), density)
+                out_name = f"step{self.global_step}-D{dset_id}"
+                rank = self.model.config[0]["rank"][0]
+                dim = self.model.config[0]["output_coordinate_dim"]
+                n_planes = len(self.model.scene_grids[0][0])
                 
-                    rays_d = torch.ones((grid.data.view(-1, 28).shape[0], 3), device=grid.data.device).view(-1,3)
-                    rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
-                    features = grid.data.view(c, h*w).permute(1,0)
-                    color = self.model.decoder.compute_color(features, rays_d) * 255
-                    color = color.view(h, w, 3).cpu().numpy().astype(np.uint8)
-                    cv2.imwrite(os.path.join(self.log_dir, f"{out_name}-color-plane-{plane_idx}.png"), color)
+                fig, ax = plt.subplots(nrows=n_planes, ncols=2*rank, figsize=(3*n_planes,3*2*rank))
+                for plane_idx, grid in enumerate(self.model.scene_grids[0][0]):
+                    _, c, h, w = grid.data.shape
+
+                    grid = grid.data.view(dim, rank, h, w)
+                    for r in range(rank):
+                        density = grid[-1, r, :, :].cpu().numpy()
+
+                        im = ax[plane_idx, r].imshow(density)
+                        ax[plane_idx, r].axis("off")
+                        plt.colorbar(im, ax=ax[plane_idx, r], aspect=20, fraction=0.04)
+
+                        rays_d = torch.ones((h*w, 3), device=grid.device)
+                        rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
+                        features = grid[:, r, :, :].view(dim, h*w).permute(1,0)
+                        color = self.model.decoder.compute_color(features, rays_d) * 255
+                        color = color.view(h, w, 3).cpu().numpy().astype(np.uint8)
+                        
+                        im = ax[plane_idx, r+rank].imshow(color)
+                        ax[plane_idx, r+rank].axis("off")
+                        plt.colorbar(im, ax=ax[plane_idx, r+rank], aspect=20, fraction=0.04)
+                        
+                fig.tight_layout()
+                plt.savefig(os.path.join(self.log_dir, f"{out_name}-planes.png"))
+                plt.cla()
+                plt.clf()
+                plt.close()
 
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))

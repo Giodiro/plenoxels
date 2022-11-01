@@ -5,7 +5,7 @@ import os
 from collections import defaultdict
 from copy import copy
 from typing import Dict, Optional, MutableMapping
-
+import matplotlib.pyplot as plt
 import cv2
 import numpy as np
 import pandas as pd
@@ -94,7 +94,9 @@ class VideoTrainer(Trainer):
                 else:
                     bg_color = 1
                 outputs = self.model(rays_o_b, rays_d_b, timestamps_d_b, bg_color=bg_color,
-                                     channels={"rgb", "depth"}, near_far=near_far)
+                                     channels={"rgb", "depth"}, near_far=near_far,
+                                     global_translation=self.train_datasets[0].global_translation,
+                                     global_scale=self.train_datasets[0].global_scale)
                 for k, v in outputs.items():
                     preds[k].append(v)
         return {k: torch.cat(v, 0) for k, v in preds.items()}
@@ -124,7 +126,9 @@ class VideoTrainer(Trainer):
             imgs = imgs[..., :3] * imgs[..., 3:] + bg_color * (1.0 - imgs[..., 3:])
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            fwd_out = self.model(rays_o, rays_d, timestamps, bg_color=bg_color, channels={"rgb"}, near_far=near_far)
+            fwd_out = self.model(rays_o, rays_d, timestamps, bg_color=bg_color, channels={"rgb"}, near_far=near_far, 
+                                 global_translation=self.train_datasets[0].global_translation,
+                                 global_scale=self.train_datasets[0].global_scale)
             rgb_preds = fwd_out["rgb"]
             recon_loss = self.criterion(rgb_preds, imgs)
             loss = recon_loss
@@ -132,6 +136,10 @@ class VideoTrainer(Trainer):
             if self.plane_tv_weight > 0:
                 plane_tv = self.model.compute_plane_tv() * self.plane_tv_weight
                 loss = loss + plane_tv
+            time_smoothness = None
+            if self.time_smoothness_weight > 0:
+                time_smoothness = self.model.compute_time_smoothness() * self.time_smoothness_weight
+                loss = loss + time_smoothness
             floater_loss: Optional[torch.Tensor] = None
             if self.floater_loss > 0:
                 midpoint = torch.cat([fwd_out["midpoint"], (2*fwd_out["midpoint"][:,-1] - fwd_out["midpoint"][:,-2])[:,None]], dim=1)
@@ -150,6 +158,8 @@ class VideoTrainer(Trainer):
         self.loss_info["psnr"].update(-10 * math.log10(recon_loss_val))
         if plane_tv is not None:
             self.loss_info["plane_tv"].update(plane_tv.item() if self.plane_tv_weight > 0 else 0.0)
+        if time_smoothness is not None:
+            self.loss_info["time_smoothness"].update(time_smoothness.item() if self.time_smoothness_weight > 0 else 0.0)
         if floater_loss is not None:
             self.loss_info["floater_loss"].update(floater_loss.item())
 
@@ -251,7 +261,9 @@ class VideoTrainer(Trainer):
 
                 with torch.cuda.amp.autocast(enabled=self.train_fp16):
                     fwd_out = self.model(rays_o_b, rays_d_b, timestamps_b, bg_color=1,
-                                        channels={"rgb"}, near_far=near_far_b)
+                                        channels={"rgb"}, near_far=near_far_b,
+                                        global_translation=self.train_datasets[0].global_translation,
+                                        global_scale=self.train_datasets[0].global_scale)
                     rgb_preds = fwd_out["rgb"]
                     recon_loss = self.criterion(rgb_preds, imgs_b)
                     loss = recon_loss
@@ -300,6 +312,42 @@ class VideoTrainer(Trainer):
         if hasattr(self.model, "appearance_code"):
             self.optimize_appearance_codes()
 
+        with torch.no_grad():
+            # visualize planes
+            if self.save_outputs:
+                out_name = f"step{self.global_step}"
+                rank = self.model.config[0]["rank"][0]
+                dim = self.model.config[0]["output_coordinate_dim"]
+                n_planes = len(self.model.grids)
+                
+                fig, ax = plt.subplots(nrows=n_planes, ncols=2*rank, figsize=(3*n_planes,3*2*rank))
+                for plane_idx, grid in enumerate(self.model.grids):
+                    _, c, h, w = grid.data.shape
+
+                    grid = grid.data.view(dim, rank, h, w)
+                    for r in range(rank):
+                        density = grid[-1, r, :, :].cpu().numpy()
+
+                        im = ax[plane_idx, r].imshow(density)
+                        ax[plane_idx, r].axis("off")
+                        plt.colorbar(im, ax=ax[plane_idx, r], aspect=20, fraction=0.04)
+
+                        rays_d = torch.ones((h*w, 3), device=grid.device)
+                        rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
+                        features = grid[:, r, :, :].view(dim, h*w).permute(1,0)
+                        color = self.model.decoder.compute_color(features, rays_d) * 255
+                        color = color.view(h, w, 3).cpu().numpy().astype(np.uint8)
+                        
+                        im = ax[plane_idx, r+rank].imshow(color)
+                        ax[plane_idx, r+rank].axis("off")
+                        plt.colorbar(im, ax=ax[plane_idx, r+rank], aspect=20, fraction=0.04)
+                        
+                fig.tight_layout()
+                plt.savefig(os.path.join(self.log_dir, f"{out_name}-planes.png"))
+                plt.cla()
+                plt.clf()
+                plt.close()
+
         val_metrics = []
         with torch.no_grad():
             for dset_id, dataset in enumerate(self.test_datasets):
@@ -330,25 +378,7 @@ class VideoTrainer(Trainer):
                 val_metrics.append(per_scene_metrics)
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
-        
-        with torch.no_grad():
-            # visualize planes
-            if self.save_outputs:
-                out_name = f"step{self.global_step}-D{dset_id}"
-                for plane_idx, grid in enumerate(self.model.grids):
-                    _, c, h, w = grid.data.shape
-                    
-                    density = grid.data[:, -1:, ...]
-                    density = ((density[0, 0, ...] - density.min())/(density.max() - density.min()) * 255).cpu().numpy().astype(np.uint8)
-                    cv2.imwrite(os.path.join(self.log_dir, f"{out_name}-density-plane-{plane_idx}.png"), density)
-                    
-                    rays_d = torch.ones((grid.data.view(-1, 28).shape[0], 3), device=grid.data.device).view(-1,3)
-                    rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
-                    features = grid.data.view(c, h*w).permute(1,0)
-                    color = self.model.decoder.compute_color(features, rays_d) * 255
-                    color = color.view(grid.data.shape[2], grid.data.shape[3], 3).cpu().numpy().astype(np.uint8)
-                    cv2.imwrite(os.path.join(self.log_dir, f"{out_name}-color-plane-{plane_idx}.png"), color)
-
+                
     def write_video_to_file(self, frames, dataset):
         video_file = os.path.join(self.log_dir, f"step{self.global_step}.mp4")
         logging.info(f"Saving video ({len(frames)} frames) to {video_file}")

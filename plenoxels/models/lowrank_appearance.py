@@ -113,7 +113,7 @@ class LowrankAppearance(LowrankModel):
             return out, interp
         return out
 
-    def forward(self, rays_o, rays_d, timestamps, bg_color, channels: Sequence[str] = ("rgb", "depth"), near_far=None):
+    def forward(self, rays_o, rays_d, timestamps, bg_color, channels: Sequence[str] = ("rgb", "depth"), near_far=None, global_translation=torch.tensor([0, 0, 0]), global_scale=torch.tensor([1, 1, 1])):
         """
         rays_o : [batch, 3]
         rays_d : [batch, 3]
@@ -123,7 +123,8 @@ class LowrankAppearance(LowrankModel):
 
         rm_out = self.raymarcher.get_intersections2(
             rays_o, rays_d, self.aabb(0), self.resolution(0), perturb=self.training,
-            is_ndc=self.is_ndc, is_contracted=self.is_contracted, near_far=near_far)
+            is_ndc=self.is_ndc, is_contracted=self.is_contracted, near_far=near_far,
+            global_translation=global_translation, global_scale=global_scale)
         rays_d = rm_out["rays_d"]                   # [n_rays, 3]
         intersection_pts = rm_out["intersections"]  # [n_rays, n_intrs, 3]
         mask = rm_out["mask"]                       # [n_rays, n_intrs]

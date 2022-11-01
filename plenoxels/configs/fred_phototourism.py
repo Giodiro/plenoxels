@@ -66,7 +66,7 @@ config = {
         "output_coordinate_dim": 28,
         "grid_dimensions": 2,
         "resolution": [512, 512, 512, 1708], 
-        "rank": 1,
+        "rank": 2,
         "time_reso": 1708,
     },
     {

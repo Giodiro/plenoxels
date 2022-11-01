@@ -5,7 +5,7 @@ from typing import Dict, List, Union, Sequence, Tuple
 import torch
 import torch.nn.functional as F
 
-from plenoxels.models.utils import grid_sample_wrapper, compute_plane_tv, compute_line_tv, raw2alpha
+from plenoxels.models.utils import grid_sample_wrapper, compute_plane_tv, compute_line_tv, raw2alpha, compute_plane_smoothness
 from .decoders import NNDecoder, SHDecoder
 from .lowrank_model import LowrankModel
 from ..raymarching.raymarching import RayMarcher
@@ -20,6 +20,7 @@ class LowrankVideo(LowrankModel):
                  is_ndc: bool,
                  is_contracted: bool,
                  sh: bool,
+                 use_trainable_rank: bool = False,
                  **kwargs):
         super().__init__()
         if isinstance(grid_config, str):
@@ -37,7 +38,7 @@ class LowrankVideo(LowrankModel):
         self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
         self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
         self.use_F = self.extra_args["use_F"]
-        self.trainable_rank = 1
+        self.trainble_rank = None
         self.hooks = None
 
         # For now, only allow a single index grid and a single feature grid, not multiple layers
@@ -59,7 +60,10 @@ class LowrankVideo(LowrankModel):
             self.decoder = SHDecoder(feature_dim=self.feature_dim)
         else:
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
-        self.update_trainable_rank()
+        
+        if use_trainable_rank:
+            self.trainable_rank = 1
+            self.update_trainable_rank()
         log.info(f"Initialized LowrankVideo - decoder={self.decoder}")
 
     @torch.no_grad()
@@ -111,7 +115,8 @@ class LowrankVideo(LowrankModel):
             return out, interp
         return out
 
-    def forward(self, rays_o, rays_d, timestamps, bg_color, channels: Sequence[str] = ("rgb", "depth"), near_far=None):
+    def forward(self, rays_o, rays_d, timestamps, bg_color, channels: Sequence[str] = ("rgb", "depth"), near_far=None, 
+                global_translation=torch.tensor([0, 0, 0]), global_scale=torch.tensor([1, 1, 1])):
         """
         rays_o : [batch, 3]
         rays_d : [batch, 3]
@@ -121,7 +126,8 @@ class LowrankVideo(LowrankModel):
 
         rm_out = self.raymarcher.get_intersections2(
             rays_o, rays_d, self.aabb(0), self.resolution(0), perturb=self.training,
-            is_ndc=self.is_ndc, is_contracted=self.is_contracted, near_far=near_far)
+            is_ndc=self.is_ndc, is_contracted=self.is_contracted, near_far=near_far,
+            global_translation=global_translation, global_scale=global_scale)
         rays_d = rm_out["rays_d"]                   # [n_rays, 3]
         intersection_pts = rm_out["intersections"]  # [n_rays, n_intrs, 3]
         mask = rm_out["mask"]                       # [n_rays, n_intrs]
@@ -188,10 +194,21 @@ class LowrankVideo(LowrankModel):
         return params
 
     def compute_plane_tv(self):
-        grid_space = self.grids  # space: 3 x [1, rank * F_dim, reso, reso]
+        # self.grids is 6 x [1, rank * F_dim, reso, reso]
         total = 0
-        for grid in grid_space:
-            total += compute_plane_tv(grid)
+        spatial_grids = [0, 1, 3]  # These are the spatial grids; the others are spatiotemporal
+        for idx, grid in enumerate(self.grids):  
+            if idx in spatial_grids:
+                total += compute_plane_tv(grid)
+        return total
+
+    def compute_time_smoothness(self):
+        # self.grids is 6 x [1, rank * F_dim, reso, reso]
+        total = 0
+        time_grids = [2, 4, 5]  # These are the spatiotemporal grids; the others are only spatial
+        for idx, grid in enumerate(self.grids):  
+            if idx in time_grids:
+                total += compute_plane_smoothness(grid)
         return total
 
     def update_trainable_rank(self):
