@@ -94,7 +94,9 @@ class VideoTrainer(Trainer):
                 else:
                     bg_color = 1
                 outputs = self.model(rays_o_b, rays_d_b, timestamps_d_b, bg_color=bg_color,
-                                     channels={"rgb", "depth"}, near_far=near_far)
+                                     channels={"rgb", "depth"}, near_far=near_far,
+                                     global_translation=self.train_datasets[0].global_translation,
+                                     global_scale=self.train_datasets[0].global_scale)
                 for k, v in outputs.items():
                     preds[k].append(v)
         return {k: torch.cat(v, 0) for k, v in preds.items()}
@@ -124,7 +126,9 @@ class VideoTrainer(Trainer):
             imgs = imgs[..., :3] * imgs[..., 3:] + bg_color * (1.0 - imgs[..., 3:])
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            fwd_out = self.model(rays_o, rays_d, timestamps, bg_color=bg_color, channels={"rgb"}, near_far=near_far)
+            fwd_out = self.model(rays_o, rays_d, timestamps, bg_color=bg_color, channels={"rgb"}, near_far=near_far, 
+                                 global_translation=self.train_datasets[0].global_translation,
+                                 global_scale=self.train_datasets[0].global_scale)
             rgb_preds = fwd_out["rgb"]
             recon_loss = self.criterion(rgb_preds, imgs)
             loss = recon_loss
@@ -251,7 +255,9 @@ class VideoTrainer(Trainer):
 
                 with torch.cuda.amp.autocast(enabled=self.train_fp16):
                     fwd_out = self.model(rays_o_b, rays_d_b, timestamps_b, bg_color=1,
-                                        channels={"rgb"}, near_far=near_far_b)
+                                        channels={"rgb"}, near_far=near_far_b,
+                                        global_translation=self.train_datasets[0].global_translation,
+                                        global_scale=self.train_datasets[0].global_scale)
                     rgb_preds = fwd_out["rgb"]
                     recon_loss = self.criterion(rgb_preds, imgs_b)
                     loss = recon_loss
