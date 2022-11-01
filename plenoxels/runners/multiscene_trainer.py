@@ -223,7 +223,6 @@ class Trainer():
                     self.model.train()
                 self.global_step += 1
                 # Get a batch of data
-
                 self.timer.reset()
                 data = next(batch_iter)
                 self.timer.check("data")
@@ -277,51 +276,10 @@ class Trainer():
                 log_text += f" | D{dset_id} SSIM: {per_scene_metrics['ssim']:.6f}"
                 logging.info(log_text)
                 val_metrics.append(per_scene_metrics)
-            if False:  # Render extra poses
-                dset = self.train_datasets[0]
-                ro, rd = dset.extra_rays_o, dset.extra_rays_d
-                pb = tqdm(total=ro.shape[0], desc="Rendering extra poses")
-                for pose_idx in range(ro.shape[0]):
-                    data = dict(rays_o=ro[pose_idx].view(-1, 3), rays_d=rd[pose_idx].view(-1, 3))
-                    preds = self.eval_step(data, dset_id=0)
-                    self.evaluate_metrics(None, preds, dset_id=0, dset=dset, img_idx=pose_idx, name="extra_pose",
-                                          save_outputs=True)
-                    pb.update(1)
 
             # visualize planes
-            if self.save_outputs:                
-                out_name = f"step{self.global_step}-D{dset_id}"
-                rank = self.model.config[0]["rank"][0]
-                dim = self.model.config[0]["output_coordinate_dim"]
-                n_planes = len(self.model.scene_grids[0][0])
-                
-                fig, ax = plt.subplots(nrows=n_planes, ncols=2*rank, figsize=(3*n_planes, 3*2*rank))
-                for plane_idx, grid in enumerate(self.model.scene_grids[0][0]):
-                    _, c, h, w = grid.data.shape
-
-                    grid = grid.data.view(dim, rank, h, w)
-                    for r in range(rank):
-                        density = grid[-1, r, :, :].cpu().numpy()
-
-                        im = ax[plane_idx, r].imshow(density)
-                        ax[plane_idx, r].axis("off")
-                        plt.colorbar(im, ax=ax[plane_idx, r], aspect=20, fraction=0.04)
-
-                        rays_d = torch.ones((h*w, 3), device=grid.device)
-                        rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
-                        features = grid[:, r, :, :].view(dim, h*w).permute(1,0)
-                        color = self.model.decoder.compute_color(features, rays_d) * 255
-                        color = color.view(h, w, 3).cpu().numpy().astype(np.uint8)
-                        
-                        im = ax[plane_idx, r+rank].imshow(color)
-                        ax[plane_idx, r+rank].axis("off")
-                        plt.colorbar(im, ax=ax[plane_idx, r+rank], aspect=20, fraction=0.04)
-                        
-                fig.tight_layout()
-                plt.savefig(os.path.join(self.log_dir, f"{out_name}-planes.png"))
-                plt.cla()
-                plt.clf()
-                plt.close()
+            if self.save_outputs:
+                visualize_planes(model, self.log_dir, f"step{self.global_step}-D{dset_id}")
 
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
@@ -482,7 +440,7 @@ class Trainer():
             num_scenes=self.num_dsets,
             grid_config=kwargs.pop("grid_config"),
             aabb=aabbs,
-            is_ndc=self.is_ndc,  # TODO: This should also be per-scene
+            is_ndc=self.is_ndc,
             is_contracted=self.is_contracted,
             **kwargs)
         logging.info(f"Initialized LowrankLearnableHash model with "
@@ -583,14 +541,47 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
     return {"ts_dsets": ts_dsets, "tr_dsets": tr_dsets, "tr_loader": tr_loader}
 
 
-def trace_handler(p):
-    output = p.key_averages(group_by_input_shape=True).table(sort_by="self_cuda_time_total", row_limit=20)
-    print(output)
-    output = p.key_averages(group_by_input_shape=True).table(sort_by="self_cpu_time_total", row_limit=20)
-    print(output)
-    p.export_chrome_trace("./logs/trace_" + str(p.step_num) + ".json")
-
-
 def N_to_reso(num_voxels, aabb):
     voxel_size = ((aabb[1] - aabb[0]).prod() / num_voxels).pow(1 / 3)
     return ((aabb[1] - aabb[0]) / voxel_size).long().cpu().tolist()
+
+
+@torch.no_grad()
+def visualize_planes(model, save_dir: str, name: str):
+    rank = model.config[0]["rank"][0]
+    dim = model.feature_dim
+    grids = model.scene_grids[0][0]
+
+    n_planes = len(grids)
+    fig, axs = plt.subplots(nrows=n_planes, ncols=2*rank, figsize=(3*n_planes, 3*2*rank))
+    for plane_idx, grid in enumerate(grids):
+        _, c, h, w = grid.shape
+        grid = grid.view(dim, rank, h, w)
+        for r in range(rank):
+            grid_r = grid[:, r, :, :].cpu()
+            # Density plot
+            ax = axs[plane_idx, r]
+            density = model.density_act(grid_r[-1, :, :]).numpy()
+            im = ax.imshow(density)
+            ax.axis("off")
+            plt.colorbar(im, ax=ax, aspect=20, fraction=0.04)
+
+            # Color plot
+            ax = axs[plane_idx, r + rank]
+            rays_d = torch.ones((h * w, 3))
+            rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
+            features = grid_r.view(dim, h*w).transpose()  # [h*w, dim]
+            color = (
+                torch.sigmoid(
+                    model.decoder.compute_color(features, rays_d)
+                ) * 255
+            ).view(h, w, 3).numpy().astype(np.uint8)
+            im = ax.imshow(color)
+            ax.axis("off")
+            plt.colorbar(im, ax=ax, aspect=20, fraction=0.04)
+
+        fig.savefig(os.path.join(save_dir, f"{name}-planes.png"), bbox_inches='tight')
+        plt.cla()
+        plt.clf()
+        plt.close(fig)
+
