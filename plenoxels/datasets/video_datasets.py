@@ -64,9 +64,9 @@ class Video360Dataset(BaseDataset):
                 keyframes=keyframes, keyframes_take_each=30)
             self.poses = poses.float()
             self.per_cam_near_fars = self.per_cam_near_fars.float()
-            # TODO: tune these for each specific video
+            # These values are tuned for the salmon video
             self.global_translation = torch.tensor([0, 0, 2])
-            self.global_scale = torch.tensor([1, 1, 1])
+            self.global_scale = torch.tensor([0.6, 0.6, 1])
             log.info(f'per_cam_near_fars is {self.per_cam_near_fars}, with global translation '
                      f'{self.global_translation} and scale {self.global_scale}')
         elif dset_type == "synthetic":
@@ -85,19 +85,6 @@ class Video360Dataset(BaseDataset):
         else:
             imgs = imgs.view(-1, intrinsics.height * intrinsics.width, imgs.shape[-1])
 
-        isg_weights = None
-        if self.isg:
-            t_s = time.time()
-            gamma = 1e-3 if self.keyframes else 2e-2
-            isg_weights = dynerf_isg_weight(
-                imgs.view(-1, intrinsics.height, intrinsics.width, imgs.shape[-1]),
-                self.median_imgs,
-                gamma)
-            # Normalize into a probability distribution, to speed up sampling
-            isg_weights = (isg_weights.reshape(-1) / torch.sum(isg_weights))
-            t_e = time.time()
-            log.info(f"Computed {isg_weights.shape[0]} ISG weights in {t_e - t_s:.2f}s.")
-
         super().__init__(datadir=datadir,
                          split=split,
                          batch_size=batch_size,
@@ -108,8 +95,43 @@ class Video360Dataset(BaseDataset):
                          rays_d=None,
                          intrinsics=intrinsics,
                          imgs=imgs,
-                         sampling_weights=isg_weights
+                         sampling_weights=None,  # Start without importance sampling, by default
                          )
+        
+        self.isg_weights = None
+        self.ist_weights = None
+        if split == "train":
+            if os.path.exists(os.path.join(datadir, f"isg_weights.pt")):
+                self.isg_weights = torch.load(os.path.join(datadir, f"isg_weights.pt"))
+                log.info(f"Reloaded {self.isg_weights.shape[0]} ISG weights from file.")
+            else:
+                # Precompute ISG weights
+                t_s = time.time()
+                gamma = 1e-3 if self.keyframes else 2e-2
+                self.isg_weights = dynerf_isg_weight(
+                    imgs.view(-1, intrinsics.height, intrinsics.width, imgs.shape[-1]),
+                    self.median_imgs,
+                    gamma)
+                # Normalize into a probability distribution, to speed up sampling
+                self.isg_weights = (self.isg_weights.reshape(-1) / torch.sum(self.isg_weights))
+                torch.save(self.isg_weights, os.path.join(datadir, f"isg_weights.pt"))
+                t_e = time.time()
+                log.info(f"Computed {self.isg_weights.shape[0]} ISG weights in {t_e - t_s:.2f}s.")
+
+            if os.path.exists(os.path.join(datadir, f"ist_weights.pt")):
+                self.ist_weights = torch.load(os.path.join(datadir, f"ist_weights.pt"))
+                log.info(f"Reloaded {self.ist_weights.shape[0]} IST weights from file.")
+            else:
+                # Precompute IST weights
+                t_s = time.time()
+                self.ist_weights = dynerf_ist_weight(
+                    imgs.view(-1, self.img_h, self.img_w, imgs.shape[-1]),
+                    num_cameras=self.median_imgs.shape[0])
+                # Normalize into a probability distribution, to speed up sampling
+                self.ist_weights = (self.ist_weights.reshape(-1) / torch.sum(self.ist_weights))
+                torch.save(self.ist_weights, os.path.join(datadir, f"ist_weights.pt"))
+                t_e = time.time()
+                log.info(f"Computed {self.ist_weights.shape[0]} IST weights in {t_e - t_s:.2f}s.")
 
         if dset_type == "synthetic":
             self.len_time = torch.amax(timestamps).item()
@@ -131,30 +153,14 @@ class Video360Dataset(BaseDataset):
     def enable_isg(self):
         self.isg = True
         self.ist = False
-        t_s = time.time()
-        gamma = 1e-3 if self.keyframes else 2e-2
-        isg_weights = dynerf_isg_weight(
-            self.imgs.view(-1, self.img_h, self.img_w, self.imgs.shape[-1]),
-            self.median_imgs, gamma)
-        # Normalize into a probability distribution, to speed up sampling
-        isg_weights = (isg_weights.reshape(-1) / torch.sum(isg_weights))
-        self.sampling_weights = isg_weights
-        t_e = time.time()
-        log.info(f"Enabled ISG weights (computed in {t_e - t_s:.2f}s).")
+        self.sampling_weights = self.isg_weights
+        log.info(f"Enabled ISG weights.")
 
     def switch_isg2ist(self):
-        del self.sampling_weights
         self.isg = False
         self.ist = True
-        t_s = time.time()
-        ist_weights = dynerf_ist_weight(
-            self.imgs.view(-1, self.img_h, self.img_w, self.imgs.shape[-1]),
-            num_cameras=self.median_imgs.shape[0])
-        # Normalize into a probability distribution, to speed up sampling
-        ist_weights = (ist_weights.reshape(-1) / torch.sum(ist_weights))
-        self.sampling_weights = ist_weights
-        t_e = time.time()
-        log.info(f"Switched from ISG to IST weights (computed in {t_e - t_s:.2f}s).")
+        self.sampling_weights = self.ist_weights
+        log.info(f"Switched from ISG to IST weights.")
 
     def __getitem__(self, index):
         h = self.intrinsics.height

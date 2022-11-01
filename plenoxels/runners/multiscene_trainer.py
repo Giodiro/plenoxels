@@ -558,9 +558,10 @@ def visualize_planes(model, save_dir: str, name: str):
 
         grid = grid.data.view(dim, rank, h, w)
         for r in range(rank):
-            density = model.density_act(
-                grid[-1, r, :, :].cpu()
-            ).numpy()
+            # density = model.density_act(
+            #     grid[-1, r, :, :].cpu()
+            # ).numpy()
+            density = grid[-1, r, :, :].cpu().numpy()
 
             im = ax[plane_idx, r].imshow(density)
             ax[plane_idx, r].axis("off")
