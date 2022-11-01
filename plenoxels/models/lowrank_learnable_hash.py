@@ -56,19 +56,19 @@ class LowrankLearnableHash(LowrankModel):
         self.transfer_learning = self.extra_args["transfer_learning"]
         self.alpha_mask_threshold = self.extra_args["density_threshold"]
         self.use_F = self.extra_args["use_F"]
+        self.timer = CudaTimer(enabled=False)
 
         self.density_act = lambda x: trunc_exp(x - 1)
-        self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
-        self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
-        
-        self.timer = CudaTimer(enabled=False)
+        self.pt_min, self.pt_max = None, None
+        if self.use_F:
+            self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
+            self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
 
         self.scene_grids = nn.ModuleList()
         for si in range(num_scenes):
             grids = nn.ModuleList()
             for li, grid_config in enumerate(self.config):
-                if "feature_dim" in grid_config and si == 0:  # Only make one set of features
-                    # TODO: we don't need these features if use_F is False
+                if self.use_F and "feature_dim" in grid_config and si == 0:  # Only make one set of features
                     self.features = self.init_features_param(grid_config, self.sh)
                     self.feature_dim = self.features.shape[0]
                 else:
@@ -76,6 +76,9 @@ class LowrankLearnableHash(LowrankModel):
                     if li == 0:
                         self.set_resolution(gpdesc.reso, grid_id=si)
                     grids.append(gpdesc.grid_coefs)
+                    if not self.use_F:
+                        # shape[1] is out-dim * rank
+                        self.feature_dim = gpdesc.grid_coefs[-1].shape[1] // grid_config["rank"][0]
             self.scene_grids.append(grids)
         if self.sh:
             self.decoder = SHDecoder(feature_dim=self.feature_dim)
@@ -90,13 +93,6 @@ class LowrankLearnableHash(LowrankModel):
                          grid_id: int,
                          return_coords: bool = False
                          ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        """
-        :param pts:
-            Coordinates normalized between -1, 1
-        :param grid_id:
-        :param return_coords:
-        :return:
-        """
         grids: nn.ModuleList = self.scene_grids[grid_id]  # noqa
         grids_info = self.config
 
@@ -124,7 +120,6 @@ class LowrankLearnableHash(LowrankModel):
             if interp.numel() > 0:
                 interp = (interp - self.pt_min) / (self.pt_max - self.pt_min)
                 interp = interp * 2 - 1
-
             out = grid_sample_wrapper(self.features.to(dtype=interp.dtype), interp).view(-1, self.feature_dim)
         else:
             out = interp
@@ -139,7 +134,7 @@ class LowrankLearnableHash(LowrankModel):
         aabb = self.aabb(grid_id)
         grid_size = self.resolution(grid_id)
         grid_size_l = grid_size.cpu().tolist()
-        step_size = self.raymarcher.get_step_size(aabb, grid_size)
+        step_size = self.raymarcher.get_step_size(aabb, grid_size)  # TODO: This doesn't exist anymore
 
         # Compute density on a regular grid (of shape grid_size)
         pts = self.get_points_on_grid(aabb, grid_size, max_voxels=None)
@@ -382,11 +377,11 @@ class LowrankLearnableHash(LowrankModel):
     def get_params(self, lr):
         params = [
             {"params": self.scene_grids.parameters(), "lr": lr},
-            {"params": [self.pt_min, self.pt_max], "lr": lr},
         ]
+        if self.use_F:
+            params.append({"params": [self.pt_min, self.pt_max], "lr": lr})
         if not self.transfer_learning:
-            params += [
-                {"params": self.decoder.parameters(), "lr": lr},
-                {"params": self.features, "lr": lr},
-            ]
+            params.append({"params": self.decoder.parameters(), "lr": lr})
+            if self.use_F:
+                params.append({"params": self.features, "lr": lr})
         return params
