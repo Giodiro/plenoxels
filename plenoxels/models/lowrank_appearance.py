@@ -5,7 +5,10 @@ from typing import Dict, List, Union, Sequence, Tuple
 import torch
 import torch.nn.functional as F
 
-from plenoxels.models.utils import grid_sample_wrapper, compute_plane_tv, compute_line_tv, raw2alpha
+from plenoxels.models.utils import (
+    grid_sample_wrapper, compute_plane_tv, compute_line_tv,
+    raw2alpha, init_density_activation
+)
 from .decoders import NNDecoder, SHDecoder
 from .lowrank_model import LowrankModel
 from ..raymarching.raymarching import RayMarcher
@@ -35,7 +38,8 @@ class LowrankAppearance(LowrankModel):
         self.lookup_time = lookup_time
         self.raymarcher = RayMarcher(**self.extra_args)
         self.sh = sh
-        self.density_act = trunc_exp
+        self.density_act = init_density_activation(
+            self.extra_args.get('density_activation', 'trunc_exp'))
         self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
         self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
         self.use_F = self.extra_args["use_F"]
@@ -73,8 +77,14 @@ class LowrankAppearance(LowrankModel):
         grid_time = self.time_coef  # time: [rank * F_dim, time_reso]
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
 
+        dim = level_info["output_coordinate_dim"] - 1 if level_info["output_coordinate_dim"] == 28 else level_info["output_coordinate_dim"]
+
         interp_time = grid_time[:, timestamps.long()].unsqueeze(0).repeat(pts.shape[0], 1)  # [n, F_dim * rank]
-        interp_time = interp_time.view(-1, level_info["output_coordinate_dim"], level_info["rank"][0])  # [n, F_dim, rank]
+        interp_time = interp_time.view(-1, dim, level_info["rank"][0])  # [n, F_dim, rank]
+        
+        # add density one to appearance code
+        if level_info["output_coordinate_dim"] == 28:
+             interp_time = torch.cat([interp_time, torch.ones_like(interp_time[:, 0:1, :])], dim=1)
         
         # Interpolate in space
         interp = pts
@@ -107,7 +117,7 @@ class LowrankAppearance(LowrankModel):
             return out, interp
         return out
 
-    def forward(self, rays_o, rays_d, timestamps, bg_color, channels: Sequence[str] = ("rgb", "depth"), near_far=None):
+    def forward(self, rays_o, rays_d, timestamps, bg_color, channels: Sequence[str] = ("rgb", "depth"), near_far=None, global_translation=torch.tensor([0, 0, 0]), global_scale=torch.tensor([1, 1, 1])):
         """
         rays_o : [batch, 3]
         rays_d : [batch, 3]
@@ -117,7 +127,8 @@ class LowrankAppearance(LowrankModel):
 
         rm_out = self.raymarcher.get_intersections2(
             rays_o, rays_d, self.aabb(0), self.resolution(0), perturb=self.training,
-            is_ndc=self.is_ndc, is_contracted=self.is_contracted, near_far=near_far)
+            is_ndc=self.is_ndc, is_contracted=self.is_contracted, near_far=near_far,
+            global_translation=global_translation, global_scale=global_scale)
         rays_d = rm_out["rays_d"]                   # [n_rays, 3]
         intersection_pts = rm_out["intersections"]  # [n_rays, n_intrs, 3]
         mask = rm_out["mask"]                       # [n_rays, n_intrs]
@@ -135,7 +146,7 @@ class LowrankAppearance(LowrankModel):
         rays_d_rep = rays_d.view(-1, 1, 3).expand(intersection_pts.shape)
         masked_rays_d_rep = rays_d_rep[mask]
 
-        density_masked = self.density_act(self.decoder.compute_density(features, rays_d=masked_rays_d_rep) - 1)
+        density_masked = self.density_act(self.decoder.compute_density(features, rays_d=masked_rays_d_rep))
         density = torch.zeros(n_rays, n_intrs, device=intersection_pts.device, dtype=density_masked.dtype)
         density[mask] = density_masked.view(-1)
 
@@ -187,8 +198,16 @@ class LowrankAppearance(LowrankModel):
     def compute_plane_tv(self):
         grid_space = self.grids  # space: 3 x [1, rank * F_dim, reso, reso]
         #grid_time = self.time_coef  # time: [rank * F_dim, time_reso]
+        
+        if len(grid_space) == 6:
+            # only use tv on spatial planes
+            grid_ids = [0,1,3]
+        else:
+            grid_ids = list(range(len(grid_space)))
+        
         total = 0
-        for grid in grid_space:
+        for grid_id in grid_ids:
+            grid = grid_space[grid_id]
             total += compute_plane_tv(grid)
         #total += compute_line_tv(grid_time)
         return total

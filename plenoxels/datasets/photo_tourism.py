@@ -55,14 +55,20 @@ class PhotoTourismDataset(torch.utils.data.Dataset):
         self.downsample = downsample
         self.near_far = [0.0, 1.0]
         self.keyframes = False
-        self.is_ndc = False
-        self.is_contracted = True
+        self.is_ndc = True
+        self.is_contracted = False
         self.lookup_time = True
-        self.scene_bbox = torch.tensor([[-2.0,-2.0,-2.0], [2.0,2.0,2.0]])
+        if self.is_contracted:
+            self.scene_bbox = torch.tensor([[-2.0,-2.0,-2.0], [2.0,2.0,2.0]])
+        else:
+            self.scene_bbox = torch.tensor([[-1.0,-1.0,-1.0], [1.0,1.0,1.0]])
         self.batch_size = batch_size
         self.training = split == 'train'
         self.name = os.path.basename(datadir)
         self.datadir = datadir
+        # TODO: tune these for each dataset
+        self.global_translation = torch.tensor([0, 0, 0])
+        self.global_scale = torch.tensor([1, 1, 1])
 
         # read all files in the tsv first (split to train and test later)
         tsv = glob.glob(os.path.join(self.datadir, '*.tsv'))[0]
@@ -108,7 +114,7 @@ class PhotoTourismDataset(torch.utils.data.Dataset):
         image = image[..., :3]/255.
         image = torch.as_tensor(image, dtype=torch.float)
         
-        scale = 0.05
+        scale = 0.2
         pose = self.poses[idx]
         pose = torch.as_tensor(pose, dtype=torch.float)
         pose = torch.cat([pose[:3, :3], pose[:3, 3:4]*scale], dim=-1)

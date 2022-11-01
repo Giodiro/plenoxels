@@ -1,13 +1,13 @@
 # configuration file to be used with `main.py` for normal (or multiscene) training
 # the configuration must be specified in a dictionary called `config`.
 config = {
-    "expname": "mic_timing",
-    "logdir": "./logs",
+    "expname": "rank_1_l1_plane_density_00008_l1_plane_color_00_tv_001",
+    "logdir": "./logs/lego",
 
     # Data settings
     "data_resolution": None,
     "data_downsample": 4,
-    "data_dirs": ["/work3/frwa/mic"],  # CHANGE ME!
+    "data_dirs": ["/work3/frwa/lego"],  # CHANGE ME!
     # Data settings for 360
     "max_tr_frames": None,
     "max_ts_frames": 10,
@@ -15,20 +15,21 @@ config = {
     "hold_every": 8,
 
     # Optimization settings
-    "num_steps": 3001,
+    "num_steps": 15001,
     "batch_size": 4096,
     "num_batches_per_dset": 1,
     "scheduler_type": None,
     "optim_type": "adam",
-    "lr": 0.1,
+    "lr": 0.01,
 
     # Regularization settings
     "regnerf_weight_start": 0.0,
     "regnerf_weight_end": 0.0,
     "floater_loss" : 0.0,
     "regnerf_weight_max_step": 700,
-
-    "plane_tv_weight": 0.00,
+    "l1_plane_density_reg": 0.0008,
+    "l1_plane_color_reg": 0.0,
+    "plane_tv_weight": 0.001,
     "plane_tv_what": "Gcoords",
 
     "l1density_weight": 0.000,
@@ -40,15 +41,15 @@ config = {
 
     # Training settings
     "train_fp16": True,
-    "save_every": 1000,
-    "valid_every": 1000,
+    "save_every": 5000,
+    "valid_every": 5000,
     "save_outputs": True,
     "transfer_learning": False,
 
     # Raymarching settings
     "raymarch_type": "fixed",
     "num_sample_multiplier": 2,  # Used when raymarch_type is 'voxel_size'
-    "n_intersections": 440,  # Used when raymarch_type is 'fixed'
+    "n_intersections": 400,  # Used when raymarch_type is 'fixed'
     "spacing_fn": "reciprocal",
     "single_jitter": True,
 
@@ -60,20 +61,21 @@ config = {
     "upsample_resolution": [],
     "upsample_F_steps": [],
     "density_multiplier": 1,
+    "use_F": False,
     "grid_config": """
 [
     {
         "input_coordinate_dim": 3,
-        "output_coordinate_dim": 5,
+        "output_coordinate_dim": 28,
         "grid_dimensions": 2,
-        "resolution": [128, 128, 128],
-        "rank": 10,
+        "resolution": [512, 512, 512], 
+        "rank": 1,
     },
     {
         "input_coordinate_dim": 5,
-        "resolution": [2, 2, 2, 2, 2],
+        "resolution": [6, 6, 6, 6, 6],
         "feature_dim": 28,
-        "init_std": 0.001,
+        "init_std": 0.001
     }
 ]
 """

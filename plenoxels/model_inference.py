@@ -12,8 +12,8 @@ from plenoxels.datasets.photo_tourism import PhotoTourismDataset
 from plenoxels.ops.image import metrics
 from plenoxels.models.utils import grid_sample_wrapper, compute_plane_tv, compute_line_tv, raw2alpha
 
-checkpoint_path = "logs/trevi/tv_0.05_appearance_code_wo_density_longer_test_time_optim_rank_1/model.pth"
-save_dir = "logs/trevi_rank_vis/05_appearance_code_wo_density_longer_test_time_optim_rank_1/"
+checkpoint_path = "logs/trevi/tv_0.05_appearance_code_wo_density_longer_test_time_optim_rank_1_ndc/model.pth"
+save_dir = "logs/trevi_rank_vis/05_appearance_code_wo_density_longer_test_time_optim_rank_1_ndc_2/"
 os.makedirs(save_dir, exist_ok=True)
 
 ranks = [0, 1, "avg"]
@@ -166,11 +166,24 @@ model.load_state_dict(checkpoint['model'])
 parameters = [grid.data for grid in model.grids]
 
 for plane_idx, grid in enumerate(model.grids):
-    print("Plane", plane_idx, grid.shape)
-    density = grid.data[:, -1:, ...]
-    density = ((density[0, 0, ...] - density.min())/(density.max() - density.min()) * 255).cpu().numpy().astype(np.uint8)
-    cv2.imwrite(f"{save_dir}density_{plane_idx}.png", density)
+                    
+    _, c, h, w = grid.data.shape
+    rank = model.config[0]["rank"][0]
+    dim = model.config[0]["output_coordinate_dim"]
+    grid = grid.data.view(dim, rank, h, w)
+    for r in range(rank):
+        
+        density = grid[-1, r, :, :]
+        density = ((density - density.min())/(density.max() - density.min()) * 255).cpu().numpy().astype(np.uint8)
+        cv2.imwrite(os.path.join(save_dir, f"density-plane-{plane_idx}-rank_{r}.png"), density)
     
+        rays_d = torch.ones((h*w, 3), device=grid.device)
+        rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
+        features = grid[:, r, :, :].view(dim, h*w).permute(1,0)
+        color = model.decoder.compute_color(features, rays_d) * 255
+        color = color.view(h, w, 3).cpu().numpy().astype(np.uint8)
+        cv2.imwrite(os.path.join(save_dir, f"color-plane-{plane_idx}-rank_{r}.png"), color)
+
 
 # visualize time grid
 train_dataset = PhotoTourismDataset("/work3/frwa/data/phototourism/trevi", "train")

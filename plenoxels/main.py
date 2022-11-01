@@ -81,6 +81,7 @@ def main():
     overrides_dict = {ovr.split("=")[0]: ovr.split("=")[1] for ovr in overrides}
     config.update(overrides_dict)
     is_video = "keyframes" in config
+    validate_only = args.validate_only
 
     pprint.pprint(config)
 
@@ -89,7 +90,7 @@ def main():
         if args.log_dir is not None:
             checkpoint_path = os.path.join(args.log_dir, "model.pth")
             state = torch.load(checkpoint_path)
-        trainer, config = video_trainer.load_video_model(config, state)
+        trainer, config = video_trainer.load_video_model(config, state, validate_only)
     else:
         data = load_data(is_video, **config)
         config.update(data)

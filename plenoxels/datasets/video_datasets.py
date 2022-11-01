@@ -46,6 +46,8 @@ class Video360Dataset(BaseDataset):
         self.ist = False
         self.lookup_time = False
         self.per_cam_near_fars = None
+        self.global_translation = torch.tensor([0, 0, 0])
+        self.global_scale = torch.tensor([1, 1, 1])
         dset_type = None
         if is_contracted and is_ndc:
             raise ValueError("Options 'is_contracted' and 'is_ndc' are exclusive.")
@@ -62,7 +64,11 @@ class Video360Dataset(BaseDataset):
                 keyframes=keyframes, keyframes_take_each=30)
             self.poses = poses.float()
             self.per_cam_near_fars = self.per_cam_near_fars.float()
-            log.info(f'per_cam_near_fars is {self.per_cam_near_fars}')
+            # TODO: tune these for each specific video
+            self.global_translation = torch.tensor([0, 0, 2])
+            self.global_scale = torch.tensor([1, 1, 1])
+            log.info(f'per_cam_near_fars is {self.per_cam_near_fars}, with global translation '
+                     f'{self.global_translation} and scale {self.global_scale}')
         elif dset_type == "synthetic":
             frames, transform = load_360video_frames(datadir, split, max_cameras=self.max_cameras, max_tsteps=self.max_tsteps)
             imgs, self.poses = load_360_images(frames, datadir, split, self.downsample)
@@ -108,7 +114,7 @@ class Video360Dataset(BaseDataset):
         if dset_type == "synthetic":
             self.len_time = torch.amax(timestamps).item()
         elif dset_type == "llff":
-            self.len_time = 300
+            self.len_time = 299
         if self.split == 'train':
             self.timestamps = timestamps[:, None, None].repeat(
                 1, intrinsics.height, intrinsics.width).reshape(-1)  # [n_frames * h * w]
@@ -405,6 +411,7 @@ def load_llffvideo_poses(datadir: str,
         split_ids = np.arange(1, poses.shape[0])
     else:
         split_ids = np.array([0])
+        # split_ids = np.array([1])  # Try evaluating on a train view
     poses = torch.from_numpy(poses[split_ids])
     near_fars = torch.from_numpy(near_fars[split_ids])
     videopaths = videopaths[split_ids].tolist()
