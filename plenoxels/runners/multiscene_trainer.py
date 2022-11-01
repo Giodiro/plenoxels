@@ -34,6 +34,7 @@ class Trainer():
                  regnerf_weight_max_step: int,
                  floater_loss: float,
                  plane_tv_weight: float,
+                 time_smoothness_weight: float,
                  l1_plane_color_reg: float,
                  l1_plane_density_reg: float,
                  l1density_weight: float,
@@ -66,6 +67,7 @@ class Trainer():
         self.regnerf_weight_max_step = regnerf_weight_max_step
         self.cur_regnerf_weight = self.regnerf_weight_start
         self.plane_tv_weight = plane_tv_weight
+        self.time_smoothness_weight = time_smoothness_weight
         self.l1_plane_color_reg = l1_plane_color_reg
         self.l1_plane_density_reg = l1_plane_density_reg
         self.plane_tv_what = kwargs.get('plane_tv_what', 'Gcoords')

@@ -65,7 +65,7 @@ class Video360Dataset(BaseDataset):
             self.poses = poses.float()
             self.per_cam_near_fars = self.per_cam_near_fars.float()
             # TODO: tune these for each specific video
-            self.global_translation = torch.tensor([0, 0, 0.5])
+            self.global_translation = torch.tensor([0, 0, 2])
             self.global_scale = torch.tensor([1, 1, 1])
             print(f'per_cam_near_fars is {self.per_cam_near_fars}, with global translation {self.global_translation} and scale {self.global_scale}')
         elif dset_type == "synthetic":
@@ -409,8 +409,8 @@ def load_llffvideo_poses(datadir: str,
     if split == 'train':
         split_ids = np.arange(1, poses.shape[0])
     else:
-        # split_ids = np.array([0])
-        split_ids = np.array([1])  # Try evaluating on a train view
+        split_ids = np.array([0])
+        # split_ids = np.array([1])  # Try evaluating on a train view
     poses = torch.from_numpy(poses[split_ids])
     near_fars = torch.from_numpy(near_fars[split_ids])
     videopaths = videopaths[split_ids].tolist()

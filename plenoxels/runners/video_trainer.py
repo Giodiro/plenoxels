@@ -136,6 +136,10 @@ class VideoTrainer(Trainer):
             if self.plane_tv_weight > 0:
                 plane_tv = self.model.compute_plane_tv() * self.plane_tv_weight
                 loss = loss + plane_tv
+            time_smoothness = None
+            if self.time_smoothness_weight > 0:
+                time_smoothness = self.model.compute_time_smoothness() * self.time_smoothness_weight
+                loss = loss + time_smoothness
             floater_loss: Optional[torch.Tensor] = None
             if self.floater_loss > 0:
                 midpoint = torch.cat([fwd_out["midpoint"], (2*fwd_out["midpoint"][:,-1] - fwd_out["midpoint"][:,-2])[:,None]], dim=1)
@@ -154,6 +158,8 @@ class VideoTrainer(Trainer):
         self.loss_info["psnr"].update(-10 * math.log10(recon_loss_val))
         if plane_tv is not None:
             self.loss_info["plane_tv"].update(plane_tv.item() if self.plane_tv_weight > 0 else 0.0)
+        if time_smoothness is not None:
+            self.loss_info["time_smoothness"].update(time_smoothness.item() if self.time_smoothness_weight > 0 else 0.0)
         if floater_loss is not None:
             self.loss_info["floater_loss"].update(floater_loss.item())
 
@@ -306,41 +312,10 @@ class VideoTrainer(Trainer):
         if hasattr(self.model, "appearance_code"):
             self.optimize_appearance_codes()
 
-        val_metrics = []
-        with torch.no_grad():
-            for dset_id, dataset in enumerate(self.test_datasets):
-                per_scene_metrics = {
-                    "psnr": 0, "ssim": 0, "dset_id": dset_id,
-                }
-
-                pred_frames = []
-                pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
-                for img_idx, data in enumerate(dataset):
-                    preds = self.eval_step(data, dset_id=dset_id)
-                    out_metrics, out_img = self.evaluate_metrics(
-                        data["imgs"], preds, dset_id=dset_id, dset=dataset, img_idx=img_idx, name=None)
-                    pred_frames.append(out_img)
-                    per_scene_metrics["psnr"] += out_metrics["psnr"]
-                    per_scene_metrics["ssim"] += out_metrics["ssim"]
-                    pb.set_postfix_str(f"PSNR={out_metrics['psnr']:.2f}", refresh=False)
-                    pb.update(1)
-                pb.close()
-
-                self.write_video_to_file(pred_frames, dataset)
-                per_scene_metrics["psnr"] /= len(dataset)  # noqa
-                per_scene_metrics["ssim"] /= len(dataset)  # noqa
-                log_text = f"step {self.global_step}/{self.num_steps} | scene {dset_id}"
-                log_text += f" | D{dset_id} PSNR: {per_scene_metrics['psnr']:.2f}"
-                log_text += f" | D{dset_id} SSIM: {per_scene_metrics['ssim']:.6f}"
-                logging.info(log_text)
-                val_metrics.append(per_scene_metrics)
-        df = pd.DataFrame.from_records(val_metrics)
-        df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
-        
         with torch.no_grad():
             # visualize planes
             if self.save_outputs:
-                out_name = f"step{self.global_step}-D{dset_id}"
+                out_name = f"step{self.global_step}"
                 rank = self.model.config[0]["rank"][0]
                 dim = self.model.config[0]["output_coordinate_dim"]
                 n_planes = len(self.model.grids)
@@ -372,6 +347,37 @@ class VideoTrainer(Trainer):
                 plt.cla()
                 plt.clf()
                 plt.close()
+
+        val_metrics = []
+        with torch.no_grad():
+            for dset_id, dataset in enumerate(self.test_datasets):
+                per_scene_metrics = {
+                    "psnr": 0, "ssim": 0, "dset_id": dset_id,
+                }
+
+                pred_frames = []
+                pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
+                for img_idx, data in enumerate(dataset):
+                    preds = self.eval_step(data, dset_id=dset_id)
+                    out_metrics, out_img = self.evaluate_metrics(
+                        data["imgs"], preds, dset_id=dset_id, dset=dataset, img_idx=img_idx, name=None)
+                    pred_frames.append(out_img)
+                    per_scene_metrics["psnr"] += out_metrics["psnr"]
+                    per_scene_metrics["ssim"] += out_metrics["ssim"]
+                    pb.set_postfix_str(f"PSNR={out_metrics['psnr']:.2f}", refresh=False)
+                    pb.update(1)
+                pb.close()
+
+                self.write_video_to_file(pred_frames, dataset)
+                per_scene_metrics["psnr"] /= len(dataset)  # noqa
+                per_scene_metrics["ssim"] /= len(dataset)  # noqa
+                log_text = f"step {self.global_step}/{self.num_steps} | scene {dset_id}"
+                log_text += f" | D{dset_id} PSNR: {per_scene_metrics['psnr']:.2f}"
+                log_text += f" | D{dset_id} SSIM: {per_scene_metrics['ssim']:.6f}"
+                logging.info(log_text)
+                val_metrics.append(per_scene_metrics)
+        df = pd.DataFrame.from_records(val_metrics)
+        df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
                 
     def write_video_to_file(self, frames, dataset):
         video_file = os.path.join(self.log_dir, f"step{self.global_step}.mp4")

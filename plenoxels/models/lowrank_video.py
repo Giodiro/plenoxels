@@ -5,7 +5,7 @@ from typing import Dict, List, Union, Sequence, Tuple
 import torch
 import torch.nn.functional as F
 
-from plenoxels.models.utils import grid_sample_wrapper, compute_plane_tv, compute_line_tv, raw2alpha
+from plenoxels.models.utils import grid_sample_wrapper, compute_plane_tv, compute_line_tv, raw2alpha, compute_plane_smoothness
 from .decoders import NNDecoder, SHDecoder
 from .lowrank_model import LowrankModel
 from ..raymarching.raymarching import RayMarcher
@@ -194,10 +194,21 @@ class LowrankVideo(LowrankModel):
         return params
 
     def compute_plane_tv(self):
-        grid_space = self.grids  # space: 3 x [1, rank * F_dim, reso, reso]
+        # self.grids is 6 x [1, rank * F_dim, reso, reso]
         total = 0
-        for grid in grid_space:
-            total += compute_plane_tv(grid)
+        spatial_grids = [0, 1, 3]  # These are the spatial grids; the others are spatiotemporal
+        for idx, grid in enumerate(self.grids):  
+            if idx in spatial_grids:
+                total += compute_plane_tv(grid)
+        return total
+
+    def compute_time_smoothness(self):
+        # self.grids is 6 x [1, rank * F_dim, reso, reso]
+        total = 0
+        time_grids = [2, 4, 5]  # These are the spatiotemporal grids; the others are only spatial
+        for idx, grid in enumerate(self.grids):  
+            if idx in time_grids:
+                total += compute_plane_smoothness(grid)
         return total
 
     def update_trainable_rank(self):
