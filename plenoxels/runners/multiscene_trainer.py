@@ -380,7 +380,7 @@ class Trainer():
                 dim = self.model.config[0]["output_coordinate_dim"]
                 n_planes = len(self.model.scene_grids[0][0])
                 
-                fig, ax = plt.subplots(nrows=n_planes, ncols=2*rank, figsize=(3*n_planes,3*2*rank))
+                fig, ax = plt.subplots(nrows=n_planes, ncols=2*rank, figsize=(3*2*rank, 3*n_planes))
                 for plane_idx, grid in enumerate(self.model.scene_grids[0][0]):
                     _, c, h, w = grid.data.shape
 
@@ -392,11 +392,15 @@ class Trainer():
                         ax[plane_idx, r].axis("off")
                         plt.colorbar(im, ax=ax[plane_idx, r], aspect=20, fraction=0.04)
 
-                        rays_d = torch.ones((h*w, 3), device=grid.device)
-                        rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
-                        features = grid[:, r, :, :].view(dim, h*w).permute(1,0)
-                        color = self.model.decoder.compute_color(features, rays_d) * 255
-                        color = color.view(h, w, 3).cpu().numpy().astype(np.uint8)
+                        #rays_d = torch.randn((h*w, 3), device=grid.device)
+                        #rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
+                        #features = grid[:, r, :, :].view(dim, h*w).permute(1,0)
+                        #color = torch.clamp(self.model.decoder.compute_color(features, rays_d), 0, 1) * 255
+                        #color = color.view(h, w, 3).cpu().numpy().astype(np.uint8)
+
+                        color = torch.stack([grid[0, r, :, :], grid[9, r, :, :], grid[18, r, :, :]], dim=-1)
+                        color = color * 0.28209479177387814
+                        color = (torch.clamp(color, 0, 1).cpu().numpy() * 255).astype(np.uint8)
                         
                         im = ax[plane_idx, r+rank].imshow(color)
                         ax[plane_idx, r+rank].axis("off")
@@ -407,6 +411,41 @@ class Trainer():
                 plt.cla()
                 plt.clf()
                 plt.close()
+
+
+                def compute_plane_tv_error_maps(t):
+                    batch_size, c, h, w = t.shape
+                    h_tv = torch.square(t[..., 1:, :] - t[..., :h-1, :]).sum(dim=0).sum(dim=0) 
+                    w_tv = torch.square(t[..., :, 1:] - t[..., :, :w-1]).sum(dim=0).sum(dim=0)
+                    
+                    return h_tv[:,1:]+w_tv[1:, :]
+                
+                fig, ax = plt.subplots(nrows=n_planes, ncols=2*rank, figsize=(3*2*rank, 3*n_planes))
+                for plane_idx, grid in enumerate(self.model.scene_grids[0][0]):
+                    _, c, h, w = grid.data.shape
+
+                    grid = grid.data.view(dim, rank, h, w)
+                    for r in range(rank):
+                        density = grid[-1, r, :, :].unsqueeze(0).unsqueeze(0)
+                        
+                        density_tv = compute_plane_tv_error_maps(density).cpu().numpy()
+                        im = ax[plane_idx, r].imshow(density_tv)
+                        ax[plane_idx, r].axis("off")
+                        plt.colorbar(im, ax=ax[plane_idx, r], aspect=20, fraction=0.04)
+
+                        features = grid[:-1, r, :, :].unsqueeze(0)
+                        features_tv = compute_plane_tv_error_maps(features).cpu().numpy()
+                                                
+                        im = ax[plane_idx, r+rank].imshow(features_tv)
+                        ax[plane_idx, r+rank].axis("off")
+                        plt.colorbar(im, ax=ax[plane_idx, r+rank], aspect=20, fraction=0.04)
+                        
+                fig.tight_layout()
+                plt.savefig(os.path.join(self.log_dir, f"{out_name}-planes_tv.png"))
+                plt.cla()
+                plt.clf()
+                plt.close()
+
 
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))

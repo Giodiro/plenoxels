@@ -57,7 +57,8 @@ class LowrankLearnableHash(LowrankModel):
         self.alpha_mask_threshold = self.extra_args["density_threshold"]
         self.use_F = self.extra_args["use_F"]
 
-        self.density_act = lambda x: trunc_exp(x - 1)
+        #self.density_act = lambda x: trunc_exp(x - 1)
+        self.density_act = torch.relu
         self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
         self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
         
@@ -113,7 +114,7 @@ class LowrankLearnableHash(LowrankModel):
                 if interp_out is None:
                     interp_out = (
                         grid_sample_wrapper(grid[ci], interp[..., coo_comb]).view(
-                            -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
+                            -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))                    
                 else:
                     interp_out = interp_out * (
                         grid_sample_wrapper(grid[ci], interp[..., coo_comb]).view(
@@ -354,7 +355,7 @@ class LowrankLearnableHash(LowrankModel):
         rgb_masked = self.decoder.compute_color(features, rays_d=masked_rays_d_rep)
         rgb = torch.zeros(n_rays, n_intrs, 3, device=dev, dtype=rgb_masked.dtype)
         rgb[mask] = rgb_masked
-        rgb = torch.sigmoid(rgb)
+        rgb = torch.clamp(rgb, 0, 1)
 
         # Confirmed that torch.sum(weight, -1) matches 1-transmission[:,-1]
         acc_map = 1 - transmission[:, -1]
@@ -384,7 +385,17 @@ class LowrankLearnableHash(LowrankModel):
         total = 0
         for grid_ls in grids:
             for grid in grid_ls:
-                if what == 'Gcoords':
+                if what == 'Gcoords_color':
+                    grid = grid.view(self.feature_dim, -1, grid.shape[-2], grid.shape[-1])
+                    for r in range(grid.shape[1]):
+                        grid_r = grid[:-1, r, :, :].unsqueeze(0)
+                        total += compute_plane_tv(grid_r)
+                elif what == 'Gcoords_density':
+                    grid = grid.view(self.feature_dim, -1, grid.shape[-2], grid.shape[-1])
+                    for r in range(grid.shape[1]):
+                        grid_r = grid[-1:, r, :, :].unsqueeze(0)
+                        total += compute_plane_tv(grid_r)
+                elif what == 'Gcoords':
                     total += compute_plane_tv(grid)
                 elif what == 'features':
                     # Look up the features so we do tv on features rather than coordinates

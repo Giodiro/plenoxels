@@ -354,7 +354,7 @@ class VideoTrainer(Trainer):
                         rays_d = torch.ones((h*w, 3), device=grid.device)
                         rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
                         features = grid[:, r, :, :].view(dim, h*w).permute(1,0)
-                        color = self.model.decoder.compute_color(features, rays_d) * 255
+                        color = torch.clamp(self.model.decoder.compute_color(features, rays_d) * 255, 0, 255)
                         color = color.view(h, w, 3).cpu().numpy().astype(np.uint8)
                         
                         im = ax[plane_idx, r+rank].imshow(color)
