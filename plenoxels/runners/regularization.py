@@ -5,7 +5,8 @@ import torch.optim.lr_scheduler
 from torch import nn
 
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash
-from plenoxels.models.utils import compute_plane_tv
+from plenoxels.models.lowrank_video import LowrankVideo
+from plenoxels.models.utils import compute_plane_tv, compute_plane_smoothness
 
 
 class Regularizer():
@@ -107,6 +108,32 @@ class PlaneTV(Regularizer):
         for grid_ls in grids:
             for grid in grid_ls:
                 total += compute_plane_tv(grid)
+        return total
+
+
+class VideoPlaneTV(Regularizer):
+    def __init__(self, initial_value):
+        super().__init__('plane-TV', initial_value)
+
+    def _regularize(self, model: LowrankVideo, **kwargs) -> torch.Tensor:
+        spatial_grids = [0, 1, 3]  # These are the spatial grids; the others are spatiotemporal
+        total = torch.tensor(0.0, device=model.grids.device, dtype=model.grids.dtype)
+        # model.grids is 6 x [1, rank * F_dim, reso, reso]
+        for grid_id in spatial_grids:
+            total += compute_plane_tv(model.grids[grid_id])
+        return total
+
+
+class TimeSmoothness(Regularizer):
+    def __init__(self, initial_value):
+        super().__init__('time-smoothness', initial_value)
+
+    def _regularize(self, model: LowrankVideo, **kwargs) -> torch.Tensor:
+        time_grids = [2, 4, 5]  # These are the spatiotemporal grids; the others are only spatial
+        total = torch.tensor(0.0, device=model.grids.device, dtype=model.grids.dtype)
+        # model.grids is 6 x [1, rank * F_dim, reso, reso]
+        for grid_id in time_grids:
+            total += compute_plane_smoothness(model.grids[grid_id])
         return total
 
 

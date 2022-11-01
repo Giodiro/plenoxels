@@ -3,24 +3,25 @@ import logging
 import math
 import os
 from collections import defaultdict
-from copy import copy
 from typing import Dict, Optional, MutableMapping
-import matplotlib.pyplot as plt
+
 import cv2
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
 import torch.utils.data
 
-from plenoxels.datasets.video_datasets import Video360Dataset, VideoLLFFDataset
 from plenoxels.datasets.photo_tourism import PhotoTourismDataset
+from plenoxels.datasets.video_datasets import Video360Dataset
 from plenoxels.ema import EMA
-from plenoxels.models.lowrank_video import LowrankVideo
 from plenoxels.models.lowrank_appearance import LowrankAppearance
+from plenoxels.models.lowrank_video import LowrankVideo
 from plenoxels.my_tqdm import tqdm
 from plenoxels.ops.image import metrics
-from plenoxels.runners.multiscene_trainer import Trainer
-#from plenoxels.distortion_loss_warp import distortion_loss
+from plenoxels.ops.image.io import write_video_to_file
+from plenoxels.runners.multiscene_trainer import Trainer, visualize_planes
+from plenoxels.runners.regularization import VideoPlaneTV, TimeSmoothness
 
 
 class VideoTrainer(Trainer):
@@ -132,21 +133,9 @@ class VideoTrainer(Trainer):
             rgb_preds = fwd_out["rgb"]
             recon_loss = self.criterion(rgb_preds, imgs)
             loss = recon_loss
-            plane_tv = None
-            if self.plane_tv_weight > 0:
-                plane_tv = self.model.compute_plane_tv() * self.plane_tv_weight
-                loss = loss + plane_tv
-            time_smoothness = None
-            if self.time_smoothness_weight > 0:
-                time_smoothness = self.model.compute_time_smoothness() * self.time_smoothness_weight
-                loss = loss + time_smoothness
-            floater_loss: Optional[torch.Tensor] = None
-            if self.floater_loss > 0:
-                midpoint = torch.cat([fwd_out["midpoint"], (2*fwd_out["midpoint"][:,-1] - fwd_out["midpoint"][:,-2])[:,None]], dim=1)
-                dt = torch.cat([fwd_out["deltas"], fwd_out["deltas"][:,-2:-1]], dim=1)
-                weight = torch.cat([fwd_out["weight"], 1 - fwd_out["weight"].sum(dim=1, keepdim=True)], dim=1)
-                floater_loss = distortion_loss(midpoint, weight, dt) * 1e-2
-                loss = loss + floater_loss
+            # Regularization
+            for r in self.regularizers:
+                loss = loss + r.regularize(self.model)
 
         self.gscaler.scale(loss).backward()
         self.gscaler.step(self.optimizer)
@@ -156,12 +145,8 @@ class VideoTrainer(Trainer):
         recon_loss_val = recon_loss.item()
         self.loss_info["mse"].update(recon_loss_val)
         self.loss_info["psnr"].update(-10 * math.log10(recon_loss_val))
-        if plane_tv is not None:
-            self.loss_info["plane_tv"].update(plane_tv.item() if self.plane_tv_weight > 0 else 0.0)
-        if time_smoothness is not None:
-            self.loss_info["time_smoothness"].update(time_smoothness.item() if self.time_smoothness_weight > 0 else 0.0)
-        if floater_loss is not None:
-            self.loss_info["floater_loss"].update(floater_loss.item())
+        for r in self.regularizers:
+            r.report(self.loss_info)
 
         if self.global_step in self.add_rank_steps:
             self.model.trainable_rank = self.model.trainable_rank + 1
@@ -197,9 +182,6 @@ class VideoTrainer(Trainer):
 
     def post_step(self, data, progress_bar):
         self.writer.add_scalar(f"mse: ", self.loss_info["mse"].value, self.global_step)
-        if self.global_step == 15_000:
-            self.plane_tv_weight /= 10
-            logging.info(f"Modified plane_tv_weight to {self.plane_tv_weight}")
         progress_bar.set_postfix_str(losses_to_postfix(self.loss_info, lr=self.cur_lr()), refresh=False)
         progress_bar.update(1)
 
@@ -210,7 +192,7 @@ class VideoTrainer(Trainer):
     def init_model(self, **kwargs) -> torch.nn.Module:
         dset = self.test_datasets[0]
         data_dir = dset.datadir
-        if "sacre" in data_dir or "trevi" in data_dir: # This is untested but should be ok
+        if "sacre" in data_dir or "trevi" in data_dir:
             model = LowrankAppearance(
                 aabb=dset.scene_bbox,
                 len_time=dset.len_time,
@@ -218,8 +200,6 @@ class VideoTrainer(Trainer):
                 is_contracted=self.is_contracted,
                 lookup_time=dset.lookup_time,
                 **kwargs)
-            logging.info(f"Initialized LowrankAppearance model with "
-                    f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, using ndc {self.is_ndc} and contraction {self.is_contracted}.")
         else:
             model = LowrankVideo(
                 aabb=dset.scene_bbox,
@@ -228,10 +208,20 @@ class VideoTrainer(Trainer):
                 is_contracted=self.is_contracted,
                 lookup_time=dset.lookup_time,
                 **kwargs)
-            logging.info(f"Initialized LowrankVideo model with "
-                        f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, using ndc {self.is_ndc} and contraction {self.is_contracted}.")
+        logging.info(f"Initialized {model.__class__} model with "
+                     f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, "
+                     f"using ndc {self.is_ndc} and contraction {self.is_contracted}.")
         model.cuda()
         return model
+
+    def init_regularizers(self, **kwargs):
+        regularizers = [
+            VideoPlaneTV(kwargs.get('plane_tv_weight', 0.0)),
+            TimeSmoothness(kwargs.get('time_smoothness_weight', 0.0)),
+        ]
+        # Keep only the regularizers with a positive weight
+        regularizers = [r for r in regularizers if r.weight > 0]
+        return regularizers
 
     def optimize_appearance_step(self, data, batch_size, im_id):
         rays_o = data["rays_o_left"]
@@ -244,7 +234,7 @@ class VideoTrainer(Trainer):
             rays_o = rays_o.squeeze(0)
             rays_d = rays_d.squeeze(0)
             near_far = near_far.squeeze(0) if near_far is not None else None
-            timestamps = timestamps.squeeze(0)
+            timestamp = timestamp.squeeze(0)
             imgs = imgs.squeeze(0)
 
         # here we shuffle the rays to make optimization more stable
@@ -315,38 +305,7 @@ class VideoTrainer(Trainer):
         with torch.no_grad():
             # visualize planes
             if self.save_outputs:
-                out_name = f"step{self.global_step}"
-                rank = self.model.config[0]["rank"][0]
-                dim = self.model.config[0]["output_coordinate_dim"]
-                n_planes = len(self.model.grids)
-                
-                fig, ax = plt.subplots(nrows=n_planes, ncols=2*rank, figsize=(3*n_planes,3*2*rank))
-                for plane_idx, grid in enumerate(self.model.grids):
-                    _, c, h, w = grid.data.shape
-
-                    grid = grid.data.view(dim, rank, h, w)
-                    for r in range(rank):
-                        density = grid[-1, r, :, :].cpu().numpy()
-
-                        im = ax[plane_idx, r].imshow(density)
-                        ax[plane_idx, r].axis("off")
-                        plt.colorbar(im, ax=ax[plane_idx, r], aspect=20, fraction=0.04)
-
-                        rays_d = torch.ones((h*w, 3), device=grid.device)
-                        rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
-                        features = grid[:, r, :, :].view(dim, h*w).permute(1,0)
-                        color = self.model.decoder.compute_color(features, rays_d) * 255
-                        color = color.view(h, w, 3).cpu().numpy().astype(np.uint8)
-                        
-                        im = ax[plane_idx, r+rank].imshow(color)
-                        ax[plane_idx, r+rank].axis("off")
-                        plt.colorbar(im, ax=ax[plane_idx, r+rank], aspect=20, fraction=0.04)
-                        
-                fig.tight_layout()
-                plt.savefig(os.path.join(self.log_dir, f"{out_name}-planes.png"))
-                plt.cla()
-                plt.clf()
-                plt.close()
+                visualize_planes(self.model, self.log_dir, f"step{self.global_step}")
 
         val_metrics = []
         with torch.no_grad():
@@ -367,8 +326,10 @@ class VideoTrainer(Trainer):
                     pb.set_postfix_str(f"PSNR={out_metrics['psnr']:.2f}", refresh=False)
                     pb.update(1)
                 pb.close()
-
-                self.write_video_to_file(pred_frames, dataset)
+                write_video_to_file(
+                    os.path.join(self.log_dir, f"step{self.global_step}.mp4"),
+                    pred_frames
+                )
                 per_scene_metrics["psnr"] /= len(dataset)  # noqa
                 per_scene_metrics["ssim"] /= len(dataset)  # noqa
                 log_text = f"step {self.global_step}/{self.num_steps} | scene {dset_id}"
@@ -379,34 +340,6 @@ class VideoTrainer(Trainer):
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
                 
-    def write_video_to_file(self, frames, dataset):
-        video_file = os.path.join(self.log_dir, f"step{self.global_step}.mp4")
-        logging.info(f"Saving video ({len(frames)} frames) to {video_file}")
-
-        # Photo tourisme the image sizes differs
-        sizes = np.array([frame.shape[:2] for frame in frames])
-        same_size_frames = np.unique(sizes, axis=0).shape[0] == 1
-        if same_size_frames:
-            height, width = frames[0].shape[:2]
-            video = cv2.VideoWriter(
-                video_file, cv2.VideoWriter_fourcc(*'mp4v'), 30, (width, height))
-            for img in frames:
-                video.write(img[:, :, ::-1])  # opencv uses BGR instead of RGB
-            cv2.destroyAllWindows()
-            video.release()
-        else:
-            height = sizes[:,0].max()
-            width = sizes[:, 1].max()
-            video = cv2.VideoWriter(
-                video_file, cv2.VideoWriter_fourcc(*'mp4v'), 5, (width, height))
-            for img in frames:
-                image = np.zeros((height, width, 3), dtype=np.uint8)
-                h, w = img.shape[:2]
-                image[(height-h)//2:(height-h)//2+h, (width-w)//2:(width-w)//2+w, :] = img
-                video.write(image[:, :, ::-1])  # opencv uses BGR instead of RGB
-            cv2.destroyAllWindows()
-            video.release()
-
     def evaluate_metrics(self, gt, preds: MutableMapping[str, torch.Tensor], dset, dset_id,
                          img_idx, name=None, save_outputs: bool = True):
         if isinstance(dset.img_h, int):

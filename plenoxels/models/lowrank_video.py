@@ -113,7 +113,6 @@ class LowrankVideo(LowrankModel):
             if interp.numel() > 0:
                 interp = (interp - self.pt_min) / (self.pt_max - self.pt_min)
                 interp = interp * 2 - 1
-
             out = grid_sample_wrapper(self.features, interp).view(-1, self.feature_dim)
         else:
             out = interp
@@ -199,24 +198,6 @@ class LowrankVideo(LowrankModel):
             ]
         return params
 
-    def compute_plane_tv(self):
-        # self.grids is 6 x [1, rank * F_dim, reso, reso]
-        total = 0
-        spatial_grids = [0, 1, 3]  # These are the spatial grids; the others are spatiotemporal
-        for idx, grid in enumerate(self.grids):  
-            if idx in spatial_grids:
-                total += compute_plane_tv(grid)
-        return total
-
-    def compute_time_smoothness(self):
-        # self.grids is 6 x [1, rank * F_dim, reso, reso]
-        total = 0
-        time_grids = [2, 4, 5]  # These are the spatiotemporal grids; the others are only spatial
-        for idx, grid in enumerate(self.grids):  
-            if idx in time_grids:
-                total += compute_plane_smoothness(grid)
-        return total
-
     def update_trainable_rank(self):
         # Remove any existing hooks
         if self.hooks is not None:
@@ -228,6 +209,7 @@ class LowrankVideo(LowrankModel):
             hook = grid.register_hook(lambda grad: grad_mask(grad, self.feature_dim, self.trainable_rank))
             self.hooks.append(hook)
         print(f'set trainable rank to {self.trainable_rank}')
+
 
 def grad_mask(grad, feature_dim, trainable_rank):
     # Each grid is shape [1, features * rank, reso, reso]
