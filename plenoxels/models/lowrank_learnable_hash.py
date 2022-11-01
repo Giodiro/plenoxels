@@ -135,7 +135,7 @@ class LowrankLearnableHash(LowrankModel):
         aabb = self.aabb(grid_id)
         grid_size = self.resolution(grid_id)
         grid_size_l = grid_size.cpu().tolist()
-        step_size = self.raymarcher.get_step_size(aabb, grid_size)  # TODO: This doesn't exist anymore
+        step_size = self.raymarcher.get_step_size(aabb, grid_size)
 
         # Compute density on a regular grid (of shape grid_size)
         pts = self.get_points_on_grid(aabb, grid_size, max_voxels=None)

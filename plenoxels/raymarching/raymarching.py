@@ -1,3 +1,4 @@
+import math
 from typing import Optional, Mapping
 import logging as log
 import numpy as np
@@ -36,6 +37,14 @@ class RayMarcher():
             self.inv_spacing_fn = torch.reciprocal
         else:
             raise ValueError(f"Spacing function {spacing_fn} invalid.")
+
+    def get_step_size(self, aabb: torch.Tensor, resolution: torch.Tensor) -> float:
+        n_samples = self.calc_n_samples(aabb, resolution)
+        return (
+            (aabb[1] - aabb[0]).max()
+            * math.sqrt(3)
+            / n_samples
+        )
 
     def calc_n_samples(self, aabb: torch.Tensor, resolution: torch.Tensor) -> int:
         if self.raymarch_type == "fixed":
@@ -161,10 +170,17 @@ class RayMarcher():
         }
 
 
-# Apply the square (L_infinity norm) version of the scene contraction from MipNeRF360
 def contract(pts):
-    # pts should have shape [n_rays, n_samples, 3]
-    norms = torch.linalg.vector_norm(pts, ord=np.inf, dim=-1, keepdim=True).expand(-1, -1, 3)  # [n_rays, n_samples, 3]
+    """
+    Apply the square (L_infinity norm) version of the scene contraction from MipNeRF360
+
+    :param pts:
+        torch.Tensor of shape [n_rays, n_samples, 3]
+    :return:
+        the contracted tensor with the same shape as `pts`
+    """
+    norms = torch.linalg.vector_norm(
+        pts, ord=np.inf, dim=-1, keepdim=True).expand(-1, -1, 3)  # [n_rays, n_samples, 3]
     norm_mask = norms > 1
     pts[norm_mask] = (2.0 - 1.0 / norms[norm_mask]) * pts[norm_mask] / norms[norm_mask]
     return pts
