@@ -29,7 +29,6 @@ class Trainer():
                  tr_loader: torch.utils.data.DataLoader,
                  ts_dsets: List[torch.utils.data.TensorDataset],
                  tr_dsets: List[torch.utils.data.TensorDataset],
-                 time_smoothness_weight: float,
                  num_steps: int,
                  scheduler_type: Optional[str],
                  optim_type: str,
@@ -234,7 +233,7 @@ class Trainer():
                     self.scheduler.step()
             except StopIteration as e:
                 logging.info(str(e))
-                print(f'resetting after a full pass through the data, or when the dataset changed')
+                logging.info(f'resetting after a full pass through the data, or when the dataset changed')
                 self.pre_epoch()
                 batch_iter = iter(self.train_data_loader)
         pb.close()
@@ -499,10 +498,7 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
             raise RuntimeError(f"data_dir {dd} not recognized as LLFF or Synthetic dataset.")
 
     data_resolution = parse_optint(kwargs.get('data_resolution'))
-    regnerf_weight = float(kwargs.get('regnerf_weight_start'))
     num_batches_per_dataset = int(kwargs['num_batches_per_dset'])
-    extra_views = regnerf_weight > 0
-    patch_size = 8
 
     tr_dsets, ts_dsets = [], []
     for i, data_dir in enumerate(data_dirs):
@@ -513,8 +509,7 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
             logging.info(f"About to load data at reso={data_resolution}, downsample={data_downsample}")
             tr_dsets.append(SyntheticNerfDataset(
                 data_dir, split='train', downsample=data_downsample, resolution=data_resolution,
-                max_frames=max_tr_frames, extra_views=extra_views, batch_size=batch_size,
-                patch_size=patch_size, dset_id=i))
+                max_frames=max_tr_frames, batch_size=batch_size, dset_id=i))
             ts_dsets.append(SyntheticNerfDataset(
                 data_dir, split='test', downsample=1, resolution=800, max_frames=max_ts_frames,
                 dset_id=i))

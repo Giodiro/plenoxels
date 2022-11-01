@@ -12,7 +12,7 @@ class Regularizer():
     def __init__(self, reg_type, initialization):
         self.reg_type = reg_type
         self.initialization = initialization
-        self.weight = self.initialization.clone()
+        self.weight = float(self.initialization)
         self.last_reg = None
 
     def step(self, global_step):
