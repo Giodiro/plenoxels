@@ -1,7 +1,7 @@
 # configuration file to be used with `main.py` for normal (or multiscene) training
 # the configuration must be specified in a dictionary called `config`.
 config = {
-    "expname": "fern_test",
+    "expname": "lego_test_nerfacc_noF",
     "logdir": "./logs",
     "device": "cuda:0",
 
@@ -27,12 +27,12 @@ config = {
 
     "alpha_threshold": 1e-3,
 
-    "plane_tv_weight": 0.000,
+    "plane_tv_weight": 0.003,
     "plane_tv_what": "Gcoords",
 
     "l1density_weight": 0.000,
 
-    "volume_tv_weight": 0.005,
+    "volume_tv_weight": 0.000,
     "volume_tv_npts": 100,
     "volume_tv_patch_size": 8,
     "volume_tv_what": "Gcoords",
@@ -55,21 +55,17 @@ config = {
     "upsample_steps": [2500, 4000],
     "upsample_resolution": [4410944, 11239424],
     "density_multiplier": 1,
+    "use_F": False,
+
     "grid_config": """
 [
     {
         "input_coordinate_dim": 3,
-        "output_coordinate_dim": 5,
+        "output_coordinate_dim": 28,
         "grid_dimensions": 2,
         "resolution": [128, 128, 128],
-        "rank": 10,
+        "rank": 2,
     },
-    {
-        "input_coordinate_dim": 5,
-        "resolution": [6, 6, 6, 6, 6],
-        "feature_dim": 28,
-        "init_std": 0.001,
-    }
 ]
 """
 }
