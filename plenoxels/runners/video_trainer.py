@@ -301,12 +301,6 @@ class VideoTrainer(Trainer):
     def validate(self):
         if hasattr(self.model, "appearance_code"):
             self.optimize_appearance_codes()
-
-        with torch.no_grad():
-            # visualize planes
-            if self.save_outputs:
-                visualize_planes(self.model, self.log_dir, f"step{self.global_step}")
-
         val_metrics = []
         with torch.no_grad():
             for dset_id, dataset in enumerate(self.test_datasets):
@@ -337,6 +331,10 @@ class VideoTrainer(Trainer):
                 log_text += f" | D{dset_id} SSIM: {per_scene_metrics['ssim']:.6f}"
                 logging.info(log_text)
                 val_metrics.append(per_scene_metrics)
+
+            if self.save_outputs:
+                visualize_planes(self.model, self.log_dir, f"step{self.global_step}")
+
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
                 

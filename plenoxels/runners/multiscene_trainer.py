@@ -545,7 +545,12 @@ def N_to_reso(num_voxels, aabb):
 def visualize_planes(model, save_dir: str, name: str):
     rank = model.config[0]["rank"][0]
     dim = model.feature_dim
-    grids = model.scene_grids[0][0]
+    if hasattr(model, 'scene_grids'):  # LowrankLearnableHash
+        grids = model.scene_grids[0][0]
+    elif hasattr(model, 'grids'):  # LowrankVideo
+        grids = model.grids
+    else:
+        raise RuntimeError(f"Cannot find grids in model {model}.")
 
     n_planes = len(grids)
     fig, axs = plt.subplots(nrows=n_planes, ncols=2*rank, figsize=(3*n_planes, 3*2*rank))
@@ -579,4 +584,3 @@ def visualize_planes(model, save_dir: str, name: str):
         plt.cla()
         plt.clf()
         plt.close(fig)
-
