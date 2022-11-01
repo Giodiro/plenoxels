@@ -58,7 +58,7 @@ class LowrankLearnableHash(LowrankModel):
                         self.set_resolution(gpdesc.reso, grid_id=si)
                     if not self.use_F:
                         # shape[1] is out_dim * rank
-                        self.feature_dim = gpdesc.grid_coefs.shape[1] / grid_config['rank'][0]
+                        self.feature_dim = gpdesc.grid_coefs[-1].shape[1] // grid_config['rank'][0]
                     grids.append(gpdesc.grid_coefs)
             self.scene_grids.append(grids)
         if self.sh:
@@ -250,13 +250,17 @@ class LowrankLearnableHash(LowrankModel):
     def get_params(self, lr):
         params = [
             {"params": self.scene_grids.parameters(), "lr": lr},
-            {"params": [self.pt_min, self.pt_max], "lr": lr},
         ]
+        if self.use_F:
+            params.append(
+                {"params": [self.pt_min, self.pt_max], "lr": lr}
+            )
         if not self.transfer_learning:
-            params += [
-                {"params": self.decoder.parameters(), "lr": lr},
-                {"params": self.features, "lr": lr},
-            ]
+            params.append(
+                {"params": self.decoder.parameters(), "lr": lr}
+            )
+            if self.use_F:
+                params.append({"params": self.features, "lr": lr})
         return params
 
     """Regularizers"""
