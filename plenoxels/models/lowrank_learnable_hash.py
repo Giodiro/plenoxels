@@ -21,6 +21,7 @@ class LowrankLearnableHash(LowrankModel):
                  sh: bool,
                  render_n_samples: int,
                  num_scenes: int = 1,
+                 use_F: bool = True,
                  **kwargs):
         super().__init__()
         if isinstance(grid_config, str):
@@ -31,46 +32,47 @@ class LowrankLearnableHash(LowrankModel):
         self.extra_args = kwargs
         self.is_ndc = is_ndc
         self.sh = sh
+        self.use_F = use_F
         self.cone_angle = kwargs.get('cone_angle', 0.0)
         # render_n_samples: number of intersections in each ray. Used for computing step-size.
         self.render_n_samples = render_n_samples
         self.transfer_learning = self.extra_args["transfer_learning"]
 
         self.density_act = lambda x: trunc_exp(x - 1)
-        self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
-        self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
+        self.pt_min, self.pt_max = None, None
+        if self.use_F:
+            self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
+            self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
 
         self.scene_grids = nn.ModuleList()
         for si in range(num_scenes):
             grids = nn.ModuleList()
             for li, grid_config in enumerate(self.config):
-                if "feature_dim" in grid_config and si == 0:  # Only make one set of features
+                if "feature_dim" in grid_config and si == 0 and use_F:
                     self.features = self.init_features_param(grid_config, self.sh)
                     self.feature_dim = self.features.shape[0]
                 else:
-                    gpdesc = self.init_grid_param(grid_config, is_video=False, grid_level=li)
+                    gpdesc = self.init_grid_param(
+                        grid_config, is_video=False, grid_level=li, use_F=use_F)
                     if li == 0:
                         self.set_resolution(gpdesc.reso, grid_id=si)
+                    if not self.use_F:
+                        # shape[1] is out_dim * rank
+                        self.feature_dim = gpdesc.grid_coefs.shape[1] / grid_config['rank'][0]
                     grids.append(gpdesc.grid_coefs)
             self.scene_grids.append(grids)
         if self.sh:
             self.decoder = SHDecoder(feature_dim=self.feature_dim)
         else:
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
-        log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes, decoder: {self.decoder}.")
+        log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes, "
+                 f"decoder: {self.decoder}, use-F: {self.use_F}")
 
     def compute_features(self,
                          pts: torch.Tensor,
                          grid_id: int,
                          return_coords: bool = False
                          ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        """
-        :param pts:
-            Coordinates normalized between -1, 1
-        :param grid_id:
-        :param return_coords:
-        :return:
-        """
         grids: nn.ModuleList = self.scene_grids[grid_id]  # noqa
         grids_info = self.config
 
@@ -95,11 +97,14 @@ class LowrankLearnableHash(LowrankModel):
             interp = interp_out.mean(dim=-1)
 
         # Learned normalization
-        if interp.numel() > 0:
-            interp = (interp - self.pt_min) / (self.pt_max - self.pt_min)
-            interp = interp * 2 - 1
+        if self.use_F:
+            if interp.numel() > 0:
+                interp = (interp - self.pt_min) / (self.pt_max - self.pt_min)
+                interp = interp * 2 - 1
+            out = grid_sample_wrapper(self.features.to(dtype=interp.dtype), interp).view(-1, self.feature_dim)
+        else:
+            out = interp
 
-        out = grid_sample_wrapper(self.features.to(dtype=interp.dtype), interp).view(-1, self.feature_dim)
         if return_coords:
             return out, interp
         return out
