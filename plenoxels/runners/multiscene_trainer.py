@@ -278,7 +278,7 @@ class Trainer():
 
             # visualize planes
             if self.save_outputs:
-                visualize_planes(model, self.log_dir, f"step{self.global_step}-D{dset_id}")
+                visualize_planes(self.model, self.log_dir, f"step{self.global_step}-D{dset_id}")
 
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
@@ -553,24 +553,24 @@ def visualize_planes(model, save_dir: str, name: str):
         _, c, h, w = grid.shape
         grid = grid.view(dim, rank, h, w)
         for r in range(rank):
-            grid_r = grid[:, r, :, :].cpu()
+            grid_r = grid[:, r, :, :]
             # Density plot
             ax = axs[plane_idx, r]
-            density = model.density_act(grid_r[-1, :, :]).numpy()
+            density = model.density_act(grid_r[-1, :, :]).cpu().numpy()
             im = ax.imshow(density)
             ax.axis("off")
             plt.colorbar(im, ax=ax, aspect=20, fraction=0.04)
 
             # Color plot
             ax = axs[plane_idx, r + rank]
-            rays_d = torch.ones((h * w, 3))
+            rays_d = torch.ones((h * w, 3), device=grid_r.device)
             rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
-            features = grid_r.view(dim, h*w).transpose()  # [h*w, dim]
+            features = grid_r.view(dim, h*w).transpose(0, 1)  # [h*w, dim]
             color = (
                 torch.sigmoid(
                     model.decoder.compute_color(features, rays_d)
-                ) * 255
-            ).view(h, w, 3).numpy().astype(np.uint8)
+                )
+            ).view(h, w, 3).cpu().numpy()
             im = ax.imshow(color)
             ax.axis("off")
             plt.colorbar(im, ax=ax, aspect=20, fraction=0.04)
