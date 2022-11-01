@@ -5,7 +5,10 @@ from typing import Dict, List, Union, Sequence, Tuple
 import torch
 import torch.nn.functional as F
 
-from plenoxels.models.utils import grid_sample_wrapper, compute_plane_tv, compute_line_tv, raw2alpha, compute_plane_smoothness
+from plenoxels.models.utils import (
+    grid_sample_wrapper, compute_plane_tv, compute_line_tv,
+    raw2alpha, compute_plane_smoothness, init_density_activation
+)
 from .decoders import NNDecoder, SHDecoder
 from .lowrank_model import LowrankModel
 from ..raymarching.raymarching import RayMarcher
@@ -34,7 +37,8 @@ class LowrankVideo(LowrankModel):
         self.is_contracted = is_contracted
         self.raymarcher = RayMarcher(**self.extra_args)
         self.sh = sh
-        self.density_act = trunc_exp
+        self.density_act = init_density_activation(
+            self.extra_args.get('density_activation', 'trunc_exp'))
         self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
         self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
         self.use_F = self.extra_args["use_F"]
@@ -147,7 +151,7 @@ class LowrankVideo(LowrankModel):
         rays_d_rep = rays_d.view(-1, 1, 3).expand(intersection_pts.shape)
         masked_rays_d_rep = rays_d_rep[mask]
 
-        density_masked = self.density_act(self.decoder.compute_density(features, rays_d=masked_rays_d_rep) - 1)
+        density_masked = self.density_act(self.decoder.compute_density(features, rays_d=masked_rays_d_rep))
         density = torch.zeros(n_rays, n_intrs, device=intersection_pts.device, dtype=density_masked.dtype)
         density[mask] = density_masked.view(-1)
 

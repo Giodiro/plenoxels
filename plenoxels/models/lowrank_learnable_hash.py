@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-from plenoxels.models.utils import grid_sample_wrapper, raw2alpha
+from plenoxels.models.utils import grid_sample_wrapper, raw2alpha, init_density_activation
 from .decoders import NNDecoder, SHDecoder
 from ..ops.activations import trunc_exp
 from ..raymarching.raymarching import RayMarcher
@@ -58,7 +58,8 @@ class LowrankLearnableHash(LowrankModel):
         self.use_F = self.extra_args["use_F"]
         self.timer = CudaTimer(enabled=False)
 
-        self.density_act = lambda x: trunc_exp(x - 1)
+        self.density_act = init_density_activation(
+            self.extra_args.get('density_activation', 'trunc_exp'))
         self.pt_min, self.pt_max = None, None
         if self.use_F:
             self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))

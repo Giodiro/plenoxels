@@ -4,6 +4,7 @@ import torch
 import torch.nn.functional as F
 
 from plenoxels.ops.interpolation import grid_sample_4d, grid_sample_1d, grid_sample_nd
+from ..ops.activations import trunc_exp
 
 
 def interp_regular(grid, pts, align_corners=True, padding_mode='border'):
@@ -158,3 +159,12 @@ def raw2alpha(sigma, dist):
 
     weights = alpha * T[:, :-1]
     return alpha, weights, T#[:, -1:]  # Return full-length T so we can use the last one for background
+
+
+def init_density_activation(activation_type: str):
+    if activation_type == 'trunc_exp':
+        return lambda x: trunc_exp(x - 1)
+    elif activation_type == 'relu':
+        return F.relu
+    else:
+        raise ValueError(activation_type)
