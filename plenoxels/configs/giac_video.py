@@ -1,15 +1,13 @@
 # configuration file to be used with `main.py` for video training
 config = {
-    # "expname": "legovideo20views_regdepthweightedacc_400_0.1_512_3framesreso3rank20",
-    "expname": "test_keyframes10k_isg",
-    # "expname": "testspeed",
-    # "expname": "testrelu_sameranktimereso128_llff",
-    "logdir": "./logs/coffeevideo",
+    "expname": "test_salmon_rank4",
+    "logdir": "./logs",
 
     # Data settings
-    "data_downsample": 8.0,
-    "data_dirs": ["/data/DATASETS/VidNerf/coffee_martini"],
-    # "data_dir": "/data/datasets/nerf/data/nerf_synthetic/lego",
+    "data_downsample": 4.0,
+    # "data_dirs": ["/home/sfk/data/3DVideo/lego_video"],
+    # "data_dirs": ["/home/sfk/data/3DVideo/coffee_martini"],
+    "data_dirs": ["/data/DATASETS/VidNerf/flame_salmon"],
 
     # Data settings for 360
     "max_train_cameras": 20,
@@ -17,55 +15,60 @@ config = {
     "max_train_tsteps": 2,
     "max_test_tsteps": 2,
     # Data settings for LLFF
-    "keyframes": True,
-    "isg": True,
+    "keyframes": False,
+    "isg_step": 20000,
+    "ist_step": -20000,
 
     # Optimization settings
-    "num_epochs": 10,
+    # "num_steps": 40001,
+    "num_steps": 40001,
+    "floater_loss": 0.0000,
     "regnerf_weight_start": 0,
     "regnerf_weight_end": 0.0,
     "regnerf_weight_max_step": 512,
-    "plane_tv_weight": 0,  # Not used for video yet
+    "plane_tv_weight": 0.02,
     "l1density_weight": 0,  # Not used for video yet
     "volume_tv_weight": 0.0,  # Not used for video yet
     "volume_tv_npts": 1024,  # Not used for video yet
     "volume_tv_what": "Gcoords",  # Not used for video yet
-    "scheduler_type": None,
-    "batch_size": 8000,
+    "scheduler_type": "warmup_cosine", # "step"
+    "batch_size": 4096,
     "optim_type": "adam",
-    "lr": 1e-2,
+    "lr": 0.01,
 
     # Training settings
     "train_fp16": True,
-    "save_every": 1,
-    "valid_every": 1,
+    "save_every": 10000,
+    "valid_every": 10000,
     "save_video": True,
     "save_outputs": True,
 
     # Raymarching settings
-    "raymarch_type": "voxel_size",
+    "raymarch_type": "fixed",
     "num_sample_multiplier": 2,
-    "n_intersections": 128,
-    "spacing_fn": "linear",
-    "single_jitter": True,
+    "n_intersections": 400,
+    "spacing_fn": "reciprocal",
+    "single_jitter": False,
 
     # Model settings
     "sh": True,
     "upsample_time_resolution": [150],
-    "upsample_time_steps": [10000],  # DyNerf does 300K iterations with keyframes, with lr 5e-4
+    # "upsample_time_steps": [6000],  # DyNerf does 300K iterations with keyframes, with lr 5e-4
+    "upsample_time_steps": [-1],
+    "use_F": False,
+    "add_rank_steps": [100, 101, 102],
     "grid_config": """
 [
     {
-        "input_coordinate_dim": 3,
-        "output_coordinate_dim": 5,
+        "input_coordinate_dim": 4,
+        "output_coordinate_dim": 28,
         "grid_dimensions": 2,
-        "resolution": [128, 128, 128],
-        "rank": 20,
-        "time_reso": 30,
+        "resolution": [300, 300, 300, 150],
+        "rank": 4,
     },
     {
-        "input_coordinate_dim": 5,
-        "resolution": [6, 6, 6, 6, 6],
+        "input_coordinate_dim": 1,
+        "resolution": [3, 3],
         "feature_dim": 28,
         "init_std": 0.001
     }
