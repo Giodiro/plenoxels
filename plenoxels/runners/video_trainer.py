@@ -5,8 +5,6 @@ import os
 from collections import defaultdict
 from typing import Dict, Optional, MutableMapping
 
-import cv2
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch

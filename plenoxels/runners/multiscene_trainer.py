@@ -558,7 +558,9 @@ def visualize_planes(model, save_dir: str, name: str):
 
         grid = grid.data.view(dim, rank, h, w)
         for r in range(rank):
-            density = grid[-1, r, :, :].cpu().numpy()
+            density = model.density_act(
+                grid[-1, r, :, :].cpu()
+            ).numpy()
 
             im = ax[plane_idx, r].imshow(density)
             ax[plane_idx, r].axis("off")
@@ -567,8 +569,10 @@ def visualize_planes(model, save_dir: str, name: str):
             rays_d = torch.ones((h*w, 3), device=grid.device)
             rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
             features = grid[:, r, :, :].view(dim, h*w).permute(1,0)
-            color = model.decoder.compute_color(features, rays_d) * 255
-            color = color.view(h, w, 3).cpu().numpy().astype(np.uint8)
+            color = (
+                    torch.sigmoid(model.decoder.compute_color(features, rays_d))
+                    * 255
+            ).view(h, w, 3).cpu().numpy().astype(np.uint8)
 
             im = ax[plane_idx, r+rank].imshow(color)
             ax[plane_idx, r+rank].axis("off")
