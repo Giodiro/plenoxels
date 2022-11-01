@@ -61,7 +61,9 @@ class LowrankVideo(LowrankModel):
                 for i in range(len(self.grids)):
                     print(f'grid {i} has shape {self.grids[i].shape}')
         if self.sh:
-            self.decoder = SHDecoder(feature_dim=self.feature_dim)
+            self.decoder = SHDecoder(
+                feature_dim=self.feature_dim,
+                decoder_type=self.extra_args.get('sh_decoder_type', 'manual'))
         else:
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
         

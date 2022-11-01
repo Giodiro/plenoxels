@@ -9,7 +9,6 @@ import numpy as np
 
 from plenoxels.models.utils import grid_sample_wrapper, raw2alpha, init_density_activation
 from .decoders import NNDecoder, SHDecoder
-from ..ops.activations import trunc_exp
 from ..raymarching.raymarching import RayMarcher
 from .lowrank_model import LowrankModel
 from ..runners.timer import CudaTimer
@@ -82,7 +81,9 @@ class LowrankLearnableHash(LowrankModel):
                         self.feature_dim = gpdesc.grid_coefs[-1].shape[1] // grid_config["rank"][0]
             self.scene_grids.append(grids)
         if self.sh:
-            self.decoder = SHDecoder(feature_dim=self.feature_dim)
+            self.decoder = SHDecoder(
+                feature_dim=self.feature_dim,
+                decoder_type=self.extra_args.get('sh_decoder_type', 'manual'))
         else:
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
         self.raymarcher = RayMarcher(**self.extra_args)
