@@ -299,9 +299,10 @@ class LowrankLearnableHash(LowrankModel):
             # Compute density on the grid
             patches = (
                 self.query_density(pts, grid_id, return_feat=False)
-                    .view(-1, patch_size, patch_size, patch_size)
+                .view(-1, patch_size, patch_size, patch_size)
             )
         elif what == 'Gcoords':
+            assert self.use_F, "Gcoords regularization not compatible with use_F=False"
             pts = self.normalize_coords(pts, grid_id)
             _, coords = self.compute_features(pts, grid_id, return_coords=True)
             patches = coords.view(-1, patch_size, patch_size, patch_size, coords.shape[-1])
