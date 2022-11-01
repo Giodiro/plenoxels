@@ -551,36 +551,31 @@ def visualize_planes(model, save_dir: str, name: str):
         grids = model.grids
     else:
         raise RuntimeError(f"Cannot find grids in model {model}.")
-
     n_planes = len(grids)
-    fig, axs = plt.subplots(nrows=n_planes, ncols=2*rank, figsize=(3*n_planes, 3*2*rank))
+    fig, ax = plt.subplots(nrows=n_planes, ncols=2*rank, figsize=(3*n_planes,3*2*rank))
     for plane_idx, grid in enumerate(grids):
-        _, c, h, w = grid.shape
-        grid = grid.view(dim, rank, h, w)
+        _, c, h, w = grid.data.shape
+
+        grid = grid.data.view(dim, rank, h, w)
         for r in range(rank):
-            grid_r = grid[:, r, :, :]
-            # Density plot
-            ax = axs[plane_idx, r]
-            density = model.density_act(grid_r[-1, :, :]).cpu().numpy()
-            im = ax.imshow(density)
-            ax.axis("off")
-            plt.colorbar(im, ax=ax, aspect=20, fraction=0.04)
+            density = grid[-1, r, :, :].cpu().numpy()
 
-            # Color plot
-            ax = axs[plane_idx, r + rank]
-            rays_d = torch.ones((h * w, 3), device=grid_r.device)
+            im = ax[plane_idx, r].imshow(density)
+            ax[plane_idx, r].axis("off")
+            plt.colorbar(im, ax=ax[plane_idx, r], aspect=20, fraction=0.04)
+
+            rays_d = torch.ones((h*w, 3), device=grid.device)
             rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
-            features = grid_r.view(dim, h*w).transpose(0, 1)  # [h*w, dim]
-            color = (
-                torch.sigmoid(
-                    model.decoder.compute_color(features, rays_d)
-                )
-            ).view(h, w, 3).cpu().numpy()
-            im = ax.imshow(color)
-            ax.axis("off")
-            plt.colorbar(im, ax=ax, aspect=20, fraction=0.04)
+            features = grid[:, r, :, :].view(dim, h*w).permute(1,0)
+            color = model.decoder.compute_color(features, rays_d) * 255
+            color = color.view(h, w, 3).cpu().numpy().astype(np.uint8)
 
-        fig.savefig(os.path.join(save_dir, f"{name}-planes.png"), bbox_inches='tight')
-        plt.cla()
-        plt.clf()
-        plt.close(fig)
+            im = ax[plane_idx, r+rank].imshow(color)
+            ax[plane_idx, r+rank].axis("off")
+            plt.colorbar(im, ax=ax[plane_idx, r+rank], aspect=20, fraction=0.04)
+
+    fig.tight_layout()
+    plt.savefig(os.path.join(save_dir, f"{name}-planes.png"))
+    plt.cla()
+    plt.clf()
+    plt.close()
