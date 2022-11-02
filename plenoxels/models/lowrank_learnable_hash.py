@@ -56,7 +56,8 @@ class LowrankLearnableHash(LowrankModel):
         self.alpha_mask_threshold = self.extra_args["density_threshold"]
         self.use_F = self.extra_args["use_F"]
         self.timer = CudaTimer(enabled=False)
-
+        self.use_weigted_rank_average = True
+        
         self.density_act = init_density_activation(
             self.extra_args.get('density_activation', 'trunc_exp'))
         self.pt_min, self.pt_max = None, None
@@ -68,18 +69,25 @@ class LowrankLearnableHash(LowrankModel):
         for si in range(num_scenes):
             grids = nn.ModuleList()
             for li, grid_config in enumerate(self.config):
-                if self.use_F and "feature_dim" in grid_config and si == 0:  # Only make one set of features
-                    self.features = self.init_features_param(grid_config, self.sh)
-                    self.feature_dim = self.features.shape[0]
+                if "feature_dim" in grid_config and si == 0:  # Only make one set of features
+                    if self.use_F:
+                        self.features = self.init_features_param(grid_config, self.sh)
+                        self.feature_dim = self.features.shape[0]
                 else:
+                    if self.use_weigted_rank_average:
+                        grid_config["output_coordinate_dim"] += 1
+
                     gpdesc = self.init_grid_param(grid_config, is_video=False, grid_level=li, use_F=self.use_F, is_appearance=False)
                     if li == 0:
                         self.set_resolution(gpdesc.reso, grid_id=si)
                     grids.append(gpdesc.grid_coefs)
                     if not self.use_F:
-                        # shape[1] is out-dim * rank
-                        self.feature_dim = gpdesc.grid_coefs[-1].shape[1] // grid_config["rank"][0]
+                        if self.use_weigted_rank_average:
+                            self.feature_dim = (gpdesc.grid_coefs[-1].shape[1] - 1) // grid_config["rank"][0]
+                        else:    
+                            self.feature_dim = gpdesc.grid_coefs[-1].shape[1] // grid_config["rank"][0]
             self.scene_grids.append(grids)
+                        
         if self.sh:
             self.decoder = SHDecoder(
                 feature_dim=self.feature_dim,
@@ -97,7 +105,7 @@ class LowrankLearnableHash(LowrankModel):
                          ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         grids: nn.ModuleList = self.scene_grids[grid_id]  # noqa
         grids_info = self.config
-
+            
         interp = pts
         grid: nn.ParameterList
         for level_info, grid in zip(grids_info, grids):
@@ -116,7 +124,12 @@ class LowrankLearnableHash(LowrankModel):
                     interp_out = interp_out * (
                         grid_sample_wrapper(grid[ci], interp[..., coo_comb]).view(
                             -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
-            interp = interp_out.mean(dim=-1)
+            
+            if self.use_weigted_rank_average:  
+                weights = torch.softmax(interp_out[:, 0, :], dim=1)
+                interp = torch.sum(interp_out[:, 1:, :] * weights[:, None, :], dim=-1)
+            else:
+                interp = interp_out.mean(dim=-1)
         
         if self.use_F:
             if interp.numel() > 0:
@@ -341,13 +354,14 @@ class LowrankLearnableHash(LowrankModel):
         deltas = rm_out["deltas"]  # [batch_size, n_samples]
         rays_d_rep = rays_d.view(-1, 1, 3).expand(intersection_pts.shape)
         masked_rays_d_rep = rays_d_rep[mask]
+        
         density_masked, features = self.query_density(pts=intersection_pts[mask], grid_id=grid_id, return_feat=True)
         density = torch.zeros(n_rays, n_intrs, device=dev, dtype=density_masked.dtype)
         density[mask] = density_masked.view(-1)
 
         alpha, weight, transmission = raw2alpha(density, deltas * self.density_multiplier)  # Each is shape [batch_size, n_samples]
         self.timer.check("density")
-
+        
         rgb_masked = self.decoder.compute_color(features, rays_d=masked_rays_d_rep)
         rgb = torch.zeros(n_rays, n_intrs, 3, device=dev, dtype=rgb_masked.dtype)
         rgb[mask] = rgb_masked

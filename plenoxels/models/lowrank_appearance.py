@@ -44,6 +44,7 @@ class LowrankAppearance(LowrankModel):
         self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
         self.use_F = self.extra_args["use_F"]
         self.appearance_code = True
+        self.use_weigted_rank_average = False
 
         # For now, only allow a single index grid and a single feature grid, not multiple layers
         assert len(self.config) == 2

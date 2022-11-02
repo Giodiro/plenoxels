@@ -545,6 +545,9 @@ def N_to_reso(num_voxels, aabb):
 def visualize_planes(model, save_dir: str, name: str):
     rank = model.config[0]["rank"][0]
     dim = model.feature_dim
+    if model.use_weigted_rank_average:
+        dim += 1
+        weights = []
     if hasattr(model, 'scene_grids'):  # LowrankLearnableHash
         grids = model.scene_grids[0][0]
     elif hasattr(model, 'grids'):  # LowrankVideo
@@ -555,7 +558,7 @@ def visualize_planes(model, save_dir: str, name: str):
     fig, ax = plt.subplots(nrows=n_planes, ncols=2*rank, figsize=(3*n_planes,3*2*rank))
     for plane_idx, grid in enumerate(grids):
         _, c, h, w = grid.data.shape
-
+        
         grid = grid.data.view(dim, rank, h, w)
         for r in range(rank):
             density = model.density_act(
@@ -568,7 +571,10 @@ def visualize_planes(model, save_dir: str, name: str):
 
             rays_d = torch.ones((h*w, 3), device=grid.device)
             rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
-            features = grid[:, r, :, :].view(dim, h*w).permute(1,0)
+            if model.use_weigted_rank_average:
+                features = grid[1:, r, :, :].view(dim-1, h*w).permute(1,0)
+            else: 
+                features = grid[:, r, :, :].view(dim, h*w).permute(1,0)
             color = (
                     torch.sigmoid(model.decoder.compute_color(features, rays_d))
                     * 255
@@ -578,8 +584,26 @@ def visualize_planes(model, save_dir: str, name: str):
             ax[plane_idx, r+rank].axis("off")
             plt.colorbar(im, ax=ax[plane_idx, r+rank], aspect=20, fraction=0.04)
 
+        if model.use_weigted_rank_average:
+            weights += [torch.softmax(grid[0, :, :, :], dim=1)]
+        
     fig.tight_layout()
     plt.savefig(os.path.join(save_dir, f"{name}-planes.png"))
     plt.cla()
     plt.clf()
     plt.close()
+    
+    if model.use_weigted_rank_average:
+        fig2, ax2 = plt.subplots(nrows=n_planes, ncols=rank, figsize=(3*n_planes,3*rank))
+        
+        for plane_idx in range(n_planes): 
+            for i, weight in enumerate(weights[plane_idx]):   
+                im = ax2[plane_idx, i].imshow(weight.cpu().numpy())
+                ax2[plane_idx, i].axis("off")
+                plt.colorbar(im, ax=ax[plane_idx, i], aspect=20, fraction=0.04)    
+                
+        fig2.tight_layout()
+        plt.savefig(os.path.join(save_dir, f"{name}-weights.png"))
+        plt.cla()
+        plt.clf()
+        plt.close()

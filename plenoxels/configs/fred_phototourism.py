@@ -1,7 +1,7 @@
 # configuration file to be used with `main.py` for video training
 config = {
 
-    "expname": "default",
+    "expname": "default_scale15_zn07",
     "logdir": "./logs/trevi",
 
     # Data settings
@@ -39,8 +39,8 @@ config = {
     
     # Training settings
     "train_fp16": False,
-    "save_every": 5000,
-    "valid_every": 5000,
+    "save_every": 1000,
+    "valid_every": 1000,
     "save_video": True,
     "add_rank_steps": [],
     "save_outputs": True,

@@ -44,6 +44,7 @@ class LowrankVideo(LowrankModel):
         self.use_F = self.extra_args["use_F"]
         self.trainble_rank = None
         self.hooks = None
+        self.use_weigted_rank_average = False
 
         # For now, only allow a single index grid and a single feature grid, not multiple layers
         assert len(self.config) == 2
