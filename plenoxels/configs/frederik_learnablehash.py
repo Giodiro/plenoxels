@@ -1,7 +1,7 @@
 # configuration file to be used with `main.py` for normal (or multiscene) training
 # the configuration must be specified in a dictionary called `config`.
 config = {
-    "expname": "rank_1_l1_plane_density_00008_l1_plane_color_00_tv_001",
+    "expname": "res512_rank4",
     "logdir": "./logs/lego",
 
     # Data settings
@@ -62,6 +62,7 @@ config = {
     "upsample_F_steps": [],
     "density_multiplier": 1,
     "use_F": False,
+    "multiscale_res": [1], #, 2, 4, 8],
     "grid_config": """
 [
     {
@@ -69,7 +70,7 @@ config = {
         "output_coordinate_dim": 28,
         "grid_dimensions": 2,
         "resolution": [512, 512, 512], 
-        "rank": 1,
+        "rank": 4,
     },
     {
         "input_coordinate_dim": 5,

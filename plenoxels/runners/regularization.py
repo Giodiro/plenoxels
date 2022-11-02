@@ -103,11 +103,13 @@ class PlaneTV(Regularizer):
         super().__init__('plane-TV', initial_value)
 
     def _regularize(self, model: LowrankLearnableHash, grid_id: int = 0, **kwargs):
-        grids: nn.ModuleList = model.scene_grids[grid_id]
+        multi_res_grids: nn.ModuleList = model.scene_grids[grid_id]
         total = 0
-        for grid_ls in grids:
-            for grid in grid_ls:
-                total += compute_plane_tv(grid)
+        for grids in multi_res_grids:
+            for grid_ls in grids:
+                for grid in grid_ls:
+                    total += compute_plane_tv(grid)
+        
         return total
 
 
@@ -119,8 +121,9 @@ class VideoPlaneTV(Regularizer):
         spatial_grids = [0, 1, 3]  # These are the spatial grids; the others are spatiotemporal
         total = 0
         # model.grids is 6 x [1, rank * F_dim, reso, reso]
-        for grid_id in spatial_grids:
-            total += compute_plane_tv(model.grids[grid_id])
+        for grids in model.grids:
+            for grid_id in spatial_grids:
+                total += compute_plane_tv(grids[grid_id])
         return total
 
 
@@ -132,8 +135,9 @@ class TimeSmoothness(Regularizer):
         time_grids = [2, 4, 5]  # These are the spatiotemporal grids; the others are only spatial
         total = 0
         # model.grids is 6 x [1, rank * F_dim, reso, reso]
-        for grid_id in time_grids:
-            total += compute_plane_smoothness(model.grids[grid_id])
+        for grids in model.grids:
+            for grid_id in time_grids:
+                total += compute_plane_smoothness(grids[grid_id])
         return total
 
 

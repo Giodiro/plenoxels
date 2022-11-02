@@ -39,8 +39,8 @@ config = {
     
     # Training settings
     "train_fp16": False,
-    "save_every": 5000,
-    "valid_every": 5000,
+    "save_every": 10,
+    "valid_every": 10,
     "save_video": True,
     "add_rank_steps": [],
     "save_outputs": True,
@@ -59,14 +59,15 @@ config = {
     # "upsample_time_steps": [6000],  # DyNerf does 300K iterations with keyframes, with lr 5e-4
     "upsample_time_steps": [],
     #"upsample_resolution": [],
+    "multiscale_res": [1, 2, 4, 8],
     "grid_config": """
 [
     {
         "input_coordinate_dim": 4,
         "output_coordinate_dim": 28,
         "grid_dimensions": 2,
-        "resolution": [512, 512, 512, 1708], 
-        "rank": 2,
+        "resolution": [64, 64, 64, 1708], 
+        "rank": 1,
         "time_reso": 1708,
     },
     {
