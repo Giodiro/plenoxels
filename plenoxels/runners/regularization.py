@@ -135,10 +135,16 @@ class VideoPlaneTV(Regularizer):
         super().__init__('plane-TV', initial_value)
 
     def _regularize(self, model: LowrankVideo, **kwargs) -> torch.Tensor:
-        spatial_grids = [0, 1, 3]  # These are the spatial grids; the others are spatiotemporal
+        
         total = 0
         # model.grids is 6 x [1, rank * F_dim, reso, reso]
         for grids in model.grids:
+            
+            if len(grids) == 3:
+                spatial_grids = [0, 1, 2]
+            else:
+                spatial_grids = [0, 1, 3]  # These are the spatial grids; the others are spatiotemporal
+            
             for grid_id in spatial_grids:
                 total += compute_plane_tv(grids[grid_id])
         return total

@@ -1,7 +1,7 @@
 # configuration file to be used with `main.py` for video training
 config = {
 
-    "expname": "multires_tv005",
+    "expname": "multires_tv005_notime",
     "logdir": "./logs/trevi",
 
     # Data settings
@@ -63,10 +63,10 @@ config = {
     "grid_config": """
 [
     {
-        "input_coordinate_dim": 4,
+        "input_coordinate_dim": 3,
         "output_coordinate_dim": 28,
         "grid_dimensions": 2,
-        "resolution": [64, 64, 64, 1708], 
+        "resolution": [64, 64, 64], 
         "rank": 1,
         "time_reso": 1708,
     },

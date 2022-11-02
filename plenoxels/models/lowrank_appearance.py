@@ -98,7 +98,8 @@ class LowrankAppearance(LowrankModel):
         dim = level_info["output_coordinate_dim"] - 1 if level_info["output_coordinate_dim"] == 28 else level_info["output_coordinate_dim"]
                 
         # Interpolate in space and time
-        pts = torch.cat([pts, timestamps.expand(pts.shape[0],1)], dim=-1)  # [batch, 4] for xyzt
+        if level_info["input_coordinate_dim"] == 4:
+            pts = torch.cat([pts, timestamps.expand(pts.shape[0],1)], dim=-1)  # [batch, 4] for xyzt
 
         # Interpolate in space
         coo_combs = list(itertools.combinations(
