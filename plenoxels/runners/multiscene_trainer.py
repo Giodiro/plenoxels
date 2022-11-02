@@ -216,16 +216,6 @@ class Trainer():
         batch_iter = iter(self.train_data_loader)
         while self.global_step < self.num_steps:
             try:
-                # Check if we need to save model at this step
-                if self.save_every > -1 and self.global_step % self.save_every == 0 and self.global_step > 0:
-                    self.model.eval()
-                    self.save_model()
-                    self.model.train()
-                if self.valid_every > -1 and self.global_step % self.valid_every == 0 and self.global_step > 0:
-                    self.model.eval()
-                    self.validate()
-                    self.model.train()
-                self.global_step += 1
                 # Get a batch of data
                 self.timer.reset()
                 data = next(batch_iter)
@@ -236,6 +226,18 @@ class Trainer():
                 self.post_step(data=data, progress_bar=pb)
                 if step_successful and self.scheduler is not None:
                     self.scheduler.step()
+
+                # Check if we need to save model at this step
+                if self.save_every > -1 and self.global_step % self.save_every == 0 and self.global_step > 0:
+                    self.model.eval()
+                    self.save_model()
+                    self.model.train()
+                if self.valid_every > -1 and self.global_step % self.valid_every == 0 and self.global_step > 0:
+                    self.model.eval()
+                    self.validate()
+                    self.model.train()
+
+                self.global_step += 1
             except StopIteration as e:
                 logging.info(str(e))
                 logging.info(f'resetting after a full pass through the data, or when the dataset changed')
