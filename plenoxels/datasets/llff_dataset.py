@@ -23,12 +23,6 @@ class LLFFDataset(BaseDataset):
                  batch_size: Optional[int] = None,
                  downsample: int = 4,
                  hold_every: int = 8):
-        """
-        spheric_poses: whether the images are taken in a spheric inward-facing manner
-                       default: False (forward-facing)
-        val_num: number of val images (used for multigpu training, validate same image for all gpus)
-        """
-
         self.downsample = downsample
         self.hold_every = hold_every
         self.dset_id = dset_id
@@ -73,14 +67,10 @@ class LLFFDataset(BaseDataset):
             )
             x = x.flatten()
             y = y.flatten()
-        near_fars = None
-        if self.per_cam_near_fars is not None:
-            if self.split == 'train':
-                num_frames_per_camera = len(self.imgs) // (len(self.per_cam_near_fars) * h * w)
-                camera_id = torch.div(image_id, num_frames_per_camera, rounding_mode='floor')  # [num_rays]
-                near_fars = self.per_cam_near_fars[camera_id, :]
-            else:
-                near_fars = self.per_cam_near_fars[image_id[0], :]
+        if self.is_ndc:
+            near_fars = torch.tensor([[0.0, 1.0]])
+        else:
+            near_fars = self.per_cam_near_fars[image_id, :]
 
         rgba = self.imgs[index] / 255.0  # (num_rays, 3)   this converts to f32
         c2w = self.poses[image_id]       # (num_rays, 3, 4)
