@@ -117,7 +117,7 @@ class LowrankLearnableHash(LowrankModel):
                         grid_sample_wrapper(grid[ci], interp[..., coo_comb]).view(
                             -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
             interp = interp_out.mean(dim=-1)
-        
+
         if self.use_F:
             if interp.numel() > 0:
                 interp = (interp - self.pt_min) / (self.pt_max - self.pt_min)
@@ -132,7 +132,7 @@ class LowrankLearnableHash(LowrankModel):
 
     @torch.no_grad()
     def update_alpha_mask(self, grid_id: int = 0):
-        assert len(self.config) == 2, "Alpha-masking not supported for multiple layers of indirection."
+        assert len(self.config) <= 2, "Alpha-masking not supported for multiple layers of indirection."
         aabb = self.aabb(grid_id)
         grid_size = self.resolution(grid_id)
         grid_size_l = grid_size.cpu().tolist()
@@ -265,7 +265,7 @@ class LowrankLearnableHash(LowrankModel):
         :param max_voxels:
         :return:
         """
-        dev = self.features.device
+        dev = aabb.device
         pts = torch.stack(torch.meshgrid(
             torch.linspace(0, 1, grid_size[0], device=dev),
             torch.linspace(0, 1, grid_size[1], device=dev),
@@ -333,7 +333,7 @@ class LowrankLearnableHash(LowrankModel):
             if "alpha" in channels:
                 outputs["alpha"] = torch.zeros(n_rays, 1, device=dev, dtype=rays_o.dtype)
             return outputs
-        
+
         self.timer.check("raymarcher")
         # compute features and render
         outputs = {}
@@ -371,7 +371,7 @@ class LowrankLearnableHash(LowrankModel):
         outputs["deltas"] = deltas
         outputs["weight"] = weight
         outputs["midpoint"] = rm_out["z_mids"]
-        
+
         self.timer.check("render")
 
         return outputs
