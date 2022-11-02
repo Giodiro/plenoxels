@@ -48,7 +48,6 @@ class Video360Dataset(BaseDataset):
         self.per_cam_near_fars = None
         self.global_translation = torch.tensor([0, 0, 0])
         self.global_scale = torch.tensor([1, 1, 1])
-        dset_type = None
         if is_contracted and is_ndc:
             raise ValueError("Options 'is_contracted' and 'is_ndc' are exclusive.")
         if "lego" in datadir:

@@ -61,18 +61,23 @@ class LowrankLearnableHash(LowrankModel):
         self.use_F = self.extra_args["use_F"]
         self.timer = CudaTimer(enabled=False)
         self.multiscale_res = multiscale_res
-        self.use_proposal_sampling = kwargs.get('proposal_sampling', False)
+
         self.spatial_distortion = None
         if is_contracted:
-            self.spatial_distortion = SceneContraction(float('inf'))
+            self.spatial_distortion = SceneContraction(
+                order=float('inf'),
+                global_scale=kwargs.get('global_scale', None),
+                global_translation=kwargs.get('global_translation', None))
 
         self.density_act = init_density_activation(
             self.extra_args.get('density_activation', 'trunc_exp'))
+
         self.pt_min, self.pt_max = None, None
         if self.use_F:
             self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
             self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
 
+        self.use_proposal_sampling = kwargs.get('proposal_sampling', False)
         self.density_field, self.density_fns = None, None
         if self.use_proposal_sampling:
             # Initialize density_fields
@@ -87,7 +92,7 @@ class LowrankLearnableHash(LowrankModel):
             if self.extra_args['raymarch_type'] != 'fixed':
                 log.warning("raymarch_type is not 'fixed' but we will use 'n_intersections' anyways.")
             self.raymarcher = ProposalNetworkSampler(
-                num_proposal_samples_per_ray=[self.extra_args['num_proposal_samples']],
+                num_proposal_samples_per_ray=(self.extra_args['num_proposal_samples'], ),
                 num_nerf_samples_per_ray=self.extra_args['n_intersections'],
                 num_proposal_network_iterations=1,
                 single_jitter=self.extra_args['single_jitter'],

@@ -212,7 +212,7 @@ class FloaterLoss(Regularizer):
     def __init__(self, initial_value):
         super().__init__('floater-loss', initial_value)
 
-    def _regularize(self, model: LowrankLearnableHash, model_out, grid_id: int) -> torch.Tensor:
+    def _regularize(self, model: LowrankLearnableHash, model_out, grid_id: int, **kwargs) -> torch.Tensor:
         from plenoxels.ops.losses.distortion_loss_warp import distortion_loss
         midpoint = torch.cat(
             [model_out["midpoint"],
@@ -228,5 +228,5 @@ class HistogramLoss(Regularizer):
     def __init__(self, initial_value):
         super().__init__('histogram-loss', initial_value)
 
-    def _regularize(self, model: LowrankLearnableHash, model_out, grid_id: int) -> torch.Tensor:
+    def _regularize(self, model: LowrankLearnableHash, model_out, grid_id: int, **kwargs) -> torch.Tensor:
         return interlevel_loss(model_out['weights_list'], model_out['ray_samples_list'])

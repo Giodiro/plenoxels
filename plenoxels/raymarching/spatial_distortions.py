@@ -33,11 +33,25 @@ class SceneContraction(SpatialDistortion):
             order: Order of the norm. Default to the Frobenius norm. Must be set to None for Gaussians.
     """
 
-    def __init__(self, order: Optional[Union[float, int]] = None) -> None:
+    def __init__(self,
+                 order: Optional[Union[float, int]] = None,
+                 global_translation: Optional[torch.Tensor] = None,
+                 global_scale: Optional[torch.Tensor] = None,
+                 ) -> None:
         super().__init__()
         self.order = order
+        global_translation = global_translation or torch.tensor([0.0, 0.0, 0.0])
+        self.global_translation = nn.Parameter(global_translation, requires_grad=False)
+        global_scale = global_scale or torch.tensor([1.0, 1.0, 1.0])
+        self.global_scale = nn.Parameter(global_scale, requires_grad=False)
 
     def forward(self, positions):
+        # Apply global scale and translation
+        positions = (
+            positions * self.global_scale[None, None, :]
+            + self.global_translation[None, None, :]
+        )
+
         mag = torch.linalg.norm(positions, ord=self.order, dim=-1)
         mask = mag >= 1
         x_new = positions.clone()
