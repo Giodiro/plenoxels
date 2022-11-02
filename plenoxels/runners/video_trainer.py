@@ -45,8 +45,9 @@ class VideoTrainer(Trainer):
         # Keys we wish to ignore
         kwargs.pop('transfer_learning', None)
         kwargs.pop('num_batches_per_dset', None)
+        tr_dset = tr_loader.dataset if tr_loader is not None else None
         super().__init__(tr_loader=tr_loader,
-                         tr_dsets=[tr_loader.dataset if tr_loader is not None else None],
+                         tr_dsets=[tr_dset],
                          ts_dsets=[ts_dset],
                          num_batches_per_dset=1,
                          num_steps=num_steps,
@@ -59,6 +60,8 @@ class VideoTrainer(Trainer):
                          valid_every=valid_every,
                          transfer_learning=False,  # No transfer with video
                          save_outputs=save_outputs,
+                         global_translation=ts_dset.global_translation,
+                         global_scale=ts_dset.global_scale,
                          **kwargs)
         self.upsample_time_resolution = upsample_time_resolution
         self.upsample_time_steps = upsample_time_steps
@@ -94,8 +97,8 @@ class VideoTrainer(Trainer):
                     bg_color = 1
                 outputs = self.model(rays_o_b, rays_d_b, timestamps_d_b, bg_color=bg_color,
                                      channels={"rgb", "depth"}, near_far=near_far,
-                                     global_translation=self.train_datasets[0].global_translation,
-                                     global_scale=self.train_datasets[0].global_scale)
+                                     global_translation=self.test_datasets[0].global_translation,
+                                     global_scale=self.test_datasets[0].global_scale)
                 for k, v in outputs.items():
                     preds[k].append(v.cpu())
         return {k: torch.cat(v, 0) for k, v in preds.items()}
@@ -273,16 +276,18 @@ class VideoTrainer(Trainer):
         self.model.grids.requires_grad_(False)
         self.model.time_coef.requires_grad_(True)
 
-        self.appearance_optimizer = torch.optim.Adam(params=[self.model.time_coef], lr=1e-3)
+        parameters = [p for p in self.model.time_coef]
+        self.appearance_optimizer = torch.optim.Adam(params=parameters, lr=1e-3)
 
         for dset_id, dataset in enumerate(self.test_datasets):
             pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
 
             # reset the appearance codes for
-            test_frames = self.test_datasets[0].__len__()
-            mask = torch.ones_like(self.model.time_coef)
-            mask[: , -test_frames:] = 0
-            self.model.time_coef.data = self.model.time_coef.data * mask + abs(1 - mask)
+            for i in range(len(self.model.time_coef)):
+                test_frames = self.test_datasets[0].__len__()
+                mask = torch.ones_like(self.model.time_coef[i])
+                mask[: , -test_frames:] = 0
+                self.model.time_coef[i].data = self.model.time_coef[i].data * mask + abs(1 - mask)
 
             batch_size = self.train_datasets[dset_id].batch_size
 

@@ -96,7 +96,10 @@ class LowrankAppearance(LowrankModel):
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
 
         dim = level_info["output_coordinate_dim"] - 1 if level_info["output_coordinate_dim"] == 28 else level_info["output_coordinate_dim"]
-        
+                
+        # Interpolate in space and time
+        pts = torch.cat([pts, timestamps.expand(pts.shape[0],1)], dim=-1)  # [batch, 4] for xyzt
+
         # Interpolate in space
         coo_combs = list(itertools.combinations(
             range(pts.shape[-1]),

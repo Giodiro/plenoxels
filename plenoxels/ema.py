@@ -8,7 +8,7 @@ class EMA():
         if self.val is None:
             self.val = val
         else:
-            self.val = self.weighting * val + (1 - self.weighting) * self.val
+            self.val = val#self.weighting * val + (1 - self.weighting) * self.val
 
     @property
     def value(self):

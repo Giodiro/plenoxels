@@ -10,12 +10,16 @@ import torch
 import torch.utils.data
 from torch.utils.tensorboard import SummaryWriter
 import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
 
 from plenoxels.ema import EMA
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash, DensityMask
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_exr, write_png
-from .regularization import PlaneTV, L1PlaneColor, L1PlaneDensity, VolumeTV, L1Density, FloaterLoss
+from .regularization import (
+    PlaneTV, L1PlaneColor, L1PlaneDensity, VolumeTV, L1Density, FloaterLoss,
+    HistogramLoss
+)
 from .timer import CudaTimer
 from ..datasets import SyntheticNerfDataset, LLFFDataset
 from ..datasets.multi_dataset_sampler import MultiSceneSampler
@@ -64,7 +68,7 @@ class Trainer():
         self.upsample_steps = [s * step_multiplier for s in kwargs.get('upsample_steps', [])]
         self.upsample_resolution_list = list(kwargs.get('upsample_resolution', []))
         self.upsample_F_steps = list(kwargs.get('upsample_F_steps', []))
-        
+
         assert len(self.upsample_resolution_list) == len(self.upsample_steps), \
             f"Got {len(self.upsample_steps)} upsample_steps and {len(self.upsample_resolution_list)} upsample_resolution."
 
@@ -105,7 +109,7 @@ class Trainer():
                 outputs = self.model(rays_o_b, rays_d_b, grid_id=dset_id, bg_color=bg_color, channels={"rgb", "depth"})
                 for k, v in outputs.items():
                     preds[k].append(v)
-        return {k: torch.cat(v, 0) for k, v in preds.items()}
+        return {k: torch.cat(v, 0) for k, v in preds.items() if k in {"rgb", "depth"}}
 
     def step(self, data: Dict[str, Union[int, torch.Tensor]]):
         self.timer.reset()
@@ -134,7 +138,7 @@ class Trainer():
             loss = recon_loss
             # Regularization
             for r in self.regularizers:
-                loss = loss + r.regularize(self.model, dset_id)
+                loss = loss + r.regularize(self.model, grid_id=dset_id, model_out=fwd_out)
             self.timer.check("step_loss")
         self.gscaler.scale(loss).backward()
 
@@ -212,16 +216,6 @@ class Trainer():
         batch_iter = iter(self.train_data_loader)
         while self.global_step < self.num_steps:
             try:
-                # Check if we need to save model at this step
-                if self.save_every > -1 and self.global_step % self.save_every == 0 and self.global_step > 0:
-                    self.model.eval()
-                    self.save_model()
-                    self.model.train()
-                if self.valid_every > -1 and self.global_step % self.valid_every == 0 and self.global_step > 0:
-                    self.model.eval()
-                    self.validate()
-                    self.model.train()
-                self.global_step += 1
                 # Get a batch of data
                 self.timer.reset()
                 data = next(batch_iter)
@@ -232,6 +226,18 @@ class Trainer():
                 self.post_step(data=data, progress_bar=pb)
                 if step_successful and self.scheduler is not None:
                     self.scheduler.step()
+
+                # Check if we need to save model at this step
+                if self.save_every > -1 and self.global_step % self.save_every == 0 and self.global_step > 0:
+                    self.model.eval()
+                    self.save_model()
+                    self.model.train()
+                if self.valid_every > -1 and self.global_step % self.valid_every == 0 and self.global_step > 0:
+                    self.model.eval()
+                    self.validate()
+                    self.model.train()
+
+                self.global_step += 1
             except StopIteration as e:
                 logging.info(str(e))
                 logging.info(f'resetting after a full pass through the data, or when the dataset changed')
@@ -436,13 +442,14 @@ class Trainer():
 
     def init_model(self, **kwargs) -> torch.nn.Module:
         aabbs = [d.scene_bbox for d in self.test_datasets]
-        
+
         model = LowrankLearnableHash(
             num_scenes=self.num_dsets,
             grid_config=kwargs.pop("grid_config"),
             aabb=aabbs,
             is_ndc=self.is_ndc,
             is_contracted=self.is_contracted,
+            proposal_sampling=self.extra_args.get('histogram_loss_weight', 0.0) > 0.0,
             **kwargs)
         logging.info(f"Initialized LowrankLearnableHash model with "
                      f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters.")
@@ -462,6 +469,7 @@ class Trainer():
             L1PlaneDensity(kwargs.get('l1_plane_density_weight', 0.0)),
             L1Density(kwargs.get('l1density_weight', 0.0), max_voxels=100_000),
             FloaterLoss(kwargs.get('floater_loss_weight', 0.0)),
+            HistogramLoss(kwargs.get('histogram_loss_weight', 0.0)),
         ]
         # Keep only the regularizers with a positive weight
         regularizers = [r for r in regularizers if r.weight > 0]
@@ -553,10 +561,10 @@ def visualize_planes(model, save_dir: str, name: str):
         multi_scale_grids = model.grids
     else:
         raise RuntimeError(f"Cannot find grids in model {model}.")
-    
+
     for scale_id, grids in enumerate(multi_scale_grids):
         if hasattr(model, 'scene_grids'):
-            grids = grids[0] 
+            grids = grids[0]
         n_planes = len(grids)
         fig, ax = plt.subplots(nrows=n_planes, ncols=2*rank, figsize=(3*n_planes,3*2*rank))
         for plane_idx, grid in enumerate(grids):
@@ -564,12 +572,12 @@ def visualize_planes(model, save_dir: str, name: str):
 
             grid = grid.data.view(dim, rank, h, w)
             for r in range(rank):
-                # density = model.density_act(
-                #     grid[-1, r, :, :].cpu()
-                # ).numpy()
-                density = grid[-1, r, :, :].cpu().numpy()
+                density = model.density_act(
+                    grid[-1, r, :, :].cpu()
+                ).numpy()
+                # density = grid[-1, r, :, :].cpu().numpy()
 
-                im = ax[plane_idx, r].imshow(density)
+                im = ax[plane_idx, r].imshow(density, norm=LogNorm(vmin=1e-6, vmax=density.max()))
                 ax[plane_idx, r].axis("off")
                 plt.colorbar(im, ax=ax[plane_idx, r], aspect=20, fraction=0.04)
 
@@ -578,15 +586,13 @@ def visualize_planes(model, save_dir: str, name: str):
                 features = grid[:, r, :, :].view(dim, h*w).permute(1,0)
                 color = (
                         torch.sigmoid(model.decoder.compute_color(features, rays_d))
-                        * 255
-                ).view(h, w, 3).cpu().numpy().astype(np.uint8)
-
-                im = ax[plane_idx, r+rank].imshow(color)
+                ).view(h, w, 3).cpu().numpy()
+                ax[plane_idx, r+rank].imshow(color)
                 ax[plane_idx, r+rank].axis("off")
-                plt.colorbar(im, ax=ax[plane_idx, r+rank], aspect=20, fraction=0.04)
 
         fig.tight_layout()
         plt.savefig(os.path.join(save_dir, f"{name}-planes-scale-{scale_id}.png"))
         plt.cla()
         plt.clf()
         plt.close()
+

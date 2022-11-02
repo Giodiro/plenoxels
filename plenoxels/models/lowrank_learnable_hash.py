@@ -9,8 +9,11 @@ import numpy as np
 
 from plenoxels.models.utils import grid_sample_wrapper, raw2alpha, init_density_activation
 from .decoders import NNDecoder, SHDecoder
+from .density_fields import TriplaneDensityField
+from ..raymarching.ray_samplers import RayBundle, ProposalNetworkSampler
 from ..raymarching.raymarching import RayMarcher
 from .lowrank_model import LowrankModel
+from ..raymarching.spatial_distortions import SceneContraction
 from ..runners.timer import CudaTimer
 
 
@@ -59,13 +62,43 @@ class LowrankLearnableHash(LowrankModel):
         self.timer = CudaTimer(enabled=False)
         self.multiscale_res = multiscale_res
 
+        self.spatial_distortion = None
+        if is_contracted:
+            self.spatial_distortion = SceneContraction(
+                order=float('inf'),
+                global_scale=kwargs.get('global_scale', None),
+                global_translation=kwargs.get('global_translation', None))
+
         self.density_act = init_density_activation(
             self.extra_args.get('density_activation', 'trunc_exp'))
+
         self.pt_min, self.pt_max = None, None
         if self.use_F:
             self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
             self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
-            
+
+        self.use_proposal_sampling = kwargs.get('proposal_sampling', False)
+        self.density_field, self.density_fns = None, None
+        if self.use_proposal_sampling:
+            # Initialize density_fields
+            self.density_field = TriplaneDensityField(
+                aabb=self.aabb(0),
+                resolution=self.extra_args['density_field_resolution'],
+                num_input_coords=self.config[0]['input_coordinate_dim'],
+                rank=self.extra_args['density_field_rank'],
+                spatial_distortion=self.spatial_distortion,
+            )
+            self.density_fns = [self.density_field.get_density]
+            if self.extra_args['raymarch_type'] != 'fixed':
+                log.warning("raymarch_type is not 'fixed' but we will use 'n_intersections' anyways.")
+            self.raymarcher = ProposalNetworkSampler(
+                num_proposal_samples_per_ray=(self.extra_args['num_proposal_samples'], ),
+                num_nerf_samples_per_ray=self.extra_args['n_intersections'],
+                num_proposal_network_iterations=1,
+                single_jitter=self.extra_args['single_jitter'],
+            )
+        else:
+            self.raymarcher = RayMarcher(**self.extra_args)
 
         self.scene_grids = nn.ModuleList()
         for si in range(num_scenes):
@@ -90,18 +123,19 @@ class LowrankLearnableHash(LowrankModel):
                         if not self.use_F:
                             # shape[1] is out-dim * rank
                             self.feature_dim = gpdesc.grid_coefs[-1].shape[1] // config["rank"][0]
-                multi_scale_grids.append(grids)    
+                multi_scale_grids.append(grids)
             self.scene_grids.append(multi_scale_grids)
-            
+
         if self.sh:
             self.decoder = SHDecoder(
                 feature_dim=self.feature_dim,
                 decoder_type=self.extra_args.get('sh_decoder_type', 'manual'))
         else:
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
-        self.raymarcher = RayMarcher(**self.extra_args)
+
         self.density_mask = nn.ModuleList([None] * num_scenes)
-        log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes, decoder: {self.decoder}.")
+        log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes, "
+                 f"decoder: {self.decoder}. Raymarcher: {self.raymarcher}")
 
     def compute_features(self,
                          pts: torch.Tensor,
@@ -110,20 +144,20 @@ class LowrankLearnableHash(LowrankModel):
                          ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         mulitres_grids: nn.ModuleList = self.scene_grids[grid_id]  # noqa
         grids_info = self.config
-                
+
         multi_scale_interp = 0
         for scale_id, res in enumerate(self.multiscale_res):
             grids: nn.ParameterList = mulitres_grids[scale_id]
-            
+
             for level_info, grid in zip(grids_info, grids):
                 if "feature_dim" in level_info:
                     continue
-                
+
                 # create plane combinations
                 coo_combs = list(itertools.combinations(
                     range(pts.shape[-1]),
                     level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
-                                
+
                 interp_out = None
                 for ci, coo_comb in enumerate(coo_combs):
                     # interpolate in plane
@@ -131,13 +165,11 @@ class LowrankLearnableHash(LowrankModel):
                                 -1, level_info["output_coordinate_dim"], level_info["rank"])
                     # compute product
                     interp_out = interp_out_plane if interp_out is None else interp_out * interp_out_plane
-                
             # average over rank
             interp = interp_out.mean(dim=-1)
-
             # sum over scales
             multi_scale_interp += interp
-            
+
         if self.use_F:
             if multi_scale_interp.numel() > 0:
                 multi_scale_interp = (multi_scale_interp - self.pt_min) / (self.pt_max - self.pt_min)
@@ -152,7 +184,7 @@ class LowrankLearnableHash(LowrankModel):
 
     @torch.no_grad()
     def update_alpha_mask(self, grid_id: int = 0):
-        assert len(self.config) == 2, "Alpha-masking not supported for multiple layers of indirection."
+        assert len(self.config) <= 2, "Alpha-masking not supported for multiple layers of indirection."
         aabb = self.aabb(grid_id)
         grid_size = self.resolution(grid_id)
         grid_size_l = grid_size.cpu().tolist()
@@ -285,7 +317,7 @@ class LowrankLearnableHash(LowrankModel):
         :param max_voxels:
         :return:
         """
-        dev = self.features.device
+        dev = aabb.device
         pts = torch.stack(torch.meshgrid(
             torch.linspace(0, 1, grid_size[0], device=dev),
             torch.linspace(0, 1, grid_size[1], device=dev),
@@ -320,13 +352,56 @@ class LowrankLearnableHash(LowrankModel):
         near_far : [batch, 2]
         """
         self.timer.reset()
-        rm_out = self.raymarcher.get_intersections2(
-            rays_o, rays_d, self.aabb(grid_id), self.resolution(grid_id), perturb=self.training,
-            is_ndc=self.is_ndc, is_contracted=self.is_contracted, near_far=near_far)
-        rays_d = rm_out["rays_d"]                   # [n_rays, 3]
-        intersection_pts = rm_out["intersections"]  # [n_rays, n_intrs, 3]
-        mask = rm_out["mask"]                       # [n_rays, n_intrs]
-        n_rays, n_intrs = intersection_pts.shape[:2]
+        outputs = {}
+
+        if self.use_proposal_sampling:
+            if near_far is None:
+                aabb = self.aabb(grid_id)
+                # Intersect with AABB
+                dir_fraction = 1.0 / (rays_d + 1e-6)
+                # x
+                t1 = (aabb[0, 0] - rays_o[:, 0:1]) * dir_fraction[:, 0:1]
+                t2 = (aabb[1, 0] - rays_o[:, 0:1]) * dir_fraction[:, 0:1]
+                # y
+                t3 = (aabb[0, 1] - rays_o[:, 1:2]) * dir_fraction[:, 1:2]
+                t4 = (aabb[1, 1] - rays_o[:, 1:2]) * dir_fraction[:, 1:2]
+                # z
+                t5 = (aabb[0, 2] - rays_o[:, 2:3]) * dir_fraction[:, 2:3]
+                t6 = (aabb[1, 2] - rays_o[:, 2:3]) * dir_fraction[:, 2:3]
+                nears = torch.max(
+                    torch.cat([torch.minimum(t1, t2), torch.minimum(t3, t4), torch.minimum(t5, t6)], dim=1), dim=1
+                ).values[..., None]
+                fars = torch.min(
+                    torch.cat([torch.maximum(t1, t2), torch.maximum(t3, t4), torch.maximum(t5, t6)], dim=1), dim=1
+                ).values[..., None]
+                near_plane = 2.0 if self.training else 0  # TODO: this is harcoded for synthetic
+                nears = torch.clamp(nears, min=near_plane)
+            else:
+                nears, fars = torch.split(near_far, [1, 1], dim=-1)
+            ray_bundle = RayBundle(origins=rays_o, directions=rays_d, nears=nears, fars=fars)
+            ray_samples, weights_list, ray_samples_list = self.raymarcher.generate_ray_samples(
+                ray_bundle, density_fns=self.density_fns)
+            outputs['weights_list'] = weights_list
+            outputs['ray_samples_list'] = ray_samples_list
+            outputs['ray_samples_list'].append(ray_samples)
+            rays_d = ray_bundle.directions
+            pts = ray_samples.get_positions()
+            if self.spatial_distortion is not None:
+                pts = self.spatial_distortion(pts)  # cube of side 2
+            mask = ((aabb[0] <= pts) & (pts <= aabb[1])).all(dim=-1)  # noqa
+            deltas = ray_samples.deltas.squeeze()
+            z_vals = ((ray_samples.starts + ray_samples.ends) / 2).squeeze()
+        else:
+            rm_out = self.raymarcher.get_intersections2(
+                rays_o, rays_d, self.aabb(grid_id), self.resolution(grid_id), perturb=self.training,
+                is_ndc=self.is_ndc, is_contracted=self.is_contracted, near_far=near_far)
+            rays_d = rm_out["rays_d"]      # [n_rays, 3]
+            pts = rm_out["intersections"]  # [n_rays, n_intrs, 3]
+            mask = rm_out["mask"]          # [n_rays, n_intrs]
+            z_vals = rm_out["z_vals"]      # [n_rays, n_samples]
+            deltas = rm_out["deltas"]      # [n_rays, n_samples]
+
+        n_rays, n_intrs = pts.shape[:2]
         dev = rays_o.device
 
         # Filter intersections which have a low density according to the density mask
@@ -334,13 +409,12 @@ class LowrankLearnableHash(LowrankModel):
         if self.density_mask[grid_id] is not None and not self.is_contracted:
             # density_mask needs unnormalized coordinates: normalization happens internally
             # and can be with a different aabb than the current one.
-            alpha_mask = self.density_mask[grid_id].sample_density(intersection_pts[mask]) > 0
+            alpha_mask = self.density_mask[grid_id].sample_density(pts[mask]) > 0
             invalid_mask = ~mask
             invalid_mask[mask] |= (~alpha_mask)
             mask = ~invalid_mask
 
-        if len(intersection_pts) == 0:
-            outputs = {}
+        if len(pts) == 0:
             if "rgb" in channels:
                 if bg_color is None:
                     outputs["rgb"] = torch.zeros((n_rays, 3), dtype=rays_o.dtype, device=dev)
@@ -353,19 +427,18 @@ class LowrankLearnableHash(LowrankModel):
             if "alpha" in channels:
                 outputs["alpha"] = torch.zeros(n_rays, 1, device=dev, dtype=rays_o.dtype)
             return outputs
-        
+
         self.timer.check("raymarcher")
         # compute features and render
-        outputs = {}
-        z_vals = rm_out["z_vals"]  # [batch_size, n_samples]
-        deltas = rm_out["deltas"]  # [batch_size, n_samples]
-        rays_d_rep = rays_d.view(-1, 1, 3).expand(intersection_pts.shape)
+        rays_d_rep = rays_d.view(-1, 1, 3).expand(pts.shape)
         masked_rays_d_rep = rays_d_rep[mask]
-        density_masked, features = self.query_density(pts=intersection_pts[mask], grid_id=grid_id, return_feat=True)
+        density_masked, features = self.query_density(pts=pts[mask], grid_id=grid_id, return_feat=True)
         density = torch.zeros(n_rays, n_intrs, device=dev, dtype=density_masked.dtype)
         density[mask] = density_masked.view(-1)
 
         alpha, weight, transmission = raw2alpha(density, deltas * self.density_multiplier)  # Each is shape [batch_size, n_samples]
+        if self.use_proposal_sampling:
+            outputs['weights_list'].append(weight[..., None])
         self.timer.check("density")
 
         rgb_masked = self.decoder.compute_color(features, rays_d=masked_rays_d_rep)
@@ -390,8 +463,7 @@ class LowrankLearnableHash(LowrankModel):
             outputs["depth"] = depth_map
         outputs["deltas"] = deltas
         outputs["weight"] = weight
-        outputs["midpoint"] = rm_out["z_mids"]
-        
+
         self.timer.check("render")
 
         return outputs
@@ -400,6 +472,8 @@ class LowrankLearnableHash(LowrankModel):
         params = [
             {"params": self.scene_grids.parameters(), "lr": lr},
         ]
+        if self.density_field is not None:
+            params.append({"params": self.density_field.parameters(), "lr": lr})
         if self.use_F:
             params.append({"params": [self.pt_min, self.pt_max], "lr": lr})
         if not self.transfer_learning:

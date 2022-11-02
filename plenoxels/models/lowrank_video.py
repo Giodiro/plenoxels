@@ -49,7 +49,7 @@ class LowrankVideo(LowrankModel):
 
         # For now, only allow a single index grid and a single feature grid, not multiple layers
         assert len(self.config) == 2
-        self.grids = nn.ModuleList()
+        self.grids = torch.nn.ModuleList()
         for res in self.multiscale_res:
             for li, grid_config in enumerate(self.config):
                 # initialize feature grid
@@ -66,11 +66,12 @@ class LowrankVideo(LowrankModel):
                     # do not have multi resolution on time.
                     if len(grid_config["resolution"]) == 4:
                         config["resolution"] += [grid_config["resolution"][-1]]
-                    gpdesc = self.init_grid_param(grid_config, grid_level=li, use_F=self.use_F, is_video=True, is_appearance=False)
+                    gpdesc = self.init_grid_param(config, grid_level=li, use_F=self.use_F, is_video=True, is_appearance=False)
                     self.set_resolution(gpdesc.reso, 0)
                     self.grids.append(gpdesc.grid_coefs)
                     #for i in range(len(self.grids)):
                     #    print(f'grid {i} has shape {self.grids[i].shape}')
+        print(self.grids)
         if self.sh:
             self.decoder = SHDecoder(
                 feature_dim=self.feature_dim,
@@ -99,24 +100,24 @@ class LowrankVideo(LowrankModel):
                          timestamps,  # [batch]
                          return_coords: bool = False
                          ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        multiscale_space : nn.ModuleList = self.grids  # space: 6 x [1, rank * F_dim, reso, reso] where the reso can be different in different grids and dimensions
+        multiscale_space : torch.nn.ModuleList = self.grids  # space: 6 x [1, rank * F_dim, reso, reso] where the reso can be different in different grids and dimensions
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
         
         # Interpolate in space and time
-        interp = torch.cat([pts, timestamps[:,None]], dim=-1)  # [batch, 4] for xyzt
+        pts = torch.cat([pts, timestamps[:,None]], dim=-1)  # [batch, 4] for xyzt
         
         coo_combs = list(itertools.combinations(
-            range(interp.shape[-1]),
+            range(pts.shape[-1]),
             level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
         
         multi_scale_interp = 0
         for scale_id, grid_space in enumerate(multiscale_space):
-            
             interp_space = None  # [n, F_dim, rank]
             for ci, coo_comb in enumerate(coo_combs):
                 
                 # interpolate in plane
-                interp_out_plane = grid_sample_wrapper(grid_space[ci], interp[..., coo_comb]).view(
+                # This errors because level_info["rank"] is a list
+                interp_out_plane = grid_sample_wrapper(grid_space[ci], pts[..., coo_comb]).view(
                             -1, level_info["output_coordinate_dim"], level_info["rank"])
                 
                 # compute product
@@ -131,13 +132,13 @@ class LowrankVideo(LowrankModel):
         if self.use_F:
             # Learned normalization
             if interp.numel() > 0:
-                interp = (interp - self.pt_min) / (self.pt_max - self.pt_min)
-                interp = interp * 2 - 1
-            out = grid_sample_wrapper(self.features, interp).view(-1, self.feature_dim)
+                multi_scale_interp = (multi_scale_interp - self.pt_min) / (self.pt_max - self.pt_min)
+                multi_scale_interp = multi_scale_interp * 2 - 1
+            out = grid_sample_wrapper(self.features, multi_scale_interp).view(-1, self.feature_dim)
         else:
-            out = interp
+            out = multi_scale_interp
         if return_coords:
-            return out, interp
+            return out, multi_scale_interp
         return out
 
     def forward(self, rays_o, rays_d, timestamps, bg_color, channels: Sequence[str] = ("rgb", "depth"), near_far=None, 
