@@ -1,10 +1,7 @@
 # This file is borrowed from Alex Mai to implement distortion loss, which discourages floaters
-
 import warp as wp
-# from .distortion_loss_pseudo import distortion_loss_pseudo, lossfun_distortion
-# from icecream import ic
 import torch
-import time
+
 
 # wrap a torch tensor to a wp array, data is not copied
 def from_torch(t, dtype=None, requires_grad=None):
