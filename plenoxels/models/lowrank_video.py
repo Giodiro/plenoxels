@@ -24,6 +24,7 @@ class LowrankVideo(LowrankModel):
                  is_contracted: bool,
                  sh: bool,
                  use_trainable_rank: bool = False,
+                 multiscale_res: List[int] = [1],
                  **kwargs):
         super().__init__()
         if isinstance(grid_config, str):
@@ -44,22 +45,32 @@ class LowrankVideo(LowrankModel):
         self.use_F = self.extra_args["use_F"]
         self.trainble_rank = None
         self.hooks = None
+        self.multiscale_res = multiscale_res
 
         # For now, only allow a single index grid and a single feature grid, not multiple layers
         assert len(self.config) == 2
-        for li, grid_config in enumerate(self.config):
-            if "feature_dim" in grid_config:
-                self.features = None
-                self.feature_dim = grid_config["feature_dim"]
-                if self.use_F:
-                    self.features = self.init_features_param(grid_config, self.sh)
-                    self.feature_dim = self.features.shape[0]
-            else:
-                gpdesc = self.init_grid_param(grid_config, grid_level=li, use_F=self.use_F, is_video=True, is_appearance=False)
-                self.set_resolution(gpdesc.reso, 0)
-                self.grids = gpdesc.grid_coefs
-                for i in range(len(self.grids)):
-                    print(f'grid {i} has shape {self.grids[i].shape}')
+        self.grids = torch.nn.ModuleList()
+        for res in self.multiscale_res:
+            for li, grid_config in enumerate(self.config):
+                # initialize feature grid
+                if "feature_dim" in grid_config:
+                    self.features = None
+                    self.feature_dim = grid_config["feature_dim"]
+                    if self.use_F:
+                        self.features = self.init_features_param(grid_config, self.sh)
+                        self.feature_dim = self.features.shape[0]
+                # initialize coordinate grid
+                else:
+                    config = grid_config.copy()
+                    config["resolution"] = [r * res for r in config["resolution"][:3]]
+                    # do not have multi resolution on time.
+                    if len(grid_config["resolution"]) == 4:
+                        config["resolution"] += [grid_config["resolution"][-1]]
+                    gpdesc = self.init_grid_param(grid_config, grid_level=li, use_F=self.use_F, is_video=True, is_appearance=False)
+                    self.set_resolution(gpdesc.reso, 0)
+                    self.grids.append(gpdesc.grid_coefs)
+                    #for i in range(len(self.grids)):
+                    #    print(f'grid {i} has shape {self.grids[i].shape}')
         if self.sh:
             self.decoder = SHDecoder(
                 feature_dim=self.feature_dim,
@@ -88,25 +99,35 @@ class LowrankVideo(LowrankModel):
                          timestamps,  # [batch]
                          return_coords: bool = False
                          ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        grid_space = self.grids  # space: 6 x [1, rank * F_dim, reso, reso] where the reso can be different in different grids and dimensions
+        multiscale_space : torch.nn.ModuleList = self.grids  # space: 6 x [1, rank * F_dim, reso, reso] where the reso can be different in different grids and dimensions
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
+        
         # Interpolate in space and time
         interp = torch.cat([pts, timestamps[:,None]], dim=-1)  # [batch, 4] for xyzt
         
         coo_combs = list(itertools.combinations(
             range(interp.shape[-1]),
             level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
-        interp_space = None  # [n, F_dim, rank]
-        for ci, coo_comb in enumerate(coo_combs):
-            if interp_space is None:
-                interp_space = (
-                    grid_sample_wrapper(grid_space[ci], interp[..., coo_comb]).view(
-                        -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
-            else:
-                interp_space = interp_space * (
-                    grid_sample_wrapper(grid_space[ci], interp[..., coo_comb]).view(
-                        -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
-        interp = interp_space.mean(dim=-1)  # Mean over rank
+        
+        multi_scale_interp = 0
+        for scale_id, grid_space in enumerate(multiscale_space):
+            
+            interp_space = None  # [n, F_dim, rank]
+            for ci, coo_comb in enumerate(coo_combs):
+                
+                # interpolate in plane
+                # This errors because level_info["rank"] is a list
+                interp_out_plane = grid_sample_wrapper(grid_space[ci], interp[..., coo_comb]).view(
+                            -1, level_info["output_coordinate_dim"], level_info["rank"])
+                
+                # compute product
+                interp_space = interp_out_plane if interp_space is None else interp_space * interp_out_plane
+
+            # Combine space and time over rank
+            interp = interp_space.mean(dim=-1)  # Mean over rank
+
+            # sum over scales
+            multi_scale_interp += interp
 
         if self.use_F:
             # Learned normalization

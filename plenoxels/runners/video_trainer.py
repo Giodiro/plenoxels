@@ -301,6 +301,9 @@ class VideoTrainer(Trainer):
             self.optimize_appearance_codes()
         val_metrics = []
         with torch.no_grad():
+            if self.save_outputs:
+                visualize_planes(self.model, self.log_dir, f"step{self.global_step}")
+
             for dset_id, dataset in enumerate(self.test_datasets):
                 per_scene_metrics = {
                     "psnr": 0, "ssim": 0, "dset_id": dset_id,
@@ -329,9 +332,6 @@ class VideoTrainer(Trainer):
                 log_text += f" | D{dset_id} SSIM: {per_scene_metrics['ssim']:.6f}"
                 logging.info(log_text)
                 val_metrics.append(per_scene_metrics)
-
-            if self.save_outputs:
-                visualize_planes(self.model, self.log_dir, f"step{self.global_step}")
 
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))

@@ -40,6 +40,7 @@ class LowrankLearnableHash(LowrankModel):
                  is_contracted: bool,
                  sh: bool,
                  num_scenes: int = 1,
+                 multiscale_res: List[int] = [1],
                  **kwargs):
         super().__init__()
         if isinstance(grid_config, str):
@@ -56,6 +57,7 @@ class LowrankLearnableHash(LowrankModel):
         self.alpha_mask_threshold = self.extra_args["density_threshold"]
         self.use_F = self.extra_args["use_F"]
         self.timer = CudaTimer(enabled=False)
+        self.multiscale_res = multiscale_res
 
         self.density_act = init_density_activation(
             self.extra_args.get('density_activation', 'trunc_exp'))
@@ -64,22 +66,33 @@ class LowrankLearnableHash(LowrankModel):
             self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
             self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
 
+
         self.scene_grids = nn.ModuleList()
         for si in range(num_scenes):
-            grids = nn.ModuleList()
-            for li, grid_config in enumerate(self.config):
-                if self.use_F and "feature_dim" in grid_config and si == 0:  # Only make one set of features
-                    self.features = self.init_features_param(grid_config, self.sh)
-                    self.feature_dim = self.features.shape[0]
-                else:
-                    gpdesc = self.init_grid_param(grid_config, is_video=False, grid_level=li, use_F=self.use_F, is_appearance=False)
-                    if li == 0:
-                        self.set_resolution(gpdesc.reso, grid_id=si)
-                    grids.append(gpdesc.grid_coefs)
-                    if not self.use_F:
-                        # shape[1] is out-dim * rank
-                        self.feature_dim = gpdesc.grid_coefs[-1].shape[1] // grid_config["rank"][0]
-            self.scene_grids.append(grids)
+            multi_scale_grids = nn.ModuleList()
+            for res in self.multiscale_res:
+                grids = nn.ModuleList()
+                for li, grid_config in enumerate(self.config):
+                    # initialize feature grid
+                    if "feature_dim" in grid_config and si == 0:  # Only make one set of features
+                        if self.use_F:
+                            self.features = self.init_features_param(grid_config, self.sh)
+                            self.feature_dim = self.features.shape[0]
+                    # initialize coordinate grid
+                    else:
+                        config = grid_config.copy()
+                        config["resolution"] = [r * res for r in config["resolution"]]
+
+                        gpdesc = self.init_grid_param(config, is_video=False, grid_level=li, use_F=self.use_F, is_appearance=False)
+                        if li == 0:
+                            self.set_resolution(gpdesc.reso, grid_id=si)
+                        grids.append(gpdesc.grid_coefs)
+                        if not self.use_F:
+                            # shape[1] is out-dim * rank
+                            self.feature_dim = gpdesc.grid_coefs[-1].shape[1] // config["rank"][0]
+                multi_scale_grids.append(grids)
+            self.scene_grids.append(multi_scale_grids)
+
         if self.sh:
             self.decoder = SHDecoder(
                 feature_dim=self.feature_dim,
@@ -95,39 +108,45 @@ class LowrankLearnableHash(LowrankModel):
                          grid_id: int,
                          return_coords: bool = False
                          ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        grids: nn.ModuleList = self.scene_grids[grid_id]  # noqa
+        mulitres_grids: nn.ModuleList = self.scene_grids[grid_id]  # noqa
         grids_info = self.config
 
-        interp = pts
-        grid: nn.ParameterList
-        for level_info, grid in zip(grids_info, grids):
-            if "feature_dim" in level_info:
-                continue
-            coo_combs = list(itertools.combinations(
-                range(interp.shape[-1]),
-                level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
-            interp_out = None
-            for ci, coo_comb in enumerate(coo_combs):
-                if interp_out is None:
-                    interp_out = (
-                        grid_sample_wrapper(grid[ci], interp[..., coo_comb]).view(
-                            -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
-                else:
-                    interp_out = interp_out * (
-                        grid_sample_wrapper(grid[ci], interp[..., coo_comb]).view(
-                            -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
+        multi_scale_interp = 0
+        for scale_id, res in enumerate(self.multiscale_res):
+            grids: nn.ParameterList = mulitres_grids[scale_id]
+
+            for level_info, grid in zip(grids_info, grids):
+                if "feature_dim" in level_info:
+                    continue
+
+                # create plane combinations
+                coo_combs = list(itertools.combinations(
+                    range(pts.shape[-1]),
+                    level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
+
+                interp_out = None
+                for ci, coo_comb in enumerate(coo_combs):
+                    # interpolate in plane
+                    interp_out_plane = grid_sample_wrapper(grid[ci], pts[..., coo_comb]).view(
+                                -1, level_info["output_coordinate_dim"], level_info["rank"])
+                    # compute product
+                    interp_out = interp_out_plane if interp_out is None else interp_out * interp_out_plane
+
+            # average over rank
             interp = interp_out.mean(dim=-1)
+            # sum over scales
+            multi_scale_interp += interp
 
         if self.use_F:
-            if interp.numel() > 0:
-                interp = (interp - self.pt_min) / (self.pt_max - self.pt_min)
-                interp = interp * 2 - 1
-            out = grid_sample_wrapper(self.features.to(dtype=interp.dtype), interp).view(-1, self.feature_dim)
+            if multi_scale_interp.numel() > 0:
+                multi_scale_interp = (multi_scale_interp - self.pt_min) / (self.pt_max - self.pt_min)
+                multi_scale_interp = multi_scale_interp * 2 - 1
+            out = grid_sample_wrapper(self.features.to(dtype=interp.dtype), multi_scale_interp).view(-1, self.feature_dim)
         else:
-            out = interp
+            out = multi_scale_interp
 
         if return_coords:
-            return out, interp
+            return out, multi_scale_interp
         return out
 
     @torch.no_grad()

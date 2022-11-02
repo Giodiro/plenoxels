@@ -65,6 +65,7 @@ class Trainer():
         self.upsample_steps = [s * step_multiplier for s in kwargs.get('upsample_steps', [])]
         self.upsample_resolution_list = list(kwargs.get('upsample_resolution', []))
         self.upsample_F_steps = list(kwargs.get('upsample_F_steps', []))
+
         assert len(self.upsample_resolution_list) == len(self.upsample_steps), \
             f"Got {len(self.upsample_steps)} upsample_steps and {len(self.upsample_resolution_list)} upsample_resolution."
 
@@ -436,6 +437,7 @@ class Trainer():
 
     def init_model(self, **kwargs) -> torch.nn.Module:
         aabbs = [d.scene_bbox for d in self.test_datasets]
+
         model = LowrankLearnableHash(
             num_scenes=self.num_dsets,
             grid_config=kwargs.pop("grid_config"),
@@ -544,40 +546,46 @@ def N_to_reso(num_voxels, aabb):
 
 @torch.no_grad()
 def visualize_planes(model, save_dir: str, name: str):
-    rank = model.config[0]["rank"][0]
+    rank = model.config[0]["rank"]
     dim = model.feature_dim
     if hasattr(model, 'scene_grids'):  # LowrankLearnableHash
-        grids = model.scene_grids[0][0]
+        multi_scale_grids = model.scene_grids[0]
     elif hasattr(model, 'grids'):  # LowrankVideo
-        grids = model.grids
+        multi_scale_grids = model.grids
     else:
         raise RuntimeError(f"Cannot find grids in model {model}.")
-    n_planes = len(grids)
-    fig, ax = plt.subplots(nrows=n_planes, ncols=2*rank, figsize=(3*n_planes,3*2*rank))
-    for plane_idx, grid in enumerate(grids):
-        _, c, h, w = grid.data.shape
 
-        grid = grid.data.view(dim, rank, h, w)
-        for r in range(rank):
-            density = model.density_act(
-                grid[-1, r, :, :].cpu()
-            ).numpy()
+    for scale_id, grids in enumerate(multi_scale_grids):
+        if hasattr(model, 'scene_grids'):
+            grids = grids[0]
+        n_planes = len(grids)
+        fig, ax = plt.subplots(nrows=n_planes, ncols=2*rank, figsize=(3*n_planes,3*2*rank))
+        for plane_idx, grid in enumerate(grids):
+            _, c, h, w = grid.data.shape
 
-            im = ax[plane_idx, r].imshow(density, norm=LogNorm(vmin=1e-6, vmax=density.max()))
-            ax[plane_idx, r].axis("off")
-            plt.colorbar(im, ax=ax[plane_idx, r], aspect=20, fraction=0.04)
+            grid = grid.data.view(dim, rank, h, w)
+            for r in range(rank):
+                density = model.density_act(
+                    grid[-1, r, :, :].cpu()
+                ).numpy()
+                # density = grid[-1, r, :, :].cpu().numpy()
 
-            rays_d = torch.ones((h*w, 3), device=grid.device)
-            rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
-            features = grid[:, r, :, :].view(dim, h*w).permute(1,0)
-            color = (
-                    torch.sigmoid(model.decoder.compute_color(features, rays_d))
-            ).view(h, w, 3).cpu().numpy()
-            ax[plane_idx, r+rank].imshow(color)
-            ax[plane_idx, r+rank].axis("off")
+                im = ax[plane_idx, r].imshow(density, norm=LogNorm(vmin=1e-6, vmax=density.max()))
+                ax[plane_idx, r].axis("off")
+                plt.colorbar(im, ax=ax[plane_idx, r], aspect=20, fraction=0.04)
 
-    fig.tight_layout()
-    plt.savefig(os.path.join(save_dir, f"{name}-planes.png"))
-    plt.cla()
-    plt.clf()
-    plt.close()
+                rays_d = torch.ones((h*w, 3), device=grid.device)
+                rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
+                features = grid[:, r, :, :].view(dim, h*w).permute(1,0)
+                color = (
+                        torch.sigmoid(model.decoder.compute_color(features, rays_d))
+                ).view(h, w, 3).cpu().numpy()
+                ax[plane_idx, r+rank].imshow(color)
+                ax[plane_idx, r+rank].axis("off")
+
+        fig.tight_layout()
+        plt.savefig(os.path.join(save_dir, f"{name}-planes-scale-{scale_id}.png"))
+        plt.cla()
+        plt.clf()
+        plt.close()
+

@@ -4,6 +4,7 @@ from typing import Dict, List, Union, Sequence, Tuple
 
 import torch
 import torch.nn.functional as F
+import torch.nn as nn
 
 from plenoxels.models.utils import (
     grid_sample_wrapper, compute_plane_tv, compute_line_tv,
@@ -24,6 +25,7 @@ class LowrankAppearance(LowrankModel):
                  is_contracted: bool,
                  lookup_time: bool,
                  sh: bool,
+                 multiscale_res: List[int] = [1],
                  **kwargs):
         super().__init__()
         if isinstance(grid_config, str):
@@ -44,23 +46,37 @@ class LowrankAppearance(LowrankModel):
         self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
         self.use_F = self.extra_args["use_F"]
         self.appearance_code = True
+        self.multiscale_res = multiscale_res
 
+        
         # For now, only allow a single index grid and a single feature grid, not multiple layers
         assert len(self.config) == 2
-        for li, grid_config in enumerate(self.config):
-            if "feature_dim" in grid_config:
-                self.features = None
-                self.feature_dim = grid_config["feature_dim"]
-                if self.use_F:
-                    self.features = self.init_features_param(grid_config, self.sh)
-                    self.feature_dim = self.features.shape[0]
-            else:
-                gpdesc = self.init_grid_param(grid_config, is_video=False, is_appearance=True, grid_level=li, use_F=self.use_F)
-                self.set_resolution(gpdesc.reso, 0)
-                self.register_buffer(
-                    'time_resolution', torch.tensor(gpdesc.time_coef.shape[-1], dtype=torch.int32))
-                self.grids = gpdesc.grid_coefs
-                self.time_coef = gpdesc.time_coef  # [out_dim * rank, time_reso]
+        self.grids = nn.ModuleList()
+        self.time_coef = nn.ParameterList()
+        for res in self.multiscale_res:
+            for li, grid_config in enumerate(self.config):
+                # initialize feature grid
+                if "feature_dim" in grid_config:
+                    self.features = None
+                    self.feature_dim = grid_config["feature_dim"]
+                    if self.use_F:
+                        self.features = self.init_features_param(grid_config, self.sh)
+                        self.feature_dim = self.features.shape[0]
+                # initialize coordinate grid
+                else:
+                    config = grid_config.copy()
+                    config["resolution"] = [r * res for r in config["resolution"][:3]]
+                    # do not have multi resolution on time.
+                    if len(grid_config["resolution"]) == 4:
+                        config["resolution"] += [grid_config["resolution"][-1]]
+                    
+                    gpdesc = self.init_grid_param(config, is_video=False, is_appearance=True, grid_level=li, use_F=self.use_F)
+                    self.set_resolution(gpdesc.reso, 0)
+                    self.register_buffer(
+                        'time_resolution', torch.tensor(gpdesc.time_coef.shape[-1], dtype=torch.int32))
+                    self.grids.append(gpdesc.grid_coefs)
+                    self.time_coef.append(gpdesc.time_coef)  # [out_dim * rank, time_reso]
+        print(self.grids)
         if self.sh:
             self.decoder = SHDecoder(
                 feature_dim=self.feature_dim,
@@ -68,55 +84,61 @@ class LowrankAppearance(LowrankModel):
         else:
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
         log.info(f"Initialized LowrankAppearance. "
-                 f"time-reso={self.time_coef.shape[1]} - decoder={self.decoder}")
+                 f"time-reso={self.time_coef[0].shape[1]} - decoder={self.decoder}")
 
     def compute_features(self,
                          pts,
                          timestamps,
                          return_coords: bool = False
                          ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        grid_space = self.grids  # space: 3 x [1, rank * F_dim, reso, reso]
-        grid_time = self.time_coef  # time: [rank * F_dim, time_reso]
+        multiscale_space : nn.ModuleList = self.grids  # space: 3 x [1, rank * F_dim, reso, reso]
+        multiscale_time : nn.ModuleList = self.time_coef  # time: [rank * F_dim, time_reso]
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
 
         dim = level_info["output_coordinate_dim"] - 1 if level_info["output_coordinate_dim"] == 28 else level_info["output_coordinate_dim"]
-
-        interp_time = grid_time[:, timestamps.long()].unsqueeze(0).repeat(pts.shape[0], 1)  # [n, F_dim * rank]
-        interp_time = interp_time.view(-1, dim, level_info["rank"][0])  # [n, F_dim, rank]
-        
-        # add density one to appearance code
-        if level_info["output_coordinate_dim"] == 28:
-             interp_time = torch.cat([interp_time, torch.ones_like(interp_time[:, 0:1, :])], dim=1)
         
         # Interpolate in space
-        interp = pts
         coo_combs = list(itertools.combinations(
-            range(interp.shape[-1]),
+            range(pts.shape[-1]),
             level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
-        interp_space = None  # [n, F_dim, rank]
-        for ci, coo_comb in enumerate(coo_combs):
-            if interp_space is None:
-                interp_space = (
-                    grid_sample_wrapper(grid_space[ci], interp[..., coo_comb]).view(
-                        -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
-            else:
-                interp_space = interp_space * (
-                    grid_sample_wrapper(grid_space[ci], interp[..., coo_comb]).view(
-                        -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
-        # Combine space and time over rank
-        interp = (interp_space * interp_time).mean(dim=-1)  # [n, F_dim]
+
+        multi_scale_interp = 0
+        for scale_id, (grid_space, grid_time) in enumerate(zip(multiscale_space, multiscale_time)):
+            interp_time = grid_time[:, timestamps.long()].unsqueeze(0).repeat(pts.shape[0], 1)  # [n, F_dim * rank]
+            interp_time = interp_time.view(-1, dim, level_info["rank"])  # [n, F_dim, rank]
+            
+            # add density one to appearance code
+            if level_info["output_coordinate_dim"] == 28:
+                interp_time = torch.cat([interp_time, torch.ones_like(interp_time[:, 0:1, :])], dim=1)
+                    
+            interp_space = None  # [n, F_dim, rank]
+            for ci, coo_comb in enumerate(coo_combs):
+                
+                # interpolate in plane
+                interp_out_plane = grid_sample_wrapper(grid_space[ci], pts[..., coo_comb]).view(
+                            -1, level_info["output_coordinate_dim"], level_info["rank"])
+                
+                # compute product
+                interp_space = interp_out_plane if interp_space is None else interp_space * interp_out_plane
+                        
+            # Combine space and time over rank
+            interp = (interp_space * interp_time).mean(dim=-1)  # [n, F_dim]
+            
+            # sum over scales
+            multi_scale_interp += interp
 
         if self.use_F:
             # Learned normalization
             if interp.numel() > 0:
-                interp = (interp - self.pt_min) / (self.pt_max - self.pt_min)
-                interp = interp * 2 - 1
+                multi_scale_interp = (multi_scale_interp - self.pt_min) / (self.pt_max - self.pt_min)
+                multi_scale_interp = multi_scale_interp * 2 - 1
 
-            out = grid_sample_wrapper(self.features, interp).view(-1, self.feature_dim)
+            out = grid_sample_wrapper(self.features, multi_scale_interp).view(-1, self.feature_dim)
         else:
-            out = interp
+            out = multi_scale_interp
+            
         if return_coords:
-            return out, interp
+            return out, multi_scale_interp
         return out
 
     def forward(self, rays_o, rays_d, timestamps, bg_color, channels: Sequence[str] = ("rgb", "depth"), near_far=None, global_translation=torch.tensor([0, 0, 0]), global_scale=torch.tensor([1, 1, 1])):
@@ -198,18 +220,21 @@ class LowrankAppearance(LowrankModel):
         return params
 
     def compute_plane_tv(self):
-        grid_space = self.grids  # space: 3 x [1, rank * F_dim, reso, reso]
+        multiscale_grids = self.grids  # space: 3 x [1, rank * F_dim, reso, reso]
         #grid_time = self.time_coef  # time: [rank * F_dim, time_reso]
-        
-        if len(grid_space) == 6:
-            # only use tv on spatial planes
-            grid_ids = [0,1,3]
-        else:
-            grid_ids = list(range(len(grid_space)))
-        
+                
         total = 0
-        for grid_id in grid_ids:
-            grid = grid_space[grid_id]
-            total += compute_plane_tv(grid)
+        for grid_space in multiscale_grids:
+            
+            if len(grid_space) == 6:
+                # only use tv on spatial planes
+                grid_ids = [0,1,3]
+            else:
+                grid_ids = list(range(len(grid_space)))
+                
+            for grid_id in grid_ids:
+                grid = grid_space[grid_id]
+                total += compute_plane_tv(grid)
+                
         #total += compute_line_tv(grid_time)
         return total
