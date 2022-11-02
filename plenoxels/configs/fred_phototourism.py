@@ -1,7 +1,7 @@
 # configuration file to be used with `main.py` for video training
 config = {
 
-    "expname": "default",
+    "expname": "multires_tv005",
     "logdir": "./logs/trevi",
 
     # Data settings
@@ -39,8 +39,8 @@ config = {
     
     # Training settings
     "train_fp16": False,
-    "save_every": 10,
-    "valid_every": 10,
+    "save_every": 10000,
+    "valid_every": 10000,
     "save_video": True,
     "add_rank_steps": [],
     "save_outputs": True,
