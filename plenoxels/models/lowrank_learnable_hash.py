@@ -5,14 +5,13 @@ import logging as log
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import kaolin.render.spc as spc_render
 import numpy as np
 
-from plenoxels.models.utils import grid_sample_wrapper, compute_plane_tv, raw2alpha
+from plenoxels.models.utils import grid_sample_wrapper, raw2alpha, init_density_activation
 from .decoders import NNDecoder, SHDecoder
-from ..ops.activations import trunc_exp
 from ..raymarching.raymarching import RayMarcher
 from .lowrank_model import LowrankModel
+from ..runners.timer import CudaTimer
 
 
 class DensityMask(nn.Module):
@@ -41,6 +40,7 @@ class LowrankLearnableHash(LowrankModel):
                  is_contracted: bool,
                  sh: bool,
                  num_scenes: int = 1,
+                 multiscale_res: List[int] = [1],
                  **kwargs):
         super().__init__()
         if isinstance(grid_config, str):
@@ -56,27 +56,47 @@ class LowrankLearnableHash(LowrankModel):
         self.transfer_learning = self.extra_args["transfer_learning"]
         self.alpha_mask_threshold = self.extra_args["density_threshold"]
         self.use_F = self.extra_args["use_F"]
+        self.timer = CudaTimer(enabled=False)
+        self.multiscale_res = multiscale_res
 
-        self.density_act = lambda x: trunc_exp(x - 1)
-        self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
-        self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
+        self.density_act = init_density_activation(
+            self.extra_args.get('density_activation', 'trunc_exp'))
+        self.pt_min, self.pt_max = None, None
+        if self.use_F:
+            self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
+            self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
+            
 
         self.scene_grids = nn.ModuleList()
         for si in range(num_scenes):
-            grids = nn.ModuleList()
-            for li, grid_config in enumerate(self.config):
-                if "feature_dim" in grid_config and si == 0:  # Only make one set of features
-                    # TODO: we don't need these features if use_F is False
-                    self.features = self.init_features_param(grid_config, self.sh)
-                    self.feature_dim = self.features.shape[0]
-                else:
-                    gpdesc = self.init_grid_param(grid_config, is_video=False, grid_level=li, use_F=self.use_F)
-                    if li == 0:
-                        self.set_resolution(gpdesc.reso, grid_id=si)
-                    grids.append(gpdesc.grid_coefs)
-            self.scene_grids.append(grids)
+            multi_scale_grids = nn.ModuleList()
+            for res in self.multiscale_res:
+                grids = nn.ModuleList()
+                for li, grid_config in enumerate(self.config):
+                    # initialize feature grid
+                    if "feature_dim" in grid_config and si == 0:  # Only make one set of features
+                        if self.use_F:
+                            self.features = self.init_features_param(grid_config, self.sh)
+                            self.feature_dim = self.features.shape[0]
+                    # initialize coordinate grid
+                    else:
+                        config = grid_config.copy()
+                        config["resolution"] = [r * res for r in config["resolution"]]
+
+                        gpdesc = self.init_grid_param(config, is_video=False, grid_level=li, use_F=self.use_F, is_appearance=False)
+                        if li == 0:
+                            self.set_resolution(gpdesc.reso, grid_id=si)
+                        grids.append(gpdesc.grid_coefs)
+                        if not self.use_F:
+                            # shape[1] is out-dim * rank
+                            self.feature_dim = gpdesc.grid_coefs[-1].shape[1] // config["rank"][0]
+                multi_scale_grids.append(grids)    
+            self.scene_grids.append(multi_scale_grids)
+            
         if self.sh:
-            self.decoder = SHDecoder(feature_dim=self.feature_dim)
+            self.decoder = SHDecoder(
+                feature_dim=self.feature_dim,
+                decoder_type=self.extra_args.get('sh_decoder_type', 'manual'))
         else:
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
         self.raymarcher = RayMarcher(**self.extra_args)
@@ -88,46 +108,46 @@ class LowrankLearnableHash(LowrankModel):
                          grid_id: int,
                          return_coords: bool = False
                          ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        """
-        :param pts:
-            Coordinates normalized between -1, 1
-        :param grid_id:
-        :param return_coords:
-        :return:
-        """
-        grids: nn.ModuleList = self.scene_grids[grid_id]  # noqa
+        mulitres_grids: nn.ModuleList = self.scene_grids[grid_id]  # noqa
         grids_info = self.config
-
-        interp = pts
-        grid: nn.ParameterList
-        for level_info, grid in zip(grids_info, grids):
-            if "feature_dim" in level_info:
-                continue
-            coo_combs = list(itertools.combinations(
-                range(interp.shape[-1]),
-                level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
-            interp_out = None
-            for ci, coo_comb in enumerate(coo_combs):
-                if interp_out is None:
-                    interp_out = (
-                        grid_sample_wrapper(grid[ci], interp[..., coo_comb]).view(
-                            -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
-                else:
-                    interp_out = interp_out * (
-                        grid_sample_wrapper(grid[ci], interp[..., coo_comb]).view(
-                            -1, level_info["output_coordinate_dim"], level_info["rank"][ci]))
+                
+        multi_scale_interp = 0
+        for scale_id, res in enumerate(self.multiscale_res):
+            grids: nn.ParameterList = mulitres_grids[scale_id]
+            
+            for level_info, grid in zip(grids_info, grids):
+                if "feature_dim" in level_info:
+                    continue
+                
+                # create plane combinations
+                coo_combs = list(itertools.combinations(
+                    range(pts.shape[-1]),
+                    level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
+                                
+                interp_out = None
+                for ci, coo_comb in enumerate(coo_combs):
+                    # interpolate in plane
+                    interp_out_plane = grid_sample_wrapper(grid[ci], pts[..., coo_comb]).view(
+                                -1, level_info["output_coordinate_dim"], level_info["rank"])
+                    # compute product
+                    interp_out = interp_out_plane if interp_out is None else interp_out * interp_out_plane
+                
+            # average over rank
             interp = interp_out.mean(dim=-1)
 
+            # sum over scales
+            multi_scale_interp += interp
+            
         if self.use_F:
-            if interp.numel() > 0:
-                interp = (interp - self.pt_min) / (self.pt_max - self.pt_min)
-                interp = interp * 2 - 1
-
-            out = grid_sample_wrapper(self.features.to(dtype=interp.dtype), interp).view(-1, self.feature_dim)
+            if multi_scale_interp.numel() > 0:
+                multi_scale_interp = (multi_scale_interp - self.pt_min) / (self.pt_max - self.pt_min)
+                multi_scale_interp = multi_scale_interp * 2 - 1
+            out = grid_sample_wrapper(self.features.to(dtype=interp.dtype), multi_scale_interp).view(-1, self.feature_dim)
         else:
-            out = interp
+            out = multi_scale_interp
+
         if return_coords:
-            return out, interp
+            return out, multi_scale_interp
         return out
 
     @torch.no_grad()
@@ -253,8 +273,7 @@ class LowrankLearnableHash(LowrankModel):
         coords = coords.view(coords.shape[0], -1)  # [dim, new_reso**dim]
         coords = torch.permute(coords, (1, 0))[None,:,:]  # [1, new_reso**dim, dim]
         self.features.data = grid_sample_wrapper(self.features[None,...], coords).permute(1, 0).view(new_size)
-        print(f'upsampled feature grid to shape {new_size}')
-
+        log.info(f'upsampled feature grid to shape {new_size}')
 
     def get_points_on_grid(self, aabb, grid_size, max_voxels: Optional[int] = None):
         """
@@ -300,6 +319,7 @@ class LowrankLearnableHash(LowrankModel):
         rays_d : [batch, 3]
         near_far : [batch, 2]
         """
+        self.timer.reset()
         rm_out = self.raymarcher.get_intersections2(
             rays_o, rays_d, self.aabb(grid_id), self.resolution(grid_id), perturb=self.training,
             is_ndc=self.is_ndc, is_contracted=self.is_contracted, near_far=near_far)
@@ -333,7 +353,8 @@ class LowrankLearnableHash(LowrankModel):
             if "alpha" in channels:
                 outputs["alpha"] = torch.zeros(n_rays, 1, device=dev, dtype=rays_o.dtype)
             return outputs
-
+        
+        self.timer.check("raymarcher")
         # compute features and render
         outputs = {}
         z_vals = rm_out["z_vals"]  # [batch_size, n_samples]
@@ -345,6 +366,7 @@ class LowrankLearnableHash(LowrankModel):
         density[mask] = density_masked.view(-1)
 
         alpha, weight, transmission = raw2alpha(density, deltas * self.density_multiplier)  # Each is shape [batch_size, n_samples]
+        self.timer.check("density")
 
         rgb_masked = self.decoder.compute_color(features, rays_d=masked_rays_d_rep)
         rgb = torch.zeros(n_rays, n_intrs, 3, device=dev, dtype=rgb_masked.dtype)
@@ -353,6 +375,7 @@ class LowrankLearnableHash(LowrankModel):
 
         # Confirmed that torch.sum(weight, -1) matches 1-transmission[:,-1]
         acc_map = 1 - transmission[:, -1]
+        self.timer.check("color")
 
         if "rgb" in channels:
             rgb_map = torch.sum(weight[..., None] * rgb, -2)
@@ -368,78 +391,19 @@ class LowrankLearnableHash(LowrankModel):
         outputs["deltas"] = deltas
         outputs["weight"] = weight
         outputs["midpoint"] = rm_out["z_mids"]
+        
+        self.timer.check("render")
 
         return outputs
-
-    def compute_plane_tv(self, grid_id, what='Gcoords'):
-        grids: nn.ModuleList = self.scene_grids[grid_id]
-        total = 0
-        for grid_ls in grids:
-            for grid in grid_ls:
-                if what == 'Gcoords':
-                    total += compute_plane_tv(grid)
-                elif what == 'features':
-                    # Look up the features so we do tv on features rather than coordinates
-                    coords = grid.view(-1, len(self.features.shape)-1)
-                    features = grid_sample_wrapper(self.features, coords).reshape(-1, self.feature_dim, grid.shape[-2], grid.shape[-1])
-                    total += compute_plane_tv(features)
-        return total
-
-    def compute_l1density(self, max_voxels, grid_id):
-        pts = self.get_points_on_grid(
-            self.aabb(grid_id), self.resolution(grid_id), max_voxels=max_voxels)
-        # Compute density on the grid
-        density = self.query_density(pts, grid_id)
-        return torch.mean(torch.abs(density))
-
-    def compute_3d_tv(self, grid_id, what='Gcoords', batch_size=100, patch_size=3):
-        aabb = self.aabb(grid_id)
-        grid_size_l = self.resolution(grid_id)
-        dev = aabb.device
-        pts = torch.stack(torch.meshgrid(
-            torch.linspace(0, 1, patch_size, device=dev),
-            torch.linspace(0, 1, patch_size, device=dev),
-            torch.linspace(0, 1, patch_size, device=dev), indexing='ij'
-        ), dim=-1)  # [gs0, gs1, gs2, 3]
-        pts = pts.view(-1, 3)
-
-        start = torch.rand(batch_size, 3, device=dev) * (1 - patch_size / grid_size_l[None, :])
-        end = start + (patch_size / grid_size_l[None, :])
-
-        # pts: [1, gs0, gs1, gs2, 3] * (bs, 1, 1, 1, 3) + (bs, 1, 1, 1, 3)
-        pts = pts[None, ...] * (end - start)[:, None, None, None, :] + start[:, None, None, None, :]
-        pts = pts.view(-1, 3)  # [bs*gs0*gs1*gs2, 3]
-
-        # Normalize between [aabb0, aabb1]
-        pts = aabb[0] * (1 - pts) + aabb[1] * pts
-
-        if what == 'density':
-            # Compute density on the grid
-            density = self.query_density(pts, grid_id)
-            patches = density.view(-1, patch_size, patch_size, patch_size)
-        elif what == 'Gcoords':
-            pts = self.normalize_coords(pts, grid_id)
-            _, coords = self.compute_features(pts, grid_id, return_coords=True)
-            patches = coords.view(-1, patch_size, patch_size, patch_size, coords.shape[-1])
-        else:
-            raise ValueError(what)
-
-        d0 = patches[:, 1:, :, :, :] - patches[:, :-1, :, :, :]
-        d1 = patches[:, :, 1:, :, :] - patches[:, :, :-1, :, :]
-        d2 = patches[:, :, :, 1:, :] - patches[:, :, :, :-1, :]
-
-        return (d0.square().mean() + d1.square().mean() + d2.square().mean())  # l2
-        # return (d0.abs().mean() + d1.abs().mean() + d2.abs().mean())  # l1
 
     def get_params(self, lr):
         params = [
             {"params": self.scene_grids.parameters(), "lr": lr},
-            {"params": [self.pt_min, self.pt_max], "lr": lr},
-            #{"params": self.bn.parameters(), "lr": lr},
         ]
+        if self.use_F:
+            params.append({"params": [self.pt_min, self.pt_max], "lr": lr})
         if not self.transfer_learning:
-            params += [
-                {"params": self.decoder.parameters(), "lr": lr},
-                {"params": self.features, "lr": lr},
-            ]
+            params.append({"params": self.decoder.parameters(), "lr": lr})
+            if self.use_F:
+                params.append({"params": self.features, "lr": lr})
         return params

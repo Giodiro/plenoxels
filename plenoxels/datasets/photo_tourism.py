@@ -4,6 +4,14 @@ from pathlib import Path
 import imageio
 from typing import Optional
 import os
+import glob
+import pandas as pd
+
+train_images = {"sacre" : 1179,
+            "trevi" : 1689}
+
+test_images = {"sacre" : 21,
+            "trevi" : 19}
 
 def get_rays_tourism(H, W, kinv, pose):
     """
@@ -50,31 +58,49 @@ class PhotoTourismDataset(torch.utils.data.Dataset):
         self.is_ndc = False
         self.is_contracted = True
         self.lookup_time = True
-        self.scene_bbox = torch.tensor([[-2.0,-2.0,-2.0], [2.0,2.0,2.0]])
+        if self.is_contracted:
+            self.scene_bbox = torch.tensor([[-2.0,-2.0,-2.0], [2.0,2.0,2.0]])
+        else:
+            self.scene_bbox = torch.tensor([[-1.0,-1.0,-1.0], [1.0,1.0,1.0]])
         self.batch_size = batch_size
         self.training = split == 'train'
         self.name = os.path.basename(datadir)
+        self.datadir = datadir
+        # TODO: tune these for each dataset
+        self.global_translation = torch.tensor([0, 0, 0.7])
+        self.global_scale = torch.tensor([1.5, 1.5, 1.5])
 
-        self.imagepaths = sorted((Path(datadir) / "dense" / "images").glob("*.jpg"))
-        self.poses = np.load(Path(datadir) / "c2w_mats.npy")
-        self.kinvs = np.load(Path(datadir) / "kinv_mats.npy")
-        self.bounds = np.load(Path(datadir) / "bds.npy")
-        res = np.load(Path(datadir) / "res_mats.npy")
+        # read all files in the tsv first (split to train and test later)
+        tsv = glob.glob(os.path.join(self.datadir, '*.tsv'))[0]
+        self.scene_name = os.path.basename(tsv)[:-4]
+        self.files = pd.read_csv(tsv, sep='\t')
+        self.files = self.files[~self.files['id'].isnull()] # remove data without id
+        self.files.reset_index(inplace=True, drop=True)
         
-        # first 20 images are test, next 5 for validation and the rest for training.
-        # https://github.com/tancik/learnit/issues/3
-        splits = {
-            "test": (self.imagepaths[:20], self.poses[:20], self.kinvs[:20], self.bounds[:20], res[:20]),
-            #"val": (all_imagepaths[20:25], all_poses[20:25], all_kinvs[20:25], all_bounds[20:25]),
-            "train": (self.imagepaths, self.poses, self.kinvs, self.bounds, res)
-        }
-        self.imagepaths, self.poses, self.kinvs, self.bounds, res = splits[split]
-
+        
+        # the first N idx are for training, the rest are for testing
+        # we therefore need to know how many training frames there are
+        # such that the test frames can get unique time/appearance indices
+        self.n_train_images = train_images[self.name]
+             
+        self.files = self.files[self.files["split"]==split]
+    
+        self.imagepaths = sorted((Path(datadir) / "dense" / "images").glob("*.jpg"))
+        imkey = np.array([os.path.basename(im) for im in self.imagepaths])
+        idx = np.in1d(imkey, self.files["filename"])
+    
+        self.imagepaths = np.array(self.imagepaths)[idx]
+            
+        self.poses = np.load(Path(datadir) / "c2w_mats.npy")[idx]
+        self.kinvs = np.load(Path(datadir) / "kinv_mats.npy")[idx]
+        self.bounds = np.load(Path(datadir) / "bds.npy")[idx]
+        res = np.load(Path(datadir) / "res_mats.npy")[idx]
+        
         self.img_w = res[:, 0]
         self.img_h = res[:, 1]
 
-        self.len_time = len(self.imagepaths)
-        # self.len_time = 300  # This is true for the 10-second sequences from DyNerf
+        self.len_time = train_images[self.name] + test_images[self.name]
+        print(f"==> in total there are {self.len_time} images")
 
     def __len__(self):
         return len(self.imagepaths)
@@ -87,8 +113,8 @@ class PhotoTourismDataset(torch.utils.data.Dataset):
         image = imageio.imread(self.imagepaths[idx])
         image = image[..., :3]/255.
         image = torch.as_tensor(image, dtype=torch.float)
-
-        scale = 0.05
+        
+        scale = 0.2
         pose = self.poses[idx]
         pose = torch.as_tensor(pose, dtype=torch.float)
         pose = torch.cat([pose[:3, :3], pose[:3, 3:4]*scale], dim=-1)
@@ -99,8 +125,15 @@ class PhotoTourismDataset(torch.utils.data.Dataset):
         bound = self.bounds[idx]
         bound = torch.as_tensor(bound, dtype=torch.float)
         bound = bound * torch.as_tensor([0.9, 1.2]) * scale
-        
+        #TODO: histoggram of image resolutions 
         rays_o, rays_d = get_rays_tourism(image.shape[0], image.shape[1], kinv, pose)
+        
+        if not self.training:
+            mid = image.shape[1]//2
+            
+            image_left = image[:, :mid, :].reshape(-1, 3)
+            rays_o_left = rays_o[:, :mid, :].reshape(-1, 3)
+            rays_d_left = rays_d[:, :mid, :].reshape(-1, 3)
         
         rays_o = rays_o.reshape(-1, 3)
         rays_d = rays_d.reshape(-1, 3)
@@ -115,8 +148,15 @@ class PhotoTourismDataset(torch.utils.data.Dataset):
             timestamp = torch.tensor(idx).expand(len(rays_o))
             bound = bound.expand(len(rays_o), 2)
         else:
-            timestamp = torch.tensor(idx)
+            timestamp = torch.tensor(idx + self.n_train_images)
             bound = bound.expand(1, 2)
             
-        return {"rays_o" : rays_o, "rays_d": rays_d, "imgs": image, "near_far" : bound, "timestamps": timestamp}
+        out = {"rays_o" : rays_o, "rays_d": rays_d, "imgs": image, "near_far" : bound, "timestamps": timestamp}
+        
+        if not self.training:
+            out["rays_o_left"] = rays_o_left
+            out["rays_d_left"] = rays_d_left
+            out["imgs_left"] =  image_left
+        
+        return out
     

@@ -9,15 +9,16 @@ import pandas as pd
 import torch
 import torch.utils.data
 from torch.utils.tensorboard import SummaryWriter
+import matplotlib.pyplot as plt
 
 from plenoxels.ema import EMA
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash, DensityMask
-from plenoxels.models.utils import compute_tv_norm
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_exr, write_png
+from .regularization import PlaneTV, L1PlaneColor, L1PlaneDensity, VolumeTV, L1Density, FloaterLoss
+from .timer import CudaTimer
 from ..datasets import SyntheticNerfDataset, LLFFDataset
 from ..datasets.multi_dataset_sampler import MultiSceneSampler
-#from ..distortion_loss_warp import distortion_loss
 from ..my_tqdm import tqdm
 from ..utils import parse_optint
 from .utils import get_cosine_schedule_with_warmup, get_step_schedule_with_warmup
@@ -28,14 +29,6 @@ class Trainer():
                  tr_loader: torch.utils.data.DataLoader,
                  ts_dsets: List[torch.utils.data.TensorDataset],
                  tr_dsets: List[torch.utils.data.TensorDataset],
-                 regnerf_weight_start: float,
-                 regnerf_weight_end: float,
-                 regnerf_weight_max_step: int,
-                 floater_loss: float,
-                 plane_tv_weight: float,
-                 l1density_weight: float,
-                 volume_tv_weight: float,
-                 volume_tv_npts: int,
                  num_steps: int,
                  scheduler_type: Optional[str],
                  optim_type: str,
@@ -52,22 +45,10 @@ class Trainer():
         self.train_datasets = tr_dsets
         self.is_ndc = self.test_datasets[0].is_ndc
         self.is_contracted = self.test_datasets[0].is_contracted
+        self.eval_batch_size = kwargs.get('eval_batch_size', 8192)
 
         self.extra_args = kwargs
         self.num_dsets = len(self.train_datasets)
-
-        self.floater_loss = floater_loss
-        self.regnerf_weight_start = regnerf_weight_start
-        self.regnerf_weight_end = regnerf_weight_end
-        self.regnerf_weight_max_step = regnerf_weight_max_step
-        self.cur_regnerf_weight = self.regnerf_weight_start
-        self.plane_tv_weight = plane_tv_weight
-        self.plane_tv_what = kwargs.get('plane_tv_what', 'Gcoords')
-        self.l1density_weight = l1density_weight
-        self.volume_tv_weight = volume_tv_weight
-        self.volume_tv_npts = volume_tv_npts
-        self.volume_tv_what = kwargs.get('volume_tv_what', 'Gcoords')
-        self.volume_tv_patch_size = kwargs.get('volume_tv_patch_size', 3)
 
         self.num_steps = num_steps
 
@@ -83,6 +64,7 @@ class Trainer():
         self.upsample_steps = [s * step_multiplier for s in kwargs.get('upsample_steps', [])]
         self.upsample_resolution_list = list(kwargs.get('upsample_resolution', []))
         self.upsample_F_steps = list(kwargs.get('upsample_F_steps', []))
+        
         assert len(self.upsample_resolution_list) == len(self.upsample_steps), \
             f"Got {len(self.upsample_steps)} upsample_steps and {len(self.upsample_resolution_list)} upsample_resolution."
 
@@ -93,11 +75,13 @@ class Trainer():
         self.global_step = None
         self.loss_info = None
         self.train_iterators = None
+        self.timer = CudaTimer(enabled=False)
 
         self.model = self.init_model(**self.extra_args)
         self.optimizer = self.init_optim(**self.extra_args)
         self.scheduler = self.init_lr_scheduler(**self.extra_args)
         self.criterion = torch.nn.MSELoss(reduction='mean')
+        self.regularizers = self.init_regularizers(**self.extra_args)
         #self.criterion = torch.nn.SmoothL1Loss(reduction='mean')
         self.gscaler = torch.cuda.amp.GradScaler(enabled=self.train_fp16)
 
@@ -106,7 +90,7 @@ class Trainer():
         Note that here `data` contains a whole image. we need to split it up before tracing
         for memory constraints.
         """
-        batch_size = self.train_datasets[dset_id].batch_size
+        batch_size = self.eval_batch_size
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             rays_o = data["rays_o"]
             rays_d = data["rays_d"]
@@ -124,18 +108,12 @@ class Trainer():
         return {k: torch.cat(v, 0) for k, v in preds.items()}
 
     def step(self, data: Dict[str, Union[int, torch.Tensor]]):
+        self.timer.reset()
         dset_id = data["dset_id"]
         rays_o = data["rays_o"].cuda()
         rays_d = data["rays_d"].cuda()
-        if "near_far" in data.keys():
-            near_far = data["near_far"].cuda()
-        else:
-            near_far = None
+        near_far = data["near_far"].cuda() if "near_far" in data else None
         imgs = data["imgs"].cuda()
-        patch_rays_o, patch_rays_d = None, None
-        if "patch_rays_o" in data:
-            patch_rays_o = data["patch_rays_o"].cuda()
-            patch_rays_d = data["patch_rays_d"].cuda()
 
         C = imgs.shape[-1]
         if self.is_ndc:
@@ -145,84 +123,34 @@ class Trainer():
         else:  # Random bg-color
             bg_color = torch.rand_like(imgs[..., :3])
             imgs = imgs[..., :3] * imgs[..., 3:] + bg_color * (1.0 - imgs[..., 3:])
+        self.timer.check("step_prepare")
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             fwd_out = self.model(rays_o, rays_d, grid_id=dset_id, bg_color=bg_color, channels={"rgb"}, near_far=near_far)
+            self.timer.check("step_model")
             rgb_preds = fwd_out["rgb"]
             # Reconstruction loss
             recon_loss = self.criterion(rgb_preds, imgs)
             loss = recon_loss
-            # Different regularizers
-            l1density: Optional[torch.Tensor] = None
-            if self.l1density_weight > 0:
-                l1density = self.model.compute_l1density(
-                    max_voxels=100_000, grid_id=dset_id) * self.l1density_weight
-                loss = loss + l1density
-            depth_tv: Optional[torch.Tensor] = None
-            if self.cur_regnerf_weight > 0:
-                ps = patch_rays_o.shape[1]  # patch-size
-                out = self.model(
-                    patch_rays_o.reshape(-1, 3), patch_rays_d.reshape(-1, 3), bg_color=None,
-                    channels={"depth", "rgb"}, grid_id=dset_id)
-                reshape_to_patch = lambda x, dim: x.reshape(-1, ps, ps, dim)
-                depths = reshape_to_patch(out["depth"], 1)
-                #if self.global_step > 2000:
-                #    torch.save(depths.detach().cpu(), "depths8.pt")
-                #    rgbs = reshape_to_patch(out["rgb"], 3)
-                #    torch.save(rgbs.detach().cpu(), "rgbs8.pt")
-                #    raise RuntimeError()
-                # NOTE: the weighting below is never applied in RegNerf (the constant in front of it is set to 0)
-                # with torch.autograd.no_grad():
-                #     weighting = reshape_to_patch(out["alpha"], 1)[:, :-1, :-1]
-                depth_tv = compute_tv_norm(depths, 'l2', None) * self.cur_regnerf_weight
-                loss = loss + depth_tv
-            plane_tv: Optional[torch.Tensor] = None
-            if self.plane_tv_weight > 0:
-                plane_tv = self.model.compute_plane_tv(
-                    grid_id=dset_id,
-                    what=self.plane_tv_what) * self.plane_tv_weight
-                loss = loss + plane_tv
-            volume_tv: Optional[torch.Tensor] = None
-            if self.volume_tv_weight > 0:
-                volume_tv = self.model.compute_3d_tv(
-                    grid_id=dset_id,
-                    what=self.volume_tv_what,
-                    batch_size=self.volume_tv_npts,
-                    patch_size=self.volume_tv_patch_size) * self.volume_tv_weight
-                loss = loss + volume_tv
-            floater_loss: Optional[torch.Tensor] = None
-            if self.floater_loss > 0:
-                midpoint = torch.cat([fwd_out["midpoint"], (2*fwd_out["midpoint"][:,-1] - fwd_out["midpoint"][:,-2])[:,None]], dim=1)
-                dt = torch.cat([fwd_out["deltas"], fwd_out["deltas"][:,-2:-1]], dim=1)
-                weight = torch.cat([fwd_out["weight"], 1 - fwd_out["weight"].sum(dim=1, keepdim=True)], dim=1)
-                floater_loss = distortion_loss(midpoint, weight, dt) * 1e-2
-                loss = loss + floater_loss
-
+            # Regularization
+            for r in self.regularizers:
+                loss = loss + r.regularize(self.model, dset_id)
+            self.timer.check("step_loss")
         self.gscaler.scale(loss).backward()
-
-        # Report on losses
-        recon_loss_val = recon_loss.item()
-        if len(self.test_datasets) < 5:
-            self.loss_info[dset_id]["mse"].update(recon_loss_val)
-        self.loss_info[dset_id]["psnr"].update(-10 * math.log10(recon_loss_val))
-        if l1density is not None:
-            self.loss_info[dset_id]["l1_density"].update(l1density.item())
-        if depth_tv is not None:
-            self.loss_info[dset_id]["depth_tv"].update(depth_tv.item())
-        if plane_tv is not None:
-            self.loss_info[dset_id]["plane_tv"].update(plane_tv.item())
-        if volume_tv is not None:
-            self.loss_info[dset_id]["volume_tv"].update(volume_tv.item())
-        if floater_loss is not None:
-            self.loss_info[dset_id]["floater_loss"].update(floater_loss.item())
-        self.loss_info[dset_id]["pt_min"].update(self.model.pt_min)
-        self.loss_info[dset_id]["pt_max"].update(self.model.pt_max)
 
         # Update weights
         self.gscaler.step(self.optimizer)
         scale = self.gscaler.get_scale()
         self.gscaler.update()
         self.optimizer.zero_grad(set_to_none=True)
+        self.timer.check("step_backprop")
+
+        # Report on losses
+        recon_loss_val = recon_loss.item()
+        self.loss_info[dset_id]["mse"].update(recon_loss_val)
+        self.loss_info[dset_id]["psnr"].update(-10 * math.log10(recon_loss_val))
+        for r in self.regularizers:
+            r.report(self.loss_info[dset_id])
 
         # Run grid-update routines (masking, shrinking, upscaling)
         opt_reset_required = False
@@ -231,7 +159,7 @@ class Trainer():
             for u_dset_id in range(self.num_dsets):
                 new_aabb = self.model.update_alpha_mask(grid_id=u_dset_id)
                 sorted_updates = sorted(self.density_mask_update_steps)
-                if self.global_step == sorted_updates[0] or self.global_step == sorted_updates[1]:#min(self.density_mask_update_steps):
+                if self.global_step == sorted_updates[0] or self.global_step == sorted_updates[1]:
                     self.model.shrink(new_aabb, grid_id=u_dset_id)
                     opt_reset_required = True
         try:
@@ -253,16 +181,18 @@ class Trainer():
         if opt_reset_required:
             self.optimizer = self.init_optim(**self.extra_args)
 
+        self.timer.check("step_remaining")
         return scale <= self.gscaler.get_scale()
 
     def post_step(self, data, progress_bar):
-        # Anneal regularization weights
-        if self.regnerf_weight_start > 0:
-            w = np.clip(self.global_step / (1 if self.regnerf_weight_max_step < 1 else self.regnerf_weight_max_step), 0, 1)
-            self.cur_regnerf_weight = self.regnerf_weight_start * (1 - w) + w * self.regnerf_weight_end
-
         dset_id = data["dset_id"]
         self.writer.add_scalar(f"mse/D{dset_id}", self.loss_info[dset_id]["mse"].value, self.global_step)
+
+        for key in self.timer.timings:
+            self.writer.add_scalar(f"timer/{key}", self.timer.timings[key], self.global_step)
+        for key in self.model.timer.timings:
+            self.writer.add_scalar(f"timer/{key}", self.model.timer.timings[key], self.global_step)
+
         progress_bar.set_postfix_str(losses_to_postfix(self.loss_info, lr=self.cur_lr()), refresh=False)
         progress_bar.update(1)
 
@@ -271,7 +201,6 @@ class Trainer():
             d.reset_iter()
         self.init_epoch_info()
         self.model.train()
-
 
     def train(self):
         """Override this if some very specific training procedure is needed."""
@@ -294,7 +223,10 @@ class Trainer():
                     self.model.train()
                 self.global_step += 1
                 # Get a batch of data
+                self.timer.reset()
                 data = next(batch_iter)
+                self.timer.check("data")
+
                 step_successful = self.step(data)
                 # Update the progress bar
                 self.post_step(data=data, progress_bar=pb)
@@ -302,7 +234,7 @@ class Trainer():
                     self.scheduler.step()
             except StopIteration as e:
                 logging.info(str(e))
-                print(f'resetting after a full pass through the data, or when the dataset changed')
+                logging.info(f'resetting after a full pass through the data, or when the dataset changed')
                 self.pre_epoch()
                 batch_iter = iter(self.train_data_loader)
         pb.close()
@@ -344,16 +276,10 @@ class Trainer():
                 log_text += f" | D{dset_id} SSIM: {per_scene_metrics['ssim']:.6f}"
                 logging.info(log_text)
                 val_metrics.append(per_scene_metrics)
-            if False:  # Render extra poses
-                dset = self.train_datasets[0]
-                ro, rd = dset.extra_rays_o, dset.extra_rays_d
-                pb = tqdm(total=ro.shape[0], desc="Rendering extra poses")
-                for pose_idx in range(ro.shape[0]):
-                    data = dict(rays_o=ro[pose_idx].view(-1, 3), rays_d=rd[pose_idx].view(-1, 3))
-                    preds = self.eval_step(data, dset_id=0)
-                    self.evaluate_metrics(None, preds, dset_id=0, dset=dset, img_idx=pose_idx, name="extra_pose",
-                                          save_outputs=True)
-                    pb.update(1)
+
+            # visualize planes
+            if self.save_outputs:
+                visualize_planes(self.model, self.log_dir, f"step{self.global_step}-D{dset_id}")
 
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
@@ -494,7 +420,7 @@ class Trainer():
             lr_sched = torch.optim.lr_scheduler.MultiStepLR(
                 self.optimizer,
                 milestones=[
-                    2 * max_steps // 3,
+                    max_steps // 2,
                 ],
                 gamma=0.1)
         elif self.scheduler_type is not None:
@@ -509,18 +435,37 @@ class Trainer():
         return optim
 
     def init_model(self, **kwargs) -> torch.nn.Module:
-        aabbs = [d.scene_bbox for d in self.train_datasets]
+        aabbs = [d.scene_bbox for d in self.test_datasets]
+        
         model = LowrankLearnableHash(
             num_scenes=self.num_dsets,
             grid_config=kwargs.pop("grid_config"),
             aabb=aabbs,
-            is_ndc=self.is_ndc,  # TODO: This should also be per-scene
+            is_ndc=self.is_ndc,
             is_contracted=self.is_contracted,
             **kwargs)
         logging.info(f"Initialized LowrankLearnableHash model with "
                      f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters.")
         model.cuda()
         return model
+
+    def init_regularizers(self, **kwargs):
+        regularizers = [
+            PlaneTV(kwargs.get('plane_tv_weight', 0.0)),
+            VolumeTV(
+                kwargs.get('volume_tv_weight', 0.0),
+                what=kwargs.get('volume_tv_what'),
+                patch_size=kwargs.get('volume_tv_patch_size', 3),
+                batch_size=kwargs.get('volume_tv_npts', 100),
+            ),
+            L1PlaneColor(kwargs.get('l1_plane_color_weight', 0.0)),
+            L1PlaneDensity(kwargs.get('l1_plane_density_weight', 0.0)),
+            L1Density(kwargs.get('l1density_weight', 0.0), max_voxels=100_000),
+            FloaterLoss(kwargs.get('floater_loss_weight', 0.0)),
+        ]
+        # Keep only the regularizers with a positive weight
+        regularizers = [r for r in regularizers if r.weight > 0]
+        return regularizers
 
     def cur_lr(self):
         if self.scheduler is not None:
@@ -555,10 +500,7 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
             raise RuntimeError(f"data_dir {dd} not recognized as LLFF or Synthetic dataset.")
 
     data_resolution = parse_optint(kwargs.get('data_resolution'))
-    regnerf_weight = float(kwargs.get('regnerf_weight_start'))
     num_batches_per_dataset = int(kwargs['num_batches_per_dset'])
-    extra_views = regnerf_weight > 0
-    patch_size = 8
 
     tr_dsets, ts_dsets = [], []
     for i, data_dir in enumerate(data_dirs):
@@ -569,8 +511,7 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
             logging.info(f"About to load data at reso={data_resolution}, downsample={data_downsample}")
             tr_dsets.append(SyntheticNerfDataset(
                 data_dir, split='train', downsample=data_downsample, resolution=data_resolution,
-                max_frames=max_tr_frames, extra_views=extra_views, batch_size=batch_size,
-                patch_size=patch_size, dset_id=i))
+                max_frames=max_tr_frames, batch_size=batch_size, dset_id=i))
             ts_dsets.append(SyntheticNerfDataset(
                 data_dir, split='test', downsample=1, resolution=800, max_frames=max_ts_frames,
                 dset_id=i))
@@ -597,14 +538,55 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
     return {"ts_dsets": ts_dsets, "tr_dsets": tr_dsets, "tr_loader": tr_loader}
 
 
-def trace_handler(p):
-    output = p.key_averages(group_by_input_shape=True).table(sort_by="self_cuda_time_total", row_limit=20)
-    print(output)
-    output = p.key_averages(group_by_input_shape=True).table(sort_by="self_cpu_time_total", row_limit=20)
-    print(output)
-    p.export_chrome_trace("./logs/trace_" + str(p.step_num) + ".json")
-
-
 def N_to_reso(num_voxels, aabb):
     voxel_size = ((aabb[1] - aabb[0]).prod() / num_voxels).pow(1 / 3)
     return ((aabb[1] - aabb[0]) / voxel_size).long().cpu().tolist()
+
+
+@torch.no_grad()
+def visualize_planes(model, save_dir: str, name: str):
+    rank = model.config[0]["rank"]
+    dim = model.feature_dim
+    if hasattr(model, 'scene_grids'):  # LowrankLearnableHash
+        multi_scale_grids = model.scene_grids[0]
+    elif hasattr(model, 'grids'):  # LowrankVideo
+        multi_scale_grids = model.grids
+    else:
+        raise RuntimeError(f"Cannot find grids in model {model}.")
+    
+    for scale_id, grids in enumerate(multi_scale_grids):
+        if hasattr(model, 'scene_grids'):
+            grids = grids[0] 
+        n_planes = len(grids)
+        fig, ax = plt.subplots(nrows=n_planes, ncols=2*rank, figsize=(3*n_planes,3*2*rank))
+        for plane_idx, grid in enumerate(grids):
+            _, c, h, w = grid.data.shape
+
+            grid = grid.data.view(dim, rank, h, w)
+            for r in range(rank):
+                # density = model.density_act(
+                #     grid[-1, r, :, :].cpu()
+                # ).numpy()
+                density = grid[-1, r, :, :].cpu().numpy()
+
+                im = ax[plane_idx, r].imshow(density)
+                ax[plane_idx, r].axis("off")
+                plt.colorbar(im, ax=ax[plane_idx, r], aspect=20, fraction=0.04)
+
+                rays_d = torch.ones((h*w, 3), device=grid.device)
+                rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
+                features = grid[:, r, :, :].view(dim, h*w).permute(1,0)
+                color = (
+                        torch.sigmoid(model.decoder.compute_color(features, rays_d))
+                        * 255
+                ).view(h, w, 3).cpu().numpy().astype(np.uint8)
+
+                im = ax[plane_idx, r+rank].imshow(color)
+                ax[plane_idx, r+rank].axis("off")
+                plt.colorbar(im, ax=ax[plane_idx, r+rank], aspect=20, fraction=0.04)
+
+        fig.tight_layout()
+        plt.savefig(os.path.join(save_dir, f"{name}-planes-scale-{scale_id}.png"))
+        plt.cla()
+        plt.clf()
+        plt.close()

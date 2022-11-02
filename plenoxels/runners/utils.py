@@ -24,6 +24,8 @@ __all__ = (
     "test_model",
     "render_patches",
     "user_ask_options",
+    "get_step_schedule_with_warmup",
+    "get_cosine_schedule_with_warmup",
 )
 
 

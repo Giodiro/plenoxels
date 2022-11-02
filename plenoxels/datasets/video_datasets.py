@@ -46,6 +46,8 @@ class Video360Dataset(BaseDataset):
         self.ist = False
         self.lookup_time = False
         self.per_cam_near_fars = None
+        self.global_translation = torch.tensor([0, 0, 0])
+        self.global_scale = torch.tensor([1, 1, 1])
         dset_type = None
         if is_contracted and is_ndc:
             raise ValueError("Options 'is_contracted' and 'is_ndc' are exclusive.")
@@ -62,7 +64,11 @@ class Video360Dataset(BaseDataset):
                 keyframes=keyframes, keyframes_take_each=30)
             self.poses = poses.float()
             self.per_cam_near_fars = self.per_cam_near_fars.float()
-            print(f'per_cam_near_fars is {self.per_cam_near_fars}')
+            # These values are tuned for the salmon video
+            self.global_translation = torch.tensor([0, 0, 2])
+            self.global_scale = torch.tensor([0.6, 0.6, 1])
+            log.info(f'per_cam_near_fars is {self.per_cam_near_fars}, with global translation '
+                     f'{self.global_translation} and scale {self.global_scale}')
         elif dset_type == "synthetic":
             frames, transform = load_360video_frames(datadir, split, max_cameras=self.max_cameras, max_tsteps=self.max_tsteps)
             imgs, self.poses = load_360_images(frames, datadir, split, self.downsample)
@@ -73,24 +79,11 @@ class Video360Dataset(BaseDataset):
         else:
             raise ValueError(datadir)
 
-
         imgs = (imgs * 255).to(torch.uint8)
         if split == 'train':
             imgs = imgs.view(-1, imgs.shape[-1])
         else:
             imgs = imgs.view(-1, intrinsics.height * intrinsics.width, imgs.shape[-1])
-        isg_weights = None
-        if self.isg:
-            t_s = time.time()
-            gamma = 1e-3 if self.keyframes else 2e-2
-            isg_weights = dynerf_isg_weight(
-                imgs.view(-1, intrinsics.height, intrinsics.width, imgs.shape[-1]),
-                self.median_imgs,
-                gamma)
-            # Normalize into a probability distribution, to speed up sampling
-            isg_weights = (isg_weights.reshape(-1) / torch.sum(isg_weights))
-            t_e = time.time()
-            log.info(f"Computed {isg_weights.shape[0]} ISG weights in {t_e - t_s:.2f}s.")
 
         super().__init__(datadir=datadir,
                          split=split,
@@ -102,13 +95,48 @@ class Video360Dataset(BaseDataset):
                          rays_d=None,
                          intrinsics=intrinsics,
                          imgs=imgs,
-                         sampling_weights=isg_weights
+                         sampling_weights=None,  # Start without importance sampling, by default
                          )
+        
+        self.isg_weights = None
+        self.ist_weights = None
+        if split == "train":
+            if os.path.exists(os.path.join(datadir, f"isg_weights.pt")):
+                self.isg_weights = torch.load(os.path.join(datadir, f"isg_weights.pt"))
+                log.info(f"Reloaded {self.isg_weights.shape[0]} ISG weights from file.")
+            else:
+                # Precompute ISG weights
+                t_s = time.time()
+                gamma = 1e-3 if self.keyframes else 2e-2
+                self.isg_weights = dynerf_isg_weight(
+                    imgs.view(-1, intrinsics.height, intrinsics.width, imgs.shape[-1]),
+                    self.median_imgs,
+                    gamma)
+                # Normalize into a probability distribution, to speed up sampling
+                self.isg_weights = (self.isg_weights.reshape(-1) / torch.sum(self.isg_weights))
+                torch.save(self.isg_weights, os.path.join(datadir, f"isg_weights.pt"))
+                t_e = time.time()
+                log.info(f"Computed {self.isg_weights.shape[0]} ISG weights in {t_e - t_s:.2f}s.")
+
+            if os.path.exists(os.path.join(datadir, f"ist_weights.pt")):
+                self.ist_weights = torch.load(os.path.join(datadir, f"ist_weights.pt"))
+                log.info(f"Reloaded {self.ist_weights.shape[0]} IST weights from file.")
+            else:
+                # Precompute IST weights
+                t_s = time.time()
+                self.ist_weights = dynerf_ist_weight(
+                    imgs.view(-1, self.img_h, self.img_w, imgs.shape[-1]),
+                    num_cameras=self.median_imgs.shape[0])
+                # Normalize into a probability distribution, to speed up sampling
+                self.ist_weights = (self.ist_weights.reshape(-1) / torch.sum(self.ist_weights))
+                torch.save(self.ist_weights, os.path.join(datadir, f"ist_weights.pt"))
+                t_e = time.time()
+                log.info(f"Computed {self.ist_weights.shape[0]} IST weights in {t_e - t_s:.2f}s.")
 
         if dset_type == "synthetic":
             self.len_time = torch.amax(timestamps).item()
         elif dset_type == "llff":
-            self.len_time = 300
+            self.len_time = 299
         if self.split == 'train':
             self.timestamps = timestamps[:, None, None].repeat(
                 1, intrinsics.height, intrinsics.width).reshape(-1)  # [n_frames * h * w]
@@ -122,19 +150,17 @@ class Video360Dataset(BaseDataset):
                  f"ISG={self.isg} - IST={self.ist} - "
                  f"{intrinsics}")
 
+    def enable_isg(self):
+        self.isg = True
+        self.ist = False
+        self.sampling_weights = self.isg_weights
+        log.info(f"Enabled ISG weights.")
+
     def switch_isg2ist(self):
-        del self.sampling_weights
         self.isg = False
         self.ist = True
-        t_s = time.time()
-        ist_weights = dynerf_ist_weight(
-            self.imgs.view(-1, self.img_h, self.img_w, self.imgs.shape[-1]),
-            num_cameras=self.median_imgs.shape[0])
-        # Normalize into a probability distribution, to speed up sampling
-        ist_weights = (ist_weights.reshape(-1) / torch.sum(ist_weights))
-        self.sampling_weights = ist_weights
-        t_e = time.time()
-        log.info(f"Switched from ISG to IST weights (computed in {t_e - t_s:.2f}s).")
+        self.sampling_weights = self.ist_weights
+        log.info(f"Switched from ISG to IST weights.")
 
     def __getitem__(self, index):
         h = self.intrinsics.height
@@ -391,6 +417,7 @@ def load_llffvideo_poses(datadir: str,
         split_ids = np.arange(1, poses.shape[0])
     else:
         split_ids = np.array([0])
+        # split_ids = np.array([1])  # Try evaluating on a train view
     poses = torch.from_numpy(poses[split_ids])
     near_fars = torch.from_numpy(near_fars[split_ids])
     videopaths = videopaths[split_ids].tolist()
@@ -440,18 +467,19 @@ def dynerf_isg_weight(imgs, median_imgs, gamma):
     return psidiff  # valid probabilities, each in [0, 1]
 
 
-def dynerf_ist_weight(imgs, num_cameras, alpha=0.1, frame_shift=25):  # alpha and frame_shift values from DyNerf
+def dynerf_ist_weight(imgs, num_cameras, alpha=0.1, frame_shift=25):  # DyNerf uses alpha=0.1
     N, h, w, c = imgs.shape
     frames = imgs.view(num_cameras, -1, h, w, c)  # [num_cameras, num_timesteps, h, w, 3]
-    diffs = []
+    max_diff = None
     shifts = list(range(frame_shift + 1))[1:]
     for shift in shifts:
         shift_left = torch.cat([frames[:,shift:,...], torch.zeros(num_cameras, shift, h, w, c)], dim=1)
         shift_right = torch.cat([torch.zeros(num_cameras, shift, h, w, c), frames[:,:-shift,...]], dim=1)
-        diffs.append(torch.abs_(shift_left - frames))
-        diffs.append(torch.abs_(shift_right - frames))
-    diffs = torch.stack(diffs).squeeze()  # [frame_shift * 2, num_timesteps, h, w, 3]
-    diff = torch.mean(diffs, dim=-1)  # [frame_shift * 2, num_timesteps, h, w]
-    diff, _ = torch.max(diff, dim=0)  # [num_timesteps, h, w] 
-    diff = diff.clamp_(min=alpha)
-    return diff
+        mymax = torch.maximum(torch.abs_(shift_left - frames), torch.abs_(shift_right - frames))
+        if max_diff is None:
+            max_diff = mymax
+        else:
+            max_diff = torch.maximum(max_diff, mymax)  # [num_timesteps, h, w, 3]
+    max_diff = torch.mean(max_diff, dim=-1)  # [num_timesteps, h, w]
+    max_diff = max_diff.clamp_(min=alpha)
+    return max_diff
