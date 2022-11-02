@@ -10,6 +10,7 @@ import torch
 import torch.utils.data
 from torch.utils.tensorboard import SummaryWriter
 import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
 
 from plenoxels.ema import EMA
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash, DensityMask
@@ -562,7 +563,7 @@ def visualize_planes(model, save_dir: str, name: str):
                 grid[-1, r, :, :].cpu()
             ).numpy()
 
-            im = ax[plane_idx, r].imshow(density)
+            im = ax[plane_idx, r].imshow(density, norm=LogNorm(vmin=1e-6, vmax=density.max()))
             ax[plane_idx, r].axis("off")
             plt.colorbar(im, ax=ax[plane_idx, r], aspect=20, fraction=0.04)
 
@@ -571,12 +572,9 @@ def visualize_planes(model, save_dir: str, name: str):
             features = grid[:, r, :, :].view(dim, h*w).permute(1,0)
             color = (
                     torch.sigmoid(model.decoder.compute_color(features, rays_d))
-                    * 255
-            ).view(h, w, 3).cpu().numpy().astype(np.uint8)
-
-            im = ax[plane_idx, r+rank].imshow(color)
+            ).view(h, w, 3).cpu().numpy()
+            ax[plane_idx, r+rank].imshow(color)
             ax[plane_idx, r+rank].axis("off")
-            plt.colorbar(im, ax=ax[plane_idx, r+rank], aspect=20, fraction=0.04)
 
     fig.tight_layout()
     plt.savefig(os.path.join(save_dir, f"{name}-planes.png"))
