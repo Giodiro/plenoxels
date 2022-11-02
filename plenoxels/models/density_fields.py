@@ -47,6 +47,8 @@ class TriplaneDensityField(LowrankModel):
         if self.spatial_distortion is not None:
             pts = self.spatial_distortion(pts)  # cube of side 2
         pts = self.normalize_coords(pts)
+        n_rays, n_samples = pts.shape[:2]
+        pts = pts.view(-1, 3)  # TODO: Masking!
 
         # create plane combinations
         coo_combs = list(itertools.combinations(range(pts.shape[-1]), 2))
@@ -58,6 +60,7 @@ class TriplaneDensityField(LowrankModel):
             interp_out = interp_out_plane if interp_out is None else interp_out * interp_out_plane
         # average over rank
         interp = interp_out.mean(dim=-1)
+        interp = interp.view(n_rays, n_samples, 1)
         return interp
 
     def forward(self, pts: torch.Tensor):

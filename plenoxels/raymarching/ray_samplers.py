@@ -86,8 +86,8 @@ class RayBundle:
         """
         deltas = bin_ends - bin_starts
         return RaySamples(
-            origins=self.origins,  # [..., 1, 3]
-            directions=self.directions,  # [..., 1, 3]
+            origins=self.origins[..., None, :],  # [..., 1, 3]
+            directions=self.directions[..., None, :],  # [..., 1, 3]
             starts=bin_starts,  # [..., num_samples, 1]
             ends=bin_ends,  # [..., num_samples, 1]
             deltas=deltas,  # [..., num_samples, 1]

@@ -87,7 +87,7 @@ class LowrankLearnableHash(LowrankModel):
             if self.extra_args['raymarch_type'] != 'fixed':
                 log.warning("raymarch_type is not 'fixed' but we will use 'n_intersections' anyways.")
             self.raymarcher = ProposalNetworkSampler(
-                num_proposal_samples_per_ray=self.extra_args['num_proposal_samples'],
+                num_proposal_samples_per_ray=[self.extra_args['num_proposal_samples']],
                 num_nerf_samples_per_ray=self.extra_args['n_intersections'],
                 num_proposal_network_iterations=1,
                 single_jitter=self.extra_args['single_jitter'],
@@ -365,10 +365,10 @@ class LowrankLearnableHash(LowrankModel):
                 t6 = (aabb[1, 2] - rays_o[:, 2:3]) * dir_fraction[:, 2:3]
                 nears = torch.max(
                     torch.cat([torch.minimum(t1, t2), torch.minimum(t3, t4), torch.minimum(t5, t6)], dim=1), dim=1
-                ).values
+                ).values[..., None]
                 fars = torch.min(
                     torch.cat([torch.maximum(t1, t2), torch.maximum(t3, t4), torch.maximum(t5, t6)], dim=1), dim=1
-                ).values
+                ).values[..., None]
                 near_plane = 2.0 if self.training else 0  # TODO: this is harcoded for synthetic
                 nears = torch.clamp(nears, min=near_plane)
             else:
@@ -378,13 +378,14 @@ class LowrankLearnableHash(LowrankModel):
                 ray_bundle, density_fns=self.density_fns)
             outputs['weights_list'] = weights_list
             outputs['ray_samples_list'] = ray_samples_list
+            outputs['ray_samples_list'].append(ray_samples)
             rays_d = ray_bundle.directions
             pts = ray_samples.get_positions()
             if self.spatial_distortion is not None:
                 pts = self.spatial_distortion(pts)  # cube of side 2
             mask = ((aabb[0] <= pts) & (pts <= aabb[1])).all(dim=-1)  # noqa
-            deltas = ray_samples.deltas
-            z_vals = (ray_samples.starts + ray_samples.ends) / 2
+            deltas = ray_samples.deltas.squeeze()
+            z_vals = ((ray_samples.starts + ray_samples.ends) / 2).squeeze()
         else:
             rm_out = self.raymarcher.get_intersections2(
                 rays_o, rays_d, self.aabb(grid_id), self.resolution(grid_id), perturb=self.training,
@@ -431,6 +432,8 @@ class LowrankLearnableHash(LowrankModel):
         density[mask] = density_masked.view(-1)
 
         alpha, weight, transmission = raw2alpha(density, deltas * self.density_multiplier)  # Each is shape [batch_size, n_samples]
+        if self.use_proposal_sampling:
+            outputs['weights_list'].append(weight[..., None])
         self.timer.check("density")
 
         rgb_masked = self.decoder.compute_color(features, rays_d=masked_rays_d_rep)

@@ -34,6 +34,8 @@ config = {
     "volume_tv_what": "Gcoords",
     "l1_plane_color_weight": 0.0,
     "l1_plane_density_weight": 0.000,
+    "histogram_loss_weight": 1.0,  # this should be set > 0 when using proposal sampling
+
 
     # Training settings
     "train_fp16": True,
@@ -43,11 +45,15 @@ config = {
     "transfer_learning": False,
 
     # Raymarching settings
-    "raymarch_type": "voxel_size",
+    "raymarch_type": "fixed",
     "num_sample_multiplier": 1,  # Used when raymarch_type is 'voxel_size'
-    "n_intersections": 440,  # Used when raymarch_type is 'fixed'
+    "n_intersections": 128,  # Used when raymarch_type is 'fixed'
     "spacing_fn": "linear",
     "single_jitter": True,
+    # proposal sampling
+    "density_field_resolution": [64, 64, 64],
+    "density_field_rank": 10,
+    "num_proposal_samples": 128,
 
     # Model settings
     "sh": True,

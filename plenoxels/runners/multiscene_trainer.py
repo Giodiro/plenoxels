@@ -138,7 +138,7 @@ class Trainer():
             loss = recon_loss
             # Regularization
             for r in self.regularizers:
-                loss = loss + r.regularize(self.model, dset_id)
+                loss = loss + r.regularize(self.model, grid_id=dset_id, model_out=fwd_out)
             self.timer.check("step_loss")
         self.gscaler.scale(loss).backward()
 
@@ -449,6 +449,7 @@ class Trainer():
             aabb=aabbs,
             is_ndc=self.is_ndc,
             is_contracted=self.is_contracted,
+            proposal_sampling=self.extra_args.get('histogram_loss_weight', 0.0) > 0.0,
             **kwargs)
         logging.info(f"Initialized LowrankLearnableHash model with "
                      f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters.")
