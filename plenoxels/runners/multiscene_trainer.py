@@ -109,7 +109,7 @@ class Trainer():
                 outputs = self.model(rays_o_b, rays_d_b, grid_id=dset_id, bg_color=bg_color, channels={"rgb", "depth"})
                 for k, v in outputs.items():
                     preds[k].append(v)
-        return {k: torch.cat(v, 0) for k, v in preds.items()}
+        return {k: torch.cat(v, 0) for k, v in preds.items() if k in {"rgb", "depth"}}
 
     def step(self, data: Dict[str, Union[int, torch.Tensor]]):
         self.timer.reset()
