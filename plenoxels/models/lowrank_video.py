@@ -49,7 +49,7 @@ class LowrankVideo(LowrankModel):
 
         # For now, only allow a single index grid and a single feature grid, not multiple layers
         assert len(self.config) == 2
-        self.grids = nn.ModuleList()
+        self.grids = torch.nn.ModuleList()
         for res in self.multiscale_res:
             for li, grid_config in enumerate(self.config):
                 # initialize feature grid
@@ -99,7 +99,7 @@ class LowrankVideo(LowrankModel):
                          timestamps,  # [batch]
                          return_coords: bool = False
                          ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        multiscale_space : nn.ModuleList = self.grids  # space: 6 x [1, rank * F_dim, reso, reso] where the reso can be different in different grids and dimensions
+        multiscale_space : torch.nn.ModuleList = self.grids  # space: 6 x [1, rank * F_dim, reso, reso] where the reso can be different in different grids and dimensions
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
         
         # Interpolate in space and time
@@ -116,6 +116,7 @@ class LowrankVideo(LowrankModel):
             for ci, coo_comb in enumerate(coo_combs):
                 
                 # interpolate in plane
+                # This errors because level_info["rank"] is a list
                 interp_out_plane = grid_sample_wrapper(grid_space[ci], interp[..., coo_comb]).view(
                             -1, level_info["output_coordinate_dim"], level_info["rank"])
                 
