@@ -273,16 +273,18 @@ class VideoTrainer(Trainer):
         self.model.grids.requires_grad_(False)
         self.model.time_coef.requires_grad_(True)
 
-        self.appearance_optimizer = torch.optim.Adam(params=[self.model.time_coef], lr=1e-3)
+        parameters = [p for p in self.model.time_coef]
+        self.appearance_optimizer = torch.optim.Adam(params=parameters, lr=1e-3)
 
         for dset_id, dataset in enumerate(self.test_datasets):
             pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
 
             # reset the appearance codes for
-            test_frames = self.test_datasets[0].__len__()
-            mask = torch.ones_like(self.model.time_coef)
-            mask[: , -test_frames:] = 0
-            self.model.time_coef.data = self.model.time_coef.data * mask + abs(1 - mask)
+            for i in range(len(self.model.time_coef)):
+                test_frames = self.test_datasets[0].__len__()
+                mask = torch.ones_like(self.model.time_coef[i])
+                mask[: , -test_frames:] = 0
+                self.model.time_coef[i].data = self.model.time_coef[i].data * mask + abs(1 - mask)
 
             batch_size = self.train_datasets[dset_id].batch_size
 

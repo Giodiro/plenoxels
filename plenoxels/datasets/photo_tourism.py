@@ -114,7 +114,7 @@ class PhotoTourismDataset(torch.utils.data.Dataset):
         image = image[..., :3]/255.
         image = torch.as_tensor(image, dtype=torch.float)
         
-        scale = 0.2
+        scale = 0.05
         pose = self.poses[idx]
         pose = torch.as_tensor(pose, dtype=torch.float)
         pose = torch.cat([pose[:3, :3], pose[:3, 3:4]*scale], dim=-1)
