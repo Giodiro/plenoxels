@@ -7,6 +7,7 @@ from torch import nn
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash
 from plenoxels.models.lowrank_video import LowrankVideo
 from plenoxels.models.utils import compute_plane_tv, compute_plane_smoothness
+from plenoxels.ops.losses.histogram_loss import interlevel_loss
 
 
 class Regularizer():
@@ -75,6 +76,7 @@ class L1PlaneDensity(Regularizer):
     def _regularize(self, model: LowrankLearnableHash, grid_id: int = 0, **kwargs):
         grids: nn.ModuleList = model.scene_grids[grid_id]
         total = 0
+        # TODO: Fixme for multires
         for grid_ls in grids:
             for grid in grid_ls:
                 grid = grid.view(model.feature_dim, -1, grid.shape[-2], grid.shape[-1])
@@ -90,6 +92,7 @@ class L1PlaneColor(Regularizer):
     def _regularize(self, model: LowrankLearnableHash, grid_id: int = 0, **kwargs):
         grids: nn.ModuleList = model.scene_grids[grid_id]
         total = 0
+        # TODO: Fixme for multires
         for grid_ls in grids:
             for grid in grid_ls:
                 grid = grid.view(model.feature_dim, -1, grid.shape[-2], grid.shape[-1])
@@ -99,17 +102,31 @@ class L1PlaneColor(Regularizer):
 
 
 class PlaneTV(Regularizer):
-    def __init__(self, initial_value):
-        super().__init__('plane-TV', initial_value)
+    def __init__(self, initial_value, features: str = 'all'):
+        if features not in {'all', 'sigma', 'sh'}:
+            raise ValueError(f'features must be one of "all", "sigma" or "sh" '
+                             f'but {features} was passed.')
+        name = 'plane-TV'
+        if features != 'all':
+            name += f"-{features}"
+        super().__init__(name, initial_value)
+        self.features = features
 
     def _regularize(self, model: LowrankLearnableHash, grid_id: int = 0, **kwargs):
         multi_res_grids: nn.ModuleList = model.scene_grids[grid_id]
         total = 0
+        # Note: input to compute_plane_tv should be of shape [batch_size, c, h, w]
         for grids in multi_res_grids:
             for grid_ls in grids:
                 for grid in grid_ls:
-                    total += compute_plane_tv(grid)
-        
+                    if self.features == 'all':
+                        total += compute_plane_tv(grid)
+                    else:
+                        grid = grid.view(1, model.feature_dim, -1, grid.shape[-2], grid.shape[-1])
+                        if self.features == 'sigma':
+                            total += compute_plane_tv(grid[:, -1, ...])
+                        else:
+                            total += compute_plane_tv(grid[:, :-1, ...].view(1, -1, grid.shape[-2], grid.shape[-1]))
         return total
 
 
@@ -196,7 +213,7 @@ class FloaterLoss(Regularizer):
         super().__init__('floater-loss', initial_value)
 
     def _regularize(self, model: LowrankLearnableHash, model_out, grid_id: int) -> torch.Tensor:
-        from ..distortion_loss_warp import distortion_loss
+        from plenoxels.ops.losses.distortion_loss_warp import distortion_loss
         midpoint = torch.cat(
             [model_out["midpoint"],
              (2*model_out["midpoint"][:, -1] - model_out["midpoint"][:, -2])[:, None]], dim=1)
@@ -205,3 +222,11 @@ class FloaterLoss(Regularizer):
             model_out["weight"],
             1 - model_out["weight"].sum(dim=1, keepdim=True)], dim=1)
         return distortion_loss(midpoint, weight, dt) * 1e-2
+
+
+class HistogramLoss(Regularizer):
+    def __init__(self, initial_value):
+        super().__init__('histogram-loss', initial_value)
+
+    def _regularize(self, model: LowrankLearnableHash, model_out, grid_id: int) -> torch.Tensor:
+        return interlevel_loss(model_out['weights_list'], model_out['ray_samples_list'])

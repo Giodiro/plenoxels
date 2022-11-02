@@ -16,7 +16,10 @@ from plenoxels.ema import EMA
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash, DensityMask
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_exr, write_png
-from .regularization import PlaneTV, L1PlaneColor, L1PlaneDensity, VolumeTV, L1Density, FloaterLoss
+from .regularization import (
+    PlaneTV, L1PlaneColor, L1PlaneDensity, VolumeTV, L1Density, FloaterLoss,
+    HistogramLoss
+)
 from .timer import CudaTimer
 from ..datasets import SyntheticNerfDataset, LLFFDataset
 from ..datasets.multi_dataset_sampler import MultiSceneSampler
@@ -463,6 +466,7 @@ class Trainer():
             L1PlaneDensity(kwargs.get('l1_plane_density_weight', 0.0)),
             L1Density(kwargs.get('l1density_weight', 0.0), max_voxels=100_000),
             FloaterLoss(kwargs.get('floater_loss_weight', 0.0)),
+            HistogramLoss(kwargs.get('histogram_loss_weight', 0.0)),
         ]
         # Keep only the regularizers with a positive weight
         regularizers = [r for r in regularizers if r.weight > 0]
