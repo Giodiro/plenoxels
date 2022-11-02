@@ -138,7 +138,7 @@ class Trainer():
             loss = recon_loss
             # Regularization
             for r in self.regularizers:
-                loss = loss + r.regularize(self.model, dset_id)
+                loss = loss + r.regularize(self.model, grid_id=dset_id, model_out=fwd_out)
             self.timer.check("step_loss")
         self.gscaler.scale(loss).backward()
 
@@ -216,16 +216,6 @@ class Trainer():
         batch_iter = iter(self.train_data_loader)
         while self.global_step < self.num_steps:
             try:
-                # Check if we need to save model at this step
-                if self.save_every > -1 and self.global_step % self.save_every == 0 and self.global_step > 0:
-                    self.model.eval()
-                    self.save_model()
-                    self.model.train()
-                if self.valid_every > -1 and self.global_step % self.valid_every == 0 and self.global_step > 0:
-                    self.model.eval()
-                    self.validate()
-                    self.model.train()
-                self.global_step += 1
                 # Get a batch of data
                 self.timer.reset()
                 data = next(batch_iter)
@@ -236,6 +226,18 @@ class Trainer():
                 self.post_step(data=data, progress_bar=pb)
                 if step_successful and self.scheduler is not None:
                     self.scheduler.step()
+
+                # Check if we need to save model at this step
+                if self.save_every > -1 and self.global_step % self.save_every == 0 and self.global_step > 0:
+                    self.model.eval()
+                    self.save_model()
+                    self.model.train()
+                if self.valid_every > -1 and self.global_step % self.valid_every == 0 and self.global_step > 0:
+                    self.model.eval()
+                    self.validate()
+                    self.model.train()
+
+                self.global_step += 1
             except StopIteration as e:
                 logging.info(str(e))
                 logging.info(f'resetting after a full pass through the data, or when the dataset changed')
@@ -447,6 +449,7 @@ class Trainer():
             aabb=aabbs,
             is_ndc=self.is_ndc,
             is_contracted=self.is_contracted,
+            proposal_sampling=self.extra_args.get('histogram_loss_weight', 0.0) > 0.0,
             **kwargs)
         logging.info(f"Initialized LowrankLearnableHash model with "
                      f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters.")
