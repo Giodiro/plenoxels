@@ -23,18 +23,13 @@ class LLFFDataset(BaseDataset):
                  batch_size: Optional[int] = None,
                  downsample: int = 4,
                  hold_every: int = 8):
-        """
-        spheric_poses: whether the images are taken in a spheric inward-facing manner
-                       default: False (forward-facing)
-        val_num: number of val images (used for multigpu training, validate same image for all gpus)
-        """
-
         self.downsample = downsample
         self.hold_every = hold_every
         self.dset_id = dset_id
+        use_contraction = False
 
         image_paths, self.poses, self.per_cam_near_fars, intrinsics = load_llff_poses(
-            datadir, downsample=downsample, split=split, hold_every=hold_every, near_scaling=0.75)
+            datadir, downsample=downsample, split=split, hold_every=hold_every, near_scaling=1.0)
         print(f'self.per_cam_near_fars is {self.per_cam_near_fars}')
         imgs = load_llff_images(image_paths, intrinsics, split)
         imgs = (imgs * 255).to(torch.uint8)
@@ -42,16 +37,20 @@ class LLFFDataset(BaseDataset):
             imgs = imgs.view(-1, imgs.shape[-1])
         else:
             imgs = imgs.view(-1, intrinsics.height * intrinsics.width, imgs.shape[-1])
+        if use_contraction:
+            bbox = torch.tensor([[-2., -2., -2.], [2., 2., 2.]])
+        else:
+            bbox = torch.tensor([[-1.5, -1.67, -1.], [1.5, 1.67, 1.]])
         super().__init__(datadir=datadir,
                          split=split,
-                         scene_bbox=torch.tensor([[-2, -2, -2], [2, 2, 2]]),
-                         is_ndc=False,
+                         scene_bbox=bbox,
+                         is_ndc=not use_contraction,
                          batch_size=batch_size,
                          imgs=imgs,
                          rays_o=None,
                          rays_d=None,
                          intrinsics=intrinsics,
-                         is_contracted=True)
+                         is_contracted=use_contraction)
         log.info(f"LLFFDataset contracted {self.is_contracted} - Loaded {split} set from {datadir}: {len(self.poses)} images of "
                  f"shape {self.img_h}x{self.img_w} with {imgs.shape[-1]} channels. {intrinsics}")
 
@@ -89,6 +88,9 @@ class LLFFDataset(BaseDataset):
 
         directions = (camera_dirs[:, None, :] * c2w[:, :3, :3]).sum(dim=-1)
         origins = torch.broadcast_to(c2w[:, :3, -1], directions.shape)
+        if self.is_ndc:
+            origins, directions = ndc_rays_blender(
+                intrinsics=self.intrinsics, near=1.0, rays_o=origins, rays_d=directions)
         return {
             "rays_o": origins.reshape(-1, 3),
             "rays_d": directions.reshape(-1, 3),
@@ -147,7 +149,7 @@ def load_llff_poses(datadir: str, downsample: float, split: str, hold_every: int
     i_test = np.arange(0, poses.shape[0], hold_every)  # [np.argmin(dists)]
     img_list = i_test if split != 'train' else list(set(np.arange(len(poses))) - set(i_test))
     # If you want to visualize train results
-    # img_list = list(set(np.arange(len(poses))) - set(i_test))  
+    # img_list = list(set(np.arange(len(poses))) - set(i_test))
     # if split != 'train':
     #     img_list = img_list[0:5]  # Test on some train images
     img_list = np.asarray(img_list)
