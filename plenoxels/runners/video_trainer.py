@@ -19,7 +19,7 @@ from plenoxels.my_tqdm import tqdm
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_video_to_file
 from plenoxels.runners.multiscene_trainer import Trainer, visualize_planes, visualize_planes_withF
-from plenoxels.runners.regularization import VideoPlaneTV, TimeSmoothness, HistogramLoss
+from plenoxels.runners.regularization import VideoPlaneTV, TimeSmoothness, HistogramLoss, L1PlaneDensityVideo
 
 
 class VideoTrainer(Trainer):
@@ -229,6 +229,7 @@ class VideoTrainer(Trainer):
             VideoPlaneTV(kwargs.get('plane_tv_weight', 0.0)),
             TimeSmoothness(kwargs.get('time_smoothness_weight', 0.0)),
             HistogramLoss(kwargs.get('histogram_loss_weight', 0.0)),
+            L1PlaneDensityVideo(kwargs.get('l1_plane_density_reg', 0.0))
         ]
         # Keep only the regularizers with a positive weight
         regularizers = [r for r in regularizers if r.weight > 0]
