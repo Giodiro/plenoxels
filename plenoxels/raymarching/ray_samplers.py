@@ -438,7 +438,7 @@ class ProposalNetworkSampler(Sampler):
         weights = None
         ray_samples = None
         # TODO: Fix this (need to call step_cb!)
-        # self.step_cb()  # Comment this in to enable weight annealing
+        self.step_cb()  # Comment this in to enable weight annealing
         updated = True #self._steps_since_update > self.update_sched(self._step) or self._step < 10
         for i_level in range(n + 1):
             is_prop = i_level < n

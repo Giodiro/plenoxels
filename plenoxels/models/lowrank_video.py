@@ -58,26 +58,27 @@ class LowrankVideo(LowrankModel):
                 global_translation=kwargs.get('global_translation', None))
 
         self.use_proposal_sampling = kwargs.get('proposal_sampling', False)
-        self.density_field, self.density_fns = None, None
+        self.density_fields, self.density_fns = torch.nn.ModuleList(), []
         if self.use_proposal_sampling:
-            # Initialize density_fields
-            self.density_field = TriplaneDensityField(
-                aabb=self.aabb(0),
-                resolution=self.extra_args['density_field_resolution'],
-                num_input_coords=3,
-                rank=self.extra_args['density_field_rank'],
-                spatial_distortion=self.spatial_distortion,
-            )
-            self.density_fns = [self.density_field.get_density]
+            for reso in self.extra_args['density_field_resolution']:
+                # Initialize density_fields
+                field = TriplaneDensityField(
+                    aabb=self.aabb(0),
+                    resolution=[reso] * 3,
+                    num_input_coords=3,
+                    rank=self.extra_args['density_field_rank'],
+                    spatial_distortion=self.spatial_distortion,
+                )
+                self.density_fields.append(field)
+                self.density_fns.append(field.get_density)
             if self.extra_args['raymarch_type'] != 'fixed':
                 log.warning("raymarch_type is not 'fixed' but we will use 'n_intersections' anyways.")
             self.raymarcher = ProposalNetworkSampler(
-                num_proposal_samples_per_ray=(self.extra_args['num_proposal_samples'], ),
+                num_proposal_samples_per_ray=(self.extra_args['num_proposal_samples']),
                 num_nerf_samples_per_ray=self.extra_args['n_intersections'],
-                num_proposal_network_iterations=1,
+                num_proposal_network_iterations=len(self.extra_args['num_proposal_samples']),
                 single_jitter=self.extra_args['single_jitter'],
             )
-            # TODO: make the initial sampler linear then linear in disparity
         else:
             self.raymarcher = RayMarcher(**self.extra_args)
 
@@ -114,7 +115,7 @@ class LowrankVideo(LowrankModel):
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
 
         if use_trainable_rank:
-            self.trainable_rank = 1
+            self.trainable_rank = 1 
             self.update_trainable_rank()
         self.density_mask = None
         log.info(f"Initialized LowrankVideo - decoder={self.decoder}")
@@ -287,11 +288,10 @@ class LowrankVideo(LowrankModel):
             {"params": self.grids.parameters(), "lr": lr},
             {"params": self.decoder.parameters(), "lr": lr},
         ]
-        if self.density_field is not None:
-            params.append({"params": self.density_field.parameters(), "lr": lr})
+        if len(self.density_fields) > 0:
+            params.append({"params": self.density_fields.parameters(), "lr": lr})
         if self.use_F:
             params.append({"params": [self.pt_min, self.pt_max], "lr": lr})
-        if self.use_F:
             params.append({"params": self.features, "lr": lr})
         return params
 
