@@ -284,7 +284,7 @@ class Trainer():
                 val_metrics.append(per_scene_metrics)
 
             # visualize planes
-            if self.save_outputs:
+            if self.save_outputs and not self.model.use_F:
                 visualize_planes(self.model, self.log_dir, f"step{self.global_step}-D{dset_id}")
 
         df = pd.DataFrame.from_records(val_metrics)
