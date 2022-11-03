@@ -137,14 +137,14 @@ class VideoTrainer(Trainer):
             recon_loss = self.criterion(rgb_preds, imgs)
             loss = recon_loss
             self.writer.add_scalar(f"train/loss/mse", recon_loss, self.global_step)
-            
+
             # Regularization
             for r in self.regularizers:
-                
+
                 reg_loss = r.regularize(self.model, grid_id=0, model_out=fwd_out)
                 loss = loss + reg_loss
                 self.writer.add_scalar(f"train/loss/{r.reg_type}", reg_loss, self.global_step)
-                
+
         self.gscaler.scale(loss).backward()
         self.gscaler.step(self.optimizer)
         scale = self.gscaler.get_scale()
@@ -156,7 +156,7 @@ class VideoTrainer(Trainer):
         for r in self.regularizers:
             r.report(self.loss_info)
 
-        if self.global_step in self.add_rank_steps:
+        if self.model.trainable_rank is not None and self.global_step in self.add_rank_steps:
             self.model.trainable_rank = self.model.trainable_rank + 1
             self.model.update_trainable_rank()
         if self.global_step in self.upsample_time_steps:
