@@ -116,7 +116,6 @@ class LowrankVideo(LowrankModel):
             for ci, coo_comb in enumerate(coo_combs):
                 
                 # interpolate in plane
-                # This errors because level_info["rank"] is a list
                 interp_out_plane = grid_sample_wrapper(grid_space[ci], pts[..., coo_comb]).view(
                             -1, level_info["output_coordinate_dim"], level_info["rank"])
                 

@@ -247,6 +247,7 @@ class Trainer():
                 logging.info(f'resetting after a full pass through the data, or when the dataset changed')
                 self.pre_epoch()
                 batch_iter = iter(self.train_data_loader)
+                self.global_step += 1  # Still need to increment the step, otherwise we get stuck in a loop
         pb.close()
 
     def validate(self):
