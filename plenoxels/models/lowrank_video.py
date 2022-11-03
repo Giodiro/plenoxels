@@ -175,6 +175,9 @@ class LowrankVideo(LowrankModel):
 
         outputs = {}
 
+        # Normalize rays_d
+        rays_d = rays_d / torch.linalg.norm(rays_d, dim=-1, keepdim=True)
+
         if self.use_proposal_sampling:
             # TODO: determining near-far should be done in a separate function this is super cluttered
             if near_far is None:
