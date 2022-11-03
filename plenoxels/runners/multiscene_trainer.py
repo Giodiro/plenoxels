@@ -135,10 +135,14 @@ class Trainer():
             rgb_preds = fwd_out["rgb"]
             # Reconstruction loss
             recon_loss = self.criterion(rgb_preds, imgs)
-            loss = recon_loss
+            self.writer.add_scalar(f"train/loss/mse", recon_loss, self.global_step)
+            
             # Regularization
+            loss = recon_loss
             for r in self.regularizers:
-                loss = loss + r.regularize(self.model, grid_id=dset_id, model_out=fwd_out)
+                reg_loss = r.regularize(self.model, grid_id=dset_id, model_out=fwd_out)
+                loss = loss + reg_loss
+                self.writer.add_scalar(f"train/loss/{r.reg_type}", reg_loss, self.global_step)
             self.timer.check("step_loss")
         self.gscaler.scale(loss).backward()
 

@@ -373,7 +373,8 @@ class LowrankLearnableHash(LowrankModel):
                     near_plane = nears if self.training else 0
                     nears = ones * near_plane
                     fars = ones * fars
-
+            
+            aabb=self.aabb(grid_id)
             ray_bundle = RayBundle(origins=rays_o, directions=rays_d, nears=nears, fars=fars)
             ray_samples, weights_list, ray_samples_list = self.raymarcher.generate_ray_samples(
                 ray_bundle, density_fns=self.density_fns)
