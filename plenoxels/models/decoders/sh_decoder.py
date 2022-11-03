@@ -110,6 +110,7 @@ class SHDecoder(BaseDecoder):
     def compute_color(self, features, rays_d):
         color_features = features[..., :-1]
         if self.decoder_type == 'tcnn':
+            rays_d = (rays_d + 1.0) / 2.0
             sh_mult = self.direction_encoder(rays_d)[:, None, :]  # [batch, 1, harmonic_components]
         else:
             sh_mult = eval_sh_bases(self.sh_dim, rays_d)[:, None, :]  # [batch, 1, harmonic_components]

@@ -121,6 +121,8 @@ class LowrankLearnableHash(LowrankModel):
                         if li == 0:
                             self.set_resolution(gpdesc.reso, grid_id=si)
                         grids.append(gpdesc.grid_coefs)
+                        for gc in gpdesc.grid_coefs:
+                            log.info(f"Initialized grid with shape {gc.shape}")
                         if not self.use_F:
                             # shape[1] is out-dim * rank
                             self.feature_dim = gpdesc.grid_coefs[-1].shape[1] // config["rank"][0]
