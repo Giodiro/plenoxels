@@ -129,7 +129,7 @@ class VideoTrainer(Trainer):
             imgs = imgs[..., :3] * imgs[..., 3:] + bg_color * (1.0 - imgs[..., 3:])
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            fwd_out = self.model(rays_o, rays_d, timestamps, bg_color=bg_color, channels={"rgb"}, near_far=near_far, 
+            fwd_out = self.model(rays_o, rays_d, timestamps, bg_color=bg_color, channels={"rgb"}, near_far=near_far,
                                  global_translation=self.train_datasets[0].global_translation,
                                  global_scale=self.train_datasets[0].global_scale)
             rgb_preds = fwd_out["rgb"]
@@ -316,7 +316,7 @@ class VideoTrainer(Trainer):
             self.optimize_appearance_codes()
         val_metrics = []
         with torch.no_grad():
-            if self.save_outputs:
+            if self.save_outputs and not self.model.use_F:
                 visualize_planes(self.model, self.log_dir, f"step{self.global_step}")
 
             for dset_id, dataset in enumerate(self.test_datasets):
@@ -350,7 +350,7 @@ class VideoTrainer(Trainer):
 
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
-                
+
     def evaluate_metrics(self, gt, preds: MutableMapping[str, torch.Tensor], dset, dset_id,
                          img_idx, name=None, save_outputs: bool = True):
         if isinstance(dset.img_h, int):
