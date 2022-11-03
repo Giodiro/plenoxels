@@ -373,7 +373,7 @@ class LowrankLearnableHash(LowrankModel):
                     near_plane = nears if self.training else 0
                     nears = ones * near_plane
                     fars = ones * fars
-            
+
             aabb=self.aabb(grid_id)
             ray_bundle = RayBundle(origins=rays_o, directions=rays_d, nears=nears, fars=fars)
             ray_samples, weights_list, ray_samples_list = self.raymarcher.generate_ray_samples(
@@ -387,6 +387,7 @@ class LowrankLearnableHash(LowrankModel):
                 pts = self.spatial_distortion(pts)  # cube of side 2
             mask = ((aabb[0] <= pts) & (pts <= aabb[1])).all(dim=-1)  # noqa
             deltas = ray_samples.deltas.squeeze()
+            mask[deltas <= 0] = False
             z_vals = ((ray_samples.starts + ray_samples.ends) / 2).squeeze()
         else:
             rm_out = self.raymarcher.get_intersections2(

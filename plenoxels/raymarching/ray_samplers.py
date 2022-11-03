@@ -39,7 +39,11 @@ class RaySamples:
         Returns:
             Weights for each sample  (..., num_samples, 1)
         """
-        delta_density = self.deltas * densities
+        delta_mask = self.deltas > 0
+        deltas = self.deltas[delta_mask]
+
+        delta_density = torch.zeros_like(densities)
+        delta_density[delta_mask] = deltas * densities[delta_mask]
         alphas = 1 - torch.exp(-delta_density)
 
         transmittance = torch.cumsum(delta_density[..., :-1, :], dim=-2)
@@ -426,7 +430,8 @@ class ProposalNetworkSampler(Sampler):
         n = self.num_proposal_network_iterations
         weights = None
         ray_samples = None
-        updated = self._steps_since_update > self.update_sched(self._step) or self._step < 10
+        # TODO: Fix this (need to call step_cb!)
+        updated = True #self._steps_since_update > self.update_sched(self._step) or self._step < 10
         for i_level in range(n + 1):
             is_prop = i_level < n
             num_samples = self.num_proposal_samples_per_ray[i_level] if is_prop else self.num_nerf_samples_per_ray
