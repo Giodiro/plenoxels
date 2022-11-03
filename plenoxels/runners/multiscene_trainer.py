@@ -136,7 +136,7 @@ class Trainer():
             # Reconstruction loss
             recon_loss = self.criterion(rgb_preds, imgs)
             self.writer.add_scalar(f"train/loss/mse", recon_loss, self.global_step)
-            
+
             # Regularization
             loss = recon_loss
             for r in self.regularizers:
@@ -562,7 +562,8 @@ def N_to_reso(num_voxels, aabb):
 @torch.no_grad()
 def visualize_planes_withF(model, save_dir: str, name: str):
     MAX_RANK = 3
-    rank = min(model.config[0]["rank"], MAX_RANK)
+    rank = model.config[0]["rank"]
+    used_rank = min(model.config[0]["rank"], MAX_RANK)
     dim = model.config[0]["output_coordinate_dim"]
 
     # For each plane get the n-d coordinates and plot the density
@@ -578,18 +579,18 @@ def visualize_planes_withF(model, save_dir: str, name: str):
         if hasattr(model, 'scene_grids'):
             grids = grids[0]
         n_planes = len(grids)
-        fig, ax = plt.subplots(ncols=rank, nrows=n_planes, figsize=(3 * rank, 3 * n_planes))
+        fig, ax = plt.subplots(ncols=used_rank, nrows=n_planes, figsize=(3 * used_rank, 3 * n_planes))
         for plane_idx, grid in enumerate(grids):
             _, c, h, w = grid.data.shape
             grid = grid.data.view(dim, rank, h, w)
-            for r in range(rank):
+            for r in range(used_rank):
                 grid_r = grid[:, r, ...].view(dim, -1).transpose(0, 1)  # h*w, dim
                 multi_scale_interp = (grid_r - model.pt_min) / (model.pt_max - model.pt_min)
                 multi_scale_interp = multi_scale_interp * 2 - 1
                 from plenoxels.models.utils import grid_sample_wrapper
                 out = grid_sample_wrapper(model.features, multi_scale_interp).view(h, w, -1)
                 density = model.density_act(
-                    out[..., -1].cpu()
+                    out[..., 0].cpu()
                 ).numpy()
                 im = ax[plane_idx, r].imshow(density, norm=LogNorm(vmin=1e-6, vmax=density.max()))
                 ax[plane_idx, r].axis("off")
@@ -623,7 +624,7 @@ def visualize_planes(model, save_dir: str, name: str):
             grid = grid.data.view(dim, rank, h, w)
             for r in range(rank):
                 density = model.density_act(
-                    grid[-1, r, :, :].cpu()
+                    grid[0, r, :, :].cpu()
                 ).numpy()
                 # density = grid[-1, r, :, :].cpu().numpy()
 
