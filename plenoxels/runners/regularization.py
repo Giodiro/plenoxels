@@ -256,14 +256,16 @@ class HistogramLoss(Regularizer):
                 sdist_fine = torch.cat([spacing_starts_fine[..., 0], spacing_ends_fine[..., -1:, 0]], dim=-1).detach().cpu().numpy()
                 
                 for i in range(10):
-                    plt.figure()
+                    fix, ax1 = plt.subplots()
                     
                     delta = np.diff(sdist_proposal[i], axis=-1)
-                    plt.bar(sdist_proposal[i, :-1], weights_proposal[i].squeeze() / delta , width=delta, align="edge", label='proposal', alpha=0.7)
+                    ax1.bar(sdist_proposal[i, :-1], weights_proposal[i].squeeze() / delta , width=delta, align="edge", label='proposal', alpha=0.7, color="b")
+                    ax1.legend()
+                    ax2 = ax1.twinx()
                     
                     delta = np.diff(sdist_fine[i], axis=-1)
-                    plt.bar(sdist_fine[i, :-1], weights_fine[i].squeeze() / delta, width=delta, align="edge", label='fine', alpha=0.3)
-                    plt.legend()
+                    ax2.bar(sdist_fine[i, :-1], weights_fine[i].squeeze() / delta, width=delta, align="edge", label='fine', alpha=0.3, color='r')
+                    ax2.legend()
                     os.makedirs(f'histogram_loss/{self.count}', exist_ok=True)
                     plt.savefig(f'./histogram_loss/{self.count}/batch_{i}.png')
                     plt.close()

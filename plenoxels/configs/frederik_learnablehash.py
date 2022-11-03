@@ -53,7 +53,7 @@ config = {
     "spacing_fn": "reciprocal",
     "single_jitter": True,
     # proposal sampling
-    "histogram_loss_weight": 0.01,  # this should be set > 0 when using proposal sampling
+    "histogram_loss_weight": 100,  # this should be set > 0 when using proposal sampling
     "density_field_resolution": [64, 64, 64],
     "density_field_rank": 10,
     "num_proposal_samples": 32,

@@ -206,17 +206,16 @@ class LowrankVideo(LowrankModel):
         return outputs
 
     def get_params(self, lr):
+        params = [
+            {"params": self.grids.parameters(), "lr": lr},
+            {"params": self.decoder.parameters(), "lr": lr},
+        ]
+        if self.density_field is not None:
+            params.append({"params": self.density_field.parameters(), "lr": lr})
         if self.use_F:
-            params = [
-                {"params": self.decoder.parameters(), "lr": lr},
-                {"params": self.grids.parameters(), "lr": lr},
-                {"params": [self.features, self.pt_min, self.pt_max], "lr": lr},
-            ]
-        else:
-            params = [
-                {"params": self.decoder.parameters(), "lr": lr},
-                {"params": self.grids.parameters(), "lr": lr},
-            ]
+            params.append({"params": [self.pt_min, self.pt_max], "lr": lr})
+        if self.use_F:
+            params.append({"params": self.features, "lr": lr})
         return params
 
     def update_trainable_rank(self):

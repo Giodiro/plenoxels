@@ -1,7 +1,7 @@
 # configuration file to be used with `main.py` for video training
 config = {
 
-    "expname": "multires_tv005_notime",
+    "expname": "multires_tv005_time",
     "logdir": "./logs/trevi",
 
     # Data settings
@@ -37,15 +37,15 @@ config = {
     "lr": 0.01,
     "use_F": False,
     # proposal sampling
-    "histogram_loss_weight": 0.01,  # this should be set > 0 when using proposal sampling
+    "histogram_loss_weight": 1000,  # this should be set > 0 when using proposal sampling
     "density_field_resolution": [64, 64, 64],
     "density_field_rank": 10,
     "num_proposal_samples": 32,
     
     # Training settings
     "train_fp16": False,
-    "save_every": 1,
-    "valid_every": 1,
+    "save_every": 10000,
+    "valid_every": 10000,
     "save_video": True,
     "add_rank_steps": [],
     "save_outputs": True,
@@ -68,10 +68,10 @@ config = {
     "grid_config": """
 [
     {
-        "input_coordinate_dim": 3,
+        "input_coordinate_dim": 4,
         "output_coordinate_dim": 28,
         "grid_dimensions": 2,
-        "resolution": [64, 64, 64], 
+        "resolution": [64, 64, 64, 1708], 
         "rank": 1,
         "time_reso": 1708,
     },

@@ -62,7 +62,7 @@ class LowrankAppearance(LowrankModel):
             self.density_field = TriplaneDensityField(
                 aabb=self.aabb(0),
                 resolution=self.extra_args['density_field_resolution'],
-                num_input_coords=self.config[0]['input_coordinate_dim'],
+                num_input_coords=3,
                 rank=self.extra_args['density_field_rank'],
                 spatial_distortion=self.spatial_distortion,
             )
@@ -137,10 +137,14 @@ class LowrankAppearance(LowrankModel):
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
 
         dim = level_info["output_coordinate_dim"] - 1 if level_info["output_coordinate_dim"] == 28 else level_info["output_coordinate_dim"]
-                
+        
+        # Normalization (between [-1, 1])
+        pts = self.normalize_coords(pts, 0)
+        
         # Interpolate in space and time
         if level_info["input_coordinate_dim"] == 4:
-            pts = torch.cat([pts, timestamps.expand(pts.shape[0],1)], dim=-1)  # [batch, 4] for xyzt
+            times = (timestamps.expand(pts.shape[0],1) * 2 / self.len_time) - 1
+            pts = torch.cat([pts, times], dim=-1)  # [batch, 4] for xyzt
 
         # Interpolate in space
         coo_combs = list(itertools.combinations(
@@ -308,21 +312,20 @@ class LowrankAppearance(LowrankModel):
         return outputs
 
     def get_params(self, lr):
+        params = [
+            {"params": self.grids.parameters(), "lr": lr},
+            {"params": self.time_coef, "lr": lr},
+            {"params": self.decoder.parameters(), "lr": lr},
+        ]
+
+        if self.density_field is not None:
+            params.append({"params": self.density_field.parameters(), "lr": lr})
         if self.use_F:
-            params = [
-                {"params": self.decoder.parameters(), "lr": lr},
-                {"params": self.grids.parameters(), "lr": lr},
-                {"params": [self.features, self.pt_min, self.pt_max], "lr": lr},
-                {"params": self.time_coef, "lr": lr},
-            ]
-        else:
-            params = [
-                {"params": self.decoder.parameters(), "lr": lr},
-                {"params": self.grids.parameters(), "lr": lr},
-                {"params": self.time_coef, "lr": lr},
-                # {"params": [self.features, self.pt_min, self.pt_max], "lr": lr},
-            ]
+            params.append({"params": [self.pt_min, self.pt_max], "lr": lr})
+        if self.use_F:
+            params.append({"params": self.features, "lr": lr})
         return params
+
 
     def compute_plane_tv(self):
         multiscale_grids = self.grids  # space: 3 x [1, rank * F_dim, reso, reso]
