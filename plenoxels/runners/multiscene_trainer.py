@@ -289,8 +289,11 @@ class Trainer():
                 val_metrics.append(per_scene_metrics)
 
             # visualize planes
-            if self.save_outputs and not self.model.use_F:
-                visualize_planes(self.model, self.log_dir, f"step{self.global_step}-D{dset_id}")
+            if self.save_outputs:
+                if self.model.use_F:
+                    visualize_planes_withF(self.model, self.log_dir, f"step{self.global_step}-D{dset_id}")
+                else:
+                    visualize_planes(self.model, self.log_dir, f"step{self.global_step}-D{dset_id}")
 
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))

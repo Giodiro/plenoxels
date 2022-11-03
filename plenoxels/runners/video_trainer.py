@@ -18,7 +18,7 @@ from plenoxels.models.lowrank_video import LowrankVideo
 from plenoxels.my_tqdm import tqdm
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_video_to_file
-from plenoxels.runners.multiscene_trainer import Trainer, visualize_planes
+from plenoxels.runners.multiscene_trainer import Trainer, visualize_planes, visualize_planes_withF
 from plenoxels.runners.regularization import VideoPlaneTV, TimeSmoothness, HistogramLoss
 
 
@@ -316,8 +316,11 @@ class VideoTrainer(Trainer):
             self.optimize_appearance_codes()
         val_metrics = []
         with torch.no_grad():
-            if self.save_outputs and not self.model.use_F:
-                visualize_planes(self.model, self.log_dir, f"step{self.global_step}")
+            if self.save_outputs:  # visualize planes
+                if self.model.use_F:
+                    visualize_planes_withF(self.model, self.log_dir, f"step{self.global_step}")
+                else:
+                    visualize_planes(self.model, self.log_dir, f"step{self.global_step}")
 
             for dset_id, dataset in enumerate(self.test_datasets):
                 per_scene_metrics = {
