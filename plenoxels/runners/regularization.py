@@ -12,6 +12,8 @@ from plenoxels.ops.losses.histogram_loss import interlevel_loss
 import matplotlib.pyplot as plt
 import numpy as np
 import os
+
+
 class Regularizer():
     def __init__(self, reg_type, initialization):
         self.reg_type = reg_type

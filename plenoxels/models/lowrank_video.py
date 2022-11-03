@@ -6,18 +6,15 @@ import torch
 import torch.nn.functional as F
 
 from plenoxels.models.utils import (
-    grid_sample_wrapper, compute_plane_tv, compute_line_tv,
-    raw2alpha, compute_plane_smoothness, init_density_activation
+    grid_sample_wrapper, raw2alpha, init_density_activation
 )
 from .decoders import NNDecoder, SHDecoder
-from .lowrank_model import LowrankModel
 from .density_fields import TriplaneDensityField
+from .lowrank_model import LowrankModel
 from ..ops.bbox_colliders import intersect_with_aabb
 from ..raymarching.ray_samplers import RayBundle, ProposalNetworkSampler
 from ..raymarching.raymarching import RayMarcher
 from ..raymarching.spatial_distortions import SceneContraction
-from .lowrank_learnable_hash import DensityMask
-from ..ops.activations import trunc_exp
 
 
 class LowrankVideo(LowrankModel):
