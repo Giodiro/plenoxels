@@ -7,7 +7,7 @@ config = {
     # Data settings
     "data_resolution": None,
     "data_downsample": 1,
-    "data_dirs": ["/data/DATASETS/SyntheticNerf/lego"],
+    "data_dirs": ["/work3/frwa/lego"],
     #"data_dirs": ["/data/DATASETS/LLFF/fern"],
     # Data settings for 360
     "max_tr_frames": 100,

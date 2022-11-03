@@ -40,9 +40,12 @@ class SceneContraction(SpatialDistortion):
                  ) -> None:
         super().__init__()
         self.order = order
-        global_translation = global_translation or torch.tensor([0.0, 0.0, 0.0])
+        if global_translation is None:
+            global_translation = torch.tensor([0.0, 0.0, 0.0])
         self.global_translation = nn.Parameter(global_translation, requires_grad=False)
-        global_scale = global_scale or torch.tensor([1.0, 1.0, 1.0])
+        if global_scale is None:
+            global_scale = torch.tensor([1.0, 1.0, 1.0])
+            
         self.global_scale = nn.Parameter(global_scale, requires_grad=False)
 
     def forward(self, positions):

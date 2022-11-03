@@ -11,7 +11,12 @@ from plenoxels.models.utils import (
 )
 from .decoders import NNDecoder, SHDecoder
 from .lowrank_model import LowrankModel
+from .density_fields import TriplaneDensityField
+from ..ops.bbox_colliders import intersect_with_aabb
+from ..raymarching.ray_samplers import RayBundle, ProposalNetworkSampler
 from ..raymarching.raymarching import RayMarcher
+from ..raymarching.spatial_distortions import SceneContraction
+from .lowrank_learnable_hash import DensityMask
 from ..ops.activations import trunc_exp
 
 
@@ -36,7 +41,6 @@ class LowrankVideo(LowrankModel):
         self.extra_args = kwargs
         self.is_ndc = is_ndc
         self.is_contracted = is_contracted
-        self.raymarcher = RayMarcher(**self.extra_args)
         self.sh = sh
         self.density_act = init_density_activation(
             self.extra_args.get('density_activation', 'trunc_exp'))
@@ -46,6 +50,39 @@ class LowrankVideo(LowrankModel):
         self.trainble_rank = None
         self.hooks = None
         self.multiscale_res = multiscale_res
+
+        self.spatial_distortion = None
+        if is_contracted:
+            print(kwargs.get('global_scale', None))
+            print(kwargs.get('global_translation', None))
+            self.spatial_distortion = SceneContraction(
+                order=float('inf'),
+                global_scale=kwargs.get('global_scale', None),
+                global_translation=kwargs.get('global_translation', None))
+
+        self.use_proposal_sampling = kwargs.get('proposal_sampling', False)
+        self.density_field, self.density_fns = None, None
+        if self.use_proposal_sampling:
+            # Initialize density_fields
+            self.density_field = TriplaneDensityField(
+                aabb=self.aabb(0),
+                resolution=self.extra_args['density_field_resolution'],
+                num_input_coords=3,
+                rank=self.extra_args['density_field_rank'],
+                spatial_distortion=self.spatial_distortion,
+            )
+            self.density_fns = [self.density_field.get_density]
+            if self.extra_args['raymarch_type'] != 'fixed':
+                log.warning("raymarch_type is not 'fixed' but we will use 'n_intersections' anyways.")
+            self.raymarcher = ProposalNetworkSampler(
+                num_proposal_samples_per_ray=(self.extra_args['num_proposal_samples'], ),
+                num_nerf_samples_per_ray=self.extra_args['n_intersections'],
+                num_proposal_network_iterations=1,
+                single_jitter=self.extra_args['single_jitter'],
+            )
+            # TODO: make the initial sampler linear then linear in disparity
+        else:
+            self.raymarcher = RayMarcher(**self.extra_args)
 
         # For now, only allow a single index grid and a single feature grid, not multiple layers
         assert len(self.config) == 2
@@ -82,6 +119,7 @@ class LowrankVideo(LowrankModel):
         if use_trainable_rank:
             self.trainable_rank = 1
             self.update_trainable_rank()
+        self.density_mask = None
         log.info(f"Initialized LowrankVideo - decoder={self.decoder}")
 
     @torch.no_grad()
@@ -116,7 +154,6 @@ class LowrankVideo(LowrankModel):
             for ci, coo_comb in enumerate(coo_combs):
                 
                 # interpolate in plane
-                # This errors because level_info["rank"] is a list
                 interp_out_plane = grid_sample_wrapper(grid_space[ci], pts[..., coo_comb]).view(
                             -1, level_info["output_coordinate_dim"], level_info["rank"])
                 
@@ -150,44 +187,96 @@ class LowrankVideo(LowrankModel):
         near_far : [batch, 2]
         """
 
-        rm_out = self.raymarcher.get_intersections2(
-            rays_o, rays_d, self.aabb(0), self.resolution(0), perturb=self.training,
-            is_ndc=self.is_ndc, is_contracted=self.is_contracted, near_far=near_far,
-            global_translation=global_translation, global_scale=global_scale)
-        rays_d = rm_out["rays_d"]                   # [n_rays, 3]
-        intersection_pts = rm_out["intersections"]  # [n_rays, n_intrs, 3]
-        mask = rm_out["mask"]                       # [n_rays, n_intrs]
-        z_vals = rm_out["z_vals"]                   # [n_rays, n_intrs]
-        deltas = rm_out["deltas"]                   # [n_rays, n_intrs]
-        n_rays, n_intrs = intersection_pts.shape[:2]
+        outputs = {}
+
+        if self.use_proposal_sampling:
+            # TODO: determining near-far should be done in a separate function this is super cluttered
+            if near_far is None:
+                nears, fars = intersect_with_aabb(
+                    near_plane=2.0,  # TODO: This is hard-coded from synthetic nerf.
+                    rays_o=rays_o,
+                    rays_d=rays_d,
+                    aabb=self.aabb(0),
+                    training=self.training)
+                nears = nears[..., None]
+                fars = fars[..., None]
+            else:
+                nears, fars = torch.split(near_far, [1, 1], dim=-1)
+                if nears.shape[0] != rays_o.shape[0]:
+                    ones = torch.ones_like(rays_o[..., 0:1])
+                    near_plane = nears if self.training else 0
+                    nears = ones * near_plane
+                    fars = ones * fars
+
+            aabb=self.aabb(0)
+            ray_bundle = RayBundle(origins=rays_o, directions=rays_d, nears=nears, fars=fars)
+            ray_samples, weights_list, ray_samples_list = self.raymarcher.generate_ray_samples(
+                ray_bundle, density_fns=self.density_fns)
+            outputs['weights_list'] = weights_list
+            outputs['ray_samples_list'] = ray_samples_list
+            outputs['ray_samples_list'].append(ray_samples)
+            rays_d = ray_bundle.directions
+            pts = ray_samples.get_positions()
+            if self.spatial_distortion is not None:
+                pts = self.spatial_distortion(pts)  # cube of side 2
+            mask = ((aabb[0] <= pts) & (pts <= aabb[1])).all(dim=-1)  # noqa
+            deltas = ray_samples.deltas.squeeze()
+            z_vals = ((ray_samples.starts + ray_samples.ends) / 2).squeeze()
+        else:
+            rm_out = self.raymarcher.get_intersections2(
+                rays_o, rays_d, self.aabb(0), self.resolution(0), perturb=self.training,
+                is_ndc=self.is_ndc, is_contracted=self.is_contracted, near_far=near_far,
+                global_translation=global_translation, global_scale=global_scale)
+            rays_d = rm_out["rays_d"]                   # [n_rays, 3]
+            pts = rm_out["intersections"]  # [n_rays, n_intrs, 3]
+            mask = rm_out["mask"]                       # [n_rays, n_intrs]
+            z_vals = rm_out["z_vals"]                   # [n_rays, n_intrs]
+            deltas = rm_out["deltas"]                   # [n_rays, n_intrs]
+            n_rays, n_intrs = pts.shape[:2]
+
+        n_rays, n_intrs = pts.shape[:2]
+        dev = rays_o.device
+
+        if len(pts) == 0:
+            if "rgb" in channels:
+                if bg_color is None:
+                    outputs["rgb"] = torch.zeros((n_rays, 3), dtype=rays_o.dtype, device=dev)
+                elif isinstance(bg_color, torch.Tensor) and bg_color.shape == (n_rays, 3):
+                    outputs["rgb"] = bg_color
+                else:
+                    outputs["rgb"] = torch.full((n_rays, 3), bg_color, dtype=rays_o.dtype, device=dev)
+            if "depth" in channels:
+                outputs["depth"] = torch.zeros(n_rays, 1, device=dev, dtype=rays_o.dtype)
+            if "alpha" in channels:
+                outputs["alpha"] = torch.zeros(n_rays, 1, device=dev, dtype=rays_o.dtype)
+            return outputs
 
         times = timestamps[:, None].repeat(1, n_intrs)[mask]  # [n_rays * n_intrs]
 
         # Normalization (between [-1, 1])
-        intersection_pts = self.normalize_coords(intersection_pts, 0)
+        pts = self.normalize_coords(pts, 0)
         times = (times * 2 / self.len_time) - 1
 
         # compute features and render
-        features = self.compute_features(intersection_pts[mask], times)
-
-        rays_d_rep = rays_d.view(-1, 1, 3).expand(intersection_pts.shape)
+        rays_d_rep = rays_d.view(-1, 1, 3).expand(pts.shape)
         masked_rays_d_rep = rays_d_rep[mask]
-
+        features = self.compute_features(pts[mask], times)
         density_masked = self.density_act(self.decoder.compute_density(features, rays_d=masked_rays_d_rep))
-        density = torch.zeros(n_rays, n_intrs, device=intersection_pts.device, dtype=density_masked.dtype)
+        density = torch.zeros(n_rays, n_intrs, device=pts.device, dtype=density_masked.dtype)
         density[mask] = density_masked.view(-1)
 
         alpha, weight, transmission = raw2alpha(density, deltas)  # Each is shape [batch_size, n_samples]
+        if self.use_proposal_sampling:
+            outputs['weights_list'].append(weight[..., None])
 
         rgb_masked = self.decoder.compute_color(features, rays_d=masked_rays_d_rep)
-        rgb = torch.zeros(n_rays, n_intrs, 3, device=intersection_pts.device, dtype=rgb_masked.dtype)
+        rgb = torch.zeros(n_rays, n_intrs, 3, device=pts.device, dtype=rgb_masked.dtype)
         rgb[mask] = rgb_masked
         rgb = torch.sigmoid(rgb)
 
         # Confirmed that torch.sum(weight, -1) matches 1-transmission[:, -1]
         acc_map = 1 - transmission[:, -1]
 
-        outputs = {}
         if "rgb" in channels:
             rgb_map = torch.sum(weight[..., None] * rgb, -2)
             if bg_color is None:
@@ -201,22 +290,20 @@ class LowrankVideo(LowrankModel):
             outputs["depth"] = depth_map
         outputs["deltas"] = deltas
         outputs["weight"] = weight
-        outputs["midpoint"] = rm_out["z_mids"]
 
         return outputs
 
     def get_params(self, lr):
+        params = [
+            {"params": self.grids.parameters(), "lr": lr},
+            {"params": self.decoder.parameters(), "lr": lr},
+        ]
+        if self.density_field is not None:
+            params.append({"params": self.density_field.parameters(), "lr": lr})
         if self.use_F:
-            params = [
-                {"params": self.decoder.parameters(), "lr": lr},
-                {"params": self.grids.parameters(), "lr": lr},
-                {"params": [self.features, self.pt_min, self.pt_max], "lr": lr},
-            ]
-        else:
-            params = [
-                {"params": self.decoder.parameters(), "lr": lr},
-                {"params": self.grids.parameters(), "lr": lr},
-            ]
+            params.append({"params": [self.pt_min, self.pt_max], "lr": lr})
+        if self.use_F:
+            params.append({"params": self.features, "lr": lr})
         return params
 
     def update_trainable_rank(self):

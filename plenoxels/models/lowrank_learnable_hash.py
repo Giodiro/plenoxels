@@ -10,6 +10,7 @@ import numpy as np
 from plenoxels.models.utils import grid_sample_wrapper, raw2alpha, init_density_activation
 from .decoders import NNDecoder, SHDecoder
 from .density_fields import TriplaneDensityField
+from ..ops.bbox_colliders import intersect_with_aabb
 from ..raymarching.ray_samplers import RayBundle, ProposalNetworkSampler
 from ..raymarching.raymarching import RayMarcher
 from .lowrank_model import LowrankModel
@@ -355,29 +356,25 @@ class LowrankLearnableHash(LowrankModel):
         outputs = {}
 
         if self.use_proposal_sampling:
+            # TODO: determining near-far should be done in a separate function this is super cluttered
             if near_far is None:
-                aabb = self.aabb(grid_id)
-                # Intersect with AABB
-                dir_fraction = 1.0 / (rays_d + 1e-6)
-                # x
-                t1 = (aabb[0, 0] - rays_o[:, 0:1]) * dir_fraction[:, 0:1]
-                t2 = (aabb[1, 0] - rays_o[:, 0:1]) * dir_fraction[:, 0:1]
-                # y
-                t3 = (aabb[0, 1] - rays_o[:, 1:2]) * dir_fraction[:, 1:2]
-                t4 = (aabb[1, 1] - rays_o[:, 1:2]) * dir_fraction[:, 1:2]
-                # z
-                t5 = (aabb[0, 2] - rays_o[:, 2:3]) * dir_fraction[:, 2:3]
-                t6 = (aabb[1, 2] - rays_o[:, 2:3]) * dir_fraction[:, 2:3]
-                nears = torch.max(
-                    torch.cat([torch.minimum(t1, t2), torch.minimum(t3, t4), torch.minimum(t5, t6)], dim=1), dim=1
-                ).values[..., None]
-                fars = torch.min(
-                    torch.cat([torch.maximum(t1, t2), torch.maximum(t3, t4), torch.maximum(t5, t6)], dim=1), dim=1
-                ).values[..., None]
-                near_plane = 2.0 if self.training else 0  # TODO: this is harcoded for synthetic
-                nears = torch.clamp(nears, min=near_plane)
+                nears, fars = intersect_with_aabb(
+                    near_plane=2.0,  # TODO: This is hard-coded from synthetic nerf.
+                    rays_o=rays_o,
+                    rays_d=rays_d,
+                    aabb=self.aabb(grid_id),
+                    training=self.training)
+                nears = nears[..., None]
+                fars = fars[..., None]
             else:
                 nears, fars = torch.split(near_far, [1, 1], dim=-1)
+                if nears.shape[0] != rays_o.shape[0]:
+                    ones = torch.ones_like(rays_o[..., 0:1])
+                    near_plane = nears if self.training else 0
+                    nears = ones * near_plane
+                    fars = ones * fars
+
+            aabb=self.aabb(grid_id)
             ray_bundle = RayBundle(origins=rays_o, directions=rays_d, nears=nears, fars=fars)
             ray_samples, weights_list, ray_samples_list = self.raymarcher.generate_ray_samples(
                 ray_bundle, density_fns=self.density_fns)
@@ -390,6 +387,7 @@ class LowrankLearnableHash(LowrankModel):
                 pts = self.spatial_distortion(pts)  # cube of side 2
             mask = ((aabb[0] <= pts) & (pts <= aabb[1])).all(dim=-1)  # noqa
             deltas = ray_samples.deltas.squeeze()
+            mask[deltas <= 0] = False
             z_vals = ((ray_samples.starts + ray_samples.ends) / 2).squeeze()
         else:
             rm_out = self.raymarcher.get_intersections2(

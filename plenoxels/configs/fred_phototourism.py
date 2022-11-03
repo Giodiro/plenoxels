@@ -1,7 +1,7 @@
 # configuration file to be used with `main.py` for video training
 config = {
 
-    "expname": "multires_tv005",
+    "expname": "multires_tv005_time",
     "logdir": "./logs/trevi",
 
     # Data settings
@@ -36,6 +36,11 @@ config = {
     "optim_type": "adam",
     "lr": 0.01,
     "use_F": False,
+    # proposal sampling
+    "histogram_loss_weight": 1000,  # this should be set > 0 when using proposal sampling
+    "density_field_resolution": [64, 64, 64],
+    "density_field_rank": 10,
+    "num_proposal_samples": 32,
     
     # Training settings
     "train_fp16": False,
@@ -48,7 +53,7 @@ config = {
     # Raymarching settings
     "raymarch_type": "fixed",
     "num_sample_multiplier": 2,
-    "n_intersections": 400,
+    "n_intersections": 128,
     "spacing_fn": "linear",
     "single_jitter": False,
     

@@ -135,10 +135,14 @@ class Trainer():
             rgb_preds = fwd_out["rgb"]
             # Reconstruction loss
             recon_loss = self.criterion(rgb_preds, imgs)
-            loss = recon_loss
+            self.writer.add_scalar(f"train/loss/mse", recon_loss, self.global_step)
+            
             # Regularization
+            loss = recon_loss
             for r in self.regularizers:
-                loss = loss + r.regularize(self.model, grid_id=dset_id, model_out=fwd_out)
+                reg_loss = r.regularize(self.model, grid_id=dset_id, model_out=fwd_out)
+                loss = loss + reg_loss
+                self.writer.add_scalar(f"train/loss/{r.reg_type}", reg_loss, self.global_step)
             self.timer.check("step_loss")
         self.gscaler.scale(loss).backward()
 
@@ -243,6 +247,7 @@ class Trainer():
                 logging.info(f'resetting after a full pass through the data, or when the dataset changed')
                 self.pre_epoch()
                 batch_iter = iter(self.train_data_loader)
+                self.global_step += 1  # Still need to increment the step, otherwise we get stuck in a loop
         pb.close()
 
     def validate(self):

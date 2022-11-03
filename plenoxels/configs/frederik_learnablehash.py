@@ -1,7 +1,7 @@
 # configuration file to be used with `main.py` for normal (or multiscene) training
 # the configuration must be specified in a dictionary called `config`.
 config = {
-    "expname": "res512_rank4",
+    "expname": "muliti_res_sampling_histloss_001",
     "logdir": "./logs/lego",
 
     # Data settings
@@ -49,9 +49,14 @@ config = {
     # Raymarching settings
     "raymarch_type": "fixed",
     "num_sample_multiplier": 2,  # Used when raymarch_type is 'voxel_size'
-    "n_intersections": 400,  # Used when raymarch_type is 'fixed'
+    "n_intersections": 128,  # Used when raymarch_type is 'fixed'
     "spacing_fn": "reciprocal",
     "single_jitter": True,
+    # proposal sampling
+    "histogram_loss_weight": 100,  # this should be set > 0 when using proposal sampling
+    "density_field_resolution": [64, 64, 64],
+    "density_field_rank": 10,
+    "num_proposal_samples": 32,
 
     # Model settings
     "sh": True,
@@ -62,14 +67,14 @@ config = {
     "upsample_F_steps": [],
     "density_multiplier": 1,
     "use_F": False,
-    "multiscale_res": [1], #, 2, 4, 8],
+    "multiscale_res": [1, 2, 4],
     "grid_config": """
 [
     {
         "input_coordinate_dim": 3,
         "output_coordinate_dim": 28,
         "grid_dimensions": 2,
-        "resolution": [512, 512, 512], 
+        "resolution": [64, 64, 64], 
         "rank": 4,
     },
     {

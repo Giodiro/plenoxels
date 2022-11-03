@@ -19,7 +19,7 @@ from plenoxels.my_tqdm import tqdm
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_video_to_file
 from plenoxels.runners.multiscene_trainer import Trainer, visualize_planes
-from plenoxels.runners.regularization import VideoPlaneTV, TimeSmoothness
+from plenoxels.runners.regularization import VideoPlaneTV, TimeSmoothness, HistogramLoss
 
 
 class VideoTrainer(Trainer):
@@ -100,7 +100,8 @@ class VideoTrainer(Trainer):
                                      global_translation=self.test_datasets[0].global_translation,
                                      global_scale=self.test_datasets[0].global_scale)
                 for k, v in outputs.items():
-                    preds[k].append(v.cpu())
+                    if not isinstance(v, list):
+                        preds[k].append(v.cpu())
         return {k: torch.cat(v, 0) for k, v in preds.items()}
 
     def step(self, data, do_update=True):
@@ -132,12 +133,18 @@ class VideoTrainer(Trainer):
                                  global_translation=self.train_datasets[0].global_translation,
                                  global_scale=self.train_datasets[0].global_scale)
             rgb_preds = fwd_out["rgb"]
+            # Reconstruction loss
             recon_loss = self.criterion(rgb_preds, imgs)
             loss = recon_loss
+            self.writer.add_scalar(f"train/loss/mse", recon_loss, self.global_step)
+            
             # Regularization
             for r in self.regularizers:
-                loss = loss + r.regularize(self.model)
-
+                
+                reg_loss = r.regularize(self.model, grid_id=0, model_out=fwd_out)
+                loss = loss + reg_loss
+                self.writer.add_scalar(f"train/loss/{r.reg_type}", reg_loss, self.global_step)
+                
         self.gscaler.scale(loss).backward()
         self.gscaler.step(self.optimizer)
         scale = self.gscaler.get_scale()
@@ -200,6 +207,7 @@ class VideoTrainer(Trainer):
                 is_ndc=self.is_ndc,
                 is_contracted=self.is_contracted,
                 lookup_time=dset.lookup_time,
+                proposal_sampling=self.extra_args.get('histogram_loss_weight', 0.0) > 0.0,
                 **kwargs)
         else:
             model = LowrankVideo(
@@ -208,6 +216,7 @@ class VideoTrainer(Trainer):
                 is_ndc=self.is_ndc,
                 is_contracted=self.is_contracted,
                 lookup_time=dset.lookup_time,
+                proposal_sampling=self.extra_args.get('histogram_loss_weight', 0.0) > 0.0,
                 **kwargs)
         logging.info(f"Initialized {model.__class__} model with "
                      f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, "
@@ -219,6 +228,7 @@ class VideoTrainer(Trainer):
         regularizers = [
             VideoPlaneTV(kwargs.get('plane_tv_weight', 0.0)),
             TimeSmoothness(kwargs.get('time_smoothness_weight', 0.0)),
+            HistogramLoss(kwargs.get('histogram_loss_weight', 0.0)),
         ]
         # Keep only the regularizers with a positive weight
         regularizers = [r for r in regularizers if r.weight > 0]

@@ -9,7 +9,9 @@ from plenoxels.models.lowrank_video import LowrankVideo
 from plenoxels.models.utils import compute_plane_tv, compute_plane_smoothness
 from plenoxels.ops.losses.histogram_loss import interlevel_loss
 
-
+import matplotlib.pyplot as plt
+import numpy as np
+import os
 class Regularizer():
     def __init__(self, reg_type, initialization):
         self.reg_type = reg_type
@@ -135,10 +137,16 @@ class VideoPlaneTV(Regularizer):
         super().__init__('plane-TV', initial_value)
 
     def _regularize(self, model: LowrankVideo, **kwargs) -> torch.Tensor:
-        spatial_grids = [0, 1, 3]  # These are the spatial grids; the others are spatiotemporal
+        
         total = 0
         # model.grids is 6 x [1, rank * F_dim, reso, reso]
         for grids in model.grids:
+            
+            if len(grids) == 3:
+                spatial_grids = [0, 1, 2]
+            else:
+                spatial_grids = [0, 1, 3]  # These are the spatial grids; the others are spatiotemporal
+            
             for grid_id in spatial_grids:
                 total += compute_plane_tv(grids[grid_id])
         return total
@@ -227,6 +235,41 @@ class FloaterLoss(Regularizer):
 class HistogramLoss(Regularizer):
     def __init__(self, initial_value):
         super().__init__('histogram-loss', initial_value)
+        
+        self.visualize = False
+        self.count = 0
 
     def _regularize(self, model: LowrankLearnableHash, model_out, grid_id: int, **kwargs) -> torch.Tensor:
+        
+        if self.visualize:
+            if self.count % 100 == 0:
+                # proposal info
+                weights_proposal = model_out["weights_list"][0].detach().cpu().numpy()
+                spacing_starts_proposal = model_out["ray_samples_list"][0].spacing_starts
+                spacing_ends_proposal = model_out["ray_samples_list"][0].spacing_ends
+                sdist_proposal = torch.cat([spacing_starts_proposal[..., 0], spacing_ends_proposal[..., -1:, 0]], dim=-1).detach().cpu().numpy()
+                        
+                # fine info
+                weights_fine = model_out["weights_list"][1].detach().cpu().numpy()
+                spacing_starts_fine = model_out["ray_samples_list"][1].spacing_starts
+                spacing_ends_fine = model_out["ray_samples_list"][1].spacing_ends
+                sdist_fine = torch.cat([spacing_starts_fine[..., 0], spacing_ends_fine[..., -1:, 0]], dim=-1).detach().cpu().numpy()
+                
+                for i in range(10):
+                    fix, ax1 = plt.subplots()
+                    
+                    delta = np.diff(sdist_proposal[i], axis=-1)
+                    ax1.bar(sdist_proposal[i, :-1], weights_proposal[i].squeeze() / delta , width=delta, align="edge", label='proposal', alpha=0.7, color="b")
+                    ax1.legend()
+                    ax2 = ax1.twinx()
+                    
+                    delta = np.diff(sdist_fine[i], axis=-1)
+                    ax2.bar(sdist_fine[i, :-1], weights_fine[i].squeeze() / delta, width=delta, align="edge", label='fine', alpha=0.3, color='r')
+                    ax2.legend()
+                    os.makedirs(f'histogram_loss/{self.count}', exist_ok=True)
+                    plt.savefig(f'./histogram_loss/{self.count}/batch_{i}.png')
+                    plt.close()
+                    plt.cla()
+                    plt.clf()
+            self.count += 1
         return interlevel_loss(model_out['weights_list'], model_out['ray_samples_list'])
