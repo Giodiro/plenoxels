@@ -60,7 +60,7 @@ class TriplaneDensityField(LowrankModel):
             interp_out = interp_out_plane if interp_out is None else interp_out * interp_out_plane
         # average over rank
         interp = interp_out.mean(dim=-1)
-        interp = interp.view(n_rays, n_samples, 1)
+        interp = interp.view(n_rays, n_samples, self.feature_dim)
         return interp
 
     def forward(self, pts: torch.Tensor):

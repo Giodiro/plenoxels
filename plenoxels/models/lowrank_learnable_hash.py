@@ -304,8 +304,8 @@ class LowrankLearnableHash(LowrankModel):
         # self.features shape is [feature_dim] + [old_reso]*dim, e.g. [28, 4, 4, 4, 4, 4]
         # Reshape coords into [batch, 1, ..., n, grid_dim] as expected by grid_sample_wrapper
         coords = coords.view(coords.shape[0], -1)  # [dim, new_reso**dim]
-        coords = torch.permute(coords, (1, 0))[None,:,:]  # [1, new_reso**dim, dim]
-        self.features.data = grid_sample_wrapper(self.features[None,...], coords).permute(1, 0).view(new_size)
+        coords = torch.permute(coords, (1, 0))[None, :, :]  # [1, new_reso**dim, dim]
+        self.features.data = grid_sample_wrapper(self.features[None, ...], coords).permute(1, 0).view(new_size)
         log.info(f'upsampled feature grid to shape {new_size}')
 
     def get_points_on_grid(self, aabb, grid_size, max_voxels: Optional[int] = None):
@@ -374,7 +374,6 @@ class LowrankLearnableHash(LowrankModel):
                     nears = ones * near_plane
                     fars = ones * fars
 
-            aabb=self.aabb(grid_id)
             ray_bundle = RayBundle(origins=rays_o, directions=rays_d, nears=nears, fars=fars)
             ray_samples, weights_list, ray_samples_list = self.raymarcher.generate_ray_samples(
                 ray_bundle, density_fns=self.density_fns)
@@ -385,6 +384,7 @@ class LowrankLearnableHash(LowrankModel):
             pts = ray_samples.get_positions()
             if self.spatial_distortion is not None:
                 pts = self.spatial_distortion(pts)  # cube of side 2
+            aabb = self.aabb(grid_id)
             mask = ((aabb[0] <= pts) & (pts <= aabb[1])).all(dim=-1)  # noqa
             deltas = ray_samples.deltas.squeeze()
             mask[deltas <= 0] = False
@@ -450,10 +450,8 @@ class LowrankLearnableHash(LowrankModel):
 
         if "rgb" in channels:
             rgb_map = torch.sum(weight[..., None] * rgb, -2)
-            if bg_color is None:
-                pass
-            else:
-                rgb_map = rgb_map + (1.0 - acc_map[..., None]) * bg_color
+            if bg_color is not None:
+                rgb_map = rgb_map + (1.0 - acc_map[..., None]) * bg_color.to(rgb_map.device)
             outputs["rgb"] = rgb_map
         if "depth" in channels:
             depth_map = torch.sum(weight * z_vals, -1)  # [batch_size]

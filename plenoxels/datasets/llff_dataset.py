@@ -30,7 +30,6 @@ class LLFFDataset(BaseDataset):
 
         image_paths, self.poses, self.per_cam_near_fars, intrinsics = load_llff_poses(
             datadir, downsample=downsample, split=split, hold_every=hold_every, near_scaling=1.0)
-        print(f'self.per_cam_near_fars is {self.per_cam_near_fars}')
         imgs = load_llff_images(image_paths, intrinsics, split)
         imgs = (imgs * 255).to(torch.uint8)
         if split == 'train':

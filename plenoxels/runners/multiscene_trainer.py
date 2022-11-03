@@ -290,7 +290,10 @@ class Trainer():
 
             # visualize planes
             if self.save_outputs:
-                visualize_planes(self.model, self.log_dir, f"step{self.global_step}-D{dset_id}")
+                if self.model.use_F:
+                    visualize_planes_withF(self.model, self.log_dir, f"step{self.global_step}-D{dset_id}")
+                else:
+                    visualize_planes(self.model, self.log_dir, f"step{self.global_step}-D{dset_id}")
 
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
@@ -557,6 +560,48 @@ def N_to_reso(num_voxels, aabb):
 
 
 @torch.no_grad()
+def visualize_planes_withF(model, save_dir: str, name: str):
+    MAX_RANK = 3
+    rank = min(model.config[0]["rank"], MAX_RANK)
+    dim = model.config[0]["output_coordinate_dim"]
+
+    # For each plane get the n-d coordinates and plot the density
+    # corresponding to those coordinates in F.
+    if hasattr(model, 'scene_grids'):  # LowrankLearnableHash
+        multi_scale_grids = model.scene_grids[0]
+    elif hasattr(model, 'grids'):  # LowrankVideo
+        multi_scale_grids = model.grids
+    else:
+        raise RuntimeError(f"Cannot find grids in model {model}.")
+
+    for scale_id, grids in enumerate(multi_scale_grids):
+        if hasattr(model, 'scene_grids'):
+            grids = grids[0]
+        n_planes = len(grids)
+        fig, ax = plt.subplots(ncols=rank, nrows=n_planes, figsize=(3 * rank, 3 * n_planes))
+        for plane_idx, grid in enumerate(grids):
+            _, c, h, w = grid.data.shape
+            grid = grid.data.view(dim, rank, h, w)
+            for r in range(rank):
+                grid_r = grid[:, r, ...].view(dim, -1).transpose(0, 1)  # h*w, dim
+                multi_scale_interp = (grid_r - model.pt_min) / (model.pt_max - model.pt_min)
+                multi_scale_interp = multi_scale_interp * 2 - 1
+                from plenoxels.models.utils import grid_sample_wrapper
+                out = grid_sample_wrapper(model.features, multi_scale_interp).view(h, w, -1)
+                density = model.density_act(
+                    out[..., -1].cpu()
+                ).numpy()
+                im = ax[plane_idx, r].imshow(density, norm=LogNorm(vmin=1e-6, vmax=density.max()))
+                ax[plane_idx, r].axis("off")
+                plt.colorbar(im, ax=ax[plane_idx, r], aspect=20, fraction=0.04)
+        fig.tight_layout()
+        plt.savefig(os.path.join(save_dir, f"{name}-planes-scale-{scale_id}.png"))
+        plt.cla()
+        plt.clf()
+        plt.close()
+
+
+@torch.no_grad()
 def visualize_planes(model, save_dir: str, name: str):
     rank = model.config[0]["rank"]
     dim = model.feature_dim
@@ -571,7 +616,7 @@ def visualize_planes(model, save_dir: str, name: str):
         if hasattr(model, 'scene_grids'):
             grids = grids[0]
         n_planes = len(grids)
-        fig, ax = plt.subplots(nrows=n_planes, ncols=2*rank, figsize=(3*n_planes,3*2*rank))
+        fig, ax = plt.subplots(nrows=n_planes, ncols=2*rank, figsize=(3*2*rank, 3*n_planes))
         for plane_idx, grid in enumerate(grids):
             _, c, h, w = grid.data.shape
 
