@@ -36,11 +36,16 @@ config = {
     "optim_type": "adam",
     "lr": 0.01,
     "use_F": False,
+    # proposal sampling
+    "histogram_loss_weight": 0.01,  # this should be set > 0 when using proposal sampling
+    "density_field_resolution": [64, 64, 64],
+    "density_field_rank": 10,
+    "num_proposal_samples": 32,
     
     # Training settings
     "train_fp16": False,
-    "save_every": 10000,
-    "valid_every": 10000,
+    "save_every": 1,
+    "valid_every": 1,
     "save_video": True,
     "add_rank_steps": [],
     "save_outputs": True,
@@ -48,7 +53,7 @@ config = {
     # Raymarching settings
     "raymarch_type": "fixed",
     "num_sample_multiplier": 2,
-    "n_intersections": 400,
+    "n_intersections": 128,
     "spacing_fn": "linear",
     "single_jitter": False,
     
