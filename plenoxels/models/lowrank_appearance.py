@@ -84,14 +84,14 @@ class LowrankAppearance(LowrankModel):
         self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
         self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
         self.use_F = self.extra_args["use_F"]
-        self.appearance_code = True
         self.multiscale_res = multiscale_res
+        self.trainable_rank = None
 
         
         # For now, only allow a single index grid and a single feature grid, not multiple layers
         assert len(self.config) == 2
         self.grids = nn.ModuleList()
-        self.time_coef = nn.ParameterList()
+        
         for res in self.multiscale_res:
             for li, grid_config in enumerate(self.config):
                 # initialize feature grid
@@ -109,13 +109,13 @@ class LowrankAppearance(LowrankModel):
                     if len(grid_config["resolution"]) == 4:
                         config["resolution"] += [grid_config["resolution"][-1]]
                     
-                    gpdesc = self.init_grid_param(config, is_video=False, is_appearance=True, grid_level=li, use_F=self.use_F)
+                    gpdesc = self.init_grid_param(config, is_video=False, is_appearance=False, grid_level=li, use_F=self.use_F)
                     self.set_resolution(gpdesc.reso, 0)
-                    self.register_buffer(
-                        'time_resolution', torch.tensor(gpdesc.time_coef.shape[-1], dtype=torch.int32))
                     self.grids.append(gpdesc.grid_coefs)
-                    self.time_coef.append(gpdesc.time_coef)  # [out_dim * rank, time_reso]
-        print(self.grids)
+
+        # if sh + density in grid, then we do not want appearance code to influence density
+        self.appearance_coef = nn.Parameter(nn.init.ones_(torch.empty([self.feature_dim - 1, len_time])))  # no time dependence
+        
         if self.sh:
             self.decoder = SHDecoder(
                 feature_dim=self.feature_dim,
@@ -125,41 +125,28 @@ class LowrankAppearance(LowrankModel):
             
         self.density_mask = None
         log.info(f"Initialized LowrankAppearance. "
-                 f"time-reso={self.time_coef[0].shape[1]} - decoder={self.decoder}")
+                 f"time-reso={self.appearance_coef.shape[1]} - decoder={self.decoder}")
 
     def compute_features(self,
                          pts,
                          timestamps,
+                         appearance_idx,
                          return_coords: bool = False
                          ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         multiscale_space : nn.ModuleList = self.grids  # space: 3 x [1, rank * F_dim, reso, reso]
-        multiscale_time : nn.ModuleList = self.time_coef  # time: [rank * F_dim, time_reso]
+        appearance_coef = self.appearance_coef  # time: [F_dim, time_reso]
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
-
-        dim = level_info["output_coordinate_dim"] - 1 if level_info["output_coordinate_dim"] == 28 else level_info["output_coordinate_dim"]
-        
-        # Normalization (between [-1, 1])
-        pts = self.normalize_coords(pts, 0)
         
         # Interpolate in space and time
-        if level_info["input_coordinate_dim"] == 4:
-            times = (timestamps.expand(pts.shape[0],1) * 2 / self.len_time) - 1
-            pts = torch.cat([pts, times], dim=-1)  # [batch, 4] for xyzt
-
+        pts = torch.cat([pts, timestamps[:,None]], dim=-1)  # [batch, 4] for xyzt
+        
         # Interpolate in space
         coo_combs = list(itertools.combinations(
             range(pts.shape[-1]),
             level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
 
         multi_scale_interp = 0
-        for scale_id, (grid_space, grid_time) in enumerate(zip(multiscale_space, multiscale_time)):
-            interp_time = grid_time[:, timestamps.long()].unsqueeze(0).repeat(pts.shape[0], 1)  # [n, F_dim * rank]
-            interp_time = interp_time.view(-1, dim, level_info["rank"])  # [n, F_dim, rank]
-            
-            # add density one to appearance code
-            if level_info["output_coordinate_dim"] == 28:
-                interp_time = torch.cat([interp_time, torch.ones_like(interp_time[:, 0:1, :])], dim=1)
-                    
+        for scale_id, grid_space in enumerate(multiscale_space):       
             interp_space = None  # [n, F_dim, rank]
             for ci, coo_comb in enumerate(coo_combs):
                 
@@ -170,11 +157,19 @@ class LowrankAppearance(LowrankModel):
                 # compute product
                 interp_space = interp_out_plane if interp_space is None else interp_space * interp_out_plane
                         
-            # Combine space and time over rank
-            interp = (interp_space * interp_time).mean(dim=-1)  # [n, F_dim]
+            # Combine space over rank
+            interp = interp_space.mean(dim=-1)  # [n, F_dim]
             
             # sum over scales
             multi_scale_interp += interp
+            
+        # combine with appearance code
+        appearance_code = appearance_coef[:, appearance_idx.long()].unsqueeze(0).repeat(pts.shape[0], 1)  # [n, F_dim]
+        appearance_code = appearance_code.view(-1, self.feature_dim-1)  # [n, F_dim]
+        
+        # add density one to appearance code
+        appearance_code = torch.cat([appearance_code, torch.ones_like(appearance_code[:, 0:1])], dim=1)
+        multi_scale_interp = multi_scale_interp * appearance_code
 
         if self.use_F:
             # Learned normalization
@@ -246,16 +241,6 @@ class LowrankAppearance(LowrankModel):
 
         n_rays, n_intrs = pts.shape[:2]
         dev = rays_o.device
-
-        # Filter intersections which have a low density according to the density mask
-        # Contraction does not currently support density masking!
-        if self.density_mask is not None and not self.is_contracted:
-            # density_mask needs unnormalized coordinates: normalization happens internally
-            # and can be with a different aabb than the current one.
-            alpha_mask = self.density_mask.sample_density(pts[mask]) > 0
-            invalid_mask = ~mask
-            invalid_mask[mask] |= (~alpha_mask)
-            mask = ~invalid_mask
             
         if len(pts) == 0:
             if "rgb" in channels:
@@ -271,14 +256,20 @@ class LowrankAppearance(LowrankModel):
                 outputs["alpha"] = torch.zeros(n_rays, 1, device=dev, dtype=rays_o.dtype)
             return outputs
 
+        times = timestamps[:, None].repeat(1, n_intrs)[mask]  # [n_rays * n_intrs]
+
+        # Normalization (between [-1, 1])
+        pts = self.normalize_coords(pts, 0)
+        times = (times * 2 / self.len_time) - 1
+
         # assumes all rays are sampled at the same time
         # speed up look up a quite a bit
-        times = timestamps[0]
+        appearance_idx = timestamps[0]
 
         # compute features and render
         rays_d_rep = rays_d.view(-1, 1, 3).expand(pts.shape)
         masked_rays_d_rep = rays_d_rep[mask]
-        features = self.compute_features(pts[mask], times)
+        features = self.compute_features(pts[mask], times, appearance_idx)
         density_masked = self.density_act(self.decoder.compute_density(features, rays_d=masked_rays_d_rep))
         density = torch.zeros(n_rays, n_intrs, device=pts.device, dtype=density_masked.dtype)
         density[mask] = density_masked.view(-1)
@@ -314,7 +305,7 @@ class LowrankAppearance(LowrankModel):
     def get_params(self, lr):
         params = [
             {"params": self.grids.parameters(), "lr": lr},
-            {"params": self.time_coef, "lr": lr},
+            {"params": self.appearance_coef, "lr": lr},
             {"params": self.decoder.parameters(), "lr": lr},
         ]
 
@@ -329,7 +320,6 @@ class LowrankAppearance(LowrankModel):
 
     def compute_plane_tv(self):
         multiscale_grids = self.grids  # space: 3 x [1, rank * F_dim, reso, reso]
-        #grid_time = self.time_coef  # time: [rank * F_dim, time_reso]
                 
         total = 0
         for grid_space in multiscale_grids:

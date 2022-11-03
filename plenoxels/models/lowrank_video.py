@@ -119,17 +119,6 @@ class LowrankVideo(LowrankModel):
         self.density_mask = None
         log.info(f"Initialized LowrankVideo - decoder={self.decoder}")
 
-    @torch.no_grad()
-    # TODO: need to update this. Or just remove it as an option and always start with higher time resolution
-    def upsample_time(self, new_reso):
-        self.time_coef = torch.nn.Parameter(
-            F.interpolate(self.time_coef.data[:, None, :], size=(new_reso), mode='linear',
-                          align_corners=True).squeeze())
-        log.info(f"Upsampled time resolution from {self.time_resolution} to {new_reso}")
-        if not isinstance(new_reso, torch.Tensor):
-            new_reso = torch.tensor(new_reso, dtype=torch.int32)
-        self.time_resolution = new_reso
-
     def compute_features(self,
                          pts,  # [batch, 3]
                          timestamps,  # [batch]
