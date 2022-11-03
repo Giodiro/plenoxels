@@ -44,7 +44,7 @@ class LowrankVideo(LowrankModel):
         self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
         self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
         self.use_F = self.extra_args["use_F"]
-        self.trainble_rank = None
+        self.trainable_rank = None
         self.hooks = None
         self.multiscale_res = multiscale_res
 
@@ -112,7 +112,7 @@ class LowrankVideo(LowrankModel):
                 decoder_type=self.extra_args.get('sh_decoder_type', 'manual'))
         else:
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
-        
+
         if use_trainable_rank:
             self.trainable_rank = 1
             self.update_trainable_rank()
@@ -137,23 +137,23 @@ class LowrankVideo(LowrankModel):
                          ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         multiscale_space : torch.nn.ModuleList = self.grids  # space: 6 x [1, rank * F_dim, reso, reso] where the reso can be different in different grids and dimensions
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
-        
+
         # Interpolate in space and time
         pts = torch.cat([pts, timestamps[:,None]], dim=-1)  # [batch, 4] for xyzt
-        
+
         coo_combs = list(itertools.combinations(
             range(pts.shape[-1]),
             level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
-        
+
         multi_scale_interp = 0
         for scale_id, grid_space in enumerate(multiscale_space):
             interp_space = None  # [n, F_dim, rank]
             for ci, coo_comb in enumerate(coo_combs):
-                
+
                 # interpolate in plane
                 interp_out_plane = grid_sample_wrapper(grid_space[ci], pts[..., coo_comb]).view(
                             -1, level_info["output_coordinate_dim"], level_info["rank"])
-                
+
                 # compute product
                 interp_space = interp_out_plane if interp_space is None else interp_space * interp_out_plane
 
@@ -175,7 +175,7 @@ class LowrankVideo(LowrankModel):
             return out, multi_scale_interp
         return out
 
-    def forward(self, rays_o, rays_d, timestamps, bg_color, channels: Sequence[str] = ("rgb", "depth"), near_far=None, 
+    def forward(self, rays_o, rays_d, timestamps, bg_color, channels: Sequence[str] = ("rgb", "depth"), near_far=None,
                 global_translation=torch.tensor([0, 0, 0]), global_scale=torch.tensor([1, 1, 1])):
         """
         rays_o : [batch, 3]
