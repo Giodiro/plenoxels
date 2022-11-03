@@ -590,7 +590,7 @@ def visualize_planes_withF(model, save_dir: str, name: str):
                 from plenoxels.models.utils import grid_sample_wrapper
                 out = grid_sample_wrapper(model.features, multi_scale_interp).view(h, w, -1)
                 density = model.density_act(
-                    out[..., 0].cpu()
+                    out[..., -1].cpu()
                 ).numpy()
                 im = ax[plane_idx, r].imshow(density, norm=LogNorm(vmin=1e-6, vmax=density.max()))
                 ax[plane_idx, r].axis("off")
@@ -624,7 +624,7 @@ def visualize_planes(model, save_dir: str, name: str):
             grid = grid.data.view(dim, rank, h, w)
             for r in range(rank):
                 density = model.density_act(
-                    grid[0, r, :, :].cpu()
+                    grid[-1, r, :, :].cpu()
                 ).numpy()
                 # density = grid[-1, r, :, :].cpu().numpy()
 
