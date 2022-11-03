@@ -129,7 +129,7 @@ class VideoTrainer(Trainer):
             imgs = imgs[..., :3] * imgs[..., 3:] + bg_color * (1.0 - imgs[..., 3:])
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            fwd_out = self.model(rays_o, rays_d, timestamps, bg_color=bg_color, channels={"rgb"}, near_far=near_far, 
+            fwd_out = self.model(rays_o, rays_d, timestamps, bg_color=bg_color, channels={"rgb"}, near_far=near_far,
                                  global_translation=self.train_datasets[0].global_translation,
                                  global_scale=self.train_datasets[0].global_scale)
             rgb_preds = fwd_out["rgb"]
@@ -137,14 +137,14 @@ class VideoTrainer(Trainer):
             recon_loss = self.criterion(rgb_preds, imgs)
             loss = recon_loss
             self.writer.add_scalar(f"train/loss/mse", recon_loss, self.global_step)
-            
+
             # Regularization
             for r in self.regularizers:
-                
+
                 reg_loss = r.regularize(self.model, grid_id=0, model_out=fwd_out)
                 loss = loss + reg_loss
                 self.writer.add_scalar(f"train/loss/{r.reg_type}", reg_loss, self.global_step)
-                
+
         self.gscaler.scale(loss).backward()
         self.gscaler.step(self.optimizer)
         scale = self.gscaler.get_scale()
@@ -156,7 +156,7 @@ class VideoTrainer(Trainer):
         for r in self.regularizers:
             r.report(self.loss_info)
 
-        if self.global_step in self.add_rank_steps:
+        if self.model.trainable_rank is not None and self.global_step in self.add_rank_steps:
             self.model.trainable_rank = self.model.trainable_rank + 1
             self.model.update_trainable_rank()
         if self.global_step in self.upsample_time_steps:
@@ -350,7 +350,7 @@ class VideoTrainer(Trainer):
 
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
-                
+
     def evaluate_metrics(self, gt, preds: MutableMapping[str, torch.Tensor], dset, dset_id,
                          img_idx, name=None, save_outputs: bool = True):
         if isinstance(dset.img_h, int):
