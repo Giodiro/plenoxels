@@ -361,10 +361,17 @@ class VideoTrainer(Trainer):
         else:
             img_h, img_w = dset.img_h[img_idx], dset.img_w[img_idx]
 
-        preds_rgb = preds["rgb"].reshape(img_h, img_w, 3).cpu()
-        exrdict = {
-            "preds": preds_rgb.numpy(),
-        }
+        preds_rgb = (
+            preds["rgb"]
+            .reshape(img_h, img_w, 3)
+            .cpu()
+            .clamp(0, 1)
+        )
+        if not torch.isfinite(preds_rgb).all():
+            logging.warning(f"Predictions have {torch.isnan(preds_rgb).sum()} NaNs, {torch.isinf(preds_rgb).sum()} infs.")
+            preds_rgb = torch.nan_to_num(preds_rgb, nan=0.0)
+
+        exrdict = {"preds": preds_rgb.numpy()}
         summary = dict()
 
         if "depth" in preds:
