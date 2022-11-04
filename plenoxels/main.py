@@ -85,10 +85,14 @@ def main():
 
     pprint.pprint(config)
     log_dir = os.path.join(config['logdir'], config['expname'])
-    os.path.makedirs(log_dir, exist_ok=True)
+    os.makedirs(log_dir, exist_ok=True)
     with open(os.path.join(log_dir, 'config.txt'), 'wt') as out:
         pprint.pprint(config, stream=out)
-
+    
+    with open(os.path.join(log_dir, 'config.csv'), 'w') as f:
+        for key in config.keys():
+            f.write("%s\t%s\n"%(key,config[key]))
+    
     if is_video:
         state = None
         if args.log_dir is not None:
