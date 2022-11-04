@@ -1,8 +1,8 @@
 # configuration file to be used with `main.py` for video training
 config = {
 
-    "expname": "mr_tv0_hl_1",
-    "logdir": "./logs/trevi/global_appearance_code",
+    "expname": "scale_22_m1",
+    "logdir": "./logs/trevi/scale_translation",
 
     # Data settings
     "data_downsample": 1.0,
@@ -21,12 +21,12 @@ config = {
 
     # Optimization settings
     # "num_steps": 40001,
-    "num_steps": 60_001,
+    "num_steps": 10_001,
     "floater_loss": 0.0000,
     "regnerf_weight_start": 0,
     "regnerf_weight_end": 0.0,
     "regnerf_weight_max_step": 512,
-    "plane_tv_weight": 0.0,  
+    "plane_tv_weight": 0.05,  
     "l1density_weight": 0,  # Not used for video yet
     "volume_tv_weight": 0.0,  # Not used for video yet
     "volume_tv_npts": 1024,  # Not used for video yet
@@ -37,15 +37,15 @@ config = {
     "lr": 0.01,
     "use_F": False,
     # proposal sampling
-    "histogram_loss_weight": 1.0,  # this should be set > 0 when using proposal sampling
+    "histogram_loss_weight": 1,  # this should be set > 0 when using proposal sampling
     "density_field_resolution": [64, 64, 64],
     "density_field_rank": 10,
-    "num_proposal_samples": 32,
+    "num_proposal_samples": 128,
     
     # Training settings
     "train_fp16": False,
-    "save_every": 30000,
-    "valid_every": 30000,
+    "save_every": 1000,
+    "valid_every": 1000,
     "save_video": True,
     "add_rank_steps": [],
     "save_outputs": True,
@@ -68,15 +68,15 @@ config = {
     "grid_config": """
 [
     {
-        "input_coordinate_dim": 4,
+        "input_coordinate_dim": 3,
         "output_coordinate_dim": 28,
         "grid_dimensions": 2,
-        "resolution": [64, 64, 64, 1708], 
-        "rank": 2,
+        "resolution": [64, 64, 64], 
+        "rank": 1,
         "time_reso": 1708,
     },
     {
-        "input_coordinate_dim": 5,
+        "input_coordinate_dim": 2,
         "resolution": [6, 6, 6, 6, 6],
         "feature_dim": 28,
         "init_std": 0.001

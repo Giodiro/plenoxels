@@ -313,7 +313,9 @@ class VideoTrainer(Trainer):
 
     def validate(self):
         if hasattr(self.model, "appearance_coef"):
-            self.optimize_appearance_codes()
+            #self.optimize_appearance_codes()
+            pass
+            
         val_metrics = []
         with torch.no_grad():
             if self.save_outputs:  # visualize planes

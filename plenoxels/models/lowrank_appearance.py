@@ -109,7 +109,7 @@ class LowrankAppearance(LowrankModel):
                     if len(grid_config["resolution"]) == 4:
                         config["resolution"] += [grid_config["resolution"][-1]]
                     
-                    gpdesc = self.init_grid_param(config, is_video=False, is_appearance=False, grid_level=li, use_F=self.use_F)
+                    gpdesc = self.init_grid_param(config, is_video=False, is_appearance=True, grid_level=li, use_F=self.use_F)
                     self.set_resolution(gpdesc.reso, 0)
                     self.grids.append(gpdesc.grid_coefs)
 
@@ -137,8 +137,10 @@ class LowrankAppearance(LowrankModel):
         appearance_coef = self.appearance_coef  # time: [F_dim, time_reso]
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
         
-        # Interpolate in space and time
-        pts = torch.cat([pts, timestamps[:,None]], dim=-1)  # [batch, 4] for xyzt
+        # if there are 6 planes then
+        # interpolate in space and time
+        if len(multiscale_space[0]) == 6:
+            pts = torch.cat([pts, timestamps[:,None]], dim=-1)  # [batch, 4] for xyzt
         
         # Interpolate in space
         coo_combs = list(itertools.combinations(
