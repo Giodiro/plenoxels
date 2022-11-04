@@ -84,6 +84,10 @@ def main():
     validate_only = args.validate_only
 
     pprint.pprint(config)
+    log_dir = os.path.join(config['logdir'], config['expname'])
+    os.path.makedirs(log_dir, exist_ok=True)
+    with open(os.path.join(log_dir, 'config.txt'), 'wt') as out:
+        pprint.pprint(config, stream=out)
 
     if is_video:
         state = None
