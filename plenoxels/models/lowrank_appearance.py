@@ -45,6 +45,14 @@ class LowrankAppearance(LowrankModel):
         self.is_ndc = is_ndc
         self.is_contracted = is_contracted
         self.lookup_time = lookup_time
+        self.sh = sh
+        self.density_act = init_density_activation(
+            self.extra_args.get('density_activation', 'trunc_exp'))
+        self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
+        self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
+        self.use_F = self.extra_args["use_F"]
+        self.multiscale_res = multiscale_res
+        self.trainable_rank = None
         
         self.spatial_distortion = None
         if is_contracted:
@@ -65,6 +73,7 @@ class LowrankAppearance(LowrankModel):
                 num_input_coords=3,
                 rank=self.extra_args['density_field_rank'],
                 spatial_distortion=self.spatial_distortion,
+                density_act=self.density_act,
             )
             self.density_fns = [self.density_field.get_density]
             if self.extra_args['raymarch_type'] != 'fixed':
@@ -78,14 +87,7 @@ class LowrankAppearance(LowrankModel):
         else:
             self.raymarcher = RayMarcher(**self.extra_args)
         
-        self.sh = sh
-        self.density_act = init_density_activation(
-            self.extra_args.get('density_activation', 'trunc_exp'))
-        self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
-        self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
-        self.use_F = self.extra_args["use_F"]
-        self.multiscale_res = multiscale_res
-        self.trainable_rank = None
+
 
         
         # For now, only allow a single index grid and a single feature grid, not multiple layers
