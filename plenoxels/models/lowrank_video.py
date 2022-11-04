@@ -68,6 +68,7 @@ class LowrankVideo(LowrankModel):
                     num_input_coords=3,
                     rank=self.extra_args['density_field_rank'],
                     spatial_distortion=self.spatial_distortion,
+                    density_act=self.density_act,
                 )
                 self.density_fields.append(field)
                 self.density_fns.append(field.get_density)
