@@ -302,7 +302,12 @@ class Trainer():
 
     def evaluate_metrics(self, gt, preds: MutableMapping[str, torch.Tensor], dset, dset_id: int, img_idx: int,
                          name: Optional[str] = None, save_outputs: bool = True):
-        preds_rgb = preds["rgb"].reshape(dset.img_h, dset.img_w, 3).cpu()
+        preds_rgb = (
+            preds["rgb"]
+            .reshape(dset.img_h, dset.img_w, 3)
+            .cpu()
+            .clamp(0, 1)
+        )
         exrdict = {
             "preds": preds_rgb.numpy(),
         }
