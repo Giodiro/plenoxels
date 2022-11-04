@@ -377,8 +377,7 @@ class LowrankLearnableHash(LowrankModel):
                 nears, fars = torch.split(near_far, [1, 1], dim=-1)
                 if nears.shape[0] != rays_o.shape[0]:
                     ones = torch.ones_like(rays_o[..., 0:1])
-                    near_plane = nears if self.training else 0
-                    nears = ones * near_plane
+                    nears = ones * nears
                     fars = ones * fars
 
             ray_bundle = RayBundle(origins=rays_o, directions=rays_d, nears=nears, fars=fars)
@@ -458,7 +457,7 @@ class LowrankLearnableHash(LowrankModel):
         if "rgb" in channels:
             rgb_map = torch.sum(weight[..., None] * rgb, -2)
             if bg_color is not None:
-                rgb_map = rgb_map + (1.0 - acc_map[..., None]) * bg_color.to(rgb_map.device)
+                rgb_map = rgb_map + (1.0 - acc_map[..., None]) * bg_color#.to(rgb_map.device)
             outputs["rgb"] = rgb_map
         if "depth" in channels:
             depth_map = torch.sum(weight * z_vals, -1)  # [batch_size]
