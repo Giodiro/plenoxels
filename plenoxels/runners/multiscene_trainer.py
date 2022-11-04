@@ -98,6 +98,7 @@ class Trainer():
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             rays_o = data["rays_o"]
             rays_d = data["rays_d"]
+            near_far = data["near_far"].cuda() if "near_far" in data else None
             preds = defaultdict(list)
             for b in range(math.ceil(rays_o.shape[0] / batch_size)):
                 rays_o_b = rays_o[b * batch_size: (b + 1) * batch_size].cuda()
@@ -106,7 +107,7 @@ class Trainer():
                     bg_color = None
                 else:
                     bg_color = 1
-                outputs = self.model(rays_o_b, rays_d_b, grid_id=dset_id, bg_color=bg_color, channels={"rgb", "depth"})
+                outputs = self.model(rays_o_b, rays_d_b, grid_id=dset_id, near_far=near_far, bg_color=bg_color, channels={"rgb", "depth"})
                 for k, v in outputs.items():
                     preds[k].append(v)
         return {k: torch.cat(v, 0) for k, v in preds.items() if k in {"rgb", "depth"}}
@@ -302,7 +303,12 @@ class Trainer():
 
     def evaluate_metrics(self, gt, preds: MutableMapping[str, torch.Tensor], dset, dset_id: int, img_idx: int,
                          name: Optional[str] = None, save_outputs: bool = True):
-        preds_rgb = preds["rgb"].reshape(dset.img_h, dset.img_w, 3).cpu()
+        preds_rgb = (
+            preds["rgb"]
+            .reshape(dset.img_h, dset.img_w, 3)
+            .cpu()
+            .clamp(0, 1)
+        )
         exrdict = {
             "preds": preds_rgb.numpy(),
         }

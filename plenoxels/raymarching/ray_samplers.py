@@ -31,7 +31,7 @@ class RaySamples:
         Returns:
             xyz positions (..., 3).
         """
-        return self.origins + self.directions * (self.starts + self.ends) / 2
+        return self.origins + self.directions * (self.starts + self.ends) / 2  # world space
 
     def get_weights(self, densities: torch.Tensor) -> torch.Tensor:
         """Return weights based on predicted densities
@@ -93,9 +93,9 @@ class RayBundle:
         return RaySamples(
             origins=self.origins[..., None, :],  # [..., 1, 3]
             directions=self.directions[..., None, :],  # [..., 1, 3]
-            starts=bin_starts,  # [..., num_samples, 1]
-            ends=bin_ends,  # [..., num_samples, 1]
-            deltas=deltas,  # [..., num_samples, 1]
+            starts=bin_starts,  # [..., num_samples, 1]  world
+            ends=bin_ends,  # [..., num_samples, 1]      world
+            deltas=deltas,  # [..., num_samples, 1]  world coo
             spacing_starts=spacing_starts,  # [..., num_samples, 1]
             spacing_ends=spacing_ends,  # [..., num_samples, 1]
             spacing_to_euclidean_fn=spacing_to_euclidean_fn,
@@ -180,16 +180,17 @@ class SpacedSampler(Sampler):
         else:
             bins = bins.repeat(num_rays, 1)
 
-        s_near, s_far = (self.spacing_fn(x) for x in (ray_bundle.nears, ray_bundle.fars))
+        # s_near, s_far in [0, 1]
+        s_near, s_far = (self.spacing_fn(x) for x in (ray_bundle.nears, ray_bundle.fars))  # sara says sus
         spacing_to_euclidean_fn = lambda x: self.spacing_fn_inv(x * s_far + (1 - x) * s_near)
+        # euclidean = world
         euclidean_bins = spacing_to_euclidean_fn(bins)  # [num_rays, num_samples+1]
 
-
         return ray_bundle.get_ray_samples(
-            bin_starts=euclidean_bins[..., :-1, None],
-            bin_ends=euclidean_bins[..., 1:, None],
-            spacing_starts=bins[..., :-1, None],
-            spacing_ends=bins[..., 1:, None],
+            bin_starts=euclidean_bins[..., :-1, None],  # world [near, far]
+            bin_ends=euclidean_bins[..., 1:, None],     # world [near, far]
+            spacing_starts=bins[..., :-1, None],        # [0, 1]
+            spacing_ends=bins[..., 1:, None],           # [0, 1]
             spacing_to_euclidean_fn=spacing_to_euclidean_fn,
         )
 
@@ -352,7 +353,7 @@ class PDFSampler(Sampler):
                 ray_samples.spacing_ends[..., -1:, 0],
             ],
             dim=-1,
-        )
+        )  # [0, 1]
 
         inds = torch.searchsorted(cdf, u, right=True)
         below = torch.clamp(inds - 1, 0, existing_bins.shape[-1] - 1)
@@ -458,7 +459,7 @@ class ProposalNetworkSampler(Sampler):
             if is_prop:
                 if updated:
                     # always update on the first step or the inf check in grad scaling crashes
-                    density = density_fns[i_level](ray_samples.get_positions())
+                    density = density_fns[i_level](ray_samples.get_positions())  # world space
                 else:
                     with torch.no_grad():
                         density = density_fns[i_level](ray_samples.get_positions())

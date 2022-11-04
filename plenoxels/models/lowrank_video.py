@@ -114,7 +114,7 @@ class LowrankVideo(LowrankModel):
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
 
         if use_trainable_rank:
-            self.trainable_rank = 1 
+            self.trainable_rank = 1
             self.update_trainable_rank()
         self.density_mask = None
         log.info(f"Initialized LowrankVideo - decoder={self.decoder} - distortion={self.spatial_distortion}")
@@ -191,8 +191,7 @@ class LowrankVideo(LowrankModel):
                 nears, fars = torch.split(near_far, [1, 1], dim=-1)
                 if nears.shape[0] != rays_o.shape[0]:
                     ones = torch.ones_like(rays_o[..., 0:1])
-                    near_plane = nears if self.training else 0
-                    nears = ones * near_plane
+                    nears = ones * nears
                     fars = ones * fars
 
             aabb=self.aabb(0)

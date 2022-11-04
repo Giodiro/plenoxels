@@ -55,14 +55,14 @@ class LowrankAppearance(LowrankModel):
         self.use_F = self.extra_args["use_F"]
         self.multiscale_res = multiscale_res
         self.trainable_rank = None
-        
+
         self.spatial_distortion = None
         if is_contracted:
             self.spatial_distortion = SceneContraction(
                 order=float('inf'),
                 global_scale=global_scale,
                 global_translation=global_translation)
-        
+
         self.use_proposal_sampling = kwargs.get('proposal_sampling', False)
         self.density_field, self.density_fns = None, None
         if self.use_proposal_sampling:
@@ -93,7 +93,7 @@ class LowrankAppearance(LowrankModel):
         # For now, only allow a single index grid and a single feature grid, not multiple layers
         assert len(self.config) == 2
         self.grids = nn.ModuleList()
-        
+
         for res in self.multiscale_res:
             for li, grid_config in enumerate(self.config):
                 # initialize feature grid
@@ -110,21 +110,21 @@ class LowrankAppearance(LowrankModel):
                     # do not have multi resolution on time.
                     if len(grid_config["resolution"]) == 4:
                         config["resolution"] += [grid_config["resolution"][-1]]
-                    
+
                     gpdesc = self.init_grid_param(config, is_video=False, is_appearance=True, grid_level=li, use_F=self.use_F)
                     self.set_resolution(gpdesc.reso, 0)
                     self.grids.append(gpdesc.grid_coefs)
 
         # if sh + density in grid, then we do not want appearance code to influence density
         self.appearance_coef = nn.Parameter(nn.init.ones_(torch.empty([self.feature_dim - 1, len_time])))  # no time dependence
-        
+
         if self.sh:
             self.decoder = SHDecoder(
                 feature_dim=self.feature_dim,
                 decoder_type=self.extra_args.get('sh_decoder_type', 'manual'))
         else:
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
-            
+
         self.density_mask = None
         log.info(f"Initialized LowrankAppearance. "
                  f"time-reso={self.appearance_coef.shape[1]} - decoder={self.decoder}")
@@ -138,39 +138,39 @@ class LowrankAppearance(LowrankModel):
         multiscale_space : nn.ModuleList = self.grids  # space: 3 x [1, rank * F_dim, reso, reso]
         appearance_coef = self.appearance_coef  # time: [F_dim, time_reso]
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
-        
+
         # if there are 6 planes then
         # interpolate in space and time
         if len(multiscale_space[0]) == 6:
             pts = torch.cat([pts, timestamps[:,None]], dim=-1)  # [batch, 4] for xyzt
-        
+
         # Interpolate in space
         coo_combs = list(itertools.combinations(
             range(pts.shape[-1]),
             level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
 
         multi_scale_interp = 0
-        for scale_id, grid_space in enumerate(multiscale_space):       
+        for scale_id, grid_space in enumerate(multiscale_space):
             interp_space = None  # [n, F_dim, rank]
             for ci, coo_comb in enumerate(coo_combs):
-                
+
                 # interpolate in plane
                 interp_out_plane = grid_sample_wrapper(grid_space[ci], pts[..., coo_comb]).view(
                             -1, level_info["output_coordinate_dim"], level_info["rank"])
-                
+
                 # compute product
                 interp_space = interp_out_plane if interp_space is None else interp_space * interp_out_plane
-                        
+
             # Combine space over rank
             interp = interp_space.mean(dim=-1)  # [n, F_dim]
-            
+
             # sum over scales
             multi_scale_interp += interp
-            
+
         # combine with appearance code
         appearance_code = appearance_coef[:, appearance_idx.long()].unsqueeze(0).repeat(pts.shape[0], 1)  # [n, F_dim]
         appearance_code = appearance_code.view(-1, self.feature_dim-1)  # [n, F_dim]
-        
+
         # add density one to appearance code
         appearance_code = torch.cat([appearance_code, torch.ones_like(appearance_code[:, 0:1])], dim=1)
         multi_scale_interp = multi_scale_interp * appearance_code
@@ -184,7 +184,7 @@ class LowrankAppearance(LowrankModel):
             out = grid_sample_wrapper(self.features, multi_scale_interp).view(-1, self.feature_dim)
         else:
             out = multi_scale_interp
-            
+
         if return_coords:
             return out, multi_scale_interp
         return out
@@ -216,10 +216,9 @@ class LowrankAppearance(LowrankModel):
                 nears, fars = torch.split(near_far, [1, 1], dim=-1)
                 if nears.shape[0] != rays_o.shape[0]:
                     ones = torch.ones_like(rays_o[..., 0:1])
-                    near_plane = nears # if self.training else 0
-                    nears = ones * near_plane
+                    nears = ones * nears
                     fars = ones * fars
-            
+
             aabb=self.aabb(0)
             ray_bundle = RayBundle(origins=rays_o, directions=rays_d, nears=nears, fars=fars)
             ray_samples, weights_list, ray_samples_list, density_list = self.raymarcher.generate_ray_samples(
@@ -259,7 +258,7 @@ class LowrankAppearance(LowrankModel):
 
         n_rays, n_intrs = pts.shape[:2]
         dev = rays_o.device
-            
+
         if len(pts) == 0:
             if "rgb" in channels:
                 if bg_color is None:
@@ -295,7 +294,7 @@ class LowrankAppearance(LowrankModel):
         alpha, weight, transmission = raw2alpha(density, deltas)  # Each is shape [batch_size, n_samples]
         if self.use_proposal_sampling:
             outputs['weights_list'].append(weight[..., None])
-            
+
         rgb_masked = self.decoder.compute_color(features, rays_d=masked_rays_d_rep)
         rgb = torch.zeros(n_rays, n_intrs, 3, device=pts.device, dtype=rgb_masked.dtype)
         rgb[mask] = rgb_masked
@@ -338,19 +337,19 @@ class LowrankAppearance(LowrankModel):
 
     def compute_plane_tv(self):
         multiscale_grids = self.grids  # space: 3 x [1, rank * F_dim, reso, reso]
-                
+
         total = 0
         for grid_space in multiscale_grids:
-            
+
             if len(grid_space) == 6:
                 # only use tv on spatial planes
                 grid_ids = [0,1,3]
             else:
                 grid_ids = list(range(len(grid_space)))
-                
+
             for grid_id in grid_ids:
                 grid = grid_space[grid_id]
                 total += compute_plane_tv(grid)
-                
+
         #total += compute_line_tv(grid_time)
         return total
