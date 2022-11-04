@@ -60,8 +60,6 @@ class VideoTrainer(Trainer):
                          valid_every=valid_every,
                          transfer_learning=False,  # No transfer with video
                          save_outputs=save_outputs,
-                         global_translation=ts_dset.global_translation,
-                         global_scale=ts_dset.global_scale,
                          **kwargs)
         self.upsample_time_resolution = upsample_time_resolution
         self.upsample_time_steps = upsample_time_steps
@@ -96,9 +94,7 @@ class VideoTrainer(Trainer):
                 else:
                     bg_color = 1
                 outputs = self.model(rays_o_b, rays_d_b, timestamps_d_b, bg_color=bg_color,
-                                     channels={"rgb", "depth"}, near_far=near_far,
-                                     global_translation=self.test_datasets[0].global_translation,
-                                     global_scale=self.test_datasets[0].global_scale)
+                                     channels={"rgb", "depth"}, near_far=near_far)
                 for k, v in outputs.items():
                     if not isinstance(v, list):
                         preds[k].append(v.cpu())
@@ -129,9 +125,7 @@ class VideoTrainer(Trainer):
             imgs = imgs[..., :3] * imgs[..., 3:] + bg_color * (1.0 - imgs[..., 3:])
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            fwd_out = self.model(rays_o, rays_d, timestamps, bg_color=bg_color, channels={"rgb"}, near_far=near_far,
-                                 global_translation=self.train_datasets[0].global_translation,
-                                 global_scale=self.train_datasets[0].global_scale)
+            fwd_out = self.model(rays_o, rays_d, timestamps, bg_color=bg_color, channels={"rgb"}, near_far=near_far)
             rgb_preds = fwd_out["rgb"]
             # Reconstruction loss
             recon_loss = self.criterion(rgb_preds, imgs)
@@ -200,6 +194,14 @@ class VideoTrainer(Trainer):
     def init_model(self, **kwargs) -> torch.nn.Module:
         dset = self.test_datasets[0]
         data_dir = dset.datadir
+        try:
+            global_translation = dset.global_translation
+        except AttributeError:
+            global_translation = None
+        try:
+            global_scale = dset.global_scale
+        except AttributeError:
+            global_scale = None
         if "sacre" in data_dir or "trevi" in data_dir:
             model = LowrankAppearance(
                 aabb=dset.scene_bbox,
@@ -208,6 +210,8 @@ class VideoTrainer(Trainer):
                 is_contracted=self.is_contracted,
                 lookup_time=dset.lookup_time,
                 proposal_sampling=self.extra_args.get('histogram_loss_weight', 0.0) > 0.0,
+                global_scale=global_scale,
+                global_translation=global_translation,
                 **kwargs)
         else:
             model = LowrankVideo(
@@ -217,6 +221,8 @@ class VideoTrainer(Trainer):
                 is_contracted=self.is_contracted,
                 lookup_time=dset.lookup_time,
                 proposal_sampling=self.extra_args.get('histogram_loss_weight', 0.0) > 0.0,
+                global_scale=global_scale,
+                global_translation=global_translation,
                 **kwargs)
         logging.info(f"Initialized {model.__class__} model with "
                      f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, "

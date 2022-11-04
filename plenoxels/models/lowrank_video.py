@@ -27,6 +27,8 @@ class LowrankVideo(LowrankModel):
                  sh: bool,
                  use_trainable_rank: bool = False,
                  multiscale_res: List[int] = [1],
+                 global_translation=None,
+                 global_scale=None,
                  **kwargs):
         super().__init__()
         if isinstance(grid_config, str):
@@ -50,12 +52,10 @@ class LowrankVideo(LowrankModel):
 
         self.spatial_distortion = None
         if is_contracted:
-            print(kwargs.get('global_scale', None))
-            print(kwargs.get('global_translation', None))
             self.spatial_distortion = SceneContraction(
                 order=float('inf'),
-                global_scale=kwargs.get('global_scale', None),
-                global_translation=kwargs.get('global_translation', None))
+                global_scale=global_scale,
+                global_translation=global_translation)
 
         self.use_proposal_sampling = kwargs.get('proposal_sampling', False)
         self.density_fields, self.density_fns = torch.nn.ModuleList(), []
@@ -81,7 +81,7 @@ class LowrankVideo(LowrankModel):
                 single_jitter=self.extra_args['single_jitter'],
             )
         else:
-            self.raymarcher = RayMarcher(**self.extra_args)
+            self.raymarcher = RayMarcher(spatial_distortion=self.spatial_distortion, **self.extra_args)
 
         # For now, only allow a single index grid and a single feature grid, not multiple layers
         assert len(self.config) == 2
@@ -105,9 +105,7 @@ class LowrankVideo(LowrankModel):
                     gpdesc = self.init_grid_param(config, grid_level=li, use_F=self.use_F, is_video=True, is_appearance=False)
                     self.set_resolution(gpdesc.reso, 0)
                     self.grids.append(gpdesc.grid_coefs)
-                    #for i in range(len(self.grids)):
-                    #    print(f'grid {i} has shape {self.grids[i].shape}')
-        print(self.grids)
+
         if self.sh:
             self.decoder = SHDecoder(
                 feature_dim=self.feature_dim,
@@ -119,7 +117,8 @@ class LowrankVideo(LowrankModel):
             self.trainable_rank = 1 
             self.update_trainable_rank()
         self.density_mask = None
-        log.info(f"Initialized LowrankVideo - decoder={self.decoder}")
+        log.info(f"Initialized LowrankVideo - decoder={self.decoder} - distortion={self.spatial_distortion}")
+        log.info(f"Model grids: {self.grids}")
 
     def compute_features(self,
                          pts,  # [batch, 3]
@@ -166,17 +165,14 @@ class LowrankVideo(LowrankModel):
             return out, multi_scale_interp
         return out
 
-    def forward(self, rays_o, rays_d, timestamps, bg_color, channels: Sequence[str] = ("rgb", "depth"), near_far=None,
-                global_translation=torch.tensor([0, 0, 0]), global_scale=torch.tensor([1, 1, 1])):
+    def forward(self, rays_o, rays_d, timestamps, bg_color, channels: Sequence[str] = ("rgb", "depth"), near_far=None):
         """
         rays_o : [batch, 3]
         rays_d : [batch, 3]
         timestamps : [batch]
         near_far : [batch, 2]
         """
-
         outputs = {}
-
         # Normalize rays_d
         rays_d = rays_d / torch.linalg.norm(rays_d, dim=-1, keepdim=True)
 
@@ -216,14 +212,12 @@ class LowrankVideo(LowrankModel):
         else:
             rm_out = self.raymarcher.get_intersections2(
                 rays_o, rays_d, self.aabb(0), self.resolution(0), perturb=self.training,
-                is_ndc=self.is_ndc, is_contracted=self.is_contracted, near_far=near_far,
-                global_translation=global_translation, global_scale=global_scale)
+                is_ndc=self.is_ndc, is_contracted=self.is_contracted, near_far=near_far)
             rays_d = rm_out["rays_d"]                   # [n_rays, 3]
             pts = rm_out["intersections"]  # [n_rays, n_intrs, 3]
             mask = rm_out["mask"]                       # [n_rays, n_intrs]
             z_vals = rm_out["z_vals"]                   # [n_rays, n_intrs]
             deltas = rm_out["deltas"]                   # [n_rays, n_intrs]
-            n_rays, n_intrs = pts.shape[:2]
 
         n_rays, n_intrs = pts.shape[:2]
         dev = rays_o.device

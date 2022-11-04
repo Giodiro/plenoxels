@@ -45,6 +45,8 @@ class LowrankLearnableHash(LowrankModel):
                  sh: bool,
                  num_scenes: int = 1,
                  multiscale_res: List[int] = [1],
+                 global_translation=None,
+                 global_scale=None,
                  **kwargs):
         super().__init__()
         if isinstance(grid_config, str):
@@ -67,8 +69,8 @@ class LowrankLearnableHash(LowrankModel):
         if is_contracted:
             self.spatial_distortion = SceneContraction(
                 order=float('inf'),
-                global_scale=kwargs.get('global_scale', None),
-                global_translation=kwargs.get('global_translation', None))
+                global_scale=global_scale,
+                global_translation=global_translation)
 
         self.density_act = init_density_activation(
             self.extra_args.get('density_activation', 'trunc_exp'))
@@ -88,6 +90,7 @@ class LowrankLearnableHash(LowrankModel):
                 num_input_coords=self.config[0]['input_coordinate_dim'],
                 rank=self.extra_args['density_field_rank'],
                 spatial_distortion=self.spatial_distortion,
+                density_act=self.density_act,
             )
             self.density_fns = [self.density_field.get_density]
             if self.extra_args['raymarch_type'] != 'fixed':
@@ -99,7 +102,9 @@ class LowrankLearnableHash(LowrankModel):
                 single_jitter=self.extra_args['single_jitter'],
             )
         else:
-            self.raymarcher = RayMarcher(**self.extra_args)
+            self.raymarcher = RayMarcher(
+                spatial_distortion=self.spatial_distortion,
+                **self.extra_args)
 
         self.scene_grids = nn.ModuleList()
         for si in range(num_scenes):
@@ -461,21 +466,22 @@ class LowrankLearnableHash(LowrankModel):
             outputs["depth"] = depth_map
         outputs["deltas"] = deltas
         outputs["weight"] = weight
-
         self.timer.check("render")
-
         return outputs
 
     def get_params(self, lr):
-        params = [
-            {"params": self.scene_grids.parameters(), "lr": lr},
+        return [
+            {"params": self.parameters(), "lr": lr},
         ]
-        if self.density_field is not None:
-            params.append({"params": self.density_field.parameters(), "lr": lr})
-        if self.use_F:
-            params.append({"params": [self.pt_min, self.pt_max], "lr": lr})
-        if not self.transfer_learning:
-            params.append({"params": self.decoder.parameters(), "lr": lr})
-            if self.use_F:
-                params.append({"params": self.features, "lr": lr})
-        return params
+        # params = [
+        #     {"params": self.scene_grids.parameters(), "lr": lr},
+        # ]
+        # if self.density_field is not None:
+        #     params.append({"params": self.density_field.parameters(), "lr": lr})
+        # if self.use_F:
+        #     params.append({"params": [self.pt_min, self.pt_max], "lr": lr})
+        # if not self.transfer_learning:
+        #     params.append({"params": self.decoder.parameters(), "lr": lr})
+        #     if self.use_F:
+        #         params.append({"params": self.features, "lr": lr})
+        # return params

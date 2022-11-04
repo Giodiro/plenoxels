@@ -4,6 +4,8 @@ import logging as log
 import numpy as np
 import torch
 
+from plenoxels.raymarching.spatial_distortions import SpatialDistortion
+
 
 class RayMarcher():
     def __init__(self,
@@ -12,6 +14,7 @@ class RayMarcher():
                  raymarch_type: str = "fixed",
                  spacing_fn: str = "linear",
                  single_jitter: bool = False,
+                 spatial_distortion: Optional[SpatialDistortion] = None,
                  **kwargs):
         if raymarch_type == "fixed":
             assert n_intersections is not None
@@ -25,6 +28,7 @@ class RayMarcher():
         self.n_intersections = n_intersections
         self.num_sample_multiplier = num_sample_multiplier
         self.single_jitter = single_jitter
+        self.spatial_distortion = spatial_distortion
 
         if spacing_fn is None or spacing_fn == "linear":
             self.spacing_fn = lambda x: x
@@ -89,10 +93,8 @@ class RayMarcher():
                            resolution: torch.Tensor,
                            perturb: bool = False,
                            is_ndc: bool = False,
-                           is_contracted: bool=False,
+                           is_contracted: bool = False,
                            near_far: Optional[torch.Tensor] = None,
-                           global_translation: Optional[torch.Tensor] = torch.tensor([0, 0, 0]),
-                           global_scale: Optional[torch.Tensor] = torch.tensor([1, 1, 1]),
                            ) -> Mapping[str, torch.Tensor]:
         dev, dt = rays_o.device, rays_o.dtype
 
@@ -131,13 +133,13 @@ class RayMarcher():
         intersections = intersections[:, :-1]  # [n_rays, n_samples]
         intrs_pts = rays_o[..., None, :] + rays_d[..., None, :] * intersections[..., None]  # [n_rays, n_samples, 3]
 
-        # Apply global scale and translation
-        intrs_pts = intrs_pts * global_scale[None, None, :].to(intrs_pts.device) + global_translation[None, None, :].to(intrs_pts.device)
-
-        if is_contracted:
-            # Do the contraction to map Euclidean coordinates into [-2, 2] which is also the aabb for contracted scenes
-            # Use infinity norm so we map onto the cube instead of the sphere
-            intrs_pts = contract(intrs_pts)
+        # Apply global scale and translation, maybe contract.
+        if self.spatial_distortion is not None:
+            intrs_pts = self.spatial_distortion(intrs_pts)
+        # if is_contracted:
+        #     # Do the contraction to map Euclidean coordinates into [-2, 2] which is also the aabb for contracted scenes
+        #     # Use infinity norm so we map onto the cube instead of the sphere
+        #     intrs_pts = contract(intrs_pts)
 
         mask = ((aabb[0] <= intrs_pts) & (intrs_pts <= aabb[1])).all(dim=-1)  # noqa
         if torch.min(deltas) < 0:
