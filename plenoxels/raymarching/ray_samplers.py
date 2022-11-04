@@ -4,6 +4,7 @@ from typing import Optional, Callable, Tuple, List
 
 import torch
 from torch import nn
+import numpy as np
 
 
 @dataclass
@@ -411,10 +412,16 @@ class ProposalNetworkSampler(Sampler):
         """Set the anneal value for the proposal network."""
         self._anneal = anneal
 
-    def step_cb(self, step):
+    def step_cb(self):
         """Callback to register a training step has passed. This is used to keep track of the sampling schedule"""
-        self._step = step
+        self._step = self._step + 1
         self._steps_since_update += 1
+        N = 1000
+        b = 10
+        train_frac = np.clip(self._step / N, 0, 1)
+        bias = lambda x, b: (b * x) / ((b - 1) * x + 1)
+        anneal = bias(train_frac, b)
+        self.set_anneal(anneal)
 
     def generate_ray_samples(
         self,
@@ -431,6 +438,7 @@ class ProposalNetworkSampler(Sampler):
         weights = None
         ray_samples = None
         # TODO: Fix this (need to call step_cb!)
+        self.step_cb()  # Comment this in to enable weight annealing
         updated = True #self._steps_since_update > self.update_sched(self._step) or self._step < 10
         for i_level in range(n + 1):
             is_prop = i_level < n

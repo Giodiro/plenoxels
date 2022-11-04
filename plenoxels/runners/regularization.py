@@ -1,5 +1,6 @@
 import abc
 from typing import Optional
+import logging as log
 
 import torch.optim.lr_scheduler
 from torch import nn
@@ -73,6 +74,21 @@ class L1Density(Regularizer):
         return torch.abs(density).mean()
 
 
+class L1PlaneDensityVideo(Regularizer):
+    def __init__(self, initial_value):
+        super().__init__('l1-plane-density', initial_value)
+
+    # TODO: make this also work for lowrankappearance
+    def _regularize(self, model: LowrankVideo, grid_id: int = 0, **kwargs):
+        grids: nn.ModuleList = model.grids[grid_id]
+        total = 0
+        for grid in grids:
+            grid = grid.view(model.feature_dim, -1, grid.shape[-2], grid.shape[-1])
+            # density is on last feature. Apply activation before computing loss.
+            total += model.density_act(grid[-1, ...]).mean()
+        return total
+
+
 class L1PlaneDensity(Regularizer):
     def __init__(self, initial_value):
         super().__init__('l1-plane-density', initial_value)
@@ -84,8 +100,8 @@ class L1PlaneDensity(Regularizer):
         for grid_ls in grids:
             for grid in grid_ls:
                 grid = grid.view(model.feature_dim, -1, grid.shape[-2], grid.shape[-1])
-                # density is on last feature.
-                total += torch.abs(grid[-1, ...]).mean()
+                # density is on last feature. Apply activation before computing loss.
+                total += model.density_act(grid[-1, ...]).mean()
         return total
 
 
@@ -116,6 +132,11 @@ class PlaneTV(Regularizer):
         super().__init__(name, initial_value)
         self.features = features
 
+    def step(self, global_step):
+        if global_step == 23000:
+            self.weight /= 10
+            log.info(f"Setting PlaneTV weight to {self.weight}")
+
     def _regularize(self, model: LowrankLearnableHash, grid_id: int = 0, **kwargs):
         multi_res_grids: nn.ModuleList = model.scene_grids[grid_id]
         total = 0
@@ -139,16 +160,16 @@ class VideoPlaneTV(Regularizer):
         super().__init__('plane-TV', initial_value)
 
     def _regularize(self, model: LowrankVideo, **kwargs) -> torch.Tensor:
-        
+
         total = 0
         # model.grids is 6 x [1, rank * F_dim, reso, reso]
         for grids in model.grids:
-            
+
             if len(grids) == 3:
                 spatial_grids = [0, 1, 2]
             else:
                 spatial_grids = [0, 1, 3]  # These are the spatial grids; the others are spatiotemporal
-            
+
             for grid_id in spatial_grids:
                 total += compute_plane_tv(grids[grid_id])
         return total
@@ -237,12 +258,12 @@ class FloaterLoss(Regularizer):
 class HistogramLoss(Regularizer):
     def __init__(self, initial_value):
         super().__init__('histogram-loss', initial_value)
-        
+
         self.visualize = False
         self.count = 0
 
     def _regularize(self, model: LowrankLearnableHash, model_out, grid_id: int, **kwargs) -> torch.Tensor:
-        
+
         if self.visualize:
             if self.count % 100 == 0:
                 # proposal info
@@ -250,21 +271,21 @@ class HistogramLoss(Regularizer):
                 spacing_starts_proposal = model_out["ray_samples_list"][0].spacing_starts
                 spacing_ends_proposal = model_out["ray_samples_list"][0].spacing_ends
                 sdist_proposal = torch.cat([spacing_starts_proposal[..., 0], spacing_ends_proposal[..., -1:, 0]], dim=-1).detach().cpu().numpy()
-                        
+
                 # fine info
                 weights_fine = model_out["weights_list"][1].detach().cpu().numpy()
                 spacing_starts_fine = model_out["ray_samples_list"][1].spacing_starts
                 spacing_ends_fine = model_out["ray_samples_list"][1].spacing_ends
                 sdist_fine = torch.cat([spacing_starts_fine[..., 0], spacing_ends_fine[..., -1:, 0]], dim=-1).detach().cpu().numpy()
-                
+
                 for i in range(10):
                     fix, ax1 = plt.subplots()
-                    
+
                     delta = np.diff(sdist_proposal[i], axis=-1)
                     ax1.bar(sdist_proposal[i, :-1], weights_proposal[i].squeeze() / delta , width=delta, align="edge", label='proposal', alpha=0.7, color="b")
                     ax1.legend()
                     ax2 = ax1.twinx()
-                    
+
                     delta = np.diff(sdist_fine[i], axis=-1)
                     ax2.bar(sdist_fine[i, :-1], weights_fine[i].squeeze() / delta, width=delta, align="edge", label='fine', alpha=0.3, color='r')
                     ax2.legend()

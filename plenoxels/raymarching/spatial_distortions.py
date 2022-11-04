@@ -61,3 +61,7 @@ class SceneContraction(SpatialDistortion):
         x_new[mask] = (2 - (1 / mag[mask][..., None])) * (positions[mask] / mag[mask][..., None])
 
         return x_new
+
+    def __str__(self):
+        return (f"SceneContraction(global_translation={self.global_translation}, "
+                f"global_scale={self.global_scale})")

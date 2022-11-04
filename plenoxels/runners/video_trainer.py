@@ -19,7 +19,7 @@ from plenoxels.my_tqdm import tqdm
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_video_to_file
 from plenoxels.runners.multiscene_trainer import Trainer, visualize_planes, visualize_planes_withF
-from plenoxels.runners.regularization import VideoPlaneTV, TimeSmoothness, HistogramLoss
+from plenoxels.runners.regularization import VideoPlaneTV, TimeSmoothness, HistogramLoss, L1PlaneDensityVideo
 
 
 class VideoTrainer(Trainer):
@@ -60,8 +60,6 @@ class VideoTrainer(Trainer):
                          valid_every=valid_every,
                          transfer_learning=False,  # No transfer with video
                          save_outputs=save_outputs,
-                         global_translation=ts_dset.global_translation,
-                         global_scale=ts_dset.global_scale,
                          **kwargs)
         self.upsample_time_resolution = upsample_time_resolution
         self.upsample_time_steps = upsample_time_steps
@@ -96,9 +94,7 @@ class VideoTrainer(Trainer):
                 else:
                     bg_color = 1
                 outputs = self.model(rays_o_b, rays_d_b, timestamps_d_b, bg_color=bg_color,
-                                     channels={"rgb", "depth"}, near_far=near_far,
-                                     global_translation=self.test_datasets[0].global_translation,
-                                     global_scale=self.test_datasets[0].global_scale)
+                                     channels={"rgb", "depth"}, near_far=near_far)
                 for k, v in outputs.items():
                     if not isinstance(v, list):
                         preds[k].append(v.cpu())
@@ -129,9 +125,7 @@ class VideoTrainer(Trainer):
             imgs = imgs[..., :3] * imgs[..., 3:] + bg_color * (1.0 - imgs[..., 3:])
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            fwd_out = self.model(rays_o, rays_d, timestamps, bg_color=bg_color, channels={"rgb"}, near_far=near_far,
-                                 global_translation=self.train_datasets[0].global_translation,
-                                 global_scale=self.train_datasets[0].global_scale)
+            fwd_out = self.model(rays_o, rays_d, timestamps, bg_color=bg_color, channels={"rgb"}, near_far=near_far)
             rgb_preds = fwd_out["rgb"]
             # Reconstruction loss
             recon_loss = self.criterion(rgb_preds, imgs)
@@ -200,6 +194,14 @@ class VideoTrainer(Trainer):
     def init_model(self, **kwargs) -> torch.nn.Module:
         dset = self.test_datasets[0]
         data_dir = dset.datadir
+        try:
+            global_translation = dset.global_translation
+        except AttributeError:
+            global_translation = None
+        try:
+            global_scale = dset.global_scale
+        except AttributeError:
+            global_scale = None
         if "sacre" in data_dir or "trevi" in data_dir:
             model = LowrankAppearance(
                 aabb=dset.scene_bbox,
@@ -208,6 +210,8 @@ class VideoTrainer(Trainer):
                 is_contracted=self.is_contracted,
                 lookup_time=dset.lookup_time,
                 proposal_sampling=self.extra_args.get('histogram_loss_weight', 0.0) > 0.0,
+                global_scale=global_scale,
+                global_translation=global_translation,
                 **kwargs)
         else:
             model = LowrankVideo(
@@ -217,6 +221,8 @@ class VideoTrainer(Trainer):
                 is_contracted=self.is_contracted,
                 lookup_time=dset.lookup_time,
                 proposal_sampling=self.extra_args.get('histogram_loss_weight', 0.0) > 0.0,
+                global_scale=global_scale,
+                global_translation=global_translation,
                 **kwargs)
         logging.info(f"Initialized {model.__class__} model with "
                      f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, "
@@ -229,6 +235,7 @@ class VideoTrainer(Trainer):
             VideoPlaneTV(kwargs.get('plane_tv_weight', 0.0)),
             TimeSmoothness(kwargs.get('time_smoothness_weight', 0.0)),
             HistogramLoss(kwargs.get('histogram_loss_weight', 0.0)),
+            L1PlaneDensityVideo(kwargs.get('l1_plane_density_reg', 0.0))
         ]
         # Keep only the regularizers with a positive weight
         regularizers = [r for r in regularizers if r.weight > 0]
@@ -284,20 +291,18 @@ class VideoTrainer(Trainer):
             self.model.features.requires_grad_(False)
 
         self.model.grids.requires_grad_(False)
-        self.model.time_coef.requires_grad_(True)
-
-        parameters = [p for p in self.model.time_coef]
-        self.appearance_optimizer = torch.optim.Adam(params=parameters, lr=1e-3)
+        self.model.appearance_coef.requires_grad_(True)
+        
+        self.appearance_optimizer = torch.optim.Adam(params=[self.model.appearance_coef], lr=1e-3)
 
         for dset_id, dataset in enumerate(self.test_datasets):
             pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
-
+            
             # reset the appearance codes for
-            for i in range(len(self.model.time_coef)):
-                test_frames = self.test_datasets[0].__len__()
-                mask = torch.ones_like(self.model.time_coef[i])
-                mask[: , -test_frames:] = 0
-                self.model.time_coef[i].data = self.model.time_coef[i].data * mask + abs(1 - mask)
+            test_frames = dataset.__len__()
+            mask = torch.ones_like(self.model.appearance_coef)
+            mask[: , -test_frames:] = 0
+            self.model.appearance_coef.data = self.model.appearance_coef.data * mask + abs(1 - mask)
 
             batch_size = self.train_datasets[dset_id].batch_size
 
@@ -305,15 +310,18 @@ class VideoTrainer(Trainer):
                 self.optimize_appearance_step(data, batch_size, img_idx)
                 pb.update(1)
             pb.close()
+            
         # turn gradients on
         if self.model.use_F:
             self.model.features.requires_grad_(True)
         self.model.grids.requires_grad_(True)
-        self.model.time_coef.requires_grad_(True)
+        self.model.appearance_coef.requires_grad_(True)
 
     def validate(self):
-        if hasattr(self.model, "appearance_code"):
-            self.optimize_appearance_codes()
+        if hasattr(self.model, "appearance_coef"):
+            #self.optimize_appearance_codes()
+            pass
+            
         val_metrics = []
         with torch.no_grad():
             if self.save_outputs:  # visualize planes

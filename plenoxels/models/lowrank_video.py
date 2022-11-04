@@ -27,6 +27,8 @@ class LowrankVideo(LowrankModel):
                  sh: bool,
                  use_trainable_rank: bool = False,
                  multiscale_res: List[int] = [1],
+                 global_translation=None,
+                 global_scale=None,
                  **kwargs):
         super().__init__()
         if isinstance(grid_config, str):
@@ -50,36 +52,36 @@ class LowrankVideo(LowrankModel):
 
         self.spatial_distortion = None
         if is_contracted:
-            print(kwargs.get('global_scale', None))
-            print(kwargs.get('global_translation', None))
             self.spatial_distortion = SceneContraction(
                 order=float('inf'),
-                global_scale=kwargs.get('global_scale', None),
-                global_translation=kwargs.get('global_translation', None))
+                global_scale=global_scale,
+                global_translation=global_translation)
 
         self.use_proposal_sampling = kwargs.get('proposal_sampling', False)
-        self.density_field, self.density_fns = None, None
+        self.density_fields, self.density_fns = torch.nn.ModuleList(), []
         if self.use_proposal_sampling:
-            # Initialize density_fields
-            self.density_field = TriplaneDensityField(
-                aabb=self.aabb(0),
-                resolution=self.extra_args['density_field_resolution'],
-                num_input_coords=3,
-                rank=self.extra_args['density_field_rank'],
-                spatial_distortion=self.spatial_distortion,
-            )
-            self.density_fns = [self.density_field.get_density]
+            for reso in self.extra_args['density_field_resolution']:
+                # Initialize density_fields
+                field = TriplaneDensityField(
+                    aabb=self.aabb(0),
+                    resolution=[reso] * 3,
+                    num_input_coords=3,
+                    rank=self.extra_args['density_field_rank'],
+                    spatial_distortion=self.spatial_distortion,
+                    density_act=self.density_act,
+                )
+                self.density_fields.append(field)
+                self.density_fns.append(field.get_density)
             if self.extra_args['raymarch_type'] != 'fixed':
                 log.warning("raymarch_type is not 'fixed' but we will use 'n_intersections' anyways.")
             self.raymarcher = ProposalNetworkSampler(
-                num_proposal_samples_per_ray=(self.extra_args['num_proposal_samples'], ),
+                num_proposal_samples_per_ray=(self.extra_args['num_proposal_samples']),
                 num_nerf_samples_per_ray=self.extra_args['n_intersections'],
-                num_proposal_network_iterations=1,
+                num_proposal_network_iterations=len(self.extra_args['num_proposal_samples']),
                 single_jitter=self.extra_args['single_jitter'],
             )
-            # TODO: make the initial sampler linear then linear in disparity
         else:
-            self.raymarcher = RayMarcher(**self.extra_args)
+            self.raymarcher = RayMarcher(spatial_distortion=self.spatial_distortion, **self.extra_args)
 
         # For now, only allow a single index grid and a single feature grid, not multiple layers
         assert len(self.config) == 2
@@ -103,9 +105,7 @@ class LowrankVideo(LowrankModel):
                     gpdesc = self.init_grid_param(config, grid_level=li, use_F=self.use_F, is_video=True, is_appearance=False)
                     self.set_resolution(gpdesc.reso, 0)
                     self.grids.append(gpdesc.grid_coefs)
-                    #for i in range(len(self.grids)):
-                    #    print(f'grid {i} has shape {self.grids[i].shape}')
-        print(self.grids)
+
         if self.sh:
             self.decoder = SHDecoder(
                 feature_dim=self.feature_dim,
@@ -114,21 +114,11 @@ class LowrankVideo(LowrankModel):
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
 
         if use_trainable_rank:
-            self.trainable_rank = 1
+            self.trainable_rank = 1 
             self.update_trainable_rank()
         self.density_mask = None
-        log.info(f"Initialized LowrankVideo - decoder={self.decoder}")
-
-    @torch.no_grad()
-    # TODO: need to update this. Or just remove it as an option and always start with higher time resolution
-    def upsample_time(self, new_reso):
-        self.time_coef = torch.nn.Parameter(
-            F.interpolate(self.time_coef.data[:, None, :], size=(new_reso), mode='linear',
-                          align_corners=True).squeeze())
-        log.info(f"Upsampled time resolution from {self.time_resolution} to {new_reso}")
-        if not isinstance(new_reso, torch.Tensor):
-            new_reso = torch.tensor(new_reso, dtype=torch.int32)
-        self.time_resolution = new_reso
+        log.info(f"Initialized LowrankVideo - decoder={self.decoder} - distortion={self.spatial_distortion}")
+        log.info(f"Model grids: {self.grids}")
 
     def compute_features(self,
                          pts,  # [batch, 3]
@@ -175,16 +165,16 @@ class LowrankVideo(LowrankModel):
             return out, multi_scale_interp
         return out
 
-    def forward(self, rays_o, rays_d, timestamps, bg_color, channels: Sequence[str] = ("rgb", "depth"), near_far=None,
-                global_translation=torch.tensor([0, 0, 0]), global_scale=torch.tensor([1, 1, 1])):
+    def forward(self, rays_o, rays_d, timestamps, bg_color, channels: Sequence[str] = ("rgb", "depth"), near_far=None):
         """
         rays_o : [batch, 3]
         rays_d : [batch, 3]
         timestamps : [batch]
         near_far : [batch, 2]
         """
-
         outputs = {}
+        # Normalize rays_d
+        rays_d = rays_d / torch.linalg.norm(rays_d, dim=-1, keepdim=True)
 
         if self.use_proposal_sampling:
             # TODO: determining near-far should be done in a separate function this is super cluttered
@@ -222,14 +212,12 @@ class LowrankVideo(LowrankModel):
         else:
             rm_out = self.raymarcher.get_intersections2(
                 rays_o, rays_d, self.aabb(0), self.resolution(0), perturb=self.training,
-                is_ndc=self.is_ndc, is_contracted=self.is_contracted, near_far=near_far,
-                global_translation=global_translation, global_scale=global_scale)
+                is_ndc=self.is_ndc, is_contracted=self.is_contracted, near_far=near_far)
             rays_d = rm_out["rays_d"]                   # [n_rays, 3]
             pts = rm_out["intersections"]  # [n_rays, n_intrs, 3]
             mask = rm_out["mask"]                       # [n_rays, n_intrs]
             z_vals = rm_out["z_vals"]                   # [n_rays, n_intrs]
             deltas = rm_out["deltas"]                   # [n_rays, n_intrs]
-            n_rays, n_intrs = pts.shape[:2]
 
         n_rays, n_intrs = pts.shape[:2]
         dev = rays_o.device
@@ -295,11 +283,10 @@ class LowrankVideo(LowrankModel):
             {"params": self.grids.parameters(), "lr": lr},
             {"params": self.decoder.parameters(), "lr": lr},
         ]
-        if self.density_field is not None:
-            params.append({"params": self.density_field.parameters(), "lr": lr})
+        if len(self.density_fields) > 0:
+            params.append({"params": self.density_fields.parameters(), "lr": lr})
         if self.use_F:
             params.append({"params": [self.pt_min, self.pt_max], "lr": lr})
-        if self.use_F:
             params.append({"params": self.features, "lr": lr})
         return params
 

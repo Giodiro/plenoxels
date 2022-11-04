@@ -230,6 +230,8 @@ class Trainer():
                 self.post_step(data=data, progress_bar=pb)
                 if step_successful and self.scheduler is not None:
                     self.scheduler.step()
+                for r in self.regularizers:
+                    r.step(self.global_step)
 
                 # Check if we need to save model at this step
                 if self.save_every > -1 and self.global_step % self.save_every == 0 and self.global_step > 0:
@@ -450,6 +452,14 @@ class Trainer():
 
     def init_model(self, **kwargs) -> torch.nn.Module:
         aabbs = [d.scene_bbox for d in self.test_datasets]
+        try:
+            global_translation = self.test_datasets[0].global_translation
+        except AttributeError:
+            global_translation = None
+        try:
+            global_scale = self.test_datasets[0].global_scale
+        except AttributeError:
+            global_scale = None
 
         model = LowrankLearnableHash(
             num_scenes=self.num_dsets,
@@ -458,6 +468,8 @@ class Trainer():
             is_ndc=self.is_ndc,
             is_contracted=self.is_contracted,
             proposal_sampling=self.extra_args.get('histogram_loss_weight', 0.0) > 0.0,
+            global_translation=global_translation,
+            global_scale=global_scale,
             **kwargs)
         logging.info(f"Initialized LowrankLearnableHash model with "
                      f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters.")
