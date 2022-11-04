@@ -49,8 +49,8 @@ def lossfun_outer(
     Args:
         t: interval edges
         w: weights
-        t_env: interval edges of the upper bound enveloping historgram (from proposal net)
-        w_env: weights that should upper bound the inner (t,w) histogram (from proposal net)
+        t_env: interval edges of the upper bound enveloping histogram (from proposal model)
+        w_env: weights that should upper bound the inner (t,w) histogram (from proposal model)
     """
     w_outer = outer(t[..., :-1], t[..., 1:], t_env[..., :-1], t_env[..., 1:], w_env)
     return torch.clip(w - w_outer, min=0) ** 2 / (w + EPS)
