@@ -230,6 +230,8 @@ class Trainer():
                 self.post_step(data=data, progress_bar=pb)
                 if step_successful and self.scheduler is not None:
                     self.scheduler.step()
+                for r in self.regularizers:
+                    r.step(self.global_step)
 
                 # Check if we need to save model at this step
                 if self.save_every > -1 and self.global_step % self.save_every == 0 and self.global_step > 0:
