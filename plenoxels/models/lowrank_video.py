@@ -44,7 +44,7 @@ class LowrankVideo(LowrankModel):
         self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
         self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
         self.use_F = self.extra_args["use_F"]
-        self.trainble_rank = None
+        self.trainable_rank = None
         self.hooks = None
         self.multiscale_res = multiscale_res
 
@@ -58,26 +58,28 @@ class LowrankVideo(LowrankModel):
                 global_translation=kwargs.get('global_translation', None))
 
         self.use_proposal_sampling = kwargs.get('proposal_sampling', False)
-        self.density_field, self.density_fns = None, None
+        self.density_fields, self.density_fns = torch.nn.ModuleList(), []
         if self.use_proposal_sampling:
-            # Initialize density_fields
-            self.density_field = TriplaneDensityField(
-                aabb=self.aabb(0),
-                resolution=self.extra_args['density_field_resolution'],
-                num_input_coords=3,
-                rank=self.extra_args['density_field_rank'],
-                spatial_distortion=self.spatial_distortion,
-            )
-            self.density_fns = [self.density_field.get_density]
+            for reso in self.extra_args['density_field_resolution']:
+                # Initialize density_fields
+                field = TriplaneDensityField(
+                    aabb=self.aabb(0),
+                    resolution=[reso] * 3,
+                    num_input_coords=3,
+                    rank=self.extra_args['density_field_rank'],
+                    spatial_distortion=self.spatial_distortion,
+                    density_act=self.density_act,
+                )
+                self.density_fields.append(field)
+                self.density_fns.append(field.get_density)
             if self.extra_args['raymarch_type'] != 'fixed':
                 log.warning("raymarch_type is not 'fixed' but we will use 'n_intersections' anyways.")
             self.raymarcher = ProposalNetworkSampler(
-                num_proposal_samples_per_ray=(self.extra_args['num_proposal_samples'], ),
+                num_proposal_samples_per_ray=(self.extra_args['num_proposal_samples']),
                 num_nerf_samples_per_ray=self.extra_args['n_intersections'],
-                num_proposal_network_iterations=1,
+                num_proposal_network_iterations=len(self.extra_args['num_proposal_samples']),
                 single_jitter=self.extra_args['single_jitter'],
             )
-            # TODO: make the initial sampler linear then linear in disparity
         else:
             self.raymarcher = RayMarcher(**self.extra_args)
 
@@ -112,23 +114,12 @@ class LowrankVideo(LowrankModel):
                 decoder_type=self.extra_args.get('sh_decoder_type', 'manual'))
         else:
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
-        
+
         if use_trainable_rank:
-            self.trainable_rank = 1
+            self.trainable_rank = 1 
             self.update_trainable_rank()
         self.density_mask = None
         log.info(f"Initialized LowrankVideo - decoder={self.decoder}")
-
-    @torch.no_grad()
-    # TODO: need to update this. Or just remove it as an option and always start with higher time resolution
-    def upsample_time(self, new_reso):
-        self.time_coef = torch.nn.Parameter(
-            F.interpolate(self.time_coef.data[:, None, :], size=(new_reso), mode='linear',
-                          align_corners=True).squeeze())
-        log.info(f"Upsampled time resolution from {self.time_resolution} to {new_reso}")
-        if not isinstance(new_reso, torch.Tensor):
-            new_reso = torch.tensor(new_reso, dtype=torch.int32)
-        self.time_resolution = new_reso
 
     def compute_features(self,
                          pts,  # [batch, 3]
@@ -137,23 +128,23 @@ class LowrankVideo(LowrankModel):
                          ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         multiscale_space : torch.nn.ModuleList = self.grids  # space: 6 x [1, rank * F_dim, reso, reso] where the reso can be different in different grids and dimensions
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
-        
+
         # Interpolate in space and time
         pts = torch.cat([pts, timestamps[:,None]], dim=-1)  # [batch, 4] for xyzt
-        
+
         coo_combs = list(itertools.combinations(
             range(pts.shape[-1]),
             level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
-        
+
         multi_scale_interp = 0
         for scale_id, grid_space in enumerate(multiscale_space):
             interp_space = None  # [n, F_dim, rank]
             for ci, coo_comb in enumerate(coo_combs):
-                
+
                 # interpolate in plane
                 interp_out_plane = grid_sample_wrapper(grid_space[ci], pts[..., coo_comb]).view(
                             -1, level_info["output_coordinate_dim"], level_info["rank"])
-                
+
                 # compute product
                 interp_space = interp_out_plane if interp_space is None else interp_space * interp_out_plane
 
@@ -175,7 +166,7 @@ class LowrankVideo(LowrankModel):
             return out, multi_scale_interp
         return out
 
-    def forward(self, rays_o, rays_d, timestamps, bg_color, channels: Sequence[str] = ("rgb", "depth"), near_far=None, 
+    def forward(self, rays_o, rays_d, timestamps, bg_color, channels: Sequence[str] = ("rgb", "depth"), near_far=None,
                 global_translation=torch.tensor([0, 0, 0]), global_scale=torch.tensor([1, 1, 1])):
         """
         rays_o : [batch, 3]
@@ -185,6 +176,9 @@ class LowrankVideo(LowrankModel):
         """
 
         outputs = {}
+
+        # Normalize rays_d
+        rays_d = rays_d / torch.linalg.norm(rays_d, dim=-1, keepdim=True)
 
         if self.use_proposal_sampling:
             # TODO: determining near-far should be done in a separate function this is super cluttered
@@ -295,11 +289,10 @@ class LowrankVideo(LowrankModel):
             {"params": self.grids.parameters(), "lr": lr},
             {"params": self.decoder.parameters(), "lr": lr},
         ]
-        if self.density_field is not None:
-            params.append({"params": self.density_field.parameters(), "lr": lr})
+        if len(self.density_fields) > 0:
+            params.append({"params": self.density_fields.parameters(), "lr": lr})
         if self.use_F:
             params.append({"params": [self.pt_min, self.pt_max], "lr": lr})
-        if self.use_F:
             params.append({"params": self.features, "lr": lr})
         return params
 

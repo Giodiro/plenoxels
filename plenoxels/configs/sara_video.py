@@ -1,8 +1,8 @@
 # configuration file to be used with `main.py` for video training
 config = {
     # "expname": "newmodel500.500.500.150_noF_rank2_reg30k_isg30k_ist30k_lr0.01cosine_l1sigma0.1_planetv0.05_sample400_init0.1to0.5",
-    # "expname": "multiscale64to512.150_rank4_reg20k_isg20k_ist20k_lr0.01_timesmooth1_planetv0_scale0.6xyshift2z",
-    "expname": "testproposal",
+    "expname": "multiscale64to512.150_rank4_proposal256.128_reg20k_isg20k_ist20k_lr0.01_timesmooth1_planetv0.001_scale0.6xyshift2z_normalizeraysd_annealproposalweightsz",
+    # "expname": "testproposal",
     "logdir": "./logs/salmonvideo",
 
     # Data settings
@@ -22,16 +22,16 @@ config = {
     "ist_step": 40000,
 
     # Optimization settings
-    # "num_steps": 90001,
-    "num_steps": 2001,
+    "num_steps": 60001,
+    # "num_steps": 2001,
     "floater_loss": 0.0000,
     "regnerf_weight_start": 0,
     "regnerf_weight_end": 0.0,
     "regnerf_weight_max_step": 512,
-    "plane_tv_weight": 0.0,  
+    "plane_tv_weight": 0.01,  
     "time_smoothness_weight": 1.0,
     "l1_plane_color_reg": 0,
-    "l1_plane_density_reg": 0,
+    "l1_plane_density_reg": 0,  # Try this
     "l1density_weight": 0,  # Not used for video yet
     "volume_tv_weight": 0.0,  # Not used for video yet
     "volume_tv_npts": 1024,  # Not used for video yet
@@ -43,8 +43,8 @@ config = {
     
     # Training settings
     "train_fp16": True,
-    "save_every": 60000,
-    "valid_every": 60000,
+    "save_every": 10000,
+    "valid_every": 10000,
     "save_video": True,
     "save_outputs": True,
 
@@ -56,9 +56,9 @@ config = {
     "single_jitter": False,
     # Proposal sampling settings
     "histogram_loss_weight": 1,  # this should be set > 0 when using proposal sampling
-    "density_field_resolution": [64, 64, 64],
+    "density_field_resolution": [128],
     "density_field_rank": 10,
-    "num_proposal_samples": 64,
+    "num_proposal_samples": [256],
 
     # Model settings
     "sh": True,

@@ -2,7 +2,7 @@
 Density proposal field
 """
 import itertools
-from typing import List, Optional
+from typing import List, Optional, Callable
 
 import torch
 
@@ -17,7 +17,8 @@ class TriplaneDensityField(LowrankModel):
                  resolution: List[int],
                  num_input_coords: int,
                  rank: int,
-                 spatial_distortion: Optional[SpatialDistortion]):
+                 spatial_distortion: Optional[SpatialDistortion],
+                 density_act: Callable):
         super(TriplaneDensityField, self).__init__()
 
         is_video = num_input_coords == 4
@@ -42,6 +43,7 @@ class TriplaneDensityField(LowrankModel):
         self.feature_dim = 1
         self.spatial_distortion = spatial_distortion
         self.rank = rank
+        self.density_act = density_act
 
     def get_density(self, pts: torch.Tensor):
         if self.spatial_distortion is not None:
@@ -60,7 +62,8 @@ class TriplaneDensityField(LowrankModel):
             interp_out = interp_out_plane if interp_out is None else interp_out * interp_out_plane
         # average over rank
         interp = interp_out.mean(dim=-1)
-        interp = interp.view(n_rays, n_samples, self.feature_dim)
+        interp = self.density_act(interp.view(n_rays, n_samples, self.feature_dim))
+
         return interp
 
     def forward(self, pts: torch.Tensor):

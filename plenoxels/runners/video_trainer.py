@@ -19,7 +19,7 @@ from plenoxels.my_tqdm import tqdm
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_video_to_file
 from plenoxels.runners.multiscene_trainer import Trainer, visualize_planes, visualize_planes_withF
-from plenoxels.runners.regularization import VideoPlaneTV, TimeSmoothness, HistogramLoss
+from plenoxels.runners.regularization import VideoPlaneTV, TimeSmoothness, HistogramLoss, L1PlaneDensityVideo
 
 
 class VideoTrainer(Trainer):
@@ -229,6 +229,7 @@ class VideoTrainer(Trainer):
             VideoPlaneTV(kwargs.get('plane_tv_weight', 0.0)),
             TimeSmoothness(kwargs.get('time_smoothness_weight', 0.0)),
             HistogramLoss(kwargs.get('histogram_loss_weight', 0.0)),
+            L1PlaneDensityVideo(kwargs.get('l1_plane_density_reg', 0.0))
         ]
         # Keep only the regularizers with a positive weight
         regularizers = [r for r in regularizers if r.weight > 0]
@@ -284,20 +285,18 @@ class VideoTrainer(Trainer):
             self.model.features.requires_grad_(False)
 
         self.model.grids.requires_grad_(False)
-        self.model.time_coef.requires_grad_(True)
-
-        parameters = [p for p in self.model.time_coef]
-        self.appearance_optimizer = torch.optim.Adam(params=parameters, lr=1e-3)
+        self.model.appearance_coef.requires_grad_(True)
+        
+        self.appearance_optimizer = torch.optim.Adam(params=[self.model.appearance_coef], lr=1e-3)
 
         for dset_id, dataset in enumerate(self.test_datasets):
             pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
-
+            
             # reset the appearance codes for
-            for i in range(len(self.model.time_coef)):
-                test_frames = self.test_datasets[0].__len__()
-                mask = torch.ones_like(self.model.time_coef[i])
-                mask[: , -test_frames:] = 0
-                self.model.time_coef[i].data = self.model.time_coef[i].data * mask + abs(1 - mask)
+            test_frames = dataset.__len__()
+            mask = torch.ones_like(self.model.appearance_coef)
+            mask[: , -test_frames:] = 0
+            self.model.appearance_coef.data = self.model.appearance_coef.data * mask + abs(1 - mask)
 
             batch_size = self.train_datasets[dset_id].batch_size
 
@@ -305,15 +304,18 @@ class VideoTrainer(Trainer):
                 self.optimize_appearance_step(data, batch_size, img_idx)
                 pb.update(1)
             pb.close()
+            
         # turn gradients on
         if self.model.use_F:
             self.model.features.requires_grad_(True)
         self.model.grids.requires_grad_(True)
-        self.model.time_coef.requires_grad_(True)
+        self.model.appearance_coef.requires_grad_(True)
 
     def validate(self):
-        if hasattr(self.model, "appearance_code"):
-            self.optimize_appearance_codes()
+        if hasattr(self.model, "appearance_coef"):
+            #self.optimize_appearance_codes()
+            pass
+            
         val_metrics = []
         with torch.no_grad():
             if self.save_outputs:  # visualize planes

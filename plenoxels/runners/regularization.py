@@ -74,6 +74,21 @@ class L1Density(Regularizer):
         return torch.abs(density).mean()
 
 
+class L1PlaneDensityVideo(Regularizer):
+    def __init__(self, initial_value):
+        super().__init__('l1-plane-density', initial_value)
+
+    # TODO: make this also work for lowrankappearance
+    def _regularize(self, model: LowrankVideo, grid_id: int = 0, **kwargs):
+        grids: nn.ModuleList = model.grids[grid_id]
+        total = 0
+        for grid in grids:
+            grid = grid.view(model.feature_dim, -1, grid.shape[-2], grid.shape[-1])
+            # density is on last feature. Apply activation before computing loss.
+            total += model.density_act(grid[-1, ...]).mean()
+        return total
+
+
 class L1PlaneDensity(Regularizer):
     def __init__(self, initial_value):
         super().__init__('l1-plane-density', initial_value)
@@ -85,8 +100,8 @@ class L1PlaneDensity(Regularizer):
         for grid_ls in grids:
             for grid in grid_ls:
                 grid = grid.view(model.feature_dim, -1, grid.shape[-2], grid.shape[-1])
-                # density is on last feature.
-                total += torch.abs(grid[-1, ...]).mean()
+                # density is on last feature. Apply activation before computing loss.
+                total += model.density_act(grid[-1, ...]).mean()
         return total
 
 
