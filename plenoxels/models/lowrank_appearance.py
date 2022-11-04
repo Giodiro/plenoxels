@@ -83,6 +83,7 @@ class LowrankAppearance(LowrankModel):
                 num_nerf_samples_per_ray=self.extra_args['n_intersections'],
                 num_proposal_network_iterations=1,
                 single_jitter=self.extra_args['single_jitter'],
+                return_density=True,                    
             )
         else:
             self.raymarcher = RayMarcher(
@@ -215,13 +216,13 @@ class LowrankAppearance(LowrankModel):
                 nears, fars = torch.split(near_far, [1, 1], dim=-1)
                 if nears.shape[0] != rays_o.shape[0]:
                     ones = torch.ones_like(rays_o[..., 0:1])
-                    near_plane = nears if self.training else 0
+                    near_plane = nears # if self.training else 0
                     nears = ones * near_plane
                     fars = ones * fars
             
             aabb=self.aabb(0)
             ray_bundle = RayBundle(origins=rays_o, directions=rays_d, nears=nears, fars=fars)
-            ray_samples, weights_list, ray_samples_list = self.raymarcher.generate_ray_samples(
+            ray_samples, weights_list, ray_samples_list, density_list = self.raymarcher.generate_ray_samples(
                 ray_bundle, density_fns=self.density_fns)
             outputs['weights_list'] = weights_list
             outputs['ray_samples_list'] = ray_samples_list
@@ -233,6 +234,19 @@ class LowrankAppearance(LowrankModel):
             mask = ((aabb[0] <= pts) & (pts <= aabb[1])).all(dim=-1)  # noqa
             deltas = ray_samples.deltas.squeeze()
             z_vals = ((ray_samples.starts + ray_samples.ends) / 2).squeeze()
+            
+            if "proposal_depth" in channels:
+                
+                n_rays, n_intrs = pts.shape[:2]
+                dev = rays_o.device
+                density = density_list[0].squeeze()
+                deltas = ray_samples_list[0].deltas.squeeze()
+                alpha, weight, transmission = raw2alpha(density, deltas)  # Each is shape [batch_size, n_samples]
+                acc_map = 1 - transmission[:, -1]
+                outputs["proposal_depth"] = torch.zeros(n_rays, 1, device=dev, dtype=rays_o.dtype)
+                depth_map = torch.sum(weight * z_vals, -1)  # [batch_size]
+                depth_map = depth_map + (1.0 - acc_map) * rays_d[..., -1]  # Maybe the rays_d is to transform ray depth to absolute depth?
+                outputs["proposal_depth"] = depth_map
         else:
             rm_out = self.raymarcher.get_intersections2(
                 rays_o, rays_d, self.aabb(0), self.resolution(0), perturb=self.training,

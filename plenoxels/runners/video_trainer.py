@@ -94,7 +94,7 @@ class VideoTrainer(Trainer):
                 else:
                     bg_color = 1
                 outputs = self.model(rays_o_b, rays_d_b, timestamps_d_b, bg_color=bg_color,
-                                     channels={"rgb", "depth"}, near_far=near_far)
+                                     channels={"rgb", "depth", "proposal_depth"}, near_far=near_far)
                 for k, v in outputs.items():
                     if not isinstance(v, list):
                         preds[k].append(v.cpu())
@@ -319,8 +319,7 @@ class VideoTrainer(Trainer):
 
     def validate(self):
         if hasattr(self.model, "appearance_coef"):
-            #self.optimize_appearance_codes()
-            pass
+            self.optimize_appearance_codes()
             
         val_metrics = []
         with torch.no_grad():
@@ -390,6 +389,15 @@ class VideoTrainer(Trainer):
             depth = depth.cpu().reshape(img_h, img_w)[..., None]
             preds["depth"] = depth
             exrdict["depth"] = preds["depth"].numpy()
+            
+        if "proposal_depth" in preds:
+            # normalize depth and add to exrdict
+            depth = preds["proposal_depth"]
+            depth = depth - depth.min()
+            depth = depth / depth.max()
+            depth = depth.cpu().reshape(img_h, img_w)[..., None]
+            preds["proposal_depth"] = depth
+            exrdict["proposal_depth"] = preds["proposal_depth"].numpy()
 
         if gt is not None:
             gt = gt.reshape(img_h, img_w, -1).cpu()
@@ -419,8 +427,11 @@ class VideoTrainer(Trainer):
             out_name += "-" + name
 
         out_img = preds_rgb
+        
         if "depth" in preds:
-            out_img = torch.cat((out_img, preds["depth"].expand_as(out_img)))
+            out_img = torch.cat((out_img, preds["depth"].expand_as(preds_rgb)))
+        if "proposal_depth" in preds:
+            out_img = torch.cat((out_img, preds["proposal_depth"].expand_as(preds_rgb)))
         out_img = (out_img * 255.0).byte().numpy()
 
         return summary, out_img

@@ -391,6 +391,7 @@ class ProposalNetworkSampler(Sampler):
         num_proposal_network_iterations: int = 2,
         single_jitter: bool = False,
         update_sched: Callable = lambda x: 1,
+        return_density: bool = False,
     ) -> None:
         super().__init__()
         self.num_proposal_samples_per_ray = num_proposal_samples_per_ray
@@ -407,6 +408,8 @@ class ProposalNetworkSampler(Sampler):
         self._anneal = 1.0
         self._steps_since_update = 0
         self._step = 0
+        
+        self.return_density = return_density
 
     def set_anneal(self, anneal: float) -> None:
         """Set the anneal value for the proposal network."""
@@ -433,7 +436,7 @@ class ProposalNetworkSampler(Sampler):
 
         weights_list = []
         ray_samples_list = []
-
+        density_list = []
         n = self.num_proposal_network_iterations
         weights = None
         ray_samples = None
@@ -462,10 +465,15 @@ class ProposalNetworkSampler(Sampler):
                 weights = ray_samples.get_weights(density)
                 weights_list.append(weights)  # (num_rays, num_samples)
                 ray_samples_list.append(ray_samples)
+                if self.return_density:
+                    density_list.append(density)
         if updated:
             self._steps_since_update = 0
 
         assert ray_samples is not None
+        if self.return_density:
+            return ray_samples, weights_list, ray_samples_list, density_list
+        
         return ray_samples, weights_list, ray_samples_list
 
     def __str__(self):
