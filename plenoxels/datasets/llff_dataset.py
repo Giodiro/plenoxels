@@ -26,7 +26,7 @@ class LLFFDataset(BaseDataset):
         self.downsample = downsample
         self.hold_every = hold_every
         self.dset_id = dset_id
-        use_contraction = False
+        use_contraction = True
 
         image_paths, self.poses, self.per_cam_near_fars, intrinsics = load_llff_poses(
             datadir, downsample=downsample, split=split, hold_every=hold_every, near_scaling=1.0)
@@ -86,6 +86,8 @@ class LLFFDataset(BaseDataset):
         if self.is_ndc:
             origins, directions = ndc_rays_blender(
                 intrinsics=self.intrinsics, near=1.0, rays_o=origins, rays_d=directions)
+        else:
+            directions /= torch.linalg.norm(directions, dim=-1, keepdim=True)
         return {
             "rays_o": origins.reshape(-1, 3),
             "rays_d": directions.reshape(-1, 3),
