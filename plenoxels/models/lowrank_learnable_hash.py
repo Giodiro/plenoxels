@@ -11,7 +11,10 @@ from plenoxels.models.utils import grid_sample_wrapper, raw2alpha, init_density_
 from .decoders import NNDecoder, SHDecoder
 from .density_fields import TriplaneDensityField
 from ..ops.bbox_colliders import intersect_with_aabb
-from ..raymarching.ray_samplers import RayBundle, ProposalNetworkSampler
+from ..raymarching.ray_samplers import (
+    RayBundle, ProposalNetworkSampler,
+    UniformLinDispPiecewiseSampler, UniformSampler
+)
 from ..raymarching.raymarching import RayMarcher
 from .lowrank_model import LowrankModel
 from ..raymarching.spatial_distortions import SceneContraction
@@ -95,11 +98,16 @@ class LowrankLearnableHash(LowrankModel):
             self.density_fns = [self.density_field.get_density]
             if self.extra_args['raymarch_type'] != 'fixed':
                 log.warning("raymarch_type is not 'fixed' but we will use 'n_intersections' anyways.")
+            if self.is_contracted:
+                initial_sampler = UniformLinDispPiecewiseSampler(single_jitter=self.extra_args['single_jitter'])
+            else:
+                initial_sampler = UniformSampler(single_jitter=self.extra_args['single_jitter'])
             self.raymarcher = ProposalNetworkSampler(
                 num_proposal_samples_per_ray=(self.extra_args['num_proposal_samples'], ),
                 num_nerf_samples_per_ray=self.extra_args['n_intersections'],
                 num_proposal_network_iterations=1,
                 single_jitter=self.extra_args['single_jitter'],
+                initial_sampler=initial_sampler
             )
         else:
             self.raymarcher = RayMarcher(
