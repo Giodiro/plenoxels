@@ -78,8 +78,9 @@ class LowrankLearnableHash(LowrankModel):
         self.density_multiplier = self.extra_args.get("density_multiplier")
         self.transfer_learning = self.extra_args["transfer_learning"]
         self.alpha_mask_threshold = self.extra_args["density_threshold"]
-        self.multiscale_res = multiscale_res
 
+        self.multiscale_res = multiscale_res
+        self.active_scales = [self.multiscale_res[0]]
         self.scene_grids = nn.ModuleList()
         for si in range(num_scenes):
             multi_scale_grids = nn.ModuleList()
@@ -107,17 +108,23 @@ class LowrankLearnableHash(LowrankModel):
                             self.feature_dim = gpdesc.grid_coefs[-1].shape[1] // config["rank"][0]
                 multi_scale_grids.append(grids)
             self.scene_grids.append(multi_scale_grids)
-
         if self.sh:
             self.decoder = SHDecoder(
                 feature_dim=self.feature_dim,
                 decoder_type=self.extra_args.get('sh_decoder_type', 'manual'))
         else:
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
-
         self.density_mask = nn.ModuleList([None] * num_scenes)
         log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes, "
                  f"decoder: {self.decoder}. Raymarcher: {self.raymarcher}")
+
+    def step_cb(self, step, max_steps):
+        if len(self.active_scales) != len(self.multiscale_res):
+            if step == 1_000 or step == 2_000 or step == 3_000:
+                new_scale = self.multiscale_res[len(self.active_scales)]
+                self.active_scales.append(new_scale)
+                log.info(f"Adding new scale to the set of active scales. "
+                         f"New scales: {self.active_scales}")
 
     def compute_features(self,
                          pts: torch.Tensor,
@@ -128,9 +135,8 @@ class LowrankLearnableHash(LowrankModel):
         grids_info = self.config
 
         multi_scale_interp = 0
-        for scale_id, res in enumerate(self.multiscale_res):
+        for scale_id, res in enumerate(self.active_scales):  # noqa
             grids: nn.ParameterList = mulitres_grids[scale_id]
-
             for level_info, grid in zip(grids_info, grids):
                 if "feature_dim" in level_info:
                     continue

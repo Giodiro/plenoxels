@@ -233,6 +233,10 @@ class Trainer():
                     self.scheduler.step()
                 for r in self.regularizers:
                     r.step(self.global_step)
+                self.model.step_cb(self.global_step, self.num_steps)
+
+                # Increase global_step before validation & save. This is the correct way!
+                self.global_step += 1
 
                 # Check if we need to save model at this step
                 if self.save_every > -1 and self.global_step % self.save_every == 0 and self.global_step > 0:
@@ -244,7 +248,6 @@ class Trainer():
                     self.validate()
                     self.model.train()
 
-                self.global_step += 1
             except StopIteration as e:
                 logging.info(str(e))
                 logging.info(f'resetting after a full pass through the data, or when the dataset changed')
