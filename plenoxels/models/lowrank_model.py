@@ -29,7 +29,7 @@ class LowrankModel(ABC, nn.Module):
                  sh: bool,
                  use_F: bool,
                  use_proposal_sampling: bool,
-
+                 aabb: Union[List[torch.Tensor], torch.Tensor],
                  num_scenes: int = 1,
                  global_translation: Optional[torch.Tensor] = None,
                  global_scale: Optional[torch.Tensor] = None,
@@ -49,6 +49,7 @@ class LowrankModel(ABC, nn.Module):
             self.config: List[Dict] = eval(grid_config)
         else:
             self.config: List[Dict] = grid_config
+        self.set_aabb(aabb)  # set_aabb handles both single tensor and a list.
         self.is_ndc = is_ndc
         self.is_contracted = is_contracted
         self.is_video = self.config[0]['input_coordinate_dim'] == 4
@@ -97,7 +98,7 @@ class LowrankModel(ABC, nn.Module):
             else:
                 self.register_buffer(f'aabb{grid_id}', aabb)
 
-    def aabb(self, i: int) -> torch.Tensor:
+    def aabb(self, i: int = 0) -> torch.Tensor:
         return getattr(self, f'aabb{i}')
 
     def set_resolution(self, resolution: Union[torch.Tensor, List[torch.Tensor]], grid_id: Optional[int] = None):

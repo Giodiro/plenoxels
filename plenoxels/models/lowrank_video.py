@@ -32,7 +32,6 @@ class LowrankVideo(LowrankModel):
                  global_translation=None,
                  global_scale=None,
                  **kwargs):
-        self.set_aabb(aabb, 0)
         super().__init__(grid_config=grid_config,
                          is_ndc=is_ndc,
                          is_contracted=is_contracted,
@@ -49,7 +48,8 @@ class LowrankVideo(LowrankModel):
                          single_jitter=single_jitter,
                          raymarch_type=raymarch_type,
                          spacing_fn=kwargs.get('spacing_fn', None),
-                         num_samples_multiplier=kwargs.get('num_samples_multiplier', None))
+                         num_samples_multiplier=kwargs.get('num_samples_multiplier', None),
+                         aabb=aabb)
         self.len_time = len_time  # maximum timestep - used for normalization
         self.extra_args = kwargs
         self.trainable_rank = None
