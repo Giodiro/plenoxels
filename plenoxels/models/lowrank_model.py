@@ -3,10 +3,21 @@ import itertools
 import math
 from abc import ABC
 from dataclasses import dataclass
-from typing import List, Sequence, Optional, Union
+import logging as log
+from typing import List, Sequence, Optional, Union, Dict, Tuple, Callable, Any
 
 import torch
 import torch.nn as nn
+
+from plenoxels.models.density_fields import TriplaneDensityField
+from plenoxels.models.utils import init_density_activation
+from plenoxels.raymarching.ray_samplers import (
+    UniformLinDispPiecewiseSampler, UniformSampler,
+    ProposalNetworkSampler
+)
+from plenoxels.raymarching.raymarching import RayMarcher
+from plenoxels.raymarching.spatial_distortions import SceneContraction
+from plenoxels.runners.timer import CudaTimer
 
 
 @dataclass
@@ -18,6 +29,67 @@ class GridParamDescription:
 
 
 class LowrankModel(ABC, nn.Module):
+    def __init__(self,
+                 grid_config: Union[str, List[Dict]],
+                 # boolean flags
+                 is_ndc: bool,
+                 is_contracted: bool,
+                 sh: bool,
+                 use_F: bool,
+                 use_proposal_sampling: bool,
+
+                 num_scenes: int = 1,
+                 global_translation: Optional[torch.Tensor] = None,
+                 global_scale: Optional[torch.Tensor] = None,
+                 density_activation: Optional[str] = 'trunc_exp',
+                 # ray-sampling arguments
+                 density_field_resolution: Optional[Sequence[int]] = None,
+                 density_field_rank: Optional[int] = None,
+                 num_proposal_samples: Optional[Tuple[int]] = None,
+                 n_intersections: Optional[int] = None,
+                 single_jitter: bool = False,
+                 raymarch_type: str = 'fixed',
+                 spacing_fn: Optional[str] = None,
+                 num_samples_multiplier: Optional[int] = None,
+                 ):
+        super().__init__()
+        if isinstance(grid_config, str):
+            self.config: List[Dict] = eval(grid_config)
+        else:
+            self.config: List[Dict] = grid_config
+        self.is_ndc = is_ndc
+        self.is_contracted = is_contracted
+        self.is_video = self.config[0]['input_coordinate_dim'] == 4
+        self.sh = sh
+        self.use_F = use_F
+        self.use_proposal_sampling = use_proposal_sampling
+        self.density_act = init_density_activation(density_activation)
+        self.num_scenes = num_scenes
+        self.timer = CudaTimer(enabled=False)
+
+        self.pt_min, self.pt_max = None, None
+        if self.use_F:
+            self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
+            self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
+
+        if self.is_contracted:
+            self.spatial_distortion = SceneContraction(
+                order=float('inf'),
+                global_scale=global_scale,
+                global_translation=global_translation)
+
+        self.raymarcher, self.density_fields, self.density_fns = self.init_raymarcher(
+            prop_sampling=self.use_proposal_sampling,
+            density_field_resolution=density_field_resolution,
+            density_field_rank=density_field_rank,
+            num_proposal_samples=num_proposal_samples,
+            n_intersections=n_intersections,
+            single_jitter=single_jitter,
+            raymarch_type=raymarch_type,
+            spacing_fn=spacing_fn,
+            num_sample_multiplier=num_samples_multiplier,
+        )
+
     def set_aabb(self, aabb: Union[torch.Tensor, List[torch.Tensor]], grid_id: Optional[int] = None):
         if grid_id is None:
             # aabb needs to be BufferList (but BufferList doesn't exist so we emulate it)
@@ -179,6 +251,63 @@ class LowrankModel(ABC, nn.Module):
         return GridParamDescription(
             grid_coefs=grid_coefs, reso=pt_reso)
 
+    def init_raymarcher(self,
+                        prop_sampling: bool,
+                        density_field_resolution: Optional[Sequence[int]],
+                        density_field_rank: Optional[int],
+                        single_jitter: bool,
+                        num_proposal_samples: Optional[Tuple[int]],
+                        n_intersections: int,
+                        num_sample_multiplier: Optional[int],
+                        raymarch_type: str,
+                        spacing_fn: Optional[str],
+                        ) -> Tuple[Any, torch.nn.ModuleList, List[Callable]]:
+        density_fields, density_fns = torch.nn.ModuleList(), []
+        if prop_sampling:
+            if self.num_scenes != 1:
+                raise NotImplementedError("Proposal sampling with multiple scenes not implemented.")
+            assert num_proposal_samples is not None
+            assert density_field_rank is not None
+            assert density_field_resolution is not None
+            for reso in density_field_resolution:
+                real_resolution = [reso] * 3
+                if self.is_video:
+                    real_resolution.append(self.config[0]['resolution'][-1])
+                field = TriplaneDensityField(
+                    aabb=self.aabb(0),
+                    resolution=real_resolution,
+                    num_input_coords=4 if self.is_video else 3,
+                    rank=density_field_rank,
+                    spatial_distortion=self.spatial_distortion,
+                    density_act=self.density_act,
+                    len_time=self.len_time if self.is_video else None,
+                )
+                density_fields.append(field)
+                density_fns.append(field.get_density)
+            if raymarch_type != 'fixed':
+                log.warning("raymarch_type is not 'fixed' but we will use 'n_intersections' anyways.")
+            if self.is_contracted:
+                initial_sampler = UniformLinDispPiecewiseSampler(single_jitter=single_jitter)
+            else:
+                initial_sampler = UniformSampler(single_jitter=single_jitter)
+            raymarcher = ProposalNetworkSampler(
+                num_proposal_samples_per_ray=num_proposal_samples,
+                num_nerf_samples_per_ray=n_intersections,
+                num_proposal_network_iterations=len(num_proposal_samples),
+                single_jitter=single_jitter,
+                initial_sampler=initial_sampler,
+            )
+        else:
+            assert spacing_fn is not None
+            assert num_sample_multiplier is not None
+            raymarcher = RayMarcher(
+                n_intersections=n_intersections,
+                num_sample_multiplier=num_sample_multiplier,
+                raymarch_type=raymarch_type,
+                spacing_fn=spacing_fn,
+                single_jitter=single_jitter,
+                spatial_distortion=self.spatial_distortion)
+        return raymarcher, density_fields, density_fns
 
 
 def to_list(el, list_len, name: Optional[str] = None) -> Sequence:
@@ -187,6 +316,7 @@ def to_list(el, list_len, name: Optional[str] = None) -> Sequence:
     if len(el) != list_len:
         raise ValueError(f"Length of {name} is incorrect. Expected {list_len} but found {len(el)}")
     return el
+
 
 def basis_vector(n, k, dense=True):
     vector = torch.zeros(n)

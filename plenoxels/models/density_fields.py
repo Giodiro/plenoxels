@@ -5,13 +5,14 @@ import itertools
 from typing import List, Optional, Callable
 
 import torch
+import torch.nn as nn
 
 from plenoxels.models.lowrank_model import LowrankModel
 from plenoxels.models.utils import grid_sample_wrapper
 from plenoxels.raymarching.spatial_distortions import SpatialDistortion
 
 
-class TriplaneDensityField(LowrankModel):
+class TriplaneDensityField(nn.Module):
     def __init__(self,
                  aabb: torch.Tensor,
                  resolution: List[int],
@@ -32,16 +33,16 @@ class TriplaneDensityField(LowrankModel):
             "resolution": resolution,
             "rank": rank
         }
-        gpdesc = self.init_grid_param(
+        gpdesc = LowrankModel.init_grid_param(
             config,
             is_video=self.is_video,
             grid_level=0,
             use_F=False,
             is_appearance=False  # Not entirely sure about this
         )
-        self.set_resolution(gpdesc.reso, grid_id=0)
+        self.resolution = nn.Parameter(gpdesc.reso, requires_grad=False)
         # TODO: Enforce that when spatial_distribution is contraction, aabb must be [[-2, -2, -2], [2, 2, 2]]
-        self.set_aabb(aabb, grid_id=0)
+        self.aabb = nn.Parameter(aabb, requires_grad=False)
         self.grids = gpdesc.grid_coefs
         self.feature_dim = 1
         self.spatial_distortion = spatial_distortion
@@ -65,7 +66,7 @@ class TriplaneDensityField(LowrankModel):
         if self.spatial_distortion is not None:
             pts = self.spatial_distortion(pts)  # cube of side 2
         # 2. Normalize
-        pts = self.normalize_coords(pts)
+        pts = (pts - self.aabb[0]) * (2.0 / (self.aabb[1] - self.aabb[0])) - 1
         pts = pts.view(-1, 3)  # TODO: Masking!
         if timestamps is not None:
             timestamps = (timestamps * 2 / self.len_time) - 1

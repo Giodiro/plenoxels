@@ -1,24 +1,19 @@
 import itertools
-from typing import Dict, List, Union, Optional, Sequence, Tuple
 import logging as log
+from typing import Dict, List, Union, Optional, Sequence, Tuple
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
 
-from plenoxels.models.utils import grid_sample_wrapper, raw2alpha, init_density_activation
+from plenoxels.models.utils import grid_sample_wrapper, raw2alpha
 from .decoders import NNDecoder, SHDecoder
-from .density_fields import TriplaneDensityField
+from .lowrank_model import LowrankModel
 from ..ops.bbox_colliders import intersect_with_aabb
 from ..raymarching.ray_samplers import (
-    RayBundle, ProposalNetworkSampler,
-    UniformLinDispPiecewiseSampler, UniformSampler
+    RayBundle
 )
-from ..raymarching.raymarching import RayMarcher
-from .lowrank_model import LowrankModel
-from ..raymarching.spatial_distortions import SceneContraction
-from ..runners.timer import CudaTimer
 
 
 class DensityMask(nn.Module):
@@ -46,73 +41,41 @@ class LowrankLearnableHash(LowrankModel):
                  is_ndc: bool,
                  is_contracted: bool,
                  sh: bool,
+                 use_F: bool,
+                 density_activation: str,
+                 proposal_sampling: bool,
+                 n_intersections: int,
+                 single_jitter: bool,
+                 raymarch_type: str,
                  num_scenes: int = 1,
                  multiscale_res: List[int] = [1],
                  global_translation=None,
                  global_scale=None,
                  **kwargs):
-        super().__init__()
-        if isinstance(grid_config, str):
-            self.config: List[Dict] = eval(grid_config)
-        else:
-            self.config: List[Dict] = grid_config
+        super().__init__(grid_config=grid_config,
+                         is_ndc=is_ndc,
+                         is_contracted=is_contracted,
+                         sh=sh,
+                         use_F=use_F,
+                         num_scenes=num_scenes,
+                         global_scale=global_scale,
+                         global_translation=global_translation,
+                         density_activation=density_activation,
+                         use_proposal_sampling=proposal_sampling,
+                         density_field_resolution=kwargs.get('density_field_resolution', None),
+                         density_field_rank=kwargs.get('density_field_rank', None),
+                         num_proposal_samples=kwargs.get('num_proposal_samples', None),
+                         n_intersections=n_intersections,
+                         single_jitter=single_jitter,
+                         raymarch_type=raymarch_type,
+                         spacing_fn=kwargs.get('spacing_fn', None),
+                         num_samples_multiplier=kwargs.get('num_samples_multiplier', None))
         self.set_aabb(aabb)
         self.extra_args = kwargs
-        self.is_ndc = is_ndc
-        self.is_contracted = is_contracted
-        self.sh = sh
         self.density_multiplier = self.extra_args.get("density_multiplier")
         self.transfer_learning = self.extra_args["transfer_learning"]
         self.alpha_mask_threshold = self.extra_args["density_threshold"]
-        self.use_F = self.extra_args["use_F"]
-        self.timer = CudaTimer(enabled=False)
         self.multiscale_res = multiscale_res
-
-        self.spatial_distortion = None
-        if is_contracted:
-            self.spatial_distortion = SceneContraction(
-                order=float('inf'),
-                global_scale=global_scale,
-                global_translation=global_translation)
-
-        self.density_act = init_density_activation(
-            self.extra_args.get('density_activation', 'trunc_exp'))
-
-        self.pt_min, self.pt_max = None, None
-        if self.use_F:
-            self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
-            self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
-
-        self.use_proposal_sampling = kwargs.get('proposal_sampling', False)
-        self.density_field, self.density_fns = None, None
-        if self.use_proposal_sampling:
-            # Initialize density_fields
-            self.density_field = TriplaneDensityField(
-                aabb=self.aabb(0),
-                resolution=self.extra_args['density_field_resolution'],
-                num_input_coords=self.config[0]['input_coordinate_dim'],
-                rank=self.extra_args['density_field_rank'],
-                spatial_distortion=self.spatial_distortion,
-                density_act=self.density_act,
-            )
-            self.density_fns = [self.density_field.get_density]
-            if self.extra_args['raymarch_type'] != 'fixed':
-                log.warning("raymarch_type is not 'fixed' but we will use 'n_intersections' anyways.")
-            if self.is_contracted:
-                initial_sampler = UniformLinDispPiecewiseSampler(single_jitter=self.extra_args['single_jitter'])
-            else:
-                initial_sampler = UniformSampler(single_jitter=self.extra_args['single_jitter'])
-            self.raymarcher = ProposalNetworkSampler(
-                num_proposal_samples_per_ray=(self.extra_args['num_proposal_samples'], ),
-                num_nerf_samples_per_ray=self.extra_args['n_intersections'],
-                num_proposal_network_iterations=1,
-                single_jitter=self.extra_args['single_jitter'],
-                initial_sampler=initial_sampler
-            )
-        else:
-            self.raymarcher = RayMarcher(
-                spatial_distortion=self.spatial_distortion,
-                **self.extra_args)
 
         self.scene_grids = nn.ModuleList()
         for si in range(num_scenes):
