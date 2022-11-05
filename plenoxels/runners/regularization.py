@@ -8,6 +8,7 @@ from torch import nn
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash
 from plenoxels.models.lowrank_video import LowrankVideo
 from plenoxels.models.utils import compute_plane_tv, compute_plane_smoothness
+from plenoxels.ops.losses.distortion_loss import distortion_loss
 from plenoxels.ops.losses.histogram_loss import interlevel_loss
 
 import matplotlib.pyplot as plt
@@ -296,3 +297,11 @@ class HistogramLoss(Regularizer):
                     plt.clf()
             self.count += 1
         return interlevel_loss(model_out['weights_list'], model_out['ray_samples_list'])
+
+
+class DistortionLoss(Regularizer):
+    def __init__(self, initial_value):
+        super().__init__('distortion-loss', initial_value)
+
+    def _regularize(self, model: LowrankLearnableHash, model_out, grid_id: int, **kwargs) -> torch.Tensor:
+        return distortion_loss(model_out['weights_list'], model_out['ray_samples_list'])
