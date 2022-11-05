@@ -169,7 +169,7 @@ class LowrankVideo(LowrankModel):
             aabb=self.aabb(0)
             ray_bundle = RayBundle(origins=rays_o, directions=rays_d, nears=nears, fars=fars)
             ray_samples, weights_list, ray_samples_list = self.raymarcher.generate_ray_samples(
-                ray_bundle, timestamps=(timestamps * 2 / self.len_time) - 1, density_fns=self.density_fns)
+                ray_bundle, timestamps=timestamps, density_fns=self.density_fns)  # expects unnormalized times
             outputs['weights_list'] = weights_list
             outputs['ray_samples_list'] = ray_samples_list
             outputs['ray_samples_list'].append(ray_samples)
