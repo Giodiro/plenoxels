@@ -79,7 +79,7 @@ class VideoTrainer(Trainer):
             rays_d = data["rays_d"]
             near_far = data["near_far"].cuda() if data["near_far"] is not None else None
             timestamp = data["timestamps"]
-
+            # import pdb; pdb.set_trace()
             if rays_o.ndim == 3:
                 rays_o = rays_o.squeeze(0)
                 rays_d = rays_d.squeeze(0)
@@ -107,6 +107,7 @@ class VideoTrainer(Trainer):
         near_far = data["near_far"].cuda() if data["near_far"] is not None else None
         timestamps = data["timestamps"].cuda()
 
+        # import pdb; pdb.set_trace()
         if rays_o.ndim == 3:
             rays_o = rays_o.squeeze(0)
             rays_d = rays_d.squeeze(0)
@@ -269,9 +270,7 @@ class VideoTrainer(Trainer):
 
                 with torch.cuda.amp.autocast(enabled=self.train_fp16):
                     fwd_out = self.model(rays_o_b, rays_d_b, timestamps_b, bg_color=1,
-                                        channels={"rgb"}, near_far=near_far_b,
-                                        global_translation=self.train_datasets[0].global_translation,
-                                        global_scale=self.train_datasets[0].global_scale)
+                                        channels={"rgb"}, near_far=near_far_b)
                     rgb_preds = fwd_out["rgb"]
                     recon_loss = self.criterion(rgb_preds, imgs_b)
                     loss = recon_loss
@@ -389,15 +388,16 @@ class VideoTrainer(Trainer):
             depth = depth.cpu().reshape(img_h, img_w)[..., None]
             preds["depth"] = depth
             exrdict["depth"] = preds["depth"].numpy()
-            
-        if "proposal_depth" in preds:
-            # normalize depth and add to exrdict
-            depth = preds["proposal_depth"]
-            depth = depth - depth.min()
-            depth = depth / depth.max()
-            depth = depth.cpu().reshape(img_h, img_w)[..., None]
-            preds["proposal_depth"] = depth
-            exrdict["proposal_depth"] = preds["proposal_depth"].numpy()
+        
+        for proposal_id in range(len(self.model.density_fields)):
+            if f"proposal_depth_{proposal_id}" in preds:
+                # normalize depth and add to exrdict
+                depth = preds[f"proposal_depth_{proposal_id}"]
+                depth = depth - depth.min()
+                depth = depth / depth.max()
+                depth = depth.cpu().reshape(img_h, img_w)[..., None]
+                preds[f"proposal_depth_{proposal_id}"] = depth
+                exrdict[f"proposal_depth_{proposal_id}"] = preds[f"proposal_depth_{proposal_id}"].numpy()
 
         if gt is not None:
             gt = gt.reshape(img_h, img_w, -1).cpu()
@@ -430,8 +430,9 @@ class VideoTrainer(Trainer):
         
         if "depth" in preds:
             out_img = torch.cat((out_img, preds["depth"].expand_as(preds_rgb)))
-        if "proposal_depth" in preds:
-            out_img = torch.cat((out_img, preds["proposal_depth"].expand_as(preds_rgb)))
+        for proposal_id in range(len(self.model.density_fields)):
+            if f"proposal_depth_{proposal_id}" in preds:
+                out_img = torch.cat((out_img, preds[f"proposal_depth_{proposal_id}"].expand_as(preds_rgb)))
         out_img = (out_img * 255.0).byte().numpy()
 
         return summary, out_img
@@ -485,8 +486,8 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
             data_dir, split='train', downsample=data_downsample, batch_size=batch_size,
         )
         tr_loader = torch.utils.data.DataLoader(
-            tr_dset, batch_size=1, num_workers=2,
-            prefetch_factor=4, pin_memory=True)
+            tr_dset, batch_size=batch_size, num_workers=4,
+            prefetch_factor=4, pin_memory=True, shuffle=True,)
         return {"tr_loader": tr_loader, "tr_dset": tr_dset}
     else:
         logging.info(f"Loading contracted Video360Dataset with downsample={data_downsample}")

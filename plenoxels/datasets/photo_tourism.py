@@ -6,6 +6,7 @@ from typing import Optional
 import os
 import glob
 import pandas as pd
+import h5py
 
 train_images = {"sacre" : 1179,
             "trevi" : 1689}
@@ -27,6 +28,31 @@ def get_rays_tourism(H, W, kinv, pose):
     """
     yy, xx = torch.meshgrid(torch.arange(0., H, device=kinv.device),
                             torch.arange(0., W, device=kinv.device))
+    pixco = torch.stack([xx, yy, torch.ones_like(xx)], dim=-1)
+
+    directions = torch.matmul(pixco, kinv.T) # (H, W, 3)
+
+    rays_d = torch.matmul(directions, pose[:3, :3].T)
+    rays_d = rays_d / torch.norm(rays_d, dim=-1, keepdim=True) # (H, W, 3)
+    
+    rays_o = pose[:3, -1].expand_as(rays_d) # (H, W, 3)
+
+    return rays_o, rays_d
+
+
+def get_rays_tourism_single(xx, yy, kinv, pose):
+    """
+    phototourism camera intrinsics are defined by H, W and kinv.
+    Args:
+        H: image height
+        W: image width
+        kinv (3, 3): inverse of camera intrinsic
+        pose (4, 4): camera extrinsic
+    Returns:
+        rays_o (H, W, 3): ray origins
+        rays_d (H, W, 3): ray directions
+    """
+
     pixco = torch.stack([xx, yy, torch.ones_like(xx)], dim=-1)
 
     directions = torch.matmul(pixco, kinv.T) # (H, W, 3)
@@ -98,18 +124,38 @@ class PhotoTourismDataset(torch.utils.data.Dataset):
         
         self.img_w = res[:, 0]
         self.img_h = res[:, 1]
-
+        
+        if self.training:
+            data = np.load(os.path.join(datadir, f'my_cachedata.npy'))
+            self.data = torch.from_numpy(data)
+            print(data.shape, data.dtype)
+        
+        self.size = np.sum(self.img_w * self.img_h)
         self.len_time = train_images[self.name] + test_images[self.name]
         print(f"==> in total there are {self.len_time} images")
 
     def __len__(self):
+        if self.training:
+            return len(self.data)
+
         return len(self.imagepaths)
     
     def reset_iter(self):
-        pass 
-    
+        pass
+
     def __getitem__(self, idx: int):
         
+        # use data in the buffers
+        if self.training:
+            data = self.data[idx, :]
+
+            return {'imgs': data[:3],
+                    'rays_o': data[3:6], 
+                      'rays_d': data[6:9], 
+                      'near_far': data[9:11],
+                      'timestamps': data[11],
+                      }
+
         image = imageio.imread(self.imagepaths[idx])
         image = image[..., :3]/255.
         image = torch.as_tensor(image, dtype=torch.float)
@@ -128,35 +174,26 @@ class PhotoTourismDataset(torch.utils.data.Dataset):
         #TODO: histoggram of image resolutions 
         rays_o, rays_d = get_rays_tourism(image.shape[0], image.shape[1], kinv, pose)
         
-        if not self.training:
-            mid = image.shape[1]//2
-            
-            image_left = image[:, :mid, :].reshape(-1, 3)
-            rays_o_left = rays_o[:, :mid, :].reshape(-1, 3)
-            rays_d_left = rays_d[:, :mid, :].reshape(-1, 3)
+        mid = image.shape[1]//2
         
+        image_left = image[:, :mid, :].reshape(-1, 3)
+        rays_o_left = rays_o[:, :mid, :].reshape(-1, 3)
+        rays_d_left = rays_d[:, :mid, :].reshape(-1, 3)
+    
         rays_o = rays_o.reshape(-1, 3)
         rays_d = rays_d.reshape(-1, 3)
         image = image.reshape(-1, 3)
+
+        timestamp = torch.tensor(idx + self.n_train_images)
+        bound = bound.expand(1, 2)
         
-        if self.training:            
-            indices = torch.randint(0, len(rays_o), size = [self.batch_size])
-            rays_o = rays_o[indices, : ]
-            rays_d = rays_d[indices, : ]
-            image = image[indices, : ]
-            
-            timestamp = torch.tensor(idx).expand(len(rays_o))
-            bound = bound.expand(len(rays_o), 2)
-        else:
-            timestamp = torch.tensor(idx + self.n_train_images)
-            bound = bound.expand(1, 2)
-            
         out = {"rays_o" : rays_o, "rays_d": rays_d, "imgs": image, "near_far" : bound, "timestamps": timestamp}
-        
-        if not self.training:
-            out["rays_o_left"] = rays_o_left
-            out["rays_d_left"] = rays_d_left
-            out["imgs_left"] =  image_left
-        
+    
+        out["rays_o_left"] = rays_o_left
+        out["rays_d_left"] = rays_d_left
+        out["imgs_left"] =  image_left
+    
         return out
     
+
+

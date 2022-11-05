@@ -64,24 +64,26 @@ class LowrankAppearance(LowrankModel):
                 global_translation=global_translation)
 
         self.use_proposal_sampling = kwargs.get('proposal_sampling', False)
-        self.density_field, self.density_fns = None, None
+        self.density_fields, self.density_fns = torch.nn.ModuleList(), []
         if self.use_proposal_sampling:
-            # Initialize density_fields
-            self.density_field = TriplaneDensityField(
-                aabb=self.aabb(0),
-                resolution=self.extra_args['density_field_resolution'],
-                num_input_coords=3,
-                rank=self.extra_args['density_field_rank'],
-                spatial_distortion=self.spatial_distortion,
-                density_act=self.density_act,
-            )
-            self.density_fns = [self.density_field.get_density]
+            for reso in self.extra_args['density_field_resolution']:
+                # Initialize density_fields
+                field = TriplaneDensityField(
+                    aabb=self.aabb(0),
+                    resolution=[reso] * 3,
+                    num_input_coords=3,
+                    rank=self.extra_args['density_field_rank'],
+                    spatial_distortion=self.spatial_distortion,
+                    density_act=self.density_act,
+                )
+                self.density_fields.append(field)
+                self.density_fns.append(field.get_density)
             if self.extra_args['raymarch_type'] != 'fixed':
                 log.warning("raymarch_type is not 'fixed' but we will use 'n_intersections' anyways.")
             self.raymarcher = ProposalNetworkSampler(
-                num_proposal_samples_per_ray=(self.extra_args['num_proposal_samples'], ),
+                num_proposal_samples_per_ray=(self.extra_args['num_proposal_samples']),
                 num_nerf_samples_per_ray=self.extra_args['n_intersections'],
-                num_proposal_network_iterations=1,
+                num_proposal_network_iterations=len(self.extra_args['num_proposal_samples']),
                 single_jitter=self.extra_args['single_jitter'],
                 return_density=True,                    
             )
@@ -235,17 +237,17 @@ class LowrankAppearance(LowrankModel):
             z_vals = ((ray_samples.starts + ray_samples.ends) / 2).squeeze()
             
             if "proposal_depth" in channels:
-                
                 n_rays, n_intrs = pts.shape[:2]
                 dev = rays_o.device
-                density = density_list[0].squeeze()
-                deltas = ray_samples_list[0].deltas.squeeze()
-                alpha, weight, transmission = raw2alpha(density, deltas)  # Each is shape [batch_size, n_samples]
-                acc_map = 1 - transmission[:, -1]
-                outputs["proposal_depth"] = torch.zeros(n_rays, 1, device=dev, dtype=rays_o.dtype)
-                depth_map = torch.sum(weight * z_vals, -1)  # [batch_size]
-                depth_map = depth_map + (1.0 - acc_map) * rays_d[..., -1]  # Maybe the rays_d is to transform ray depth to absolute depth?
-                outputs["proposal_depth"] = depth_map
+                for proposal_id in range(len(density_list) - 1):
+                    density = density_list[0].squeeze()
+                    deltas = ray_samples_list[0].deltas.squeeze()
+                    alpha, weight, transmission = raw2alpha(density, deltas)  # Each is shape [batch_size, n_samples]
+                    acc_map = 1 - transmission[:, -1]
+                    outputs[f"proposal_depth_{proposal_id}"] = torch.zeros(n_rays, 1, device=dev, dtype=rays_o.dtype)
+                    depth_map = torch.sum(weight * z_vals, -1)  # [batch_size]
+                    depth_map = depth_map + (1.0 - acc_map) * rays_d[..., -1]  # Maybe the rays_d is to transform ray depth to absolute depth?
+                    outputs[f"proposal_depth{proposal_id}"] = depth_map
         else:
             rm_out = self.raymarcher.get_intersections2(
                 rays_o, rays_d, self.aabb(0), self.resolution(0), perturb=self.training,
@@ -326,11 +328,10 @@ class LowrankAppearance(LowrankModel):
             {"params": self.decoder.parameters(), "lr": lr},
         ]
 
-        if self.density_field is not None:
-            params.append({"params": self.density_field.parameters(), "lr": lr})
+        if len(self.density_fields) > 0:
+            params.append({"params": self.density_fields.parameters(), "lr": lr})
         if self.use_F:
             params.append({"params": [self.pt_min, self.pt_max], "lr": lr})
-        if self.use_F:
             params.append({"params": self.features, "lr": lr})
         return params
 

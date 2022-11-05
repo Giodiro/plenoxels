@@ -1,8 +1,10 @@
 # configuration file to be used with `main.py` for video training
 config = {
 
-    "expname": "tv0_histloss1_optimize_apperance_code_withtime",
-    "logdir": "./logs/trevi/use_test_near_bound",
+    "expname": "hexplane_lr001_tv005_histloss1_proposal128x256_256x96_ninsect48_fp16",
+    #"expname": "hexplane_lr001_tv1_histloss1_ninsect48",
+    #"expname": "test",
+    "logdir": "./logs/trevi/newdataloader",
 
     # Data settings
     "data_downsample": 1.0,
@@ -21,12 +23,12 @@ config = {
 
     # Optimization settings
     # "num_steps": 40001,
-    "num_steps": 90_001,
+    "num_steps": 120_001,
     "floater_loss": 0.0000,
     "regnerf_weight_start": 0,
     "regnerf_weight_end": 0.0,
     "regnerf_weight_max_step": 512,
-    "plane_tv_weight": 0.0,  
+    "plane_tv_weight": 0.05,  
     "l1density_weight": 0,  # Not used for video yet
     "volume_tv_weight": 0.0,  # Not used for video yet
     "volume_tv_npts": 1024,  # Not used for video yet
@@ -38,14 +40,14 @@ config = {
     "use_F": False,
     # proposal sampling
     "histogram_loss_weight": 1,  # this should be set > 0 when using proposal sampling
-    "density_field_resolution": [64, 64, 64],
+    "density_field_resolution": [128, 256],
     "density_field_rank": 10,
-    "num_proposal_samples": 128,
+    "num_proposal_samples": [256, 96],
     
     # Training settings
-    "train_fp16": False,
-    "save_every": 30_000,
-    "valid_every": 30_000,
+    "train_fp16": True,
+    "save_every":  120_000,
+    "valid_every": 120_000,
     "save_video": True,
     "add_rank_steps": [],
     "save_outputs": True,
@@ -53,7 +55,7 @@ config = {
     # Raymarching settings
     "raymarch_type": "fixed",
     "num_sample_multiplier": 2,
-    "n_intersections": 128,
+    "n_intersections": 48,
     "spacing_fn": "linear",
     "single_jitter": False,
     
