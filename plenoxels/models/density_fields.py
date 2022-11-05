@@ -66,12 +66,14 @@ class TriplaneDensityField(nn.Module):
             pts = self.spatial_distortion(pts)  # cube of side 2
         # 2. Normalize
         pts = (pts - self.aabb[0]) * (2.0 / (self.aabb[1] - self.aabb[0])) - 1
-        pts = pts.view(-1, 3)  # TODO: Masking!
         if timestamps is not None:
             timestamps = (timestamps * 2 / self.len_time) - 1
         # 3. Combine xyz with time
         if timestamps is not None:
             pts = torch.cat([pts, timestamps[:, None].expand(-1, n_samples)[..., None]], dim=-1)
+            pts = pts.view(-1, 4)  # TODO: Masking!
+        else:
+            pts = pts.view(-1, 3)  # TODO: Masking!
         # 4. Interpolate over all plane combinations
         coo_combs = list(itertools.combinations(range(pts.shape[-1]), 2))
         interp_out = None

@@ -32,6 +32,7 @@ class LowrankVideo(LowrankModel):
                  global_translation=None,
                  global_scale=None,
                  **kwargs):
+        self.len_time = len_time  # maximum timestep - used for normalization
         super().__init__(grid_config=grid_config,
                          is_ndc=is_ndc,
                          is_contracted=is_contracted,
@@ -50,7 +51,6 @@ class LowrankVideo(LowrankModel):
                          spacing_fn=kwargs.get('spacing_fn', None),
                          num_samples_multiplier=kwargs.get('num_samples_multiplier', None),
                          aabb=aabb)
-        self.len_time = len_time  # maximum timestep - used for normalization
         self.extra_args = kwargs
         self.trainable_rank = None
         self.hooks = None
