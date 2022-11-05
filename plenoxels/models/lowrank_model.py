@@ -84,16 +84,26 @@ class LowrankModel(ABC, nn.Module):
             num_sample_multiplier=num_samples_multiplier,
         )
 
+    def step_cb(self, step, max_step):
+        pass
+
     def set_aabb(self, aabb: Union[torch.Tensor, List[torch.Tensor]], grid_id: Optional[int] = None):
         if grid_id is None:
-            # aabb needs to be BufferList (but BufferList doesn't exist so we emulate it)
-            for i, p in enumerate(aabb):
-                if hasattr(self, f'aabb{i}'):
-                    setattr(self, f'aabb{i}', p)
-                else:
-                    self.register_buffer(f'aabb{i}', p)
+            if isinstance(aabb, list):
+                # aabb needs to be BufferList (but BufferList doesn't exist so we emulate it)
+                for i, p in enumerate(aabb):
+                    assert p.shape == (2, 3)
+                    if hasattr(self, f'aabb{i}'):
+                        setattr(self, f'aabb{i}', p)
+                    else:
+                        self.register_buffer(f'aabb{i}', p)
+            else:
+                assert isinstance(aabb, torch.Tensor)
+                assert aabb.shape == (2, 3)
+                self.register_buffer('aabb0', aabb)
         else:
             assert isinstance(aabb, torch.Tensor)
+            assert aabb.shape == (2, 3)
             if hasattr(self, f'aabb{grid_id}'):
                 setattr(self, f'aabb{grid_id}', aabb)
             else:

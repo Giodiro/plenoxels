@@ -134,9 +134,10 @@ class PlaneTV(Regularizer):
         self.features = features
 
     def step(self, global_step):
-        if global_step == 23000:
-            self.weight /= 10
-            log.info(f"Setting PlaneTV weight to {self.weight}")
+        #if global_step == 23000:
+        #    self.weight /= 2
+        #    log.info(f"Setting PlaneTV weight to {self.weight}")
+        pass
 
     def _regularize(self, model: LowrankLearnableHash, grid_id: int = 0, **kwargs):
         multi_res_grids: nn.ModuleList = model.scene_grids[grid_id]

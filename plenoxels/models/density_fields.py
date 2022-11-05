@@ -3,6 +3,7 @@ Density proposal field
 """
 import itertools
 from typing import List, Optional, Callable
+import logging as log
 
 import torch
 import torch.nn as nn
@@ -48,6 +49,8 @@ class TriplaneDensityField(nn.Module):
         self.rank = rank
         self.density_act = density_act
         self.len_time = len_time
+        log.info(f"Initialized TriplaneDensityField. is_video={self.is_video} - resolution={self.resolution} - time-length={self.len_time}")
+        log.info(f"TriplaneDensityField grids: \n{self.grids}")
 
     def get_density(self, pts: torch.Tensor, timestamps: Optional[torch.Tensor] = None):
         """
