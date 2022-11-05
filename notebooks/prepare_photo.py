@@ -113,7 +113,7 @@ for idx, impath in enumerate(imagepaths):
         
     timestamp = timestamp.expand(len(image), 1)
     bound = bound.expand(len(image), 2)
-    import pdb; pdb.set_trace()
+    
     rows = np.concatenate([image, rays_o, rays_d, bound, timestamp], axis=1)
     if count < 10:
         print(rows.shape, rows.dtype)
@@ -123,7 +123,7 @@ for idx, impath in enumerate(imagepaths):
     
 
 import os
-print(os.path.join(datadir, "my_cache" "data.npy"))
+print(os.path.join(datadir, "my_cache", "data.npy"))
 os.makedirs(os.path.join(datadir, "my_cache"), exist_ok=True)
 print(dset.shape, dset.dtype)
-np.save(os.path.join(datadir, "my_cache" "data.npy"), dset)
+np.save(os.path.join(datadir, "my_cache", "data.npy"), dset)

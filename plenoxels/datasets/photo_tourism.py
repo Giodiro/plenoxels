@@ -126,7 +126,7 @@ class PhotoTourismDataset(torch.utils.data.Dataset):
         self.img_h = res[:, 1]
         
         if self.training:
-            data = np.load(os.path.join(datadir, f'my_cachedata.npy'))
+            data = np.load(os.path.join(datadir, f'my_cache', 'data.npy'))
             self.data = torch.from_numpy(data)
             print(data.shape, data.dtype)
         

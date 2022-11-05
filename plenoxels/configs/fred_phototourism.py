@@ -1,10 +1,10 @@
 # configuration file to be used with `main.py` for video training
 config = {
 
-    "expname": "hexplane_lr001_tv005_histloss1_proposal128x256_256x96_ninsect48_fp16",
-    #"expname": "hexplane_lr001_tv1_histloss1_ninsect48",
+    "expname": "hexplane_lr001_tv0_histloss1_proposal128x256_256x96_ninsect48_fp16",
+    #"expname": "hexplane_lr001_tv1_histloss1_ninsect128",
     #"expname": "test",
-    "logdir": "./logs/trevi/newdataloader",
+    "logdir": "./logs/trevi/newdataloader_debug2",
 
     # Data settings
     "data_downsample": 1.0,
@@ -23,7 +23,7 @@ config = {
 
     # Optimization settings
     # "num_steps": 40001,
-    "num_steps": 120_001,
+    "num_steps": 20_001,
     "floater_loss": 0.0000,
     "regnerf_weight_start": 0,
     "regnerf_weight_end": 0.0,
@@ -46,8 +46,8 @@ config = {
     
     # Training settings
     "train_fp16": True,
-    "save_every":  120_000,
-    "valid_every": 120_000,
+    "save_every":  20_000,
+    "valid_every": 20_000,
     "save_video": True,
     "add_rank_steps": [],
     "save_outputs": True,
@@ -66,7 +66,7 @@ config = {
     # "upsample_time_steps": [6000],  # DyNerf does 300K iterations with keyframes, with lr 5e-4
     "upsample_time_steps": [],
     #"upsample_resolution": [],
-    "multiscale_res": [1, 2, 4, 8],
+    "multiscale_res": [1, 2, 4],
     "grid_config": """
 [
     {
