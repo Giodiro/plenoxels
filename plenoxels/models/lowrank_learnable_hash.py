@@ -7,7 +7,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from plenoxels.models.utils import grid_sample_wrapper, raw2alpha
+from plenoxels.models.utils import (
+    grid_sample_wrapper, raw2alpha, init_grid_param,
+    init_features_param
+)
 from .decoders import NNDecoder, SHDecoder
 from .lowrank_model import LowrankModel
 from ..ops.bbox_colliders import intersect_with_aabb
@@ -86,14 +89,14 @@ class LowrankLearnableHash(LowrankModel):
                     # initialize feature grid
                     if "feature_dim" in grid_config and si == 0:  # Only make one set of features
                         if self.use_F:
-                            self.features = self.init_features_param(grid_config, self.sh)
+                            self.features = init_features_param(grid_config, self.sh)
                             self.feature_dim = self.features.shape[0]
                     # initialize coordinate grid
                     else:
                         config = grid_config.copy()
                         config["resolution"] = [r * res for r in config["resolution"]]
 
-                        gpdesc = self.init_grid_param(config, is_video=False, grid_level=li, use_F=self.use_F, is_appearance=False)
+                        gpdesc = init_grid_param(config, is_video=False, grid_level=li, use_F=self.use_F, is_appearance=False)
                         if li == 0:
                             self.set_resolution(gpdesc.reso, grid_id=si)
                         grids.append(gpdesc.grid_coefs)

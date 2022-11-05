@@ -5,7 +5,7 @@ from typing import Dict, List, Union, Sequence, Tuple
 import torch
 
 from plenoxels.models.utils import (
-    grid_sample_wrapper, raw2alpha
+    grid_sample_wrapper, raw2alpha, init_features_param, init_grid_param
 )
 from .decoders import NNDecoder, SHDecoder
 from .lowrank_model import LowrankModel
@@ -65,7 +65,7 @@ class LowrankVideo(LowrankModel):
                     self.features = None
                     self.feature_dim = grid_config["feature_dim"]
                     if self.use_F:
-                        self.features = self.init_features_param(grid_config, self.sh)
+                        self.features = init_features_param(grid_config, self.sh)
                         self.feature_dim = self.features.shape[0]
                 # initialize coordinate grid
                 else:
@@ -74,7 +74,7 @@ class LowrankVideo(LowrankModel):
                     # do not have multi resolution on time.
                     if len(grid_config["resolution"]) == 4:
                         config["resolution"] += [grid_config["resolution"][-1]]
-                    gpdesc = self.init_grid_param(config, grid_level=li, use_F=self.use_F, is_video=True, is_appearance=False)
+                    gpdesc = init_grid_param(config, grid_level=li, use_F=self.use_F, is_video=True, is_appearance=False)
                     self.set_resolution(gpdesc.reso, 0)
                     self.grids.append(gpdesc.grid_coefs)
 

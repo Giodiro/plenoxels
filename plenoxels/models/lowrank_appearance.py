@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 
 from plenoxels.models.utils import (
-    grid_sample_wrapper, compute_plane_tv, raw2alpha
+    grid_sample_wrapper, compute_plane_tv, raw2alpha, init_features_param, init_grid_param
 )
 from .decoders import NNDecoder, SHDecoder
 from .lowrank_model import LowrankModel
@@ -68,7 +68,7 @@ class LowrankAppearance(LowrankModel):
                     self.features = None
                     self.feature_dim = grid_config["feature_dim"]
                     if self.use_F:
-                        self.features = self.init_features_param(grid_config, self.sh)
+                        self.features = init_features_param(grid_config, self.sh)
                         self.feature_dim = self.features.shape[0]
                 # initialize coordinate grid
                 else:
@@ -78,7 +78,7 @@ class LowrankAppearance(LowrankModel):
                     if len(grid_config["resolution"]) == 4:
                         config["resolution"] += [grid_config["resolution"][-1]]
 
-                    gpdesc = self.init_grid_param(config, is_video=False, is_appearance=True, grid_level=li, use_F=self.use_F)
+                    gpdesc = init_grid_param(config, is_video=False, is_appearance=True, grid_level=li, use_F=self.use_F)
                     self.set_resolution(gpdesc.reso, 0)
                     self.grids.append(gpdesc.grid_coefs)
 

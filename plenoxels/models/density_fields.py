@@ -7,8 +7,7 @@ from typing import List, Optional, Callable
 import torch
 import torch.nn as nn
 
-from plenoxels.models.lowrank_model import LowrankModel
-from plenoxels.models.utils import grid_sample_wrapper
+from plenoxels.models.utils import grid_sample_wrapper, init_grid_param
 from plenoxels.raymarching.spatial_distortions import SpatialDistortion
 
 
@@ -33,7 +32,7 @@ class TriplaneDensityField(nn.Module):
             "resolution": resolution,
             "rank": rank
         }
-        gpdesc = LowrankModel.init_grid_param(
+        gpdesc = init_grid_param(
             config,
             is_video=self.is_video,
             grid_level=0,
