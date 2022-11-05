@@ -1,21 +1,22 @@
 import itertools
-from typing import Dict, List, Union, Optional, Sequence, Tuple
 import logging as log
+from typing import Dict, List, Union, Optional, Sequence, Tuple
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
 
-from plenoxels.models.utils import grid_sample_wrapper, raw2alpha, init_density_activation
+from plenoxels.models.utils import (
+    grid_sample_wrapper, raw2alpha, init_grid_param,
+    init_features_param
+)
 from .decoders import NNDecoder, SHDecoder
-from .density_fields import TriplaneDensityField
-from ..ops.bbox_colliders import intersect_with_aabb
-from ..raymarching.ray_samplers import RayBundle, ProposalNetworkSampler
-from ..raymarching.raymarching import RayMarcher
 from .lowrank_model import LowrankModel
-from ..raymarching.spatial_distortions import SceneContraction
-from ..runners.timer import CudaTimer
+from ..ops.bbox_colliders import intersect_with_aabb
+from ..raymarching.ray_samplers import (
+    RayBundle
+)
 
 
 class DensityMask(nn.Module):
@@ -43,69 +44,43 @@ class LowrankLearnableHash(LowrankModel):
                  is_ndc: bool,
                  is_contracted: bool,
                  sh: bool,
+                 use_F: bool,
+                 density_activation: str,
+                 proposal_sampling: bool,
+                 n_intersections: int,
+                 single_jitter: bool,
+                 raymarch_type: str,
                  num_scenes: int = 1,
                  multiscale_res: List[int] = [1],
                  global_translation=None,
                  global_scale=None,
                  **kwargs):
-        super().__init__()
-        if isinstance(grid_config, str):
-            self.config: List[Dict] = eval(grid_config)
-        else:
-            self.config: List[Dict] = grid_config
-        self.set_aabb(aabb)
+        super().__init__(grid_config=grid_config,
+                         is_ndc=is_ndc,
+                         is_contracted=is_contracted,
+                         sh=sh,
+                         use_F=use_F,
+                         num_scenes=num_scenes,
+                         global_scale=global_scale,
+                         global_translation=global_translation,
+                         density_activation=density_activation,
+                         use_proposal_sampling=proposal_sampling,
+                         density_field_resolution=kwargs.get('density_field_resolution', None),
+                         density_field_rank=kwargs.get('density_field_rank', None),
+                         num_proposal_samples=kwargs.get('num_proposal_samples', None),
+                         n_intersections=n_intersections,
+                         single_jitter=single_jitter,
+                         raymarch_type=raymarch_type,
+                         spacing_fn=kwargs.get('spacing_fn', None),
+                         num_samples_multiplier=kwargs.get('num_samples_multiplier', None),
+                         aabb=aabb)
         self.extra_args = kwargs
-        self.is_ndc = is_ndc
-        self.is_contracted = is_contracted
-        self.sh = sh
         self.density_multiplier = self.extra_args.get("density_multiplier")
         self.transfer_learning = self.extra_args["transfer_learning"]
         self.alpha_mask_threshold = self.extra_args["density_threshold"]
-        self.use_F = self.extra_args["use_F"]
-        self.timer = CudaTimer(enabled=False)
+
         self.multiscale_res = multiscale_res
-
-        self.spatial_distortion = None
-        if is_contracted:
-            self.spatial_distortion = SceneContraction(
-                order=float('inf'),
-                global_scale=global_scale,
-                global_translation=global_translation)
-
-        self.density_act = init_density_activation(
-            self.extra_args.get('density_activation', 'trunc_exp'))
-
-        self.pt_min, self.pt_max = None, None
-        if self.use_F:
-            self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
-            self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
-
-        self.use_proposal_sampling = kwargs.get('proposal_sampling', False)
-        self.density_field, self.density_fns = None, None
-        if self.use_proposal_sampling:
-            # Initialize density_fields
-            self.density_field = TriplaneDensityField(
-                aabb=self.aabb(0),
-                resolution=self.extra_args['density_field_resolution'],
-                num_input_coords=self.config[0]['input_coordinate_dim'],
-                rank=self.extra_args['density_field_rank'],
-                spatial_distortion=self.spatial_distortion,
-                density_act=self.density_act,
-            )
-            self.density_fns = [self.density_field.get_density]
-            if self.extra_args['raymarch_type'] != 'fixed':
-                log.warning("raymarch_type is not 'fixed' but we will use 'n_intersections' anyways.")
-            self.raymarcher = ProposalNetworkSampler(
-                num_proposal_samples_per_ray=(self.extra_args['num_proposal_samples'], ),
-                num_nerf_samples_per_ray=self.extra_args['n_intersections'],
-                num_proposal_network_iterations=1,
-                single_jitter=self.extra_args['single_jitter'],
-            )
-        else:
-            self.raymarcher = RayMarcher(
-                spatial_distortion=self.spatial_distortion,
-                **self.extra_args)
-
+        self.active_scales = [self.multiscale_res[0]]
         self.scene_grids = nn.ModuleList()
         for si in range(num_scenes):
             multi_scale_grids = nn.ModuleList()
@@ -115,14 +90,14 @@ class LowrankLearnableHash(LowrankModel):
                     # initialize feature grid
                     if "feature_dim" in grid_config and si == 0:  # Only make one set of features
                         if self.use_F:
-                            self.features = self.init_features_param(grid_config, self.sh)
+                            self.features = init_features_param(grid_config, self.sh)
                             self.feature_dim = self.features.shape[0]
                     # initialize coordinate grid
                     else:
                         config = grid_config.copy()
                         config["resolution"] = [r * res for r in config["resolution"]]
 
-                        gpdesc = self.init_grid_param(config, is_video=False, grid_level=li, use_F=self.use_F, is_appearance=False)
+                        gpdesc = init_grid_param(config, is_video=False, grid_level=li, use_F=self.use_F, is_appearance=False)
                         if li == 0:
                             self.set_resolution(gpdesc.reso, grid_id=si)
                         grids.append(gpdesc.grid_coefs)
@@ -133,17 +108,23 @@ class LowrankLearnableHash(LowrankModel):
                             self.feature_dim = gpdesc.grid_coefs[-1].shape[1] // config["rank"][0]
                 multi_scale_grids.append(grids)
             self.scene_grids.append(multi_scale_grids)
-
         if self.sh:
             self.decoder = SHDecoder(
                 feature_dim=self.feature_dim,
                 decoder_type=self.extra_args.get('sh_decoder_type', 'manual'))
         else:
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
-
         self.density_mask = nn.ModuleList([None] * num_scenes)
         log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes, "
                  f"decoder: {self.decoder}. Raymarcher: {self.raymarcher}")
+
+    def step_cb(self, step, max_steps):
+        if len(self.active_scales) != len(self.multiscale_res):
+            if step == 1_000 or step == 2_000 or step == 3_000:
+                new_scale = self.multiscale_res[len(self.active_scales)]
+                self.active_scales.append(new_scale)
+                log.info(f"Adding new scale to the set of active scales. "
+                         f"New scales: {self.active_scales}")
 
     def compute_features(self,
                          pts: torch.Tensor,
@@ -154,9 +135,8 @@ class LowrankLearnableHash(LowrankModel):
         grids_info = self.config
 
         multi_scale_interp = 0
-        for scale_id, res in enumerate(self.multiscale_res):
+        for scale_id, res in enumerate(self.active_scales):  # noqa
             grids: nn.ParameterList = mulitres_grids[scale_id]
-
             for level_info, grid in zip(grids_info, grids):
                 if "feature_dim" in level_info:
                     continue

@@ -1,7 +1,7 @@
 # configuration file to be used with `main.py` for video training
 config = {
     # "expname": "newmodel500.500.500.150_noF_rank2_reg30k_isg30k_ist30k_lr0.01cosine_l1sigma0.1_planetv0.05_sample400_init0.1to0.5",
-    "expname": "multiscale64to512.150_rank4_proposaltime256.96.48_reg30k_isg30k_ist30k_lr0.03_timesmooth1_planetv0.001_anneal1k_bs8192",
+    "expname": "multiscale64to512.150_rank4_hexplane256.96.48_reg60k_isg30k_ist30k_lr0.03_timesmooth1_planetv0.003_anneal1k_bs4096",
     # "expname": "testproposal",
     "logdir": "./logs/salmonvideo",
 
@@ -18,17 +18,17 @@ config = {
     "max_test_tsteps": 2,
     # Data settings for LLFF
     "keyframes": False,
-    "isg_step": 30000,
-    "ist_step": 60000,
+    "isg_step": 60001,
+    "ist_step": 90001,
 
     # Optimization settings
-    "num_steps": 90001,
+    "num_steps": 120001,
     # "num_steps": 2001,
     "floater_loss": 0.0000,
     "regnerf_weight_start": 0,
     "regnerf_weight_end": 0.0,
     "regnerf_weight_max_step": 512,
-    "plane_tv_weight": 0.001,  
+    "plane_tv_weight": 0.003,  
     "time_smoothness_weight": 1.0,
     "l1_plane_color_reg": 0,
     "l1_plane_density_reg": 0.0,  # Try this
@@ -37,14 +37,14 @@ config = {
     "volume_tv_npts": 1024,  # Not used for video yet
     "volume_tv_what": "Gcoords",  # Not used for video yet
     "scheduler_type": "cosine", # "step"
-    "batch_size": 8192,  
+    "batch_size": 4096,  
     "optim_type": "adam",
     "lr": 0.03,
     
     # Training settings
     "train_fp16": True,
-    "save_every": 29999,
-    "valid_every": 29999,
+    "save_every": 30000,
+    "valid_every": 30000,
     "save_video": True,
     "save_outputs": True,
 
@@ -59,6 +59,7 @@ config = {
     "density_field_resolution": [128, 256],
     "density_field_rank": 10,
     "num_proposal_samples": [256, 96],
+    "density_activation": "trunc_exp",  # can be 'relu' or 'trunc_exp'
 
     # Model settings
     "sh": True,

@@ -3,24 +3,15 @@ import logging as log
 from typing import Dict, List, Union, Sequence, Tuple
 
 import torch
-import torch.nn.functional as F
 import torch.nn as nn
 
 from plenoxels.models.utils import (
-    grid_sample_wrapper, compute_plane_tv, compute_line_tv,
-    raw2alpha, init_density_activation
+    grid_sample_wrapper, compute_plane_tv, raw2alpha, init_features_param, init_grid_param
 )
 from .decoders import NNDecoder, SHDecoder
-from .density_fields import TriplaneDensityField
-from ..ops.bbox_colliders import intersect_with_aabb
-from ..raymarching.ray_samplers import RayBundle, ProposalNetworkSampler
-from ..raymarching.raymarching import RayMarcher
 from .lowrank_model import LowrankModel
-from ..raymarching.spatial_distortions import SceneContraction
-
-from .lowrank_learnable_hash import DensityMask
-from ..raymarching.raymarching import RayMarcher
-from ..ops.activations import trunc_exp
+from ..ops.bbox_colliders import intersect_with_aabb
+from ..raymarching.ray_samplers import RayBundle
 
 
 class LowrankAppearance(LowrankModel):
@@ -30,67 +21,41 @@ class LowrankAppearance(LowrankModel):
                  len_time: int,
                  is_ndc: bool,
                  is_contracted: bool,
-                 lookup_time: bool,
                  sh: bool,
+                 use_F: bool,
+                 lookup_time: bool,
+                 density_activation: str,
+                 proposal_sampling: bool,
+                 n_intersections: int,
+                 single_jitter: bool,
+                 raymarch_type: str,
                  multiscale_res: List[int] = [1],
                  global_translation=None,
                  global_scale=None,
                  **kwargs):
-        super().__init__()
-        if isinstance(grid_config, str):
-            self.config: List[Dict] = eval(grid_config)
-        else:
-            self.config: List[Dict] = grid_config
-        self.set_aabb(aabb, 0)
         self.len_time = len_time  # maximum timestep - used for normalization
+        super().__init__(grid_config=grid_config,
+                         is_ndc=is_ndc,
+                         is_contracted=is_contracted,
+                         sh=sh,
+                         use_F=use_F,
+                         global_scale=global_scale,
+                         global_translation=global_translation,
+                         density_activation=density_activation,
+                         use_proposal_sampling=proposal_sampling,
+                         density_field_resolution=kwargs.get('density_field_resolution', None),
+                         density_field_rank=kwargs.get('density_field_rank', None),
+                         num_proposal_samples=kwargs.get('num_proposal_samples', None),
+                         n_intersections=n_intersections,
+                         single_jitter=single_jitter,
+                         raymarch_type=raymarch_type,
+                         spacing_fn=kwargs.get('spacing_fn', None),
+                         num_samples_multiplier=kwargs.get('num_samples_multiplier', None),
+                         aabb=aabb)
         self.extra_args = kwargs
-        self.is_ndc = is_ndc
-        self.is_contracted = is_contracted
         self.lookup_time = lookup_time
-        self.sh = sh
-        self.density_act = init_density_activation(
-            self.extra_args.get('density_activation', 'trunc_exp'))
-        self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
-        self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
-        self.use_F = self.extra_args["use_F"]
         self.multiscale_res = multiscale_res
         self.trainable_rank = None
-
-        self.spatial_distortion = None
-        if is_contracted:
-            self.spatial_distortion = SceneContraction(
-                order=float('inf'),
-                global_scale=global_scale,
-                global_translation=global_translation)
-
-        self.use_proposal_sampling = kwargs.get('proposal_sampling', False)
-        self.density_fields, self.density_fns = torch.nn.ModuleList(), []
-        if self.use_proposal_sampling:
-            for reso in self.extra_args['density_field_resolution']:
-                # Initialize density_fields
-                field = TriplaneDensityField(
-                    aabb=self.aabb(0),
-                    resolution=[reso] * 3,
-                    num_input_coords=3,
-                    rank=self.extra_args['density_field_rank'],
-                    spatial_distortion=self.spatial_distortion,
-                    density_act=self.density_act,
-                )
-                self.density_fields.append(field)
-                self.density_fns.append(field.get_density)
-            if self.extra_args['raymarch_type'] != 'fixed':
-                log.warning("raymarch_type is not 'fixed' but we will use 'n_intersections' anyways.")
-            self.raymarcher = ProposalNetworkSampler(
-                num_proposal_samples_per_ray=(self.extra_args['num_proposal_samples']),
-                num_nerf_samples_per_ray=self.extra_args['n_intersections'],
-                num_proposal_network_iterations=len(self.extra_args['num_proposal_samples']),
-                single_jitter=self.extra_args['single_jitter'],
-                return_density=True,                    
-            )
-        else:
-            self.raymarcher = RayMarcher(
-                spatial_distortion=self.spatial_distortion,
-                **self.extra_args)
 
         # For now, only allow a single index grid and a single feature grid, not multiple layers
         assert len(self.config) == 2
@@ -103,7 +68,7 @@ class LowrankAppearance(LowrankModel):
                     self.features = None
                     self.feature_dim = grid_config["feature_dim"]
                     if self.use_F:
-                        self.features = self.init_features_param(grid_config, self.sh)
+                        self.features = init_features_param(grid_config, self.sh)
                         self.feature_dim = self.features.shape[0]
                 # initialize coordinate grid
                 else:
@@ -113,7 +78,7 @@ class LowrankAppearance(LowrankModel):
                     if len(grid_config["resolution"]) == 4:
                         config["resolution"] += [grid_config["resolution"][-1]]
 
-                    gpdesc = self.init_grid_param(config, is_video=False, is_appearance=True, grid_level=li, use_F=self.use_F)
+                    gpdesc = init_grid_param(config, is_video=False, is_appearance=True, grid_level=li, use_F=self.use_F)
                     self.set_resolution(gpdesc.reso, 0)
                     self.grids.append(gpdesc.grid_coefs)
 
