@@ -55,6 +55,7 @@ class LowrankLearnableHash(LowrankModel):
                  global_translation=None,
                  global_scale=None,
                  **kwargs):
+        self.set_aabb(aabb)
         super().__init__(grid_config=grid_config,
                          is_ndc=is_ndc,
                          is_contracted=is_contracted,
@@ -73,7 +74,6 @@ class LowrankLearnableHash(LowrankModel):
                          raymarch_type=raymarch_type,
                          spacing_fn=kwargs.get('spacing_fn', None),
                          num_samples_multiplier=kwargs.get('num_samples_multiplier', None))
-        self.set_aabb(aabb)
         self.extra_args = kwargs
         self.density_multiplier = self.extra_args.get("density_multiplier")
         self.transfer_learning = self.extra_args["transfer_learning"]
