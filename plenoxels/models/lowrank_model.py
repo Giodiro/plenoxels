@@ -65,6 +65,7 @@ class LowrankModel(ABC, nn.Module):
             self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
             self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
 
+        self.spatial_distortion = None
         if self.is_contracted:
             self.spatial_distortion = SceneContraction(
                 order=float('inf'),
