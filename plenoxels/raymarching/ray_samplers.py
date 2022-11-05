@@ -430,6 +430,7 @@ class ProposalNetworkSampler(Sampler):
     def generate_ray_samples(
         self,
         ray_bundle: Optional[RayBundle] = None,
+        timestamps: Optional[float] = None,
         density_fns: Optional[List[Callable]] = None,
     ) -> Tuple[RaySamples, List, List]:
         assert ray_bundle is not None
@@ -457,6 +458,9 @@ class ProposalNetworkSampler(Sampler):
                 annealed_weights = torch.pow(weights, self._anneal)
                 ray_samples = self.pdf_sampler(ray_bundle, ray_samples, annealed_weights, num_samples=num_samples)
             if is_prop:
+                if timestamps is not None:
+                    # timestamps is shape [batch], ray_samples.get_positions is shape [batch, n_samples, 3]
+                    xyzt = torch.cat([ray_samples.get_positions(), timestamps[:, None].repeat(1, num_samples)[..., None]], dim=-1)
                 if updated:
                     # always update on the first step or the inf check in grad scaling crashes
                     density = density_fns[i_level](ray_samples.get_positions())  # world space

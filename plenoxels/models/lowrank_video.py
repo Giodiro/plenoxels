@@ -64,8 +64,8 @@ class LowrankVideo(LowrankModel):
                 # Initialize density_fields
                 field = TriplaneDensityField(
                     aabb=self.aabb(0),
-                    resolution=[reso] * 3,
-                    num_input_coords=3,
+                    resolution=[reso] * 3 + [self.config[0]["resolution"][-1]],
+                    num_input_coords=4,  # Density model knows about time as well
                     rank=self.extra_args['density_field_rank'],
                     spatial_distortion=self.spatial_distortion,
                     density_act=self.density_act,
@@ -197,7 +197,7 @@ class LowrankVideo(LowrankModel):
             aabb=self.aabb(0)
             ray_bundle = RayBundle(origins=rays_o, directions=rays_d, nears=nears, fars=fars)
             ray_samples, weights_list, ray_samples_list = self.raymarcher.generate_ray_samples(
-                ray_bundle, density_fns=self.density_fns)
+                ray_bundle, timestamps=(timestamps * 2 / self.len_time) - 1, density_fns=self.density_fns)
             outputs['weights_list'] = weights_list
             outputs['ray_samples_list'] = ray_samples_list
             outputs['ray_samples_list'].append(ray_samples)
