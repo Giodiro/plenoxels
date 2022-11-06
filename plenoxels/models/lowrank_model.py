@@ -166,16 +166,16 @@ class LowrankModel(ABC, nn.Module):
             assert density_field_resolution is not None
             for reso in density_field_resolution:
                 real_resolution = [reso] * 3
-                if self.density_model is 'hexplane':
+                if self.density_model == 'hexplane':
                     real_resolution.append(self.config[0]['resolution'][-1])
                 field = TriplaneDensityField(
                     aabb=self.aabb(0),
                     resolution=real_resolution,
-                    num_input_coords=4 if self.density_model is 'hexplane' else 3,
+                    num_input_coords=4 if self.density_model == 'hexplane' else 3,
                     rank=density_field_rank,
                     spatial_distortion=self.spatial_distortion,
                     density_act=self.density_act,
-                    len_time=self.len_time if self.density_model is 'hexplane' else None,
+                    len_time=self.len_time if self.density_model == 'hexplane' else None,
                 )
                 density_fields.append(field)
                 density_fns.append(field.get_density)

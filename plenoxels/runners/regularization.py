@@ -297,3 +297,25 @@ class HistogramLoss(Regularizer):
                     plt.clf()
             self.count += 1
         return interlevel_loss(model_out['weights_list'], model_out['ray_samples_list'])
+
+
+class L1AppearancePlanes(Regularizer):
+    def __init__(self, initial_value):
+        super().__init__('l1-appearance', initial_value)
+
+    def _regularize(self, model: LowrankVideo, **kwargs) -> torch.Tensor:
+
+        total = 0
+        # model.grids is 6 x [1, rank * F_dim, reso, reso]
+        multi_res_grids = model.grids
+        for grids in multi_res_grids:
+
+            if len(grids) == 3:
+                return 0
+            else:
+                # These are the spatiotemporal grids
+                spatiotemporal_grids = [2, 4, 5]  
+
+            for grid_id in spatiotemporal_grids:
+                total += torch.abs(1 - grids[grid_id]).mean()
+        return total

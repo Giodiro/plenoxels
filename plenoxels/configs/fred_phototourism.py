@@ -1,9 +1,9 @@
 # configuration file to be used with `main.py` for video training
 config = {
 
-    "expname": "hexplane_lr001_tv0_histloss01_proposal128x256_256x96_ninsect48",
+    #"expname": "hexplane_lr001_tv0_histloss01_proposal128x256_256x96_ninsect48",
     #"expname": "hexplane_lr001_tv0_histloss001_ninsect128",
-    #"expname": "test",
+    "expname": "hexplane_no_testtime_optim_l1_appearance_planes_reg0.1_add_appearance",
     "logdir": "./logs/trevi/newdataloader_debug4",
 
     # Data settings
@@ -44,6 +44,8 @@ config = {
     "density_field_rank": 10,
     "num_proposal_samples": [256, 96],
     "density_activation": "trunc_exp",
+    "density_model": "triplane",  # Can be triplane or hexplane
+    "l1_appearance_planes_reg" : 0.1,
     
     # Training settings
     "train_fp16": True,

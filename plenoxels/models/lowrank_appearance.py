@@ -143,8 +143,9 @@ class LowrankAppearance(LowrankModel):
 
         # add density one to appearance code
         appearance_code = torch.cat([appearance_code, torch.ones_like(appearance_code[:, 0:1])], dim=1)
-        multi_scale_interp = multi_scale_interp * appearance_code
-
+        #multi_scale_interp = multi_scale_interp * appearance_code
+        multi_scale_interp = multi_scale_interp + appearance_code
+        
         if self.use_F:
             # Learned normalization
             if interp.numel() > 0:
@@ -191,8 +192,10 @@ class LowrankAppearance(LowrankModel):
 
             aabb=self.aabb(0)
             ray_bundle = RayBundle(origins=rays_o, directions=rays_d, nears=nears, fars=fars)
-            ray_samples, weights_list, ray_samples_list, density_list = self.raymarcher.generate_ray_samples(
-                ray_bundle, timestamps=timestamps, density_fns=self.density_fns, return_density=True)
+            # ray_samples, weights_list, ray_samples_list, density_list = self.raymarcher.generate_ray_samples(
+                # ray_bundle, timestamps=timestamps, density_fns=self.density_fns, return_density=False)
+            ray_samples, weights_list, ray_samples_list = self.raymarcher.generate_ray_samples(
+                ray_bundle, timestamps=timestamps, density_fns=self.density_fns, return_density=False)
             outputs['weights_list'] = weights_list
             outputs['ray_samples_list'] = ray_samples_list
             outputs['ray_samples_list'].append(ray_samples)
@@ -245,6 +248,8 @@ class LowrankAppearance(LowrankModel):
                 outputs["alpha"] = torch.zeros(n_rays, 1, device=dev, dtype=rays_o.dtype)
             return outputs
 
+        # [batch_size]
+        # [batch_size, n_intrs]
         times = timestamps[:, None].repeat(1, n_intrs)[mask]  # [n_rays * n_intrs]
 
         # Normalization (between [-1, 1])
