@@ -1,10 +1,10 @@
 # configuration file to be used with `main.py` for video training
 config = {
 
-    "expname": "hexplane_lr001_tv0_histloss1_proposal128x256_256x96_ninsect48_fp16",
-    #"expname": "hexplane_lr001_tv1_histloss1_ninsect128",
+    "expname": "hexplane_lr001_tv0_histloss01_proposal128x256_256x96_ninsect48",
+    #"expname": "hexplane_lr001_tv0_histloss001_ninsect128",
     #"expname": "test",
-    "logdir": "./logs/trevi/newdataloader_debug2",
+    "logdir": "./logs/trevi/newdataloader_debug4",
 
     # Data settings
     "data_downsample": 1.0,
@@ -28,7 +28,7 @@ config = {
     "regnerf_weight_start": 0,
     "regnerf_weight_end": 0.0,
     "regnerf_weight_max_step": 512,
-    "plane_tv_weight": 0.05,  
+    "plane_tv_weight": 0.0,  
     "l1density_weight": 0,  # Not used for video yet
     "volume_tv_weight": 0.0,  # Not used for video yet
     "volume_tv_npts": 1024,  # Not used for video yet
@@ -39,10 +39,11 @@ config = {
     "lr": 0.01,
     "use_F": False,
     # proposal sampling
-    "histogram_loss_weight": 1,  # this should be set > 0 when using proposal sampling
+    "histogram_loss_weight": 0.1,  # this should be set > 0 when using proposal sampling
     "density_field_resolution": [128, 256],
     "density_field_rank": 10,
     "num_proposal_samples": [256, 96],
+    "density_activation": "trunc_exp",
     
     # Training settings
     "train_fp16": True,
@@ -54,8 +55,8 @@ config = {
 
     # Raymarching settings
     "raymarch_type": "fixed",
-    "num_sample_multiplier": 2,
-    "n_intersections": 48,
+    "num_samples_multiplier": 2,
+    "n_intersections": 128,
     "spacing_fn": "linear",
     "single_jitter": False,
     
