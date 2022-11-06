@@ -23,8 +23,8 @@ class TriplaneDensityField(nn.Module):
                  len_time: Optional[int] = None):
         super(TriplaneDensityField, self).__init__()
 
-        self.is_video = num_input_coords == 4
-        if self.is_video:
+        self.hexplane = num_input_coords == 4
+        if self.hexplane:
             assert len_time is not None
         config = {
             "input_coordinate_dim": num_input_coords,
@@ -35,7 +35,7 @@ class TriplaneDensityField(nn.Module):
         }
         gpdesc = init_grid_param(
             config,
-            is_video=self.is_video,
+            is_video=self.hexplane,
             grid_level=0,
             use_F=False,
             is_appearance=False  # Not entirely sure about this
@@ -49,7 +49,7 @@ class TriplaneDensityField(nn.Module):
         self.rank = rank
         self.density_act = density_act
         self.len_time = len_time
-        log.info(f"Initialized TriplaneDensityField. is_video={self.is_video} - resolution={self.resolution} - time-length={self.len_time}")
+        log.info(f"Initialized TriplaneDensityField. hexplane={self.hexplane} - resolution={self.resolution} - time-length={self.len_time}")
         log.info(f"TriplaneDensityField grids: \n{self.grids}")
 
     def get_density(self, pts: torch.Tensor, timestamps: Optional[torch.Tensor] = None):
@@ -61,18 +61,17 @@ class TriplaneDensityField(nn.Module):
         :return:
             tensor of densities [n_rays, n_samples, 1]
         """
-        if self.is_video:
+        if self.hexplane:
             assert timestamps is not None
+            timestamps = (timestamps * 2 / self.len_time) - 1  # Normalize timestamps
         n_rays, n_samples = pts.shape[:2]
         # 1. Contract
         if self.spatial_distortion is not None:
             pts = self.spatial_distortion(pts)  # cube of side 2
         # 2. Normalize
         pts = (pts - self.aabb[0]) * (2.0 / (self.aabb[1] - self.aabb[0])) - 1
-        if timestamps is not None:
-            timestamps = (timestamps * 2 / self.len_time) - 1
         # 3. Combine xyz with time
-        if timestamps is not None:
+        if self.hexplane:
             pts = torch.cat([pts, timestamps[:, None].expand(-1, n_samples)[..., None]], dim=-1)
             pts = pts.view(-1, 4)  # TODO: Masking!
         else:

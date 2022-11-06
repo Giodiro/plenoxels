@@ -34,6 +34,7 @@ class LowrankModel(ABC, nn.Module):
                  global_translation: Optional[torch.Tensor] = None,
                  global_scale: Optional[torch.Tensor] = None,
                  density_activation: Optional[str] = 'trunc_exp',
+                 density_model: Optional[str] = 'triplane',
                  # ray-sampling arguments
                  density_field_resolution: Optional[Sequence[int]] = None,
                  density_field_rank: Optional[int] = None,
@@ -52,7 +53,10 @@ class LowrankModel(ABC, nn.Module):
         self.set_aabb(aabb)  # set_aabb handles both single tensor and a list.
         self.is_ndc = is_ndc
         self.is_contracted = is_contracted
-        self.is_video = self.config[0]['input_coordinate_dim'] == 4
+        self.density_model = density_model
+        if self.density_model not in ['hexplane', 'triplane']:
+            log.warning(f'density model {self.density_model} is not recognized. Using triplane as default; other choice is hexplane.')
+            self.density_model = 'triplane'
         self.sh = sh
         self.use_F = use_F
         self.use_proposal_sampling = use_proposal_sampling
@@ -162,16 +166,16 @@ class LowrankModel(ABC, nn.Module):
             assert density_field_resolution is not None
             for reso in density_field_resolution:
                 real_resolution = [reso] * 3
-                if self.is_video:
+                if self.density_model is 'hexplane':
                     real_resolution.append(self.config[0]['resolution'][-1])
                 field = TriplaneDensityField(
                     aabb=self.aabb(0),
                     resolution=real_resolution,
-                    num_input_coords=4 if self.is_video else 3,
+                    num_input_coords=4 if self.density_model is 'hexplane' else 3,
                     rank=density_field_rank,
                     spatial_distortion=self.spatial_distortion,
                     density_act=self.density_act,
-                    len_time=self.len_time if self.is_video else None,
+                    len_time=self.len_time if self.density_model is 'hexplane' else None,
                 )
                 density_fields.append(field)
                 density_fns.append(field.get_density)
