@@ -133,15 +133,19 @@ class LowrankAppearance(LowrankModel):
 
             # sum over scales
             multi_scale_interp += interp
-
+        
         # combine with appearance code
-        appearance_code = appearance_coef[:, appearance_idx.long()].unsqueeze(0).repeat(pts.shape[0], 1)  # [n, F_dim]
-        appearance_code = appearance_code.view(-1, self.feature_dim-1)  # [n, F_dim]
+        if appearance_idx.shape == torch.Size([]):
+            appearance_code = appearance_coef[:, appearance_idx.long()].unsqueeze(0).repeat(pts.shape[0], 1)  # [n, F_dim]
+            appearance_code = appearance_code.view(-1, self.feature_dim-1)  # [n, F_dim]
+        else:
+            appearance_code = appearance_coef[:, appearance_idx.long()].permute(1,0)
 
         # add density one to appearance code
         appearance_code = torch.cat([appearance_code, torch.ones_like(appearance_code[:, 0:1])], dim=1)
-        multi_scale_interp = multi_scale_interp * appearance_code
-
+        #multi_scale_interp = multi_scale_interp * appearance_code
+        multi_scale_interp = multi_scale_interp + appearance_code
+        
         if self.use_F:
             # Learned normalization
             if interp.numel() > 0:
@@ -188,8 +192,10 @@ class LowrankAppearance(LowrankModel):
 
             aabb=self.aabb(0)
             ray_bundle = RayBundle(origins=rays_o, directions=rays_d, nears=nears, fars=fars)
-            ray_samples, weights_list, ray_samples_list, density_list = self.raymarcher.generate_ray_samples(
-                ray_bundle, density_fns=self.density_fns)
+            # ray_samples, weights_list, ray_samples_list, density_list = self.raymarcher.generate_ray_samples(
+                # ray_bundle, timestamps=timestamps, density_fns=self.density_fns, return_density=False)
+            ray_samples, weights_list, ray_samples_list = self.raymarcher.generate_ray_samples(
+                ray_bundle, timestamps=timestamps, density_fns=self.density_fns, return_density=False)
             outputs['weights_list'] = weights_list
             outputs['ray_samples_list'] = ray_samples_list
             outputs['ray_samples_list'].append(ray_samples)
@@ -204,15 +210,17 @@ class LowrankAppearance(LowrankModel):
             if "proposal_depth" in channels:
                 n_rays, n_intrs = pts.shape[:2]
                 dev = rays_o.device
-                for proposal_id in range(len(density_list) - 1):
-                    density = density_list[0].squeeze()
-                    deltas = ray_samples_list[0].deltas.squeeze()
-                    alpha, weight, transmission = raw2alpha(density, deltas)  # Each is shape [batch_size, n_samples]
-                    acc_map = 1 - transmission[:, -1]
-                    outputs[f"proposal_depth_{proposal_id}"] = torch.zeros(n_rays, 1, device=dev, dtype=rays_o.dtype)
-                    depth_map = torch.sum(weight * z_vals, -1)  # [batch_size]
-                    depth_map = depth_map + (1.0 - acc_map) * rays_d[..., -1]  # Maybe the rays_d is to transform ray depth to absolute depth?
-                    outputs[f"proposal_depth{proposal_id}"] = depth_map
+                
+                for proposal_id in range(len(density_list)):
+                    density_proposal = density_list[proposal_id].squeeze()
+                    deltas_proposal = ray_samples_list[proposal_id].deltas.squeeze()
+                    z_vals_proposal = ((ray_samples_list[proposal_id].starts + ray_samples_list[proposal_id].ends) / 2).squeeze()
+                    _, weight_proposal, transmission_proposal = raw2alpha(density_proposal, deltas_proposal)  # Each is shape [batch_size, n_samples]
+                    acc_map_proposal = 1 - transmission_proposal[:, -1]
+                    #outputs[f"proposal_depth_{proposal_id}"] = torch.zeros(n_rays, 1, device=dev, dtype=rays_o.dtype)
+                    depth_map_proposal = torch.sum(weight_proposal * z_vals_proposal, -1)  # [batch_size]
+                    depth_map_proposal = depth_map_proposal + (1.0 - acc_map_proposal) * rays_d[..., -1]  # Maybe the rays_d is to transform ray depth to absolute depth?
+                    outputs[f"proposal_depth_{proposal_id}"] = depth_map_proposal
         else:
             rm_out = self.raymarcher.get_intersections2(
                 rays_o, rays_d, self.aabb(0), self.resolution(0), perturb=self.training,
@@ -240,6 +248,8 @@ class LowrankAppearance(LowrankModel):
                 outputs["alpha"] = torch.zeros(n_rays, 1, device=dev, dtype=rays_o.dtype)
             return outputs
 
+        # [batch_size]
+        # [batch_size, n_intrs]
         times = timestamps[:, None].repeat(1, n_intrs)[mask]  # [n_rays * n_intrs]
 
         # Normalization (between [-1, 1])
@@ -248,7 +258,10 @@ class LowrankAppearance(LowrankModel):
 
         # assumes all rays are sampled at the same time
         # speed up look up a quite a bit
-        appearance_idx = timestamps[0]
+        if torch.unique(times).shape[0] == 1:
+            appearance_idx = timestamps[0]
+        else:
+            appearance_idx = timestamps[:, None].repeat(1, n_intrs)[mask]
 
         # compute features and render
         rays_d_rep = rays_d.view(-1, 1, 3).expand(pts.shape)

@@ -392,7 +392,6 @@ class ProposalNetworkSampler(Sampler):
         num_proposal_network_iterations: int = 2,
         single_jitter: bool = False,
         update_sched: Callable = lambda x: 1,
-        return_density: bool = False,
         initial_sampler: Optional[Sampler] = None,
     ) -> None:
         super().__init__()
@@ -413,8 +412,6 @@ class ProposalNetworkSampler(Sampler):
         self._steps_since_update = 0
         self._step = 0
         
-        self.return_density = return_density
-
     def set_anneal(self, anneal: float) -> None:
         """Set the anneal value for the proposal network."""
         self._anneal = anneal
@@ -435,6 +432,7 @@ class ProposalNetworkSampler(Sampler):
         ray_bundle: Optional[RayBundle] = None,
         timestamps: Optional[float] = None,
         density_fns: Optional[List[Callable]] = None,
+        return_density: bool = False,
     ) -> Tuple[RaySamples, List, List]:
         assert ray_bundle is not None
         assert density_fns is not None
@@ -470,13 +468,13 @@ class ProposalNetworkSampler(Sampler):
                 weights = ray_samples.get_weights(density)
                 weights_list.append(weights)  # (num_rays, num_samples)
                 ray_samples_list.append(ray_samples)
-                if self.return_density:
+                if return_density:
                     density_list.append(density)
         if updated:
             self._steps_since_update = 0
 
         assert ray_samples is not None
-        if self.return_density:
+        if return_density:
             return ray_samples, weights_list, ray_samples_list, density_list
         
         return ray_samples, weights_list, ray_samples_list

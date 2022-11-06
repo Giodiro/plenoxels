@@ -108,13 +108,20 @@ class PhotoTourismDataset(torch.utils.data.Dataset):
         # we therefore need to know how many training frames there are
         # such that the test frames can get unique time/appearance indices
         self.n_train_images = train_images[self.name]
-             
-        self.files = self.files[self.files["split"]==split]
-    
         self.imagepaths = sorted((Path(datadir) / "dense" / "images").glob("*.jpg"))
         imkey = np.array([os.path.basename(im) for im in self.imagepaths])
-        idx = np.in1d(imkey, self.files["filename"])
-    
+        
+        #TODO: hard coded
+        debug = False
+        if debug:
+            print("\n!!!DEBUG MODE!!!!\n")
+            self.files = self.files[self.files["split"]=="train"]
+            idx = np.in1d(imkey, self.files["filename"]) # look only at first ten images
+            max_frames = 100
+        else:
+            self.files = self.files[self.files["split"]==split]
+            idx = np.in1d(imkey, self.files["filename"])
+            
         self.imagepaths = np.array(self.imagepaths)[idx]
             
         self.poses = np.load(Path(datadir) / "c2w_mats.npy")[idx]
@@ -126,12 +133,21 @@ class PhotoTourismDataset(torch.utils.data.Dataset):
         self.img_h = res[:, 1]
         
         if self.training:
-            data = np.load(os.path.join(datadir, f'my_cachedata.npy'))
+            data = np.load(os.path.join(datadir, f'my_cache', 'data.npy'))
             self.data = torch.from_numpy(data)
             print(data.shape, data.dtype)
         
-        self.size = np.sum(self.img_w * self.img_h)
         self.len_time = train_images[self.name] + test_images[self.name]
+        
+        if debug and not self.training:
+            self.poses = self.poses[:max_frames]
+            self.kinvs = self.kinvs[:max_frames]
+            self.bounds = self.bounds[:max_frames]
+            self.imagepaths = self.imagepaths[:max_frames]
+            self.img_h = self.img_h[:max_frames]
+            self.img_w = self.img_w[:max_frames]
+            self.n_train_images = 0
+        
         print(f"==> in total there are {self.len_time} images")
 
     def __len__(self):

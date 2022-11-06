@@ -19,7 +19,7 @@ from plenoxels.my_tqdm import tqdm
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_video_to_file
 from plenoxels.runners.multiscene_trainer import Trainer, visualize_planes, visualize_planes_withF
-from plenoxels.runners.regularization import VideoPlaneTV, TimeSmoothness, HistogramLoss, L1PlaneDensityVideo
+from plenoxels.runners.regularization import VideoPlaneTV, TimeSmoothness, HistogramLoss, L1PlaneDensityVideo, L1AppearancePlanes
 
 
 class VideoTrainer(Trainer):
@@ -236,7 +236,8 @@ class VideoTrainer(Trainer):
             VideoPlaneTV(kwargs.get('plane_tv_weight', 0.0)),
             TimeSmoothness(kwargs.get('time_smoothness_weight', 0.0)),
             HistogramLoss(kwargs.get('histogram_loss_weight', 0.0)),
-            L1PlaneDensityVideo(kwargs.get('l1_plane_density_reg', 0.0))
+            L1PlaneDensityVideo(kwargs.get('l1_plane_density_reg', 0.0)),
+            L1AppearancePlanes(kwargs.get('l1_appearance_planes_reg', 0.0)),
         ]
         # Keep only the regularizers with a positive weight
         regularizers = [r for r in regularizers if r.weight > 0]
@@ -286,12 +287,12 @@ class VideoTrainer(Trainer):
 
     def optimize_appearance_codes(self):
         # turn gradients off for anything but appearance codes
-        if self.model.use_F:
-            self.model.features.requires_grad_(False)
-
-        self.model.grids.requires_grad_(False)
-        self.model.appearance_coef.requires_grad_(True)
         
+        # turn gradients on
+        for param in self.model.parameters():
+            param.requires_grad = False
+        self.model.appearance_coef.requires_grad = True
+
         self.appearance_optimizer = torch.optim.Adam(params=[self.model.appearance_coef], lr=1e-3)
 
         for dset_id, dataset in enumerate(self.test_datasets):
@@ -302,24 +303,23 @@ class VideoTrainer(Trainer):
             mask = torch.ones_like(self.model.appearance_coef)
             mask[: , -test_frames:] = 0
             self.model.appearance_coef.data = self.model.appearance_coef.data * mask + abs(1 - mask)
-
-            batch_size = self.train_datasets[dset_id].batch_size
-
+            
+            batch_size = 4096
             for img_idx, data in enumerate(dataset):
                 self.optimize_appearance_step(data, batch_size, img_idx)
                 pb.update(1)
             pb.close()
             
         # turn gradients on
-        if self.model.use_F:
-            self.model.features.requires_grad_(True)
-        self.model.grids.requires_grad_(True)
-        self.model.appearance_coef.requires_grad_(True)
-
+        self.model.grids.requires_grad = True
+        for field in self.model.density_fields:
+            field.requires_grad = True
+            
     def validate(self):
+        
         if hasattr(self.model, "appearance_coef"):
             self.optimize_appearance_codes()
-            
+        
         val_metrics = []
         with torch.no_grad():
             if self.save_outputs:  # visualize planes
@@ -430,6 +430,7 @@ class VideoTrainer(Trainer):
         
         if "depth" in preds:
             out_img = torch.cat((out_img, preds["depth"].expand_as(preds_rgb)))
+        
         for proposal_id in range(len(self.model.density_fields)):
             if f"proposal_depth_{proposal_id}" in preds:
                 out_img = torch.cat((out_img, preds[f"proposal_depth_{proposal_id}"].expand_as(preds_rgb)))
@@ -537,8 +538,10 @@ def load_data(data_downsample, data_dirs, validate_only, **kwargs):
 def load_video_model(config, state, validate_only):
     if state is not None:
         global_step = state['global_step']
-        if global_step > config['upsample_time_steps'][0]:
-            config.update(keyframes=False)
+        
+        if len(config["upsample_time_steps"]) > 0:
+            if global_step > config['upsample_time_steps'][0]:
+                config.update(keyframes=False)
     data = load_data(**config, validate_only=validate_only)
     config.update(data)
     model = VideoTrainer(**config)

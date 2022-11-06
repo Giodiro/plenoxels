@@ -84,14 +84,15 @@ def main():
     validate_only = args.validate_only
 
     pprint.pprint(config)
-    log_dir = os.path.join(config['logdir'], config['expname'])
-    os.makedirs(log_dir, exist_ok=True)
-    with open(os.path.join(log_dir, 'config.txt'), 'wt') as out:
-        pprint.pprint(config, stream=out)
-    
-    with open(os.path.join(log_dir, 'config.csv'), 'w') as f:
-        for key in config.keys():
-            f.write("%s\t%s\n"%(key,config[key]))
+    if not validate_only:
+        log_dir = os.path.join(config['logdir'], config['expname'])
+        os.makedirs(log_dir, exist_ok=True)
+        with open(os.path.join(log_dir, 'config.py'), 'wt') as out: 
+            out.write('config = ' + pprint.pformat(config))
+
+        with open(os.path.join(log_dir, 'config.csv'), 'w') as f:
+            for key in config.keys():
+                f.write("%s\t%s\n"%(key,config[key]))
     
     if is_video:
         state = None
