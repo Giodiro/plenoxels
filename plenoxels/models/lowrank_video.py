@@ -50,6 +50,7 @@ class LowrankVideo(LowrankModel):
                          raymarch_type=raymarch_type,
                          spacing_fn=kwargs.get('spacing_fn', None),
                          num_samples_multiplier=kwargs.get('num_samples_multiplier', None),
+                         density_model=kwargs.get('density_model', None),
                          aabb=aabb)
         self.extra_args = kwargs
         self.trainable_rank = None

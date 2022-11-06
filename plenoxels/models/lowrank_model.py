@@ -1,9 +1,5 @@
-import collections.abc
-import itertools
-import math
-from abc import ABC
-from dataclasses import dataclass
 import logging as log
+from abc import ABC
 from typing import List, Sequence, Optional, Union, Dict, Tuple, Callable, Any
 
 import torch
@@ -34,7 +30,7 @@ class LowrankModel(ABC, nn.Module):
                  global_translation: Optional[torch.Tensor] = None,
                  global_scale: Optional[torch.Tensor] = None,
                  density_activation: Optional[str] = 'trunc_exp',
-                 density_model: Optional[str] = 'triplane',
+                 density_model: Optional[str] = None,
                  # ray-sampling arguments
                  density_field_resolution: Optional[Sequence[int]] = None,
                  density_field_rank: Optional[int] = None,
@@ -53,9 +49,10 @@ class LowrankModel(ABC, nn.Module):
         self.set_aabb(aabb)  # set_aabb handles both single tensor and a list.
         self.is_ndc = is_ndc
         self.is_contracted = is_contracted
-        self.density_model = density_model
-        if self.density_model not in ['hexplane', 'triplane']:
-            log.warning(f'density model {self.density_model} is not recognized. Using triplane as default; other choice is hexplane.')
+        self.density_model = density_model if density_model is not None else 'triplane'
+        if self.density_model not in {'hexplane', 'triplane'}:
+            log.warning(f'density model {self.density_model} is not recognized. '
+                        f'Using triplane as default; other choice is hexplane.')
             self.density_model = 'triplane'
         self.sh = sh
         self.use_F = use_F
