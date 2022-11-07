@@ -141,6 +141,9 @@ class Video360Dataset(BaseDataset):
                 t_e = time.time()
                 log.info(f"Computed {self.ist_weights.shape[0]} IST weights in {t_e - t_s:.2f}s.")
 
+        if self.isg:
+            self.enable_isg()
+
         if dset_type == "synthetic":
             self.len_time = torch.amax(timestamps).item()
         elif dset_type == "llff":
