@@ -323,7 +323,8 @@ class VideoTrainer(Trainer):
         with torch.no_grad():
             if self.save_outputs:  # visualize planes
                 if self.model.use_F:
-                    visualize_planes_withF(self.model, self.log_dir, f"step{self.global_step}")
+                    pass
+                    #visualize_planes_withF(self.model, self.log_dir, f"step{self.global_step}")
                 else:
                     visualize_planes(self.model, self.log_dir, f"step{self.global_step}")
 

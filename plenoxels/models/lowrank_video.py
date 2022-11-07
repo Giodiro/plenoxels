@@ -243,16 +243,19 @@ class LowrankVideo(LowrankModel):
         return outputs
 
     def get_params(self, lr):
-        params = [
-            {"params": self.grids.parameters(), "lr": lr},
-            {"params": self.decoder.parameters(), "lr": lr},
+        return [
+            {"params": self.parameters(), "lr": lr},
         ]
-        if len(self.density_fields) > 0:
-            params.append({"params": self.density_fields.parameters(), "lr": lr})
-        if self.use_F:
-            params.append({"params": [self.pt_min, self.pt_max], "lr": lr})
-            params.append({"params": self.features, "lr": lr})
-        return params
+        #params = [
+        #    {"params": self.grids.parameters(), "lr": lr},
+        #    {"params": self.decoder.parameters(), "lr": lr},
+        #]
+        #if len(self.density_fields) > 0:
+        #    params.append({"params": self.density_fields.parameters(), "lr": lr})
+        #if self.use_F:
+        #    params.append({"params": [self.pt_min, self.pt_max], "lr": lr})
+        #    params.append({"params": self.features, "lr": lr})
+        #return params
 
     def update_trainable_rank(self):
         # Remove any existing hooks
