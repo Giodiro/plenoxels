@@ -436,6 +436,7 @@ class ProposalNetworkSampler(Sampler):
     ) -> Tuple[RaySamples, List, List]:
         assert ray_bundle is not None
         assert density_fns is not None
+        assert len(density_fns) == self.num_proposal_network_iterations
 
         weights_list = []
         ray_samples_list = []

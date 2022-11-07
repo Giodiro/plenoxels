@@ -2,7 +2,7 @@ import logging
 import math
 import os
 from collections import defaultdict
-from typing import Dict, List, Optional, MutableMapping, Union
+from typing import Dict, List, Optional, MutableMapping, Union, Tuple
 
 import numpy as np
 import pandas as pd
@@ -269,6 +269,12 @@ class Trainer():
         val_metrics = []
         with torch.no_grad():
             for dset_id, dataset in enumerate(self.test_datasets):
+                # visualize planes
+                if self.save_outputs:
+                    if self.model.use_F:
+                        visualize_planes_withF(self.model, self.log_dir, f"step{self.global_step}-D{dset_id}")
+                    else:
+                        visualize_planes(self.model, self.log_dir, f"step{self.global_step}-D{dset_id}")
                 per_scene_metrics = {
                     "psnr": 0,
                     "ssim": 0,
@@ -277,9 +283,9 @@ class Trainer():
                 pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
                 for img_idx, data in enumerate(dataset):
                     preds = self.eval_step(data, dset_id=dset_id)
-                    out_metrics = self.evaluate_metrics(
-                        data["imgs"], preds, dset_id=dset_id, dset=dataset, img_idx=img_idx, name=None,
-                        save_outputs=self.save_outputs)
+                    out_metrics, _, _ = self.evaluate_metrics(
+                        data["imgs"], preds, dset_id=dset_id, dset=dataset, img_idx=img_idx,
+                        name=None, save_outputs=self.save_outputs)
                     per_scene_metrics["psnr"] += out_metrics["psnr"]
                     per_scene_metrics["ssim"] += out_metrics["ssim"]
                     pb.set_postfix_str(f"PSNR={out_metrics['psnr']:.2f}", refresh=False)
@@ -290,7 +296,7 @@ class Trainer():
                                 rays_d=dset.rays_d.view(-1, gt.shape[0], 3)[0],
                                 imgs=dset.imgs.view(-1, gt.shape[0], gt.shape[1])[0])
                     preds = self.eval_step(data, dset_id=dset_id)
-                    out_metrics = self.evaluate_metrics(
+                    out_metrics, _, _ = self.evaluate_metrics(
                         data["imgs"], preds, dset_id=dset_id, dset=dset, img_idx=0, name="train",
                         save_outputs=True)
                     print(f"train img 0 PSNR={out_metrics['psnr']}")
@@ -307,15 +313,16 @@ class Trainer():
                     wandb.log({"test_psnr" : per_scene_metrics["psnr"],
                                "test_ssim" : per_scene_metrics["ssim"]})
 
-            # visualize planes
-            if self.save_outputs:
-                if self.model.use_F:
-                    visualize_planes_withF(self.model, self.log_dir, f"step{self.global_step}-D{dset_id}")
-                else:
-                    visualize_planes(self.model, self.log_dir, f"step{self.global_step}-D{dset_id}")
-
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
+
+    def _normalize_err(self, preds: torch.Tensor, gt: torch.Tensor) -> torch.Tensor:
+        err = torch.abs(preds - gt)
+        err = err.mean(-1)  # mean over channels
+        # normalize between 0, 1 where 1 corresponds to the 90th percentile
+        err = err.clamp_max(torch.quantile(err, 0.9))
+        err = self._normalize_01(err)
+        return err.repeat(1, 1, 3)
 
     def _normalize_01(self, t: torch.Tensor) -> torch.Tensor:
         return (t - t.min()) / t.max()
@@ -325,51 +332,75 @@ class Trainer():
             self._normalize_01(depth)
         ).cpu().reshape(img_h, img_w)[..., None]
 
-    def evaluate_metrics(self, gt, preds: MutableMapping[str, torch.Tensor], dset, dset_id: int, img_idx: int,
-                         name: Optional[str] = None, save_outputs: bool = True):
+    def calc_metrics(self, preds: torch.Tensor, gt: torch.Tensor):
+        if gt.shape[-1] == 4:
+            gt = gt[..., :3] * gt[..., 3:] + (1.0 - gt[..., 3:])
+
+        err = (gt - preds) ** 2
+        return {
+            "mse": torch.mean(err),
+            "psnr": metrics.psnr(preds, gt),
+            "ssim": metrics.ssim(preds, gt),
+        }
+
+    def evaluate_metrics(self,
+                         gt: Optional[torch.Tensor],
+                         preds: MutableMapping[str, torch.Tensor],
+                         dset,
+                         dset_id: int,
+                         img_idx: int,
+                         name: Optional[str] = None,
+                         save_outputs: bool = True) -> Tuple[dict, torch.Tensor, torch.Tensor]:
+        if isinstance(dset.img_h, int):
+            img_h, img_w = dset.img_h, dset.img_w
+        else:
+            img_h, img_w = dset.img_h[img_idx], dset.img_w[img_idx]
         preds_rgb = (
             preds["rgb"]
-            .reshape(dset.img_h, dset.img_w, 3)
+            .reshape(img_h, img_w, 3)
             .cpu()
             .clamp(0, 1)
         )
+        if not torch.isfinite(preds_rgb).all():
+            logging.warning(f"Predictions have {torch.isnan(preds_rgb).sum()} NaNs, "
+                            f"{torch.isinf(preds_rgb).sum()} infs.")
+            preds_rgb = torch.nan_to_num(preds_rgb, nan=0.0)
         out_img = preds_rgb
         summary = dict()
 
         out_depth = None
         if "depth" in preds:
             out_depth = self._normalize_depth(
-                preds['depth'], img_h=dset.img_h, img_w=dset.img_w)
+                preds['depth'], img_h=img_h, img_w=img_w)
 
         for proposal_id in range(len(self.model.density_fields)):
             if f"proposal_depth_{proposal_id}" in preds:
                 prop_depth = self._normalize_depth(
-                    preds[f"proposal_depth_{proposal_id}"], img_h=dset.img_h, img_w=dset.img_w
+                    preds[f"proposal_depth_{proposal_id}"], img_h=img_h, img_w=img_w
                 )
                 out_depth = torch.cat((out_depth, prop_depth)) if out_depth is not None else prop_depth
 
         if gt is not None:
-            gt = gt.reshape(dset.img_h, dset.img_w, -1).cpu()
+            gt = gt.reshape(img_h, img_w, -1).cpu()
             if gt.shape[-1] == 4:
                 gt = gt[..., :3] * gt[..., 3:] + (1.0 - gt[..., 3:])
+            summary.update(self.calc_metrics(preds_rgb, gt))
+            out_img = torch.cat((out_img, self._normalize_err(preds_rgb, gt)), dim=0)
 
-            err = (gt - preds_rgb) ** 2
-            out_img = torch.cat((out_img, self._normalize_01(err)), dim=0)
-            summary["mse"] = torch.mean(err)
-            summary["psnr"] = metrics.psnr(preds_rgb, gt)
-            summary["ssim"] = metrics.ssim(preds_rgb, gt)
+        out_img = (out_img * 255.0).byte().numpy()
+        if out_depth is not None:
+            out_depth = (out_depth * 255.0).repeat(1, 1, 3).byte().numpy()
 
         if save_outputs:
             out_name = f"step{self.global_step}-D{dset_id}-{img_idx}"
             if name is not None and name != "":
                 out_name += "-" + name
-            write_png(os.path.join(self.log_dir, out_name + ".png"), (out_img * 255.0).byte().numpy())
+            write_png(os.path.join(self.log_dir, out_name + ".png"), out_img)
             if out_depth is not None:
                 depth_name = out_name + "-depth"
-                out_depth = out_depth.repeat(1, 1, 3)
-                write_png(os.path.join(self.log_dir, depth_name + ".png"), (out_depth * 255.0).byte().numpy())
+                write_png(os.path.join(self.log_dir, depth_name + ".png"), out_depth)
 
-        return summary
+        return summary, out_img, out_depth
 
     def save_model(self):
         """Override this function to change model saving."""

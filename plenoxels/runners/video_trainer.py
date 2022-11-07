@@ -316,7 +316,6 @@ class VideoTrainer(Trainer):
             field.requires_grad = True
 
     def validate(self):
-
         if hasattr(self.model, "appearance_coef"):
             self.optimize_appearance_codes()
 
@@ -333,13 +332,16 @@ class VideoTrainer(Trainer):
                     "psnr": 0, "ssim": 0, "dset_id": dset_id,
                 }
 
-                pred_frames = []
+                pred_frames, out_depths = [], []
                 pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
                 for img_idx, data in enumerate(dataset):
                     preds = self.eval_step(data, dset_id=dset_id)
-                    out_metrics, out_img = self.evaluate_metrics(
-                        data["imgs"], preds, dset_id=dset_id, dset=dataset, img_idx=img_idx, name=None)
+                    out_metrics, out_img, out_depth = self.evaluate_metrics(
+                        data["imgs"], preds, dset_id=dset_id, dset=dataset, img_idx=img_idx,
+                        name=None, save_outputs=False)
                     pred_frames.append(out_img)
+                    if out_depth is not None:
+                        out_depths.append(out_depth)
                     per_scene_metrics["psnr"] += out_metrics["psnr"]
                     per_scene_metrics["ssim"] += out_metrics["ssim"]
                     pb.set_postfix_str(f"PSNR={out_metrics['psnr']:.2f}", refresh=False)
@@ -349,6 +351,11 @@ class VideoTrainer(Trainer):
                     os.path.join(self.log_dir, f"step{self.global_step}.mp4"),
                     pred_frames
                 )
+                if len(out_depths) > 0:
+                    write_video_to_file(
+                        os.path.join(self.log_dir, f"step{self.global_step}.mp4"),
+                        out_depths
+                    )
                 per_scene_metrics["psnr"] /= len(dataset)  # noqa
                 per_scene_metrics["ssim"] /= len(dataset)  # noqa
                 log_text = f"step {self.global_step}/{self.num_steps} | scene {dset_id}"
@@ -360,83 +367,33 @@ class VideoTrainer(Trainer):
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
 
-    def evaluate_metrics(self, gt, preds: MutableMapping[str, torch.Tensor], dset, dset_id,
-                         img_idx, name=None, save_outputs: bool = True):
-        if isinstance(dset.img_h, int):
-            img_h, img_w = dset.img_h, dset.img_w
+    def calc_metrics(self, preds: torch.Tensor, gt: torch.Tensor):
+        """
+        Compute error metrics. This function gets called by `evaluate_metrics` in the base
+        trainer class.
+        :param preds:
+        :param gt:
+        :return:
+        """
+        # if phototourism then only compute metrics on the right side of the image
+        if hasattr(self.model, "appearance_code"):
+            mid = gt.shape[1] // 2
+            gt_right = gt[:, mid:]
+            preds_rgb_right = preds[:, mid:]
+
+            err = (gt_right - preds_rgb_right) ** 2
+            return {
+                "mse": torch.mean(err),
+                "psnr": metrics.psnr(preds_rgb_right, gt_right),
+                "ssim": metrics.ssim(preds_rgb_right, gt_right),
+            }
         else:
-            img_h, img_w = dset.img_h[img_idx], dset.img_w[img_idx]
-
-        preds_rgb = (
-            preds["rgb"]
-            .reshape(img_h, img_w, 3)
-            .cpu()
-            .clamp(0, 1)
-        )
-        if not torch.isfinite(preds_rgb).all():
-            logging.warning(f"Predictions have {torch.isnan(preds_rgb).sum()} NaNs, {torch.isinf(preds_rgb).sum()} infs.")
-            preds_rgb = torch.nan_to_num(preds_rgb, nan=0.0)
-
-        exrdict = {"preds": preds_rgb.numpy()}
-        summary = dict()
-
-        if "depth" in preds:
-            # normalize depth and add to exrdict
-            depth = preds["depth"]
-            depth = depth - depth.min()
-            depth = depth / depth.max()
-            depth = depth.cpu().reshape(img_h, img_w)[..., None]
-            preds["depth"] = depth
-            exrdict["depth"] = preds["depth"].numpy()
-
-        for proposal_id in range(len(self.model.density_fields)):
-            if f"proposal_depth_{proposal_id}" in preds:
-                # normalize depth and add to exrdict
-                depth = preds[f"proposal_depth_{proposal_id}"]
-                depth = depth - depth.min()
-                depth = depth / depth.max()
-                depth = depth.cpu().reshape(img_h, img_w)[..., None]
-                preds[f"proposal_depth_{proposal_id}"] = depth
-                exrdict[f"proposal_depth_{proposal_id}"] = preds[f"proposal_depth_{proposal_id}"].numpy()
-
-        if gt is not None:
-            gt = gt.reshape(img_h, img_w, -1).cpu()
-            if gt.shape[-1] == 4:
-                gt = gt[..., :3] * gt[..., 3:] + (1.0 - gt[..., 3:])
-
-            # if phototourism then only compute metrics on the right side of the image
-            if hasattr(self.model, "appearance_code"):
-                mid = gt.shape[1] // 2
-                gt_right = gt[:, mid:]
-                preds_rgb_right = preds_rgb[:, mid:]
-
-                err = (gt_right - preds_rgb_right) ** 2
-                exrdict["err"] = err.numpy()
-                summary["mse"] = torch.mean(err)
-                summary["psnr"] = metrics.psnr(preds_rgb_right, gt_right)
-                summary["ssim"] = metrics.ssim(preds_rgb_right, gt_right)
-            else:
-                err = (gt - preds_rgb) ** 2
-                exrdict["err"] = err.numpy()
-                summary["mse"] = torch.mean(err)
-                summary["psnr"] = metrics.psnr(preds_rgb, gt)
-                summary["ssim"] = metrics.ssim(preds_rgb, gt)
-
-        out_name = f"step{self.global_step}-D{dset_id}-{img_idx}"
-        if name is not None and name != "":
-            out_name += "-" + name
-
-        out_img = preds_rgb
-
-        if "depth" in preds:
-            out_img = torch.cat((out_img, preds["depth"].expand_as(preds_rgb)))
-
-        for proposal_id in range(len(self.model.density_fields)):
-            if f"proposal_depth_{proposal_id}" in preds:
-                out_img = torch.cat((out_img, preds[f"proposal_depth_{proposal_id}"].expand_as(preds_rgb)))
-        out_img = (out_img * 255.0).byte().numpy()
-
-        return summary, out_img
+            err = (gt - preds) ** 2
+            return {
+                "mse": torch.mean(err),
+                "psnr": metrics.psnr(preds, gt),
+                "ssim": metrics.ssim(preds, gt),
+            }
 
     def load_model(self, checkpoint_data):
         for k, v in checkpoint_data['model'].items():
