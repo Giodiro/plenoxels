@@ -307,6 +307,7 @@ class Trainer():
                 log_text += f" | D{dset_id} PSNR: {per_scene_metrics['psnr']:.2f}"
                 log_text += f" | D{dset_id} SSIM: {per_scene_metrics['ssim']:.6f}"
                 logging.info(log_text)
+                print(log_text)
                 val_metrics.append(per_scene_metrics)
 
                 if wandb is not None:
@@ -318,7 +319,7 @@ class Trainer():
 
     def _normalize_err(self, preds: torch.Tensor, gt: torch.Tensor) -> torch.Tensor:
         err = torch.abs(preds - gt)
-        err = err.mean(-1)  # mean over channels
+        err = err.mean(-1, keepdim=True)  # mean over channels
         # normalize between 0, 1 where 1 corresponds to the 90th percentile
         err = err.clamp_max(torch.quantile(err, 0.9))
         err = self._normalize_01(err)
