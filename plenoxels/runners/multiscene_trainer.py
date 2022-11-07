@@ -462,7 +462,7 @@ class Trainer():
                 num_training_steps=max_steps,
                 eta_min=2e-5,
                 eta_max=kwargs['lr'])
-        elif self.scheduler_type is not None:
+        elif self.scheduler_type is not None and self.scheduler_type != "None":
             raise ValueError(self.scheduler_type)
         return lr_sched
 
