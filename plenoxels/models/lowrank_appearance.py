@@ -51,15 +51,17 @@ class LowrankAppearance(LowrankModel):
                          raymarch_type=raymarch_type,
                          spacing_fn=kwargs.get('spacing_fn', None),
                          num_samples_multiplier=kwargs.get('num_samples_multiplier', None),
-                         aabb=aabb)
+                         density_model=kwargs.get('density_model', None),
+                         aabb=aabb,
+                         multiscale_res=multiscale_res)
         self.extra_args = kwargs
         self.lookup_time = lookup_time
-        self.multiscale_res = multiscale_res
         self.trainable_rank = None
 
         # For now, only allow a single index grid and a single feature grid, not multiple layers
         assert len(self.config) == 2
         self.grids = nn.ModuleList()
+        self.appearance_coef = nn.ParameterList()
 
         for res in self.multiscale_res:
             for li, grid_config in enumerate(self.config):
@@ -81,10 +83,8 @@ class LowrankAppearance(LowrankModel):
                     gpdesc = init_grid_param(config, is_video=False, is_appearance=True, grid_level=li, use_F=self.use_F)
                     self.set_resolution(gpdesc.reso, 0)
                     self.grids.append(gpdesc.grid_coefs)
-
-        # if sh + density in grid, then we do not want appearance code to influence density
-        self.appearance_coef = nn.Parameter(nn.init.ones_(torch.empty([self.feature_dim - 1, len_time])))  # no time dependence
-
+                    self.appearance_coef.append(gpdesc.appearance_coef)
+                    
         if self.sh:
             self.decoder = SHDecoder(
                 feature_dim=self.feature_dim,
@@ -94,7 +94,7 @@ class LowrankAppearance(LowrankModel):
 
         self.density_mask = None
         log.info(f"Initialized LowrankAppearance. "
-                 f"time-reso={self.appearance_coef.shape[1]} - decoder={self.decoder}")
+                 f"time-reso={self.appearance_coef[0].shape[1]} - decoder={self.decoder}")
 
     def compute_features(self,
                          pts,
@@ -103,7 +103,7 @@ class LowrankAppearance(LowrankModel):
                          return_coords: bool = False
                          ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         multiscale_space : nn.ModuleList = self.grids  # space: 3 x [1, rank * F_dim, reso, reso]
-        appearance_coef = self.appearance_coef  # time: [F_dim, time_reso]
+        appearance_coef : nn.ModuleList = self.appearance_coef  # time: [F_dim, time_reso]
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
 
         # if there are 6 planes then
@@ -117,8 +117,9 @@ class LowrankAppearance(LowrankModel):
             level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
 
         multi_scale_interp = 0
-        for scale_id, grid_space in enumerate(multiscale_space):
+        for scale_id, (grid_space, appearance_code) in enumerate(zip(multiscale_space, appearance_coef)):
             interp_space = None  # [n, F_dim, rank]
+            
             for ci, coo_comb in enumerate(coo_combs):
 
                 # interpolate in plane
@@ -127,23 +128,26 @@ class LowrankAppearance(LowrankModel):
                 
                 # compute product
                 interp_space = interp_out_plane if interp_space is None else interp_space * interp_out_plane
+            
+            # combine with appearance code
+            if appearance_idx.shape == torch.Size([]):
+                appearance_code = appearance_code[:, appearance_idx.long()].unsqueeze(1).repeat(1, pts.shape[0])  # [n, F_dim]
+            else:
+                appearance_code = appearance_code[:, appearance_idx.long()]
+                
+            if self.use_F:
+                appearance_code = appearance_code.view(level_info["output_coordinate_dim"], level_info["rank"], -1).permute(2,0,1)
+            else:
+                appearance_code = appearance_code.view(level_info["output_coordinate_dim"] - 1, level_info["rank"], -1).permute(2,0,1)
+
+            # add density one to appearance code
+            appearance_code = torch.cat([appearance_code, torch.ones_like(appearance_code[:, 0:1])], dim=1)
 
             # Combine space over rank
-            interp = interp_space.mean(dim=-1)  # [n, F_dim]
+            interp = (interp_space * appearance_code).mean(dim=-1)  # [n, F_dim]
 
             # sum over scales
             multi_scale_interp += interp
-        
-        # combine with appearance code
-        if appearance_idx.shape == torch.Size([]):
-            appearance_code = appearance_coef[:, appearance_idx.long()].unsqueeze(0).repeat(pts.shape[0], 1)  # [n, F_dim]
-            appearance_code = appearance_code.view(-1, self.feature_dim-1)  # [n, F_dim]
-        else:
-            appearance_code = appearance_coef[:, appearance_idx.long()].permute(1,0)
-
-        # add density one to appearance code
-        appearance_code = torch.cat([appearance_code, torch.ones_like(appearance_code[:, 0:1])], dim=1)
-        multi_scale_interp = multi_scale_interp * appearance_code
         
         if self.use_F:
             # Learned normalization

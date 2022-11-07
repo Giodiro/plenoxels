@@ -154,7 +154,7 @@ class GridParamDescription:
     grid_coefs: nn.ParameterList
     reso: torch.Tensor
     time_reso: int = None
-    time_coef: nn.Parameter = None
+    appearance_coef: nn.Parameter = None
 
 
 def init_features_param(grid_config, sh: bool) -> torch.nn.Parameter:
@@ -241,31 +241,28 @@ def init_grid_param(grid_config, is_video: bool, is_appearance: bool, grid_level
             if is_appearance and 3 in coo_comb:
                 grid_coefs.append(
                     nn.Parameter(nn.init.ones_(torch.empty(
-                        [1, out_dim] + [reso[cc] for cc in coo_comb[::-1]]
+                        [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb[::-1]]
                     ))))
             else:
                 grid_coefs.append(
                     nn.Parameter(nn.init.uniform_(torch.empty(
                         [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb[::-1]]
                     ), a=0.1, b=0.5)))
-    """
+    
     if is_appearance:
         time_reso = int(grid_config["time_reso"])
 
         if use_F:
-            time_coef = nn.Parameter(nn.init.uniform_(
+            appearance_coef = nn.Parameter(nn.init.uniform_(
                 torch.empty([out_dim * rank[0], time_reso]),
                 a=-1.0, b=1.0))  # if time init is fixed at 1, then it learns a static video
         else:
 
             # if sh + density in grid, then we do not want appearance code to influence density
-            if out_dim == 28:
-                out_dim = out_dim - 1
-
-            time_coef = nn.Parameter(nn.init.ones_(torch.empty([out_dim * rank[0], time_reso])))  # no time dependence
+            appearance_coef = nn.Parameter(nn.init.ones_(torch.empty([(out_dim-1) * rank[0], time_reso])))  # no time dependence
         return GridParamDescription(
-            grid_coefs=grid_coefs, reso=pt_reso, time_reso=time_reso, time_coef=time_coef)
-    """
+            grid_coefs=grid_coefs, reso=pt_reso, time_reso=time_reso, appearance_coef=appearance_coef)
+    
     return GridParamDescription(
         grid_coefs=grid_coefs, reso=pt_reso)
 

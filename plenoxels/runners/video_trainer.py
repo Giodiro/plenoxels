@@ -20,7 +20,7 @@ from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_video_to_file
 from plenoxels.runners.multiscene_trainer import Trainer, visualize_planes, visualize_planes_withF
 from plenoxels.runners.regularization import VideoPlaneTV, TimeSmoothness, HistogramLoss, L1PlaneDensityVideo, L1AppearancePlanes
-
+import matplotlib.pyplot as plt
 
 class VideoTrainer(Trainer):
     def __init__(self,
@@ -291,18 +291,20 @@ class VideoTrainer(Trainer):
         # turn gradients on
         for param in self.model.parameters():
             param.requires_grad = False
-        self.model.appearance_coef.requires_grad = True
+        for param in self.model.appearance_coef.parameters():
+            param.requires_grad = True
 
-        self.appearance_optimizer = torch.optim.Adam(params=[self.model.appearance_coef], lr=1e-3)
+        self.appearance_optimizer = torch.optim.Adam(params=self.model.appearance_coef.parameters(), lr=1e-3)
 
         for dset_id, dataset in enumerate(self.test_datasets):
             pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
 
             # reset the appearance codes for
             test_frames = dataset.__len__()
-            mask = torch.ones_like(self.model.appearance_coef)
-            mask[: , -test_frames:] = 0
-            self.model.appearance_coef.data = self.model.appearance_coef.data * mask + abs(1 - mask)
+            for i in range(len(self.model.appearance_coef)):
+                mask = torch.ones_like(self.model.appearance_coef[i])
+                mask[: , -test_frames:] = 0
+                self.model.appearance_coef[i].data = self.model.appearance_coef[i].data * mask + abs(1 - mask)
 
             batch_size = 4096
             for img_idx, data in enumerate(dataset):
@@ -377,7 +379,7 @@ class VideoTrainer(Trainer):
         :return:
         """
         # if phototourism then only compute metrics on the right side of the image
-        if hasattr(self.model, "appearance_code"):
+        if hasattr(self.model, "appearance_coef"):
             mid = gt.shape[1] // 2
             gt_right = gt[:, mid:]
             preds_rgb_right = preds[:, mid:]
@@ -395,7 +397,7 @@ class VideoTrainer(Trainer):
                 "psnr": metrics.psnr(preds, gt),
                 "ssim": metrics.ssim(preds, gt),
             }
-
+            
     def load_model(self, checkpoint_data):
         for k, v in checkpoint_data['model'].items():
             if 'time_resolution' in k:

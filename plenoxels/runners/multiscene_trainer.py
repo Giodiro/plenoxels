@@ -311,12 +311,13 @@ class Trainer():
                 log_text += f" | D{dset_id} PSNR: {per_scene_metrics['psnr']:.2f}"
                 log_text += f" | D{dset_id} SSIM: {per_scene_metrics['ssim']:.6f}"
                 logging.info(log_text)
-                print(log_text)
                 val_metrics.append(per_scene_metrics)
-
-                if wandb is not None:
+                
+                try:
                     wandb.log({"test_psnr": per_scene_metrics["psnr"],
                                "test_ssim": per_scene_metrics["ssim"]})
+                except:
+                    print(f'Not logging to wandb!')
 
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
@@ -387,8 +388,9 @@ class Trainer():
             if gt.shape[-1] == 4:
                 gt = gt[..., :3] * gt[..., 3:] + (1.0 - gt[..., 3:])
             summary.update(self.calc_metrics(preds_rgb, gt))
+            out_img = torch.cat((out_img, gt), dim=0)
             out_img = torch.cat((out_img, self._normalize_err(preds_rgb, gt)), dim=0)
-
+            
         out_img = (out_img * 255.0).byte().numpy()
         if out_depth is not None:
             out_depth = self._normalize_01(out_depth)
