@@ -107,7 +107,7 @@ def _load_video_1cam(idx: int,
             break
         # Frame is np.ndarray in uint8 dtype (H, W, C)
         imgs.append(
-            torch.from_numpy(frame).to(torch.float32).div(255),
+            torch.from_numpy(frame)  #.to(torch.float32).div(255),
         )
         timestamps.append(frame_idx)
     imgs = torch.stack(imgs, 0)
@@ -134,13 +134,13 @@ def parallel_load_images(tqdm_title,
         fn = _parallel_loader_nerf_image_pose
     elif dset_type == 'video':
         fn = _parallel_loader_video
-        max_threads = 10
+        # giac: Can increase to e.g. 10 if loading 4x subsampled images. Otherwise OOM.
+        max_threads = 4
     else:
         raise ValueError(dset_type)
     p = Pool(min(max_threads, num_images))
 
     iterator = p.imap(fn, [{"idx": i, **kwargs} for i in range(num_images)])
-    # iterator = p.imap(fn, [{iter_name: img_desc, **kwargs} for img_desc in image_iter])
     outputs = []
     for _ in tqdm(range(num_images), desc=tqdm_title):
         out = next(iterator)

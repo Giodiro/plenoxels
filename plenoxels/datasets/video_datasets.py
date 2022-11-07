@@ -75,27 +75,34 @@ class Video360Dataset(BaseDataset):
             timestamps = [parse_360_file_path(frame['file_path'])[0] for frame in frames]
             timestamps = torch.tensor(timestamps, dtype=torch.int32)
             intrinsics = load_360_intrinsics(transform, imgs, self.downsample)
+
         else:
             raise ValueError(datadir)
 
-        imgs = (imgs * 255).to(torch.uint8)
+        if imgs.dtype != torch.uint8:
+            imgs = (imgs * 255).to(torch.uint8)
+        if self.median_imgs.dtype != torch.uint8:
+            self.median_imgs = (self.median_imgs * 255).to(torch.uint8)
+
         if split == 'train':
             imgs = imgs.view(-1, imgs.shape[-1])
         else:
             imgs = imgs.view(-1, intrinsics.height * intrinsics.width, imgs.shape[-1])
 
-        super().__init__(datadir=datadir,
-                         split=split,
-                         batch_size=batch_size,
-                         is_ndc=is_ndc,
-                         is_contracted=is_contracted,
-                         scene_bbox=get_360_bbox(datadir, is_contracted=is_contracted),
-                         rays_o=None,
-                         rays_d=None,
-                         intrinsics=intrinsics,
-                         imgs=imgs,
-                         sampling_weights=None,  # Start without importance sampling, by default
-                         )
+        super().__init__(
+            datadir=datadir,
+            split=split,
+            batch_size=batch_size,
+            is_ndc=is_ndc,
+            is_contracted=is_contracted,
+            scene_bbox=get_360_bbox(datadir, is_contracted=is_contracted),
+            rays_o=None,
+            rays_d=None,
+            intrinsics=intrinsics,
+            imgs=imgs,
+            sampling_weights=None,  # Start without importance sampling, by default
+            weights_subsampled=4,   # Our ISG/IST weights are computed on 4x subsampled data
+        )
         
         self.isg_weights = None
         self.ist_weights = None
@@ -146,7 +153,7 @@ class Video360Dataset(BaseDataset):
                  f"{self.poses.shape[0]} images of size {self.img_h}x{self.img_w} and "
                  f"{imgs.shape[-1]} channels. "
                  f"{len(torch.unique(timestamps))} timestamps up to time={self.len_time}. "
-                 f"ISG={self.isg} - IST={self.ist} - "
+                 f"ISG={self.isg} - IST={self.ist} - weights_subsampled={self.weights_subsampled} - "
                  f"{intrinsics}")
 
     def enable_isg(self):
@@ -166,10 +173,22 @@ class Video360Dataset(BaseDataset):
         w = self.intrinsics.width
         dev = "cpu"
         if self.split == 'train':
-            index = self.get_rand_ids(index)
-            image_id = torch.div(index, h * w, rounding_mode='floor')
-            y = torch.remainder(index, h * w).div(w, rounding_mode='floor')
-            x = torch.remainder(index, h * w).remainder(w)
+            index = self.get_rand_ids(index)  # [batch_size // (weights_subsampled**2)]
+            # Split each subsampled index into its 16 components in 2D.
+            hsub, wsub = h // self.weights_subsampled, w // self.weights_subsampled
+            image_id = torch.div(index, hsub * wsub, rounding_mode='floor')
+            ysub = torch.remainder(index, hsub * wsub).div(wsub, rounding_mode='floor')
+            xsub = torch.remainder(index, hsub * wsub).remainder(wsub)
+            # xsub, ysub is the first point in the 4x4 square of finely sampled points
+            x, y = [], []
+            for ah in range(self.weights_subsampled):
+                for aw in range(self.weights_subsampled):
+                    x.append(xsub * self.weights_subsampled + aw)
+                    y.append(ysub * self.weights_subsampled + ah)
+            x = torch.cat(x)
+            y = torch.cat(y)
+            # Inverse of the process to get x, y from index. image_id stays the same.
+            index = x + y * w + (image_id * h * w).repeat(self.weights_subsampled ** 2)
         else:
             image_id = [index]
             x, y = torch.meshgrid(
@@ -264,131 +283,6 @@ def calc_360_camera_medians(frames, imgs):
     return median_images
 
 
-class VideoLLFFDataset(BaseDataset):
-    """This version uses normalized device coordinates, as in LLFF, for forward-facing videos
-    """
-    len_time: int
-    timestamps: Optional[torch.Tensor]
-    subsample_time: float
-
-    def __init__(self,
-                 datadir,
-                 split: str,
-                 batch_size: Optional[int] = None,
-                 downsample=1.0,
-                 keyframes=True,
-                 isg=False,):
-        self.keyframes = keyframes
-        # self.is_contracted = True  # Use contraction rather than NDC by default
-        self.isg = isg
-        self.ist = False
-        self.downsample = downsample
-
-        per_cam_poses, per_cam_near_fars, intrinsics, videopaths = load_llffvideo_poses(
-            datadir, downsample=self.downsample, split=split, near_scaling=1.0)
-        poses, imgs, timestamps, self.median_imgs = load_llffvideo_data(
-            videopaths=videopaths, cam_poses=per_cam_poses, intrinsics=intrinsics, split=split,
-            keyframes=keyframes, keyframes_take_each=30)
-
-        imgs = (imgs * 255).to(torch.uint8)
-        if split == 'train':
-            imgs = imgs.view(-1, imgs.shape[-1])
-        else:
-            imgs = imgs.view(-1, intrinsics.height * intrinsics.width, imgs.shape[-1])
-        isg_weights = None
-        if self.isg:
-            t_s = time.time()
-            gamma = 1e-3 if self.keyframes else 2e-2
-            isg_weights = dynerf_isg_weight(
-                imgs.view(-1, intrinsics.height, intrinsics.width, imgs.shape[-1]),
-                self.median_imgs,
-                gamma)
-            # Normalize into a probability distribution, to speed up sampling
-            isg_weights = (isg_weights.reshape(-1) / torch.sum(isg_weights))
-            t_e = time.time()
-            log.info(f"Computed {isg_weights.shape[0]} ISG weights in {t_e - t_s:.2f}s.")
-
-        super().__init__(datadir=datadir,
-                         split=split,
-                         scene_bbox=self.init_bbox(),
-                         is_ndc=True,
-                        #  is_contracted=self.is_contracted,
-                         batch_size=batch_size,
-                         imgs=imgs,
-                         rays_o=None,
-                         rays_d=None,
-                         intrinsics=intrinsics,
-                         sampling_weights=isg_weights)
-        self.len_time = 300  # This is true for the 10-second sequences from DyNerf
-        if self.split == 'train':
-            self.timestamps = timestamps[:, None, None].repeat(
-                1, intrinsics.height, intrinsics.width).reshape(-1)  # [n_frames * h * w]
-        else:
-            self.timestamps = timestamps
-
-        log.info(f"VideoLLFFDataset - Loaded {self.split} set from {self.datadir}: "
-                 f"{len(poses)} images of shape {self.img_h}x{self.img_w} with {imgs.shape[-1]} "
-                 f"channels. {len(torch.unique(timestamps))} timestamps up to "
-                 f"time={torch.max(timestamps)}. {intrinsics}")
-
-    def init_bbox(self):
-        if self.is_contracted:
-            return torch.tensor([[-2.0, -2.0, -2.0], [2.0, 2.0, 2.0]])
-        else:
-            return torch.tensor([[-2.0, -2.0, -1.0], [2.0, 2.0, 1.0]])
-
-    def switch_isg2ist(self):
-        del self.sampling_weights
-        self.isg = False
-        self.ist = True
-        t_s = time.time()
-        ist_weights = dynerf_ist_weight(
-            self.imgs.view(-1, self.img_h, self.img_w, self.imgs.shape[-1]),
-            num_cameras=self.median_imgs.shape[0])
-        # Normalize into a probability distribution, to speed up sampling
-        ist_weights = (ist_weights.reshape(-1) / torch.sum(ist_weights))
-        self.sampling_weights = ist_weights
-        t_e = time.time()
-        log.info(f"Switched from ISG to IST weights (computed in {t_e - t_s:.2f}s).")
-
-    def __getitem__(self, index):
-        h = self.intrinsics.height
-        w = self.intrinsics.width
-        dev = "cpu"
-        if self.split == 'train':
-            index = self.get_rand_ids(index)
-            image_id = torch.div(index, h * w, rounding_mode='floor')
-            y = torch.remainder(index, h * w).div(w, rounding_mode='floor')
-            x = torch.remainder(index, h * w).remainder(w)
-        else:
-            image_id = [index]
-            x, y = torch.meshgrid(
-                torch.arange(w, device=dev),
-                torch.arange(h, device=dev),
-                indexing="xy",
-            )
-            x = x.flatten()
-            y = y.flatten()
-
-        rgba = self.imgs[index] / 255.0  # (num_rays, 4)   this converts to f32
-        c2w = self.poses[image_id]       # (num_rays, 3, 4)
-        ts = self.timestamps[index]      # (num_rays or 1, )
-        camera_dirs = gen_camera_dirs(
-            x, y, self.intrinsics, True)  # [num_rays, 3]
-
-        directions = (camera_dirs[:, None, :] * c2w[:, :3, :3]).sum(dim=-1)
-        origins = torch.broadcast_to(c2w[:, :3, -1], directions.shape)
-        origins, directions = ndc_rays_blender(
-            intrinsics=self.intrinsics, near=1.0, rays_o=origins, rays_d=directions)
-
-        return {
-            "rays_o": origins.reshape(-1, 3),
-            "rays_d": directions.reshape(-1, 3),
-            "imgs": rgba.reshape(-1, rgba.shape[-1]),
-            "timestamps": ts,
-        }
-
-
 def load_llffvideo_poses(datadir: str,
                          downsample: float,
                          split: str,
@@ -455,25 +349,39 @@ def load_llffvideo_data(videopaths: List[str],
     return poses, imgs, timestamps, median_imgs
 
 
+@torch.no_grad()
 def dynerf_isg_weight(imgs, median_imgs, gamma):
     # imgs is [num_cameras * num_frames, h, w, 3]
     # median_imgs is [num_cameras, h, w, 3]
+    assert imgs.dtype == torch.uint8
+    assert median_imgs.dtype == torch.uint8
     num_cameras, h, w, c = median_imgs.shape
-    differences = median_imgs[:, None, ...] - imgs.view(num_cameras, -1, h, w, c)  # [num_cameras, num_frames, h, w, 3]
-    squarediff = torch.square_(differences)
+    squarediff = (
+        imgs.view(num_cameras, -1, h, w, c)
+            .float()  # creates new tensor, so later operations can be in-place
+            .div_(255.0)
+            .sub_(
+                median_imgs[:, None, ...].float().div_(255.0)
+            )
+            .square_()  # noqa
+    )  # [num_cameras, num_frames, h, w, 3]
+    # differences = median_imgs[:, None, ...] - imgs.view(num_cameras, -1, h, w, c)  # [num_cameras, num_frames, h, w, 3]
+    # squarediff = torch.square_(differences)
     psidiff = squarediff.div_(squarediff + gamma**2)
     psidiff = (1./3) * torch.sum(psidiff, dim=-1)  # [num_cameras, num_frames, h, w]
     return psidiff  # valid probabilities, each in [0, 1]
 
 
+@torch.no_grad()
 def dynerf_ist_weight(imgs, num_cameras, alpha=0.1, frame_shift=25):  # DyNerf uses alpha=0.1
+    assert imgs.dtype == torch.uint8
     N, h, w, c = imgs.shape
-    frames = imgs.view(num_cameras, -1, h, w, c)  # [num_cameras, num_timesteps, h, w, 3]
+    frames = imgs.view(num_cameras, -1, h, w, c).float()  # [num_cameras, num_timesteps, h, w, 3]
     max_diff = None
     shifts = list(range(frame_shift + 1))[1:]
     for shift in shifts:
-        shift_left = torch.cat([frames[:,shift:,...], torch.zeros(num_cameras, shift, h, w, c)], dim=1)
-        shift_right = torch.cat([torch.zeros(num_cameras, shift, h, w, c), frames[:,:-shift,...]], dim=1)
+        shift_left = torch.cat([frames[:, shift:, ...], torch.zeros(num_cameras, shift, h, w, c)], dim=1)
+        shift_right = torch.cat([torch.zeros(num_cameras, shift, h, w, c), frames[:, :-shift, ...]], dim=1)
         mymax = torch.maximum(torch.abs_(shift_left - frames), torch.abs_(shift_right - frames))
         if max_diff is None:
             max_diff = mymax
