@@ -27,6 +27,7 @@ from ..my_tqdm import tqdm
 from ..utils import parse_optint
 from .utils import get_cosine_schedule_with_warmup, get_step_schedule_with_warmup, get_log_linear_schedule_with_warmup
 
+import wandb
 
 class Trainer():
     def __init__(self,
@@ -338,6 +339,12 @@ class Trainer():
             summary["psnr"] = metrics.psnr(preds_rgb, gt)
             summary["ssim"] = metrics.ssim(preds_rgb, gt)
 
+            wandb.log({
+                "test_psnr" : summary["psnr"],
+                "test_mse" : summary["mse"],
+                "test_err" : summary["err"],
+                "test_ssim" : summary["ssim"]})
+            
         if save_outputs:
             out_name = f"step{self.global_step}-D{dset_id}-{img_idx}"
             if name is not None and name != "":
