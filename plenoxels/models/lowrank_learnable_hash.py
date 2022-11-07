@@ -361,8 +361,8 @@ class LowrankLearnableHash(LowrankModel):
                     fars = ones * fars
 
             ray_bundle = RayBundle(origins=rays_o, directions=rays_d, nears=nears, fars=fars)
-            ray_samples, weights_list, ray_samples_list = self.raymarcher.generate_ray_samples(
-                ray_bundle, density_fns=self.density_fns)
+            ray_samples, weights_list, ray_samples_list, density_list = self.raymarcher.generate_ray_samples(
+                ray_bundle, density_fns=self.density_fns, return_density=True)
             outputs['weights_list'] = weights_list
             outputs['ray_samples_list'] = ray_samples_list
             outputs['ray_samples_list'].append(ray_samples)
@@ -375,6 +375,18 @@ class LowrankLearnableHash(LowrankModel):
             deltas = ray_samples.deltas.squeeze()
             mask[deltas <= 0] = False
             z_vals = ((ray_samples.starts + ray_samples.ends) / 2).squeeze()
+            # Output depth of the proposal samples for visualization purposes.
+            if "proposal_depth" in channels:
+                for proposal_id in range(len(density_list)):
+                    density_proposal = density_list[proposal_id].squeeze()
+                    deltas_proposal = ray_samples_list[proposal_id].deltas.squeeze()
+                    z_vals_proposal = ((ray_samples_list[proposal_id].starts + ray_samples_list[proposal_id].ends) / 2).squeeze()
+                    _, weight_proposal, transmission_proposal = raw2alpha(density_proposal, deltas_proposal)  # Each is shape [batch_size, n_samples]
+                    acc_map_proposal = 1 - transmission_proposal[:, -1]
+                    depth_map_proposal = torch.sum(weight_proposal * z_vals_proposal, -1)  # [batch_size]
+                    depth_map_proposal = depth_map_proposal + (1.0 - acc_map_proposal) * rays_d[..., -1]  # Maybe the rays_d is to transform ray depth to absolute depth?
+                    outputs[f"proposal_depth_{proposal_id}"] = depth_map_proposal
+
         else:
             rm_out = self.raymarcher.get_intersections2(
                 rays_o, rays_d, self.aabb(grid_id), self.resolution(grid_id), perturb=self.training,

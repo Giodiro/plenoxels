@@ -95,6 +95,7 @@ class Trainer():
         for memory constraints.
         """
         batch_size = self.eval_batch_size
+        channels = {"rgb", "depth", "proposal_depth"}
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             rays_o = data["rays_o"]
             rays_d = data["rays_d"]
@@ -107,10 +108,12 @@ class Trainer():
                     bg_color = None
                 else:
                     bg_color = 1
-                outputs = self.model(rays_o_b, rays_d_b, grid_id=dset_id, near_far=near_far, bg_color=bg_color, channels={"rgb", "depth"})
+                outputs = self.model(rays_o_b, rays_d_b, grid_id=dset_id, near_far=near_far,
+                                     bg_color=bg_color, channels=channels)
                 for k, v in outputs.items():
                     preds[k].append(v)
-        return {k: torch.cat(v, 0) for k, v in preds.items() if k in {"rgb", "depth"}}
+        return {k: torch.cat(v, 0) for k, v in preds.items() if (
+                    k in channels or k.startswith("proposal_depth"))}
 
     def step(self, data: Dict[str, Union[int, torch.Tensor]]):
         self.timer.reset()
@@ -131,7 +134,8 @@ class Trainer():
         self.timer.check("step_prepare")
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            fwd_out = self.model(rays_o, rays_d, grid_id=dset_id, bg_color=bg_color, channels={"rgb"}, near_far=near_far)
+            fwd_out = self.model(rays_o, rays_d, grid_id=dset_id, bg_color=bg_color,
+                                 channels={"rgb"}, near_far=near_far)
             self.timer.check("step_model")
             rgb_preds = fwd_out["rgb"]
             # Reconstruction loss
@@ -304,6 +308,14 @@ class Trainer():
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
 
+    def _normalize_01(self, t: torch.Tensor) -> torch.Tensor:
+        return (t - t.min()) / t.max()
+
+    def _normalize_depth(self, depth: torch.Tensor, img_h: int, img_w: int) -> torch.Tensor:
+        return (
+            self._normalize_01(depth)
+        ).cpu().reshape(img_h, img_w)[..., None]
+
     def evaluate_metrics(self, gt, preds: MutableMapping[str, torch.Tensor], dset, dset_id: int, img_idx: int,
                          name: Optional[str] = None, save_outputs: bool = True):
         preds_rgb = (
@@ -312,28 +324,28 @@ class Trainer():
             .cpu()
             .clamp(0, 1)
         )
-        exrdict = {
-            "preds": preds_rgb.numpy(),
-        }
+        out_img = preds_rgb
         summary = dict()
 
+        out_depth = None
         if "depth" in preds:
-            # normalize depth and add to exrdict
-            depth = preds["depth"]
-            depth = depth - depth.min()
-            depth = depth / depth.max()
-            depth = depth.cpu().reshape(dset.img_h, dset.img_w)[..., None]
-            preds["depth"] = depth
-            exrdict["depth"] = preds["depth"].numpy()
+            out_depth = self._normalize_depth(
+                preds['depth'], img_h=dset.img_h, img_w=dset.img_w)
+
+        for proposal_id in range(len(self.model.density_fields)):
+            if f"proposal_depth_{proposal_id}" in preds:
+                prop_depth = self._normalize_depth(
+                    preds[f"proposal_depth_{proposal_id}"], img_h=dset.img_h, img_w=dset.img_w
+                )
+                out_depth = torch.cat((out_depth, prop_depth)) if out_depth is not None else prop_depth
 
         if gt is not None:
             gt = gt.reshape(dset.img_h, dset.img_w, -1).cpu()
             if gt.shape[-1] == 4:
                 gt = gt[..., :3] * gt[..., 3:] + (1.0 - gt[..., 3:])
-            exrdict["gt"] = gt.numpy()
 
-            err = (gt - preds_rgb) ** 2
-            exrdict["err"] = err.numpy()
+            err = self._normalize_01((gt - preds_rgb) ** 2)
+            out_img = torch.cat((out_img, err), dim=0)
             summary["mse"] = torch.mean(err)
             summary["psnr"] = metrics.psnr(preds_rgb, gt)
             summary["ssim"] = metrics.ssim(preds_rgb, gt)
@@ -342,12 +354,11 @@ class Trainer():
             out_name = f"step{self.global_step}-D{dset_id}-{img_idx}"
             if name is not None and name != "":
                 out_name += "-" + name
-            write_exr(os.path.join(self.log_dir, out_name + ".exr"), exrdict)
-            write_png(os.path.join(self.log_dir, out_name + ".png"), (preds_rgb * 255.0).byte().numpy())
-            if "depth" in preds:
-                out_name = f"step{self.global_step}-D{dset_id}-{img_idx}-depth"
-                depth = preds["depth"].repeat(1, 1, 3)
-                write_png(os.path.join(self.log_dir, out_name + ".png"), (depth * 255.0).byte().numpy())
+            write_png(os.path.join(self.log_dir, out_name + ".png"), (out_img * 255.0).byte().numpy())
+            if out_depth is not None:
+                depth_name = out_name + "-depth"
+                out_depth = out_depth.repeat(1, 1, 3)
+                write_png(os.path.join(self.log_dir, depth_name + ".png"), (out_depth * 255.0).byte().numpy())
 
         return summary
 
