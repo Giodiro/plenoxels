@@ -89,6 +89,8 @@ class Video360Dataset(BaseDataset):
         else:
             imgs = imgs.view(-1, intrinsics.height * intrinsics.width, imgs.shape[-1])
 
+        # ISG/IST weights are computed on 4x subsampled data.
+        weights_subsampled = int(4 / downsample)
         super().__init__(
             datadir=datadir,
             split=split,
@@ -101,7 +103,7 @@ class Video360Dataset(BaseDataset):
             intrinsics=intrinsics,
             imgs=imgs,
             sampling_weights=None,  # Start without importance sampling, by default
-            weights_subsampled=4,   # Our ISG/IST weights are computed on 4x subsampled data
+            weights_subsampled=weights_subsampled,
         )
         
         self.isg_weights = None
