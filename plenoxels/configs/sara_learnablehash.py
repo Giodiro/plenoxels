@@ -4,15 +4,15 @@ import numpy as np
 config = {
     # "expname": "lego_rank10_plenoxelsh28_meaninit-11_downsample3",
     # "expname": "legoF2_planetv0.001_lr0.1rank2",
-    "expname": "timetrial",
+    "expname": "planetvsigma0.000001",
     # "expname": "lowrank_noupsamplelr4e-3_planetvfeats0.04",
     # "logdir": "./logs/fullresofern",
-    "logdir": "./logs/sh",
+    "logdir": "./logs/sh/ficus",
 
     # Data settings
     "data_resolution": None,
-    "data_downsample": 4,
-    "data_dirs": ["/home/sfk/data/nerf_synthetic/lego"],
+    "data_downsample": 1,
+    "data_dirs": ["/home/sfk/data/nerf_synthetic/ficus"],
     # "data_dirs": ["/home/sfk/data/nerf_llff_data/room"],
     # Data settings for 360
     "max_tr_frames": None,
@@ -26,12 +26,13 @@ config = {
     "num_batches_per_dset": 1,
     "scheduler_type": None,
     "optim_type": "adam",
-    "lr": 1e-1,
+    "lr": 0.01,
     "regnerf_weight_start": 0,
     "regnerf_weight_end": 0.0,
     "regnerf_weight_max_step": 512,
     "l1density_weight": 0,
-    "plane_tv_weight": 0.001,
+    "plane_tv_weight_sigma": 0.000001,  # Tune this
+    "plane_tv_weight_sh": 0.0,  # Tune this
     "volume_tv_weight": 0.0,
     "volume_tv_npts": 1024,
     "floater_loss": 0,
@@ -46,9 +47,16 @@ config = {
     # Raymarching settings
     "raymarch_type": "fixed",
     "num_sample_multiplier": 2,  # Used when raymarch_type is 'voxel_size'
-    "n_intersections": 800,  # Used when raymarch_type is 'fixed'
+    "n_intersections": 48,  # Used when raymarch_type is 'fixed'
     "spacing_fn": "linear",
     "single_jitter": False,
+    # Proposal sampling settings
+    "histogram_loss_weight": 1,  # this should be set > 0 when using proposal sampling
+    "density_field_resolution": [128, 256],
+    "density_field_rank": 10,
+    "num_proposal_samples": [256, 96],
+    "density_activation": "trunc_exp",  # can be 'relu' or 'trunc_exp'
+    "density_model": "triplane",  # Can be triplane or hexplane
 
     # Model settings
     "density_threshold": 1e-4,
@@ -59,13 +67,16 @@ config = {
     "density_multiplier": 1,
     "sh": True,
     "use_F": False,
+    "use_trainable_rank": False,
+    "add_rank_steps": [-1],
+    "multiscale_res": [1, 2, 4, 8],
     "grid_config": """
 [
     {
         "input_coordinate_dim": 3,
         "output_coordinate_dim": 28,
         "grid_dimensions": 2,
-        "resolution": [128, 128, 128],
+        "resolution": [64, 64, 64],
         "rank": 2,
     },
     {
