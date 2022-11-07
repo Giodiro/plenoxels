@@ -199,8 +199,9 @@ class Video360Dataset(BaseDataset):
                         y.append(ysub * self.weights_subsampled + ah)
                 x = torch.cat(x)
                 y = torch.cat(y)
+                image_id = (image_id * h * w).repeat(self.weights_subsampled ** 2)
                 # Inverse of the process to get x, y from index. image_id stays the same.
-                index = x + y * w + (image_id * h * w).repeat(self.weights_subsampled ** 2)
+                index = x + y * w + image_id
         else:
             image_id = [index]
             x, y = torch.meshgrid(
