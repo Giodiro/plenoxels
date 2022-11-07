@@ -94,7 +94,7 @@ class VideoTrainer(Trainer):
                 else:
                     bg_color = 1
                 outputs = self.model(rays_o_b, rays_d_b, timestamps_d_b, bg_color=bg_color,
-                                     channels={"rgb", "depth"}, near_far=near_far)
+                                     channels={"rgb", "depth", "proposal_depth"}, near_far=near_far)
                 for k, v in outputs.items():
                     if not isinstance(v, list):
                         preds[k].append(v.cpu())
@@ -353,7 +353,7 @@ class VideoTrainer(Trainer):
                 )
                 if len(out_depths) > 0:
                     write_video_to_file(
-                        os.path.join(self.log_dir, f"step{self.global_step}.mp4"),
+                        os.path.join(self.log_dir, f"step{self.global_step}-depth.mp4"),
                         out_depths
                     )
                 per_scene_metrics["psnr"] /= len(dataset)  # noqa

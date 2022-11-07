@@ -51,7 +51,7 @@ def init_trainer(is_video: bool, **kwargs):
 
 
 def main():
-    setup_logging()
+    setup_logging(log_level=logging.DEBUG)
 
     p = argparse.ArgumentParser(description="")
 
