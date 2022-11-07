@@ -64,8 +64,8 @@ class Video360Dataset(BaseDataset):
             self.poses = poses.float()
             self.per_cam_near_fars = self.per_cam_near_fars.float()
             # These values are tuned for the salmon video
-            self.global_translation = torch.tensor([0, 0, 2])
-            self.global_scale = torch.tensor([0.6, 0.6, 1])
+            self.global_translation = torch.tensor([0, 0, 2.])
+            self.global_scale = torch.tensor([0.5, 0.6, 1])
             log.info(f'per_cam_near_fars is {self.per_cam_near_fars}, with global translation '
                      f'{self.global_translation} and scale {self.global_scale}')
         elif dset_type == "synthetic":
@@ -105,7 +105,7 @@ class Video360Dataset(BaseDataset):
             sampling_weights=None,  # Start without importance sampling, by default
             weights_subsampled=weights_subsampled,
         )
-        
+
         self.isg_weights = None
         self.ist_weights = None
         if split == "train":
@@ -199,9 +199,9 @@ class Video360Dataset(BaseDataset):
                         y.append(ysub * self.weights_subsampled + ah)
                 x = torch.cat(x)
                 y = torch.cat(y)
-                image_id = (image_id * h * w).repeat(self.weights_subsampled ** 2)
+                image_id = image_id.repeat(self.weights_subsampled ** 2)
                 # Inverse of the process to get x, y from index. image_id stays the same.
-                index = x + y * w + image_id
+                index = x + y * w + image_id * h * w
         else:
             image_id = [index]
             x, y = torch.meshgrid(
