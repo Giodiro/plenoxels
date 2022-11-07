@@ -60,8 +60,8 @@ class BaseDataset(Dataset, ABC):
 
     def get_rand_ids(self, index):
         assert self.batch_size is not None, "Can't get rand_ids for test split"
-        batch_size = self.batch_size // (self.weights_subsampled ** 2)
         if self.sampling_weights is not None:
+            batch_size = self.batch_size // (self.weights_subsampled ** 2)
             num_weights = len(self.sampling_weights)
             if num_weights > self.sampling_batch_size:
                 # Take a uniform random sample first, then according to the weights
@@ -73,7 +73,9 @@ class BaseDataset(Dataset, ABC):
                 return subset[samples]
             return torch.multinomial(
                 input=self.sampling_weights, num_samples=batch_size)
-        return self.perm[index * batch_size: (index + 1) * batch_size]
+        else:
+            batch_size = self.batch_size
+            return self.perm[index * batch_size: (index + 1) * batch_size]
 
     def __len__(self):
         if self.split == 'train':

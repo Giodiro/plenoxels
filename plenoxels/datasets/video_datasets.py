@@ -176,21 +176,28 @@ class Video360Dataset(BaseDataset):
         dev = "cpu"
         if self.split == 'train':
             index = self.get_rand_ids(index)  # [batch_size // (weights_subsampled**2)]
-            # Split each subsampled index into its 16 components in 2D.
-            hsub, wsub = h // self.weights_subsampled, w // self.weights_subsampled
-            image_id = torch.div(index, hsub * wsub, rounding_mode='floor')
-            ysub = torch.remainder(index, hsub * wsub).div(wsub, rounding_mode='floor')
-            xsub = torch.remainder(index, hsub * wsub).remainder(wsub)
-            # xsub, ysub is the first point in the 4x4 square of finely sampled points
-            x, y = [], []
-            for ah in range(self.weights_subsampled):
-                for aw in range(self.weights_subsampled):
-                    x.append(xsub * self.weights_subsampled + aw)
-                    y.append(ysub * self.weights_subsampled + ah)
-            x = torch.cat(x)
-            y = torch.cat(y)
-            # Inverse of the process to get x, y from index. image_id stays the same.
-            index = x + y * w + (image_id * h * w).repeat(self.weights_subsampled ** 2)
+            if len(index) == self.batch_size:
+                # Nothing special to do, either we have a weights_subsampled = 1, or we're not
+                # using weights.
+                image_id = torch.div(index, h * w, rounding_mode='floor')
+                y = torch.remainder(index, h * w).div(w, rounding_mode='floor')
+                x = torch.remainder(index, h * w).remainder(w)
+            else:
+                # Split each subsampled index into its 16 components in 2D.
+                hsub, wsub = h // self.weights_subsampled, w // self.weights_subsampled
+                image_id = torch.div(index, hsub * wsub, rounding_mode='floor')
+                ysub = torch.remainder(index, hsub * wsub).div(wsub, rounding_mode='floor')
+                xsub = torch.remainder(index, hsub * wsub).remainder(wsub)
+                # xsub, ysub is the first point in the 4x4 square of finely sampled points
+                x, y = [], []
+                for ah in range(self.weights_subsampled):
+                    for aw in range(self.weights_subsampled):
+                        x.append(xsub * self.weights_subsampled + aw)
+                        y.append(ysub * self.weights_subsampled + ah)
+                x = torch.cat(x)
+                y = torch.cat(y)
+                # Inverse of the process to get x, y from index. image_id stays the same.
+                index = x + y * w + (image_id * h * w).repeat(self.weights_subsampled ** 2)
         else:
             image_id = [index]
             x, y = torch.meshgrid(
