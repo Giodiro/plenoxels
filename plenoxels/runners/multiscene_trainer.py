@@ -552,6 +552,7 @@ class Trainer():
 
     def init_regularizers(self, **kwargs):
         regularizers = [
+            PlaneTV(kwargs.get('plane_tv_weight', 0.0), features='all'),
             PlaneTV(kwargs.get('plane_tv_weight_sigma', 0.0), features='sigma'),
             PlaneTV(kwargs.get('plane_tv_weight_sh', 0.0), features='sh'),
             VolumeTV(
