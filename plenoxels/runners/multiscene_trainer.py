@@ -375,14 +375,11 @@ class Trainer():
 
         out_depth = None
         if "depth" in preds:
-            out_depth = self._normalize_depth(
-                preds['depth'], img_h=img_h, img_w=img_w)
+            out_depth = preds['depth'].cpu().reshape(img_h, img_w)[..., None]
 
         for proposal_id in range(len(self.model.density_fields)):
             if f"proposal_depth_{proposal_id}" in preds:
-                prop_depth = self._normalize_depth(
-                    preds[f"proposal_depth_{proposal_id}"], img_h=img_h, img_w=img_w
-                )
+                prop_depth = preds[f"proposal_depth_{proposal_id}"].cpu().reshape(img_h, img_w)[..., None]
                 out_depth = torch.cat((out_depth, prop_depth)) if out_depth is not None else prop_depth
 
         if gt is not None:
@@ -394,6 +391,7 @@ class Trainer():
 
         out_img = (out_img * 255.0).byte().numpy()
         if out_depth is not None:
+            out_depth = self._normalize_01(out_depth)
             out_depth = (out_depth * 255.0).repeat(1, 1, 3).byte().numpy()
 
         if save_outputs:
