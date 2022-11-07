@@ -20,7 +20,7 @@ from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_video_to_file
 from plenoxels.runners.multiscene_trainer import Trainer, visualize_planes, visualize_planes_withF
 from plenoxels.runners.regularization import VideoPlaneTV, TimeSmoothness, HistogramLoss, L1PlaneDensityVideo, L1AppearancePlanes
-
+import matplotlib.pyplot as plt
 
 class VideoTrainer(Trainer):
     def __init__(self,
@@ -291,18 +291,20 @@ class VideoTrainer(Trainer):
         # turn gradients on
         for param in self.model.parameters():
             param.requires_grad = False
-        self.model.appearance_coef.requires_grad = True
+        for param in self.model.appearance_coef.parameters():
+            param.requires_grad = True
 
-        self.appearance_optimizer = torch.optim.Adam(params=[self.model.appearance_coef], lr=1e-3)
+        self.appearance_optimizer = torch.optim.Adam(params=self.model.appearance_coef.parameters(), lr=1e-3)
 
         for dset_id, dataset in enumerate(self.test_datasets):
             pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
 
             # reset the appearance codes for
             test_frames = dataset.__len__()
-            mask = torch.ones_like(self.model.appearance_coef)
-            mask[: , -test_frames:] = 0
-            self.model.appearance_coef.data = self.model.appearance_coef.data * mask + abs(1 - mask)
+            for i in range(len(self.model.appearance_coef)):
+                mask = torch.ones_like(self.model.appearance_coef[i])
+                mask[: , -test_frames:] = 0
+                self.model.appearance_coef[i].data = self.model.appearance_coef[i].data * mask + abs(1 - mask)
 
             batch_size = 4096
             for img_idx, data in enumerate(dataset):
@@ -339,6 +341,7 @@ class VideoTrainer(Trainer):
                     preds = self.eval_step(data, dset_id=dset_id)
                     out_metrics, out_img = self.evaluate_metrics(
                         data["imgs"], preds, dset_id=dset_id, dset=dataset, img_idx=img_idx, name=None)
+                    
                     pred_frames.append(out_img)
                     per_scene_metrics["psnr"] += out_metrics["psnr"]
                     per_scene_metrics["ssim"] += out_metrics["ssim"]
@@ -405,7 +408,7 @@ class VideoTrainer(Trainer):
                 gt = gt[..., :3] * gt[..., 3:] + (1.0 - gt[..., 3:])
 
             # if phototourism then only compute metrics on the right side of the image
-            if hasattr(self.model, "appearance_code"):
+            if hasattr(self.model, "appearance_coef"):
                 mid = gt.shape[1] // 2
                 gt_right = gt[:, mid:]
                 preds_rgb_right = preds_rgb[:, mid:]
@@ -421,6 +424,25 @@ class VideoTrainer(Trainer):
                 summary["mse"] = torch.mean(err)
                 summary["psnr"] = metrics.psnr(preds_rgb, gt)
                 summary["ssim"] = metrics.ssim(preds_rgb, gt)
+
+            # l2
+            fig, ax = plt.subplots(ncols=3, nrows=1, figsize=(3*3, 1*3))
+            err = abs(gt - preds_rgb) 
+            im = ax[0].imshow(err.mean(dim=-1), vmax=np.percentile(err.mean(dim=-1), 90))
+            ax[0].axis("off")
+            plt.colorbar(im, ax=ax[0], aspect=20, fraction=0.04)
+            
+            # gt
+            im = ax[1].imshow(gt)
+            ax[1].axis("off")
+            
+            # pred
+            im = ax[2].imshow(preds_rgb)
+            ax[2].axis("off")
+            plt.savefig(os.path.join(self.log_dir, f"err_{dset_id}_{img_idx}.png"))
+            plt.close()
+            plt.clf()
+            plt.cla()
 
         out_name = f"step{self.global_step}-D{dset_id}-{img_idx}"
         if name is not None and name != "":

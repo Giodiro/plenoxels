@@ -3,8 +3,9 @@ config = {
 
     #"expname": "hexplane_lr001_tv0_histloss01_proposal128x256_256x96_ninsect48",
     #"expname": "hexplane_lr001_tv0_histloss001_ninsect128",
-    "expname": "hexplane_no_testtime_optim_l1_appearance_planes_reg0.1_add_appearance",
-    "logdir": "./logs/trevi/newdataloader_debug4",
+    #"expname": "hexplane_no_testtime_optim_l1_appearance_planes_reg0.1_add_appearance",
+    "expname": "debug_rank2",
+    "logdir": "./logs/trevi/nov7",
 
     # Data settings
     "data_downsample": 1.0,
@@ -23,7 +24,7 @@ config = {
 
     # Optimization settings
     # "num_steps": 40001,
-    "num_steps": 20_001,
+    "num_steps": 120_001,
     "floater_loss": 0.0000,
     "regnerf_weight_start": 0,
     "regnerf_weight_end": 0.0,
@@ -39,18 +40,18 @@ config = {
     "lr": 0.01,
     "use_F": False,
     # proposal sampling
-    "histogram_loss_weight": 0.1,  # this should be set > 0 when using proposal sampling
+    "histogram_loss_weight": 0,  # this should be set > 0 when using proposal sampling
     "density_field_resolution": [128, 256],
     "density_field_rank": 10,
     "num_proposal_samples": [256, 96],
     "density_activation": "trunc_exp",
     "density_model": "triplane",  # Can be triplane or hexplane
-    "l1_appearance_planes_reg" : 0.1,
+    "l1_appearance_planes_reg" : 0,
     
     # Training settings
     "train_fp16": True,
-    "save_every":  20_000,
-    "valid_every": 20_000,
+    "save_every":  10,
+    "valid_every": 10,
     "save_video": True,
     "add_rank_steps": [],
     "save_outputs": True,
@@ -58,7 +59,7 @@ config = {
     # Raymarching settings
     "raymarch_type": "fixed",
     "num_samples_multiplier": 2,
-    "n_intersections": 128,
+    "n_intersections": 64,
     "spacing_fn": "linear",
     "single_jitter": False,
     
@@ -69,15 +70,15 @@ config = {
     # "upsample_time_steps": [6000],  # DyNerf does 300K iterations with keyframes, with lr 5e-4
     "upsample_time_steps": [],
     #"upsample_resolution": [],
-    "multiscale_res": [1, 2, 4],
+    "multiscale_res": [1, 2, 4, 8],
     "grid_config": """
 [
     {
         "input_coordinate_dim": 4,
         "output_coordinate_dim": 28,
         "grid_dimensions": 2,
-        "resolution": [64, 64, 64, 1708], 
-        "rank": 1,
+        "resolution": [80, 40, 20, 1708], 
+        "rank": 2,
         "time_reso": 1708,
     },
     {

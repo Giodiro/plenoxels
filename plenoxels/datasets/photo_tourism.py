@@ -95,7 +95,7 @@ class PhotoTourismDataset(torch.utils.data.Dataset):
         self.datadir = datadir
         # TODO: tune these for each dataset
         self.global_translation = torch.tensor([0, 0, -1])
-        self.global_scale = torch.tensor([2.2, 2.2, 3])
+        self.global_scale = torch.tensor([3.2, 3.2, 3])
 
         # read all files in the tsv first (split to train and test later)
         tsv = glob.glob(os.path.join(self.datadir, '*.tsv'))[0]
