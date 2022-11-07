@@ -95,14 +95,15 @@ class L1PlaneDensity(Regularizer):
         super().__init__('l1-plane-density', initial_value)
 
     def _regularize(self, model: LowrankLearnableHash, grid_id: int = 0, **kwargs):
-        grids: nn.ModuleList = model.scene_grids[grid_id]
+        multi_res_grids: nn.ModuleList = model.scene_grids[grid_id]
         total = 0
-        # TODO: Fixme for multires
-        for grid_ls in grids:
-            for grid in grid_ls:
-                grid = grid.view(model.feature_dim, -1, grid.shape[-2], grid.shape[-1])
-                # density is on last feature. Apply activation before computing loss.
-                total += model.density_act(grid[-1, ...]).mean()
+        
+        for grids in multi_res_grids:
+            for grid_ls in grids:
+                for grid in grid_ls:
+                    grid = grid.view(model.feature_dim, -1, grid.shape[-2], grid.shape[-1])
+                    # density is on last feature. Apply activation before computing loss.
+                    total += torch.abs(grid[-1, ...]).mean()
         return total
 
 
@@ -111,14 +112,14 @@ class L1PlaneColor(Regularizer):
         super().__init__('l1-plane-color', initial_value)
 
     def _regularize(self, model: LowrankLearnableHash, grid_id: int = 0, **kwargs):
-        grids: nn.ModuleList = model.scene_grids[grid_id]
+        multi_res_grids: nn.ModuleList = model.scene_grids[grid_id]
         total = 0
-        # TODO: Fixme for multires
-        for grid_ls in grids:
-            for grid in grid_ls:
-                grid = grid.view(model.feature_dim, -1, grid.shape[-2], grid.shape[-1])
-                # color is on all features apart the last
-                total += torch.abs(grid[:-1, ...]).mean()
+        for grids in multi_res_grids:
+            for grid_ls in grids:
+                for grid in grid_ls:
+                    grid = grid.view(model.feature_dim, -1, grid.shape[-2], grid.shape[-1])
+                    # color is on all features apart the last
+                    total += torch.abs(grid[:-1, ...]).mean()
         return total
 
 

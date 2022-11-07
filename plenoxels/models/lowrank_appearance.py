@@ -124,7 +124,7 @@ class LowrankAppearance(LowrankModel):
                 # interpolate in plane
                 interp_out_plane = grid_sample_wrapper(grid_space[ci], pts[..., coo_comb]).view(
                             -1, level_info["output_coordinate_dim"], level_info["rank"])
-
+                
                 # compute product
                 interp_space = interp_out_plane if interp_space is None else interp_space * interp_out_plane
 
@@ -143,8 +143,7 @@ class LowrankAppearance(LowrankModel):
 
         # add density one to appearance code
         appearance_code = torch.cat([appearance_code, torch.ones_like(appearance_code[:, 0:1])], dim=1)
-        #multi_scale_interp = multi_scale_interp * appearance_code
-        multi_scale_interp = multi_scale_interp + appearance_code
+        multi_scale_interp = multi_scale_interp * appearance_code
         
         if self.use_F:
             # Learned normalization

@@ -1,0 +1,19 @@
+program: plenoxels/sweep.py
+method: bayes
+metric:
+  name: test_psnr
+  goal: maximize
+parameters:
+  lr:
+    min: 0.0001
+    max: 0.1
+  plane_tv_weight_sigma:
+    min: 0.0
+    max: 0.1
+  plane_tv_weight_sh:
+    min: 0.0
+    max: 0.1
+  scheduler_type:
+    values: [None, "warmup_log_linear", "warmup_cosine", "warmup_step_many"]
+  config_path: 
+    values: ['plenoxels/configs/ficus_config_sara.py']

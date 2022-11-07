@@ -94,7 +94,7 @@ class VideoTrainer(Trainer):
                 else:
                     bg_color = 1
                 outputs = self.model(rays_o_b, rays_d_b, timestamps_d_b, bg_color=bg_color,
-                                     channels={"rgb", "depth", "proposal_depth"}, near_far=near_far)
+                                     channels={"rgb", "depth"}, near_far=near_far)
                 for k, v in outputs.items():
                     if not isinstance(v, list):
                         preds[k].append(v.cpu())
@@ -287,7 +287,7 @@ class VideoTrainer(Trainer):
 
     def optimize_appearance_codes(self):
         # turn gradients off for anything but appearance codes
-        
+
         # turn gradients on
         for param in self.model.parameters():
             param.requires_grad = False
@@ -297,29 +297,29 @@ class VideoTrainer(Trainer):
 
         for dset_id, dataset in enumerate(self.test_datasets):
             pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
-            
+
             # reset the appearance codes for
             test_frames = dataset.__len__()
             mask = torch.ones_like(self.model.appearance_coef)
             mask[: , -test_frames:] = 0
             self.model.appearance_coef.data = self.model.appearance_coef.data * mask + abs(1 - mask)
-            
+
             batch_size = 4096
             for img_idx, data in enumerate(dataset):
                 self.optimize_appearance_step(data, batch_size, img_idx)
                 pb.update(1)
             pb.close()
-            
+
         # turn gradients on
         self.model.grids.requires_grad = True
         for field in self.model.density_fields:
             field.requires_grad = True
-            
+
     def validate(self):
-        
+
         if hasattr(self.model, "appearance_coef"):
             self.optimize_appearance_codes()
-        
+
         val_metrics = []
         with torch.no_grad():
             if self.save_outputs:  # visualize planes
@@ -388,7 +388,7 @@ class VideoTrainer(Trainer):
             depth = depth.cpu().reshape(img_h, img_w)[..., None]
             preds["depth"] = depth
             exrdict["depth"] = preds["depth"].numpy()
-        
+
         for proposal_id in range(len(self.model.density_fields)):
             if f"proposal_depth_{proposal_id}" in preds:
                 # normalize depth and add to exrdict
@@ -427,10 +427,10 @@ class VideoTrainer(Trainer):
             out_name += "-" + name
 
         out_img = preds_rgb
-        
+
         if "depth" in preds:
             out_img = torch.cat((out_img, preds["depth"].expand_as(preds_rgb)))
-        
+
         for proposal_id in range(len(self.model.density_fields)):
             if f"proposal_depth_{proposal_id}" in preds:
                 out_img = torch.cat((out_img, preds[f"proposal_depth_{proposal_id}"].expand_as(preds_rgb)))
@@ -518,7 +518,7 @@ def init_ts_data(data_dir, **kwargs):
         )
     else:
         ts_dset = Video360Dataset(
-            data_dir, split='test', downsample=4, keyframes=kwargs.get('keyframes', False),
+            data_dir, split='test', downsample=2, keyframes=kwargs.get('keyframes', False),
             is_contracted=True
         )
     return {"ts_dset": ts_dset}
@@ -538,7 +538,7 @@ def load_data(data_downsample, data_dirs, validate_only, **kwargs):
 def load_video_model(config, state, validate_only):
     if state is not None:
         global_step = state['global_step']
-        
+
         if len(config["upsample_time_steps"]) > 0:
             if global_step > config['upsample_time_steps'][0]:
                 config.update(keyframes=False)

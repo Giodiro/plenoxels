@@ -74,7 +74,8 @@ class PhotoTourismDataset(torch.utils.data.Dataset):
                  datadir: str,
                  split: str,
                  batch_size: Optional[int] = None,
-                 downsample: float = 1.0):
+                 downsample: float = 1.0,
+                 debug: bool = False):
 
         self.isg = False
         self.ist = False
@@ -112,7 +113,7 @@ class PhotoTourismDataset(torch.utils.data.Dataset):
         imkey = np.array([os.path.basename(im) for im in self.imagepaths])
         
         #TODO: hard coded
-        debug = False
+        #debug = False
         if debug:
             print("\n!!!DEBUG MODE!!!!\n")
             self.files = self.files[self.files["split"]=="train"]

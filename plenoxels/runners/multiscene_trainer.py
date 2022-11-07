@@ -25,8 +25,9 @@ from ..datasets import SyntheticNerfDataset, LLFFDataset
 from ..datasets.multi_dataset_sampler import MultiSceneSampler
 from ..my_tqdm import tqdm
 from ..utils import parse_optint
-from .utils import get_cosine_schedule_with_warmup, get_step_schedule_with_warmup
+from .utils import get_cosine_schedule_with_warmup, get_step_schedule_with_warmup, get_log_linear_schedule_with_warmup
 
+import wandb
 
 class Trainer():
     def __init__(self,
@@ -298,6 +299,11 @@ class Trainer():
                 logging.info(log_text)
                 val_metrics.append(per_scene_metrics)
 
+                print(per_scene_metrics["psnr"])
+                print(per_scene_metrics["ssim"])
+                wandb.log({"test_psnr" : per_scene_metrics["psnr"],
+                         "test_ssim" : per_scene_metrics["ssim"]})
+
             # visualize planes
             if self.save_outputs:
                 if self.model.use_F:
@@ -349,7 +355,8 @@ class Trainer():
             summary["mse"] = torch.mean(err)
             summary["psnr"] = metrics.psnr(preds_rgb, gt)
             summary["ssim"] = metrics.ssim(preds_rgb, gt)
-
+ 
+            
         if save_outputs:
             out_name = f"step{self.global_step}-D{dset_id}-{img_idx}"
             if name is not None and name != "":
@@ -459,9 +466,18 @@ class Trainer():
                     max_steps // 2,
                 ],
                 gamma=0.1)
-        elif self.scheduler_type is not None:
+        elif self.scheduler_type == "warmup_log_linear":
+            lr_sched = get_log_linear_schedule_with_warmup(
+                self.optimizer,
+                num_warmup_steps=512,
+                num_training_steps=max_steps,
+                eta_min=2e-5,
+                eta_max=kwargs['lr'])
+        elif self.scheduler_type is not None and self.scheduler_type != "None":
             raise ValueError(self.scheduler_type)
         return lr_sched
+
+        # vy5bzxqg
 
     def init_optim(self, **kwargs) -> torch.optim.Optimizer:
         if self.optim_type == 'adam':
@@ -498,7 +514,8 @@ class Trainer():
 
     def init_regularizers(self, **kwargs):
         regularizers = [
-            PlaneTV(kwargs.get('plane_tv_weight', 0.0)),
+            PlaneTV(kwargs.get('plane_tv_weight_sigma', 0.0), features='sigma'),
+            PlaneTV(kwargs.get('plane_tv_weight_sh', 0.0), features='sh'),
             VolumeTV(
                 kwargs.get('volume_tv_weight', 0.0),
                 what=kwargs.get('volume_tv_what'),
