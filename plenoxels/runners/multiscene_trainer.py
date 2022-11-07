@@ -4,28 +4,31 @@ import os
 from collections import defaultdict
 from typing import Dict, List, Optional, MutableMapping, Union, Tuple
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
 import torch.utils.data
-from torch.utils.tensorboard import SummaryWriter
-import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
+from torch.utils.tensorboard import SummaryWriter
 
 from plenoxels.ema import EMA
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash, DensityMask
 from plenoxels.ops.image import metrics
-from plenoxels.ops.image.io import write_exr, write_png
+from plenoxels.ops.image.io import write_png
 from .regularization import (
     PlaneTV, L1PlaneColor, L1PlaneDensity, VolumeTV, L1Density, FloaterLoss,
     HistogramLoss
 )
 from .timer import CudaTimer
+from .utils import (
+    get_cosine_schedule_with_warmup, get_step_schedule_with_warmup,
+    get_log_linear_schedule_with_warmup
+)
 from ..datasets import SyntheticNerfDataset, LLFFDataset
 from ..datasets.multi_dataset_sampler import MultiSceneSampler
 from ..my_tqdm import tqdm
 from ..utils import parse_optint
-from .utils import get_cosine_schedule_with_warmup, get_step_schedule_with_warmup, get_log_linear_schedule_with_warmup
 
 try:
     import wandb
@@ -310,8 +313,8 @@ class Trainer():
                 val_metrics.append(per_scene_metrics)
 
                 if wandb is not None:
-                    wandb.log({"test_psnr" : per_scene_metrics["psnr"],
-                               "test_ssim" : per_scene_metrics["ssim"]})
+                    wandb.log({"test_psnr": per_scene_metrics["psnr"],
+                               "test_ssim": per_scene_metrics["ssim"]})
 
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
