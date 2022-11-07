@@ -30,7 +30,8 @@ def setup_logging(log_level=logging.INFO):
     handlers = [logging.StreamHandler(sys.stdout)]
     logging.basicConfig(level=log_level,
                         format='%(asctime)s|%(levelname)8s| %(message)s',
-                        handlers=handlers)
+                        handlers=handlers,
+                        force=True)
 
 
 def load_data(is_video: bool, data_downsample, data_dirs, batch_size, **kwargs):
@@ -87,13 +88,13 @@ def main():
     if not validate_only:
         log_dir = os.path.join(config['logdir'], config['expname'])
         os.makedirs(log_dir, exist_ok=True)
-        with open(os.path.join(log_dir, 'config.py'), 'wt') as out: 
+        with open(os.path.join(log_dir, 'config.py'), 'wt') as out:
             out.write('config = ' + pprint.pformat(config))
 
         with open(os.path.join(log_dir, 'config.csv'), 'w') as f:
             for key in config.keys():
                 f.write("%s\t%s\n"%(key,config[key]))
-    
+
     if is_video:
         state = None
         if args.log_dir is not None:

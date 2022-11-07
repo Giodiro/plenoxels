@@ -3,7 +3,6 @@ import os
 from typing import Optional
 
 import torch
-import numpy as np
 from torch.utils.data import Dataset
 
 from .intrinsics import Intrinsics
@@ -22,6 +21,7 @@ class BaseDataset(Dataset, ABC):
                  batch_size: Optional[int] = None,
                  imgs: Optional[torch.Tensor] = None,
                  sampling_weights: Optional[torch.Tensor] = None,
+                 weights_subsampled: int = 1,
                  ):
         self.datadir = datadir
         self.name = os.path.basename(self.datadir)
@@ -29,6 +29,7 @@ class BaseDataset(Dataset, ABC):
         self.split = split
         self.is_ndc = is_ndc
         self.is_contracted = is_contracted
+        self.weights_subsampled = weights_subsampled
         self.batch_size = batch_size
         if self.split == 'train':
             assert self.batch_size is not None
@@ -60,16 +61,21 @@ class BaseDataset(Dataset, ABC):
     def get_rand_ids(self, index):
         assert self.batch_size is not None, "Can't get rand_ids for test split"
         if self.sampling_weights is not None:
+            batch_size = self.batch_size // (self.weights_subsampled ** 2)
             num_weights = len(self.sampling_weights)
             if num_weights > self.sampling_batch_size:
                 # Take a uniform random sample first, then according to the weights
-                subset = torch.randint(0, num_weights, size=(self.sampling_batch_size,), dtype=torch.int64, device=self.sampling_weights.device)
+                subset = torch.randint(
+                    0, num_weights, size=(self.sampling_batch_size,),
+                    dtype=torch.int64, device=self.sampling_weights.device)
                 samples = torch.multinomial(
-                    input=self.sampling_weights[subset], num_samples=self.batch_size)
+                    input=self.sampling_weights[subset], num_samples=batch_size)
                 return subset[samples]
             return torch.multinomial(
-                input=self.sampling_weights, num_samples=self.batch_size)
-        return self.perm[index * self.batch_size: (index + 1) * self.batch_size]
+                input=self.sampling_weights, num_samples=batch_size)
+        else:
+            batch_size = self.batch_size
+            return self.perm[index * batch_size: (index + 1) * batch_size]
 
     def __len__(self):
         if self.split == 'train':

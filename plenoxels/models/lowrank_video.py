@@ -51,23 +51,21 @@ class LowrankVideo(LowrankModel):
                          spacing_fn=kwargs.get('spacing_fn', None),
                          num_samples_multiplier=kwargs.get('num_samples_multiplier', None),
                          density_model=kwargs.get('density_model', None),
-                         aabb=aabb)
+                         aabb=aabb,
+                         multiscale_res=multiscale_res)
         self.extra_args = kwargs
         self.trainable_rank = None
         self.hooks = None
-        self.multiscale_res = multiscale_res
         # For now, only allow a single index grid and a single feature grid, not multiple layers
         assert len(self.config) == 2
         self.grids = torch.nn.ModuleList()
+        self.features = torch.nn.ParameterList()
         for res in self.multiscale_res:
             for li, grid_config in enumerate(self.config):
                 # initialize feature grid
-                if "feature_dim" in grid_config:
-                    self.features = None
-                    self.feature_dim = grid_config["feature_dim"]
-                    if self.use_F:
-                        self.features = init_features_param(grid_config, self.sh)
-                        self.feature_dim = self.features.shape[0]
+                if "feature_dim" in grid_config and self.use_F:
+                    self.features.append(init_features_param(grid_config, self.sh))
+                    self.feature_dim = self.features[-1].shape[0]
                 # initialize coordinate grid
                 else:
                     config = grid_config.copy()
@@ -78,7 +76,9 @@ class LowrankVideo(LowrankModel):
                     gpdesc = init_grid_param(config, grid_level=li, use_F=self.use_F, is_video=True, is_appearance=False)
                     self.set_resolution(gpdesc.reso, 0)
                     self.grids.append(gpdesc.grid_coefs)
-
+                    if not self.use_F:
+                        # shape[1] is out-dim * rank
+                        self.feature_dim = gpdesc.grid_coefs[-1].shape[1] // config["rank"][0]
         if self.sh:
             self.decoder = SHDecoder(
                 feature_dim=self.feature_dim,
@@ -96,13 +96,12 @@ class LowrankVideo(LowrankModel):
     def compute_features(self,
                          pts,  # [batch, 3]
                          timestamps,  # [batch]
-                         return_coords: bool = False
-                         ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        multiscale_space : torch.nn.ModuleList = self.grids  # space: 6 x [1, rank * F_dim, reso, reso] where the reso can be different in different grids and dimensions
+                         ) -> torch.Tensor:
+        multiscale_space: torch.nn.ModuleList = self.grids  # space: 6 x [1, rank * F_dim, reso, reso] where the reso can be different in different grids and dimensions
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
 
         # Interpolate in space and time
-        pts = torch.cat([pts, timestamps[:,None]], dim=-1)  # [batch, 4] for xyzt
+        pts = torch.cat([pts, timestamps[:, None]], dim=-1)  # [batch, 4] for xyzt
 
         coo_combs = list(itertools.combinations(
             range(pts.shape[-1]),
@@ -112,31 +111,24 @@ class LowrankVideo(LowrankModel):
         for scale_id, grid_space in enumerate(multiscale_space):
             interp_space = None  # [n, F_dim, rank]
             for ci, coo_comb in enumerate(coo_combs):
-
                 # interpolate in plane
                 interp_out_plane = grid_sample_wrapper(grid_space[ci], pts[..., coo_comb]).view(
                             -1, level_info["output_coordinate_dim"], level_info["rank"])
-
                 # compute product
                 interp_space = interp_out_plane if interp_space is None else interp_space * interp_out_plane
-
             # Combine space and time over rank
             interp = interp_space.mean(dim=-1)  # Mean over rank
-
             # sum over scales
-            multi_scale_interp += interp
-
-        if self.use_F:
-            # Learned normalization
-            if interp.numel() > 0:
-                multi_scale_interp = (multi_scale_interp - self.pt_min) / (self.pt_max - self.pt_min)
-                multi_scale_interp = multi_scale_interp * 2 - 1
-            out = grid_sample_wrapper(self.features, multi_scale_interp).view(-1, self.feature_dim)
-        else:
-            out = multi_scale_interp
-        if return_coords:
-            return out, multi_scale_interp
-        return out
+            if self.use_F:
+                # Learned normalization
+                if interp.numel() > 0:
+                    interp = (interp - self.pt_min[scale_id]) / (self.pt_max[scale_id] - self.pt_min[scale_id])
+                    interp = interp * 2 - 1
+                multi_scale_interp += grid_sample_wrapper(
+                    self.features[scale_id], interp).view(-1, self.feature_dim)
+            else:
+                multi_scale_interp += interp
+        return multi_scale_interp  # noqa
 
     def forward(self, rays_o, rays_d, timestamps, bg_color, channels: Sequence[str] = ("rgb", "depth"), near_far=None):
         """

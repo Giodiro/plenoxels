@@ -14,6 +14,7 @@ __all__ = (
     "center_poses",
     "generate_spiral_path",
     "generate_hemispherical_orbit",
+    "gen_camera_dirs",
 )
 
 
