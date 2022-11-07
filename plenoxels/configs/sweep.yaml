@@ -1,0 +1,11 @@
+program: plenoxels/sweep.py
+method: bayes
+metric:
+  name: test_psnr
+  goal: maximize
+parameters:
+  lr:
+    min: 0.0001
+    max: 0.1
+  config_path: 
+    values: ['plenoxels/configs/ficus_config_sara.py']

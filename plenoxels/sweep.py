@@ -10,11 +10,13 @@ import numpy as np
 import wandb
 import torch
 import torch.utils.data
-
+# import time
+# import multiprocessing
 from multiprocessing import Process
 from plenoxels.runners import video_trainer, multiscene_trainer
 from plenoxels.utils import parse_optfloat, parse_optint
 
+# multiprocessing.set_start_method("spawn")
 
 def setup_logging(log_level=logging.INFO):
     handlers = [logging.StreamHandler(sys.stdout)]
@@ -40,17 +42,23 @@ def init_trainer(is_video: bool, **kwargs):
         return multiscene_trainer.Trainer(**kwargs)
     
     
-
+# def get_freer_gpu():
+#     os.system('nvidia-smi -q -d Memory |grep -A5 GPU|grep Free >tmp')
+#     memory_available = [int(x.split()[2]) for x in open('tmp', 'r').readlines()]
+#     return np.argmax(memory_available)
 
 
 def main():
     setup_logging()
     
+    #gpu = get_freer_gpu()
+    #os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
+    #print(f'gpu is {gpu}')
     
     # Use the wandb.init() API to generate a background process 
     # to sync and log data as a Weights and Biases run.
     # Optionally provide the name of the project. 
-    run = wandb.init(project='hexplane')
+    run = wandb.init()
 
     # Set random seed
     np.random.seed(42)
@@ -62,7 +70,8 @@ def main():
     cfg = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(cfg)
     config: Dict[str, Any] = cfg.config
-    
+    print("config", config)
+    print("wandb.config", wandb.config)
     # note that we define values from `wandb.config` instead of 
     # defining hard values
     for k, v in wandb.config.items():
@@ -90,37 +99,40 @@ def main():
 
 
 if __name__ == "__main__":
-    
-    sweep_configuration = {
-        'method': 'bayes',
-        'name': 'ficus_sweep',
-        'metric': {
-            'goal': 'maximize', 
-            'name': 'test_psnr'
-            },
-        'parameters': {
-            'lr': {'max': 0.1, 'min': 0.0001},
-            'plane_tv_weight_sigma': {'max': 0.1, 'min': 0.0},
-            'plane_tv_weight_sh': {'max': 0.1, 'min': 0.0},
-            "scheduler_type": {'values': ["warmup_log_linear", "warmup_cosine", "warmup_step_many"]},
-            'config_path': {'values': ['plenoxels/configs/giac_learnablehash.py']},
-        }
-    }
+    main()
+    # sweep_configuration = {
+    #     'method': 'bayes',
+    #     'name': 'ficus_sweep',
+    #     'metric': {
+    #         'goal': 'maximize', 
+    #         'name': 'test_psnr'
+    #         },
+    #     'parameters': {
+    #         'lr': {'max': 0.1, 'min': 0.0001},
+    #         'plane_tv_weight_sigma': {'max': 0.1, 'min': 0.0},
+    #         'plane_tv_weight_sh': {'max': 0.1, 'min': 0.0},
+    #         "scheduler_type": {'values': [None, "warmup_log_linear", "warmup_cosine", "warmup_step_many"]},
+    #         'config_path': {'values': ['plenoxels/configs/ficus_config_sara.py']},
+    #     }
+    # }
         
-    sweep_id = wandb.sweep(sweep=sweep_configuration, project="hexplane")
-    #print(sweep_id)
-    #wandb.agent(sweep_id, function=main, count=4)
+    # sweep_id = wandb.sweep(sweep=sweep_configuration, project="hexplane")
+    # print(sweep_id)
+    # wandb.agent(sweep_id, function=main, count=4)
     
     # run the sweep
-    agents = 4
+    # agents = 4
 
-    procs = []
-    for process in range(agents):
-        proc = Process(target=wandb.agent, args=(sweep_id, main, ))
-        proc.start()
-        procs.append(proc)
+    # procs = []
+    # for process in range(agents):
+        
+    #     proc = Process(target=wandb.agent, args=(sweep_id, main, ))
+    #     proc.start()
+    #     procs.append(proc)
+        
+    #     #time.sleep(30)
 
-    # complete the processes
-    for proc in procs:
-        proc.join()
+    # # # complete the processes
+    # for proc in procs:
+    #     proc.join()
     
