@@ -295,6 +295,11 @@ class Trainer():
                 logging.info(log_text)
                 val_metrics.append(per_scene_metrics)
 
+                print(per_scene_metrics["psnr"])
+                print(per_scene_metrics["ssim"])
+                wandb.log({"test_psnr" : per_scene_metrics["psnr"],
+                         "test_ssim" : per_scene_metrics["ssim"]})
+
             # visualize planes
             if self.save_outputs:
                 if self.model.use_F:
@@ -338,12 +343,7 @@ class Trainer():
             summary["mse"] = torch.mean(err)
             summary["psnr"] = metrics.psnr(preds_rgb, gt)
             summary["ssim"] = metrics.ssim(preds_rgb, gt)
-
-            wandb.log({
-                "test_psnr" : summary["psnr"],
-                "test_mse" : summary["mse"],
-                "test_err" : summary["err"],
-                "test_ssim" : summary["ssim"]})
+ 
             
         if save_outputs:
             out_name = f"step{self.global_step}-D{dset_id}-{img_idx}"
@@ -465,6 +465,8 @@ class Trainer():
         elif self.scheduler_type is not None and self.scheduler_type != "None":
             raise ValueError(self.scheduler_type)
         return lr_sched
+
+        # vy5bzxqg
 
     def init_optim(self, **kwargs) -> torch.optim.Optimizer:
         if self.optim_type == 'adam':
