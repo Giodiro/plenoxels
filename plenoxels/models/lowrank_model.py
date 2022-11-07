@@ -26,6 +26,7 @@ class LowrankModel(ABC, nn.Module):
                  use_F: bool,
                  use_proposal_sampling: bool,
                  aabb: Union[List[torch.Tensor], torch.Tensor],
+                 multiscale_res: Sequence[int],
                  num_scenes: int = 1,
                  global_translation: Optional[torch.Tensor] = None,
                  global_scale: Optional[torch.Tensor] = None,
@@ -46,6 +47,7 @@ class LowrankModel(ABC, nn.Module):
             self.config: List[Dict] = eval(grid_config)
         else:
             self.config: List[Dict] = grid_config
+        self.multiscale_res = multiscale_res
         self.set_aabb(aabb)  # set_aabb handles both single tensor and a list.
         self.is_ndc = is_ndc
         self.is_contracted = is_contracted
@@ -63,8 +65,10 @@ class LowrankModel(ABC, nn.Module):
 
         self.pt_min, self.pt_max = None, None
         if self.use_F:
-            self.pt_min = torch.nn.Parameter(torch.tensor(-1.0))
-            self.pt_max = torch.nn.Parameter(torch.tensor(1.0))
+            self.pt_min = nn.ParameterList([
+                torch.nn.Parameter(torch.tensor(-1.0)) for _ in range(len(self.multiscale_res))])
+            self.pt_max = nn.ParameterList([
+                torch.nn.Parameter(torch.tensor(+1.0)) for _ in range(len(self.multiscale_res))])
 
         self.spatial_distortion = None
         if self.is_contracted:

@@ -73,13 +73,13 @@ class LowrankLearnableHash(LowrankModel):
                          raymarch_type=raymarch_type,
                          spacing_fn=kwargs.get('spacing_fn', None),
                          num_samples_multiplier=kwargs.get('num_samples_multiplier', None),
-                         aabb=aabb)
+                         aabb=aabb,
+                         multiscale_res=multiscale_res)
         self.extra_args = kwargs
         self.density_multiplier = self.extra_args.get("density_multiplier")
         self.transfer_learning = self.extra_args["transfer_learning"]
         self.alpha_mask_threshold = self.extra_args["density_threshold"]
 
-        self.multiscale_res = multiscale_res
         self.scene_grids = nn.ModuleList()
         self.features = nn.ParameterList()
         for si in range(num_scenes):
@@ -152,15 +152,14 @@ class LowrankLearnableHash(LowrankModel):
             # sum over scales
             if self.use_F:
                 if interp.numel() > 0:
-                    interp = (interp - self.pt_min) / (self.pt_max - self.pt_min)
+                    interp = (interp - self.pt_min[scale_id]) / (self.pt_max[scale_id] - self.pt_min[scale_id])
                     interp = interp * 2 - 1
                 multi_scale_interp += grid_sample_wrapper(
                     self.features[scale_id].to(dtype=interp.dtype), interp
                 ).view(-1, self.feature_dim)
             else:
                 multi_scale_interp += interp
-
-        return multi_scale_interp
+        return multi_scale_interp  # noqa
 
     @torch.no_grad()
     def update_alpha_mask(self, grid_id: int = 0):
