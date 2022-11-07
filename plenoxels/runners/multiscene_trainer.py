@@ -350,13 +350,12 @@ class Trainer():
             if gt.shape[-1] == 4:
                 gt = gt[..., :3] * gt[..., 3:] + (1.0 - gt[..., 3:])
 
-            err = self._normalize_01((gt - preds_rgb) ** 2)
-            out_img = torch.cat((out_img, err), dim=0)
+            err = (gt - preds_rgb) ** 2
+            out_img = torch.cat((out_img, self._normalize_01(err)), dim=0)
             summary["mse"] = torch.mean(err)
             summary["psnr"] = metrics.psnr(preds_rgb, gt)
             summary["ssim"] = metrics.ssim(preds_rgb, gt)
- 
-            
+
         if save_outputs:
             out_name = f"step{self.global_step}-D{dset_id}-{img_idx}"
             if name is not None and name != "":
