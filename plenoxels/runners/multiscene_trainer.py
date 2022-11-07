@@ -275,7 +275,8 @@ class Trainer():
                 # visualize planes
                 if self.save_outputs:
                     if self.model.use_F:
-                        visualize_planes_withF(self.model, self.log_dir, f"step{self.global_step}-D{dset_id}")
+                        pass
+                        #visualize_planes_withF(self.model, self.log_dir, f"step{self.global_step}-D{dset_id}")
                     else:
                         visualize_planes(self.model, self.log_dir, f"step{self.global_step}-D{dset_id}")
                 per_scene_metrics = {

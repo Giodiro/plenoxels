@@ -81,6 +81,7 @@ class LowrankLearnableHash(LowrankModel):
 
         self.multiscale_res = multiscale_res
         self.scene_grids = nn.ModuleList()
+        self.features = nn.ParameterList()
         for si in range(num_scenes):
             multi_scale_grids = nn.ModuleList()
             for res in self.multiscale_res:
@@ -89,8 +90,8 @@ class LowrankLearnableHash(LowrankModel):
                     # initialize feature grid
                     if "feature_dim" in grid_config and si == 0:  # Only make one set of features
                         if self.use_F:
-                            self.features = init_features_param(grid_config, self.sh)
-                            self.feature_dim = self.features.shape[0]
+                            self.features.append(init_features_param(grid_config, self.sh))
+                            self.feature_dim = self.features[-1].shape[0]
                     # initialize coordinate grid
                     else:
                         config = grid_config.copy()
@@ -123,8 +124,7 @@ class LowrankLearnableHash(LowrankModel):
     def compute_features(self,
                          pts: torch.Tensor,
                          grid_id: int,
-                         return_coords: bool = False
-                         ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+                         ) -> torch.Tensor:
         mulitres_grids: nn.ModuleList = self.scene_grids[grid_id]  # noqa
         grids_info = self.config
 
@@ -150,19 +150,17 @@ class LowrankLearnableHash(LowrankModel):
             # average over rank
             interp = interp_out.mean(dim=-1)
             # sum over scales
-            multi_scale_interp += interp
+            if self.use_F:
+                if interp.numel() > 0:
+                    interp = (interp - self.pt_min) / (self.pt_max - self.pt_min)
+                    interp = interp * 2 - 1
+                multi_scale_interp += grid_sample_wrapper(
+                    self.features[scale_id].to(dtype=interp.dtype), interp
+                ).view(-1, self.feature_dim)
+            else:
+                multi_scale_interp += interp
 
-        if self.use_F:
-            if multi_scale_interp.numel() > 0:
-                multi_scale_interp = (multi_scale_interp - self.pt_min) / (self.pt_max - self.pt_min)
-                multi_scale_interp = multi_scale_interp * 2 - 1
-            out = grid_sample_wrapper(self.features.to(dtype=interp.dtype), multi_scale_interp).view(-1, self.feature_dim)
-        else:
-            out = multi_scale_interp
-
-        if return_coords:
-            return out, multi_scale_interp
-        return out
+        return multi_scale_interp
 
     @torch.no_grad()
     def update_alpha_mask(self, grid_id: int = 0):
@@ -262,32 +260,6 @@ class LowrankLearnableHash(LowrankModel):
         self.set_resolution(
             torch.tensor(new_reso, dtype=torch.long, device=grid_data.device), grid_id)
         log.info(f"Upsampled scene {grid_id} to resolution={new_reso}")
-
-    @torch.no_grad()
-    def upsample_F(self, new_reso):
-        grid_info = self.config[1]
-        new_size = [self.features.shape[0]] + [new_reso] * grid_info["input_coordinate_dim"]
-        if grid_info["input_coordinate_dim"] == 1:
-            coords = torch.tensor(np.mgrid[-1:1:new_reso*1j], device=self.features.device, dtype=torch.float32)
-        elif grid_info["input_coordinate_dim"] == 2:
-            coords = torch.tensor(np.mgrid[-1:1:new_reso*1j, -1:1:new_reso*1j], device=self.features.device, dtype=torch.float32)
-        elif grid_info["input_coordinate_dim"] == 3:
-            coords = torch.tensor(np.mgrid[-1:1:new_reso*1j, -1:1:new_reso*1j, -1:1:new_reso*1j], device=self.features.device, dtype=torch.float32)
-        elif grid_info["input_coordinate_dim"] == 4:
-            coords = torch.tensor(np.mgrid[-1:1:new_reso*1j, -1:1:new_reso*1j, -1:1:new_reso*1j, -1:1:new_reso*1j], device=self.features.device, dtype=torch.float32)
-        elif grid_info["input_coordinate_dim"] == 5:
-            coords = torch.tensor(np.mgrid[-1:1:new_reso*1j, -1:1:new_reso*1j, -1:1:new_reso*1j, -1:1:new_reso*1j, -1:1:new_reso*1j], device=self.features.device, dtype=torch.float32)
-        elif grid_info["input_coordinate_dim"] == 6:
-            coords = torch.tensor(np.mgrid[-1:1:new_reso*1j, -1:1:new_reso*1j, -1:1:new_reso*1j, -1:1:new_reso*1j, -1:1:new_reso*1j, -1:1:new_reso*1j], device=self.features.device, dtype=torch.float32)
-        else:
-            assert False, "feature upsampling not supported above 6 dimensions"
-        # coords shape is [dim] + [new_reso]*dim, e.g. [5, 8, 8, 8, 8, 8]
-        # self.features shape is [feature_dim] + [old_reso]*dim, e.g. [28, 4, 4, 4, 4, 4]
-        # Reshape coords into [batch, 1, ..., n, grid_dim] as expected by grid_sample_wrapper
-        coords = coords.view(coords.shape[0], -1)  # [dim, new_reso**dim]
-        coords = torch.permute(coords, (1, 0))[None, :, :]  # [1, new_reso**dim, dim]
-        self.features.data = grid_sample_wrapper(self.features[None, ...], coords).permute(1, 0).view(new_size)
-        log.info(f'upsampled feature grid to shape {new_size}')
 
     def get_points_on_grid(self, aabb, grid_size, max_voxels: Optional[int] = None):
         """
