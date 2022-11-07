@@ -27,7 +27,11 @@ from ..my_tqdm import tqdm
 from ..utils import parse_optint
 from .utils import get_cosine_schedule_with_warmup, get_step_schedule_with_warmup, get_log_linear_schedule_with_warmup
 
-import wandb
+try:
+    import wandb
+except ImportError:
+    logging.warning("wandb is not installed!")
+    wandb = None
 
 class Trainer():
     def __init__(self,
@@ -299,10 +303,9 @@ class Trainer():
                 logging.info(log_text)
                 val_metrics.append(per_scene_metrics)
 
-                print(per_scene_metrics["psnr"])
-                print(per_scene_metrics["ssim"])
-                wandb.log({"test_psnr" : per_scene_metrics["psnr"],
-                         "test_ssim" : per_scene_metrics["ssim"]})
+                if wandb is not None:
+                    wandb.log({"test_psnr" : per_scene_metrics["psnr"],
+                               "test_ssim" : per_scene_metrics["ssim"]})
 
             # visualize planes
             if self.save_outputs:
@@ -355,8 +358,8 @@ class Trainer():
             summary["mse"] = torch.mean(err)
             summary["psnr"] = metrics.psnr(preds_rgb, gt)
             summary["ssim"] = metrics.ssim(preds_rgb, gt)
- 
-            
+
+
         if save_outputs:
             out_name = f"step{self.global_step}-D{dset_id}-{img_idx}"
             if name is not None and name != "":
