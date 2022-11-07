@@ -25,7 +25,7 @@ from ..datasets import SyntheticNerfDataset, LLFFDataset
 from ..datasets.multi_dataset_sampler import MultiSceneSampler
 from ..my_tqdm import tqdm
 from ..utils import parse_optint
-from .utils import get_cosine_schedule_with_warmup, get_step_schedule_with_warmup
+from .utils import get_cosine_schedule_with_warmup, get_step_schedule_with_warmup, get_log_linear_schedule_with_warmup
 
 
 class Trainer():
@@ -448,6 +448,13 @@ class Trainer():
                     max_steps // 2,
                 ],
                 gamma=0.1)
+        elif self.scheduler_type == "warmup_log_linear":
+            lr_sched = get_log_linear_schedule_with_warmup(
+                self.optimizer,
+                num_warmup_steps=512,
+                num_training_steps=max_steps,
+                eta_min=2e-5,
+                eta_max=kwargs['lr'])
         elif self.scheduler_type is not None:
             raise ValueError(self.scheduler_type)
         return lr_sched
