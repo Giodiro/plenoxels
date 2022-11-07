@@ -51,10 +51,11 @@ class LowrankAppearance(LowrankModel):
                          raymarch_type=raymarch_type,
                          spacing_fn=kwargs.get('spacing_fn', None),
                          num_samples_multiplier=kwargs.get('num_samples_multiplier', None),
-                         aabb=aabb)
+                         density_model=kwargs.get('density_model', None),
+                         aabb=aabb,
+                         multiscale_res=multiscale_res)
         self.extra_args = kwargs
         self.lookup_time = lookup_time
-        self.multiscale_res = multiscale_res
         self.trainable_rank = None
 
         # For now, only allow a single index grid and a single feature grid, not multiple layers
