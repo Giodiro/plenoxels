@@ -64,8 +64,8 @@ class Video360Dataset(BaseDataset):
             self.poses = poses.float()
             self.per_cam_near_fars = self.per_cam_near_fars.float()
             # These values are tuned for the salmon video
-            self.global_translation = torch.tensor([0, 0, 2])
-            self.global_scale = torch.tensor([0.6, 0.6, 1])
+            self.global_translation = torch.tensor([0, 0, 2.])
+            self.global_scale = torch.tensor([0.5, 0.6, 1])
             log.info(f'per_cam_near_fars is {self.per_cam_near_fars}, with global translation '
                      f'{self.global_translation} and scale {self.global_scale}')
         elif dset_type == "synthetic":
@@ -105,7 +105,7 @@ class Video360Dataset(BaseDataset):
             sampling_weights=None,  # Start without importance sampling, by default
             weights_subsampled=weights_subsampled,
         )
-        
+
         self.isg_weights = None
         self.ist_weights = None
         if split == "train":
@@ -140,6 +140,9 @@ class Video360Dataset(BaseDataset):
                 torch.save(self.ist_weights, os.path.join(datadir, f"ist_weights.pt"))
                 t_e = time.time()
                 log.info(f"Computed {self.ist_weights.shape[0]} IST weights in {t_e - t_s:.2f}s.")
+
+        if self.isg:
+            self.enable_isg()
 
         if dset_type == "synthetic":
             self.len_time = torch.amax(timestamps).item()
@@ -176,21 +179,29 @@ class Video360Dataset(BaseDataset):
         dev = "cpu"
         if self.split == 'train':
             index = self.get_rand_ids(index)  # [batch_size // (weights_subsampled**2)]
-            # Split each subsampled index into its 16 components in 2D.
-            hsub, wsub = h // self.weights_subsampled, w // self.weights_subsampled
-            image_id = torch.div(index, hsub * wsub, rounding_mode='floor')
-            ysub = torch.remainder(index, hsub * wsub).div(wsub, rounding_mode='floor')
-            xsub = torch.remainder(index, hsub * wsub).remainder(wsub)
-            # xsub, ysub is the first point in the 4x4 square of finely sampled points
-            x, y = [], []
-            for ah in range(self.weights_subsampled):
-                for aw in range(self.weights_subsampled):
-                    x.append(xsub * self.weights_subsampled + aw)
-                    y.append(ysub * self.weights_subsampled + ah)
-            x = torch.cat(x)
-            y = torch.cat(y)
-            # Inverse of the process to get x, y from index. image_id stays the same.
-            index = x + y * w + (image_id * h * w).repeat(self.weights_subsampled ** 2)
+            if len(index) == self.batch_size:
+                # Nothing special to do, either we have a weights_subsampled = 1, or we're not
+                # using weights.
+                image_id = torch.div(index, h * w, rounding_mode='floor')
+                y = torch.remainder(index, h * w).div(w, rounding_mode='floor')
+                x = torch.remainder(index, h * w).remainder(w)
+            else:
+                # Split each subsampled index into its 16 components in 2D.
+                hsub, wsub = h // self.weights_subsampled, w // self.weights_subsampled
+                image_id = torch.div(index, hsub * wsub, rounding_mode='floor')
+                ysub = torch.remainder(index, hsub * wsub).div(wsub, rounding_mode='floor')
+                xsub = torch.remainder(index, hsub * wsub).remainder(wsub)
+                # xsub, ysub is the first point in the 4x4 square of finely sampled points
+                x, y = [], []
+                for ah in range(self.weights_subsampled):
+                    for aw in range(self.weights_subsampled):
+                        x.append(xsub * self.weights_subsampled + aw)
+                        y.append(ysub * self.weights_subsampled + ah)
+                x = torch.cat(x)
+                y = torch.cat(y)
+                image_id = image_id.repeat(self.weights_subsampled ** 2)
+                # Inverse of the process to get x, y from index. image_id stays the same.
+                index = x + y * w + image_id * h * w
         else:
             image_id = [index]
             x, y = torch.meshgrid(
