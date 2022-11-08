@@ -185,7 +185,13 @@ class DensityPlaneTV(VideoPlaneTV):
     def _regularize(self, model: LowrankModel, **kwargs) -> torch.Tensor:
         total = 0
         for field in model.density_fields:
-            total += super()._regularize(model=field)
+            grids = field.grids
+            if len(grids) == 3:
+                spatial_grids = [0, 1, 2]
+            else:
+                spatial_grids = [0, 1, 3]
+            for grid_id in spatial_grids:
+                total += compute_plane_tv(grids[grid_id])
         total /= len(model.density_fields)
         return total
 
