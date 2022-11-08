@@ -79,19 +79,42 @@ class LowrankLearnableHash(LowrankModel):
         self.density_multiplier = self.extra_args.get("density_multiplier")
         self.transfer_learning = self.extra_args["transfer_learning"]
         self.alpha_mask_threshold = self.extra_args["density_threshold"]
-
+        self.which_f = self.extra_args["which_f"]
+        
         self.scene_grids = nn.ModuleList()
-        self.features = nn.ParameterList()
+        if self.use_F:
+            if self.which_f in ("single_f_per_scale", "single_f_per_rank"):
+                self.features = nn.ParameterList()
+            elif self.which_f == "single_f_per_scale_and_rank":
+                self.features = nn.ModuleList()
+            elif self.which_f == "single_f":
+                self.features = None
+                
         for si in range(num_scenes):
             multi_scale_grids = nn.ModuleList()
-            for res in self.multiscale_res:
+            for ri, res in enumerate(self.multiscale_res):
                 grids = nn.ModuleList()
                 for li, grid_config in enumerate(self.config):
                     # initialize feature grid
                     if "feature_dim" in grid_config and si == 0:  # Only make one set of features
                         if self.use_F:
-                            self.features.append(init_features_param(grid_config, self.sh))
-                            self.feature_dim = self.features[-1].shape[0]
+                            if self.which_f == "single_f_per_scale":
+                                self.features.append(init_features_param(grid_config, self.sh))
+                                self.feature_dim = self.features[-1].shape[0]
+                            elif self.which_f == "single_f_per_rank" and len(self.features) == 0:
+                                for _ in range(self.config[1]["rank"][0]):
+                                    self.features.append(init_features_param(grid_config, self.sh))
+                                    self.feature_dim = self.features[-1].shape[0]
+                            elif self.which_f == "single_f_per_scale_per_rank":
+                                f_list = nn.ParameterList()
+                                for _ in range(self.config[1]["rank"][0]):
+                                    self.f_list.append(init_features_param(grid_config, self.sh))
+                                    self.feature_dim = self.f_list[-1].shape[0]
+                                self.features.append(f_list)
+                            elif self.which_f == "single_f" and self.features is None:
+                                self.features = init_features_param(grid_config, self.sh)
+                                self.feature_dim = self.features.shape[0]
+                            
                     # initialize coordinate grid
                     else:
                         config = grid_config.copy()
@@ -108,6 +131,9 @@ class LowrankLearnableHash(LowrankModel):
                             self.feature_dim = gpdesc.grid_coefs[-1].shape[1] // config["rank"][0]
                 multi_scale_grids.append(grids)
             self.scene_grids.append(multi_scale_grids)
+            
+
+            
         if self.sh:
             self.decoder = SHDecoder(
                 feature_dim=self.feature_dim,
@@ -121,13 +147,8 @@ class LowrankLearnableHash(LowrankModel):
     def step_cb(self, step, max_steps):
         pass
 
-    def compute_features(self,
-                         pts: torch.Tensor,
-                         grid_id: int,
-                         ) -> torch.Tensor:
-        mulitres_grids: nn.ModuleList = self.scene_grids[grid_id]  # noqa
-        grids_info = self.config
-
+    def compute_features_no_f(self, pts, mulitres_grids, grids_info):
+        
         multi_scale_interp = 0
         for scale_id, res in enumerate(self.multiscale_res):  # noqa
             grids: nn.ParameterList = mulitres_grids[scale_id]
@@ -149,18 +170,182 @@ class LowrankLearnableHash(LowrankModel):
                     interp_out = interp_out_plane if interp_out is None else interp_out * interp_out_plane
             # average over rank
             interp = interp_out.mean(dim=-1)
+            
             # sum over scales
-            if self.use_F:
-                if interp.numel() > 0:
-                    interp = (interp - self.pt_min[scale_id]) / (self.pt_max[scale_id] - self.pt_min[scale_id])
-                    interp = interp * 2 - 1
-                multi_scale_interp += grid_sample_wrapper(
-                    self.features[scale_id].to(dtype=interp.dtype), interp
-                ).view(-1, self.feature_dim)
-            else:
-                multi_scale_interp += interp
-        return multi_scale_interp  # noqa
+            multi_scale_interp += interp
+        
+        return multi_scale_interp
+        
+    def compute_features_single_f(self, pts, mulitres_grids, grids_info):
+        
+        multi_scale_interp = 0
+        for scale_id, res in enumerate(self.multiscale_res):  # noqa
+            grids: nn.ParameterList = mulitres_grids[scale_id]
+            for level_info, grid in zip(grids_info, grids):
+                if "feature_dim" in level_info:
+                    continue
 
+                # create plane combinations
+                coo_combs = list(itertools.combinations(
+                    range(pts.shape[-1]),
+                    level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
+
+                interp_out = None
+                for ci, coo_comb in enumerate(coo_combs):
+                    # interpolate in plane
+                    interp_out_plane = grid_sample_wrapper(grid[ci], pts[..., coo_comb]).view(
+                                -1, level_info["output_coordinate_dim"], level_info["rank"])
+                    # compute product
+                    interp_out = interp_out_plane if interp_out is None else interp_out * interp_out_plane
+            
+            # average over rank
+            interp = interp_out.mean(dim=-1)
+            
+            # sum over scales
+            multi_scale_interp += interp
+            
+        if multi_scale_interp.numel() > 0:
+            multi_scale_interp = (multi_scale_interp - self.pt_min) / (self.pt_max - self.pt_min)
+            multi_scale_interp = multi_scale_interp * 2 - 1
+            
+        multi_scale_interp = grid_sample_wrapper(
+            self.features.to(dtype=multi_scale_interp.dtype), multi_scale_interp
+        ).view(-1, self.feature_dim)
+        
+        return multi_scale_interp
+        
+    def compute_features_single_f_per_scale(self, pts, mulitres_grids, grids_info):
+        
+        multi_scale_interp = 0
+        for scale_id, res in enumerate(self.multiscale_res):  # noqa
+            grids: nn.ParameterList = mulitres_grids[scale_id]
+            for level_info, grid in zip(grids_info, grids):
+                if "feature_dim" in level_info:
+                    continue
+
+                # create plane combinations
+                coo_combs = list(itertools.combinations(
+                    range(pts.shape[-1]),
+                    level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
+
+                interp_out = None
+                for ci, coo_comb in enumerate(coo_combs):
+                    # interpolate in plane
+                    interp_out_plane = grid_sample_wrapper(grid[ci], pts[..., coo_comb]).view(
+                                -1, level_info["output_coordinate_dim"], level_info["rank"])
+                    # compute product
+                    interp_out = interp_out_plane if interp_out is None else interp_out * interp_out_plane
+               
+            # average over rank
+            interp = interp_out.mean(dim=-1)     
+
+            if interp.numel() > 0:
+                interp = (interp - self.pt_min[scale_id]) / (self.pt_max[scale_id] - self.pt_min[scale_id])
+                interp = interp * 2 - 1
+                    
+            interp = grid_sample_wrapper(
+                self.features[scale_id].to(dtype=interp_out.dtype), interp
+            ).view(-1, self.feature_dim)
+            
+            # sum over scales
+            multi_scale_interp += interp
+            
+        return multi_scale_interp
+        
+    def compute_features_single_f_per_rank(self, pts, mulitres_grids, grids_info):
+        
+        multi_scale_interp = 0
+        for scale_id, res in enumerate(self.multiscale_res):  # noqa
+            grids: nn.ParameterList = mulitres_grids[scale_id]
+            for level_info, grid in zip(grids_info, grids):
+                if "feature_dim" in level_info:
+                    continue
+
+                # create plane combinations
+                coo_combs = list(itertools.combinations(
+                    range(pts.shape[-1]),
+                    level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
+
+                interp_out = None
+                for ci, coo_comb in enumerate(coo_combs):
+                    # interpolate in plane
+                    interp_out_plane = grid_sample_wrapper(grid[ci], pts[..., coo_comb]).view(
+                                -1, level_info["output_coordinate_dim"], level_info["rank"])
+                    # compute product
+                    interp_out = interp_out_plane if interp_out is None else interp_out * interp_out_plane
+
+            # sum over scales
+            multi_scale_interp += interp_out
+        
+        # sum over rank
+        multi_scale_interp_rank = 0
+        for rank_id in range(level_info["rank"]):
+            multi_scale_interp_r = multi_scale_interp[:, :, rank_id]
+            if multi_scale_interp.numel() > 0:
+                multi_scale_interp_r = (multi_scale_interp_r - self.pt_min[rank_id]) / (self.pt_max[rank_id] - self.pt_min[rank_id])
+                multi_scale_interp_r = multi_scale_interp_r * 2 - 1
+            multi_scale_interp_rank += grid_sample_wrapper(
+                self.features[rank_id].to(dtype=multi_scale_interp_r.dtype), multi_scale_interp_r
+            ).view(-1, self.feature_dim)
+                    
+        return multi_scale_interp_rank
+                
+    def compute_features_single_f_per_scale_and_rank(self, pts, mulitres_grids, grids_info):
+
+        multi_scale_interp = 0
+        for scale_id, res in enumerate(self.multiscale_res):  # noqa
+            grids: nn.ParameterList = mulitres_grids[scale_id]
+            interp_out_rank = 0
+            for level_info, grid in zip(grids_info, grids):
+                if "feature_dim" in level_info:
+                    continue
+
+                # create plane combinations
+                coo_combs = list(itertools.combinations(
+                    range(pts.shape[-1]),
+                    level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
+
+                interp_out = None
+                for ci, coo_comb in enumerate(coo_combs):
+                    # interpolate in plane
+                    interp_out_plane = grid_sample_wrapper(grid[ci], pts[..., coo_comb]).view(
+                                -1, level_info["output_coordinate_dim"], level_info["rank"])
+                    # compute product
+                    interp_out = interp_out_plane if interp_out is None else interp_out * interp_out_plane
+                    
+                # sum over rank
+                for rank_id in range(level_info["rank"]):
+                    interp_rank = interp_out[:, :, rank_id]
+                    if interp_rank.numel() > 0:
+                        interp_rank = (interp_rank - self.pt_min[rank_id]) / (self.pt_max[rank_id] - self.pt_min[rank_id])
+                        interp_rank = interp_rank * 2 - 1
+                    interp_out_rank += grid_sample_wrapper(
+                        self.features[rank_id].to(dtype=interp_rank.dtype), interp_rank
+                    ).view(-1, self.feature_dim)
+                    
+            # sum over scales
+            multi_scale_interp += interp_out_rank
+        
+        return multi_scale_interp
+
+    def compute_features(self,
+                         pts: torch.Tensor,
+                         grid_id: int,
+                         ) -> torch.Tensor:
+        mulitres_grids: nn.ModuleList = self.scene_grids[grid_id]  # noqa
+        grids_info = self.config
+        
+        if not self.use_F:
+            return self.compute_features_no_f(pts, mulitres_grids, grids_info)
+        elif self.which_f == "single_f_per_scale":
+            return self.compute_features_single_f_per_scale(pts, mulitres_grids, grids_info)
+        elif self.which_f == "single_f_per_rank":
+            return self.compute_features_single_f_per_rank(pts, mulitres_grids, grids_info)
+        elif self.which_f == "single_f_per_scale_and_rank":
+            return self.compute_features_single_f_per_scale_and_rank(pts, mulitres_grids, grids_info)
+        elif self.which_f == "single_f":
+            return self.compute_features_single_f(pts, mulitres_grids, grids_info)
+            
     @torch.no_grad()
     def update_alpha_mask(self, grid_id: int = 0):
         assert len(self.config) <= 2, "Alpha-masking not supported for multiple layers of indirection."

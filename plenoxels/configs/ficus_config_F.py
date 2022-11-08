@@ -1,5 +1,5 @@
 config = {'batch_size': 4096,                                                                                                                                                                                                                          
- 'data_dirs': ["/home/sfk/data/nerf_synthetic/ficus"],                                                                                                                                                                                         
+ 'data_dirs': ["/work3/frwa/ficus"],                                                                                                                                                                                         
  'data_downsample': 1,                                                                                                                                                                                                                        
  'data_resolution': None,                                                                                                                                                                                                                     
  'density_activation': 'trunc_exp',                                                                                                                                                                                                           
@@ -7,7 +7,8 @@ config = {'batch_size': 4096,
  'density_field_resolution': [128, 256],                       
  'density_multiplier': 1,                                                                                                                                                                                                                     
  'density_threshold': 0.0004,    
- 'dmask_update': [],                                                                                       
+ 'dmask_update': [], 
+ 'which_f' : 'single_f_per_scale',    # single_f_per_scale, single_f_per_rank, single_f_per_scale_and_rank,single_f                                                                                   
  'expname': 'ficus_test_propsampling_wF',                                                                                                                                                                                                     
  'floater_loss': 0,                                                                                                                                                                                                                           
  'grid_config': '\n'                                           
