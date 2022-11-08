@@ -100,8 +100,8 @@ class TriplaneDensityField(nn.Module):
         # 6. Decode and activate
         interp = self.density_act(
             self.decoder(
-                interp.view(n_rays, n_samples, self.feature_dim)
-            )
+                interp, rays_d=None,
+            ).view(n_rays, n_samples, 1)
         )
         return interp
 

@@ -30,6 +30,9 @@ class SigmaNNDecoder(BaseDecoder):
     def compute_color(self, features, rays_d):
         raise NotImplementedError("SigmaNNDecoder does not implement color.")
 
+    def forward(self, *args, **kwargs):
+        return self.compute_density(*args, **kwargs)
+
     def __repr__(self):
         return f"SigmaNNDecoder(feature_dim={self.feature_dim}, sigma_net_width={self.sigma_net_width}, sigma_net_layers={self.sigma_net_layers})"
 
