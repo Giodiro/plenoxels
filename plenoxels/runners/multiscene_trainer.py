@@ -207,14 +207,14 @@ class Trainer():
 
     def post_step(self, data, progress_bar):
         dset_id = data["dset_id"]
-        self.writer.add_scalar(f"mse/D{dset_id}", self.loss_info[dset_id]["mse"].value, self.global_step)
-
         for key in self.timer.timings:
             self.writer.add_scalar(f"timer/{key}", self.timer.timings[key], self.global_step)
         for key in self.model.timer.timings:
             self.writer.add_scalar(f"timer/{key}", self.model.timer.timings[key], self.global_step)
-
-        progress_bar.set_postfix_str(losses_to_postfix(self.loss_info, lr=self.cur_lr()), refresh=False)
+        progress_bar.set_postfix_str(
+            losses_to_postfix(self.loss_info, lr=self.cur_lr()), refresh=False)
+        for loss_name, loss_val in self.loss_info[dset_id].items():
+            self.writer.add_scalar(f"train/loss/{dset_id}/{loss_name}", loss_val.value, self.global_step)
         progress_bar.update(1)
 
     def pre_epoch(self):
@@ -259,7 +259,6 @@ class Trainer():
                     self.model.eval()
                     self.validate()
                     self.model.train()
-
             except StopIteration as e:
                 logging.info(str(e))
                 logging.info(f'resetting after a full pass through the data, or when the dataset changed')
@@ -281,9 +280,7 @@ class Trainer():
                         pass
                         # visualize_planes(self.model, self.log_dir, f"step{self.global_step}-D{dset_id}")
                 per_scene_metrics = {
-                    "psnr": 0,
-                    "ssim": 0,
-                    "dset_id": dset_id,
+                    "psnr": 0, "ssim": 0, "dset_id": dset_id,
                 }
                 pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
                 for img_idx, data in enumerate(dataset):
@@ -313,7 +310,9 @@ class Trainer():
                 log_text += f" | D{dset_id} SSIM: {per_scene_metrics['ssim']:.6f}"
                 logging.info(log_text)
                 val_metrics.append(per_scene_metrics)
-                
+                self.writer.add_scalar(f"test/loss/{dset_id}/psnr", per_scene_metrics['psnr'], self.global_step)
+                self.writer.add_scalar(f"test/loss/{dset_id}/ssim", per_scene_metrics['ssim'], self.global_step)
+
                 try:
                     wandb.log({"test_psnr": per_scene_metrics["psnr"],
                                "test_ssim": per_scene_metrics["ssim"]})

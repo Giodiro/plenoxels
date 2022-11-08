@@ -132,13 +132,10 @@ class VideoTrainer(Trainer):
             recon_loss = self.criterion(rgb_preds, imgs)
             loss = recon_loss
             self.writer.add_scalar(f"train/loss/mse", recon_loss, self.global_step)
-
             # Regularization
             for r in self.regularizers:
-
                 reg_loss = r.regularize(self.model, grid_id=0, model_out=fwd_out)
                 loss = loss + reg_loss
-                self.writer.add_scalar(f"train/loss/{r.reg_type}", reg_loss, self.global_step)
 
         self.gscaler.scale(loss).backward()
         self.gscaler.step(self.optimizer)
@@ -184,13 +181,15 @@ class VideoTrainer(Trainer):
         return scale <= self.gscaler.get_scale()
 
     def post_step(self, data, progress_bar):
-        self.writer.add_scalar(f"mse: ", self.loss_info["mse"].value, self.global_step)
-        progress_bar.set_postfix_str(losses_to_postfix(self.loss_info, lr=self.cur_lr()), refresh=False)
+        progress_bar.set_postfix_str(
+            losses_to_postfix(self.loss_info, lr=self.cur_lr()), refresh=False)
+        for loss_name, loss_val in self.loss_info.items():
+            self.writer.add_scalar(f"train/loss/{loss_name}", loss_val.value, self.global_step)
         progress_bar.update(1)
 
     def init_epoch_info(self):
         ema_weight = 0.1
-        self.loss_info = defaultdict(lambda: EMA(ema_weight))
+        self.loss_info: Dict[str, EMA] = defaultdict(lambda: EMA(ema_weight))
 
     def init_model(self, **kwargs) -> torch.nn.Module:
         dset = self.test_datasets[0]
@@ -360,11 +359,13 @@ class VideoTrainer(Trainer):
                     )
                 per_scene_metrics["psnr"] /= len(dataset)  # noqa
                 per_scene_metrics["ssim"] /= len(dataset)  # noqa
-                log_text = f"step {self.global_step}/{self.num_steps} | scene {dset_id}"
-                log_text += f" | D{dset_id} PSNR: {per_scene_metrics['psnr']:.2f}"
-                log_text += f" | D{dset_id} SSIM: {per_scene_metrics['ssim']:.6f}"
+                log_text = f"step {self.global_step}/{self.num_steps}"
+                log_text += f" | PSNR: {per_scene_metrics['psnr']:.2f}"
+                log_text += f" | SSIM: {per_scene_metrics['ssim']:.6f}"
                 logging.info(log_text)
                 val_metrics.append(per_scene_metrics)
+                self.writer.add_scalar(f"test/loss/psnr", per_scene_metrics['psnr'], self.global_step)
+                self.writer.add_scalar(f"test/loss/ssim", per_scene_metrics['ssim'], self.global_step)
 
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
