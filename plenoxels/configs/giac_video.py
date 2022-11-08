@@ -1,66 +1,68 @@
 # configuration file to be used with `main.py` for video training
 config = {
-    # "expname": "newmodel500.500.500.150_noF_rank2_reg30k_isg30k_ist30k_lr0.01cosine_l1sigma0.1_planetv0.05_sample400_init0.1to0.5",
-    # "expname": "multiscale64to512.150_rank4_reg20k_isg20k_ist20k_lr0.01_timesmooth1_planetv0_scale0.6xyshift2z",
-    "expname": "rank2",
+    "expname": "mlp_downsample2_istonly",
     "logdir": "./logs/salmonvideo",
 
     # Data settings
-    "data_downsample": 4.0,
-    # "data_dirs": ["/home/sfk/data/3DVideo/lego_video"],
+    "data_downsample": 2.0,
+    #"data_dirs": ["/data/DATASETS/VidNerf/lego_video"],
     # "data_dirs": ["/home/sfk/data/3DVideo/coffee_martini"],
     "data_dirs": ["/data/DATASETS/VidNerf/flame_salmon"],
 
     # Data settings for 360
-    "max_train_cameras": 20,
+    "max_train_cameras": 25,
     "max_test_cameras": 1,
-    "max_train_tsteps": 2,
-    "max_test_tsteps": 2,
+    "max_train_tsteps": None,
+    "max_test_tsteps": None,
     # Data settings for LLFF
     "keyframes": False,
-    "isg_step": 60000,
-    "ist_step": 120000,
+    "isg_step": -1,
+    "isg": False,
+    "ist_step": 80000,
 
     # Optimization settings
-    "num_steps": 180001,
+    "num_steps": 120001,
     "floater_loss": 0.0000,
     "regnerf_weight_start": 0,
     "regnerf_weight_end": 0.0,
     "regnerf_weight_max_step": 512,
-    "plane_tv_weight": 0.001,
-    "time_smoothness_weight": 1.0,
+    "plane_tv_weight": 0.1,
+    "time_smoothness_weight": 0.1,
     "l1_plane_color_reg": 0,
     "l1_plane_density_reg": 0,
     "l1density_weight": 0,     # Not used for video yet
     "volume_tv_weight": 0.0,   # Not used for video yet
     "volume_tv_npts": 1024,    # Not used for video yet
     "volume_tv_what": "Gcoords",  # Not used for video yet
-    "scheduler_type": "warmup_step_many", # "step"
+    "scheduler_type": "warmup_cosine", # "step"
     "batch_size": 4096,
     "optim_type": "adam",
     "lr": 0.01,
 
     # Training settings
     "train_fp16": True,
-    "save_every": 23999,
-    "valid_every": 29999,
+    "save_every": 120000,
+    "valid_every": 30000,
     "save_video": True,
     "save_outputs": True,
 
     # Raymarching settings
     "raymarch_type": "fixed",
-    "num_sample_multiplier": 2,
+    #"num_sample_multiplier": 2,
     "n_intersections": 48,
-    "spacing_fn": "linear",  # reciprocal. Seems to not be used if proposal sampling is used
+    #"spacing_fn": "linear",  # reciprocal. Seems to not be used if proposal sampling is used
     "single_jitter": False,
     # Proposal sampling settings
     "histogram_loss_weight": 1.0,  # this should be set > 0 when using proposal sampling
+    "density_model": "triplane",
     "density_field_resolution": [128, 256],
-    "density_field_rank": 10,
+    "density_field_rank": 1,
     "num_proposal_samples": [256, 96],
+    "proposal_feature_dim": 10,
+    "proposal_decoder_type": "nn",  # can be 'sh' or 'nn'
 
     # Model settings
-    "sh": True,
+    "sh": False,
     "sh_decoder_type": "manual",
     "density_activation": "trunc_exp",
     "upsample_time_resolution": [150],
@@ -74,17 +76,11 @@ config = {
 [
     {
         "input_coordinate_dim": 4,
-        "output_coordinate_dim": 28,
+        "output_coordinate_dim": 32,
         "grid_dimensions": 2,
         "resolution": [80, 64, 64, 150],
         "rank": 2,
     },
-    {
-        "input_coordinate_dim": 1,
-        "resolution": [3, 3],
-        "feature_dim": 28,
-        "init_std": 0.001
-    }
 ]
 """
 }
