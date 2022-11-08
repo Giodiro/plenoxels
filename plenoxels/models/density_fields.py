@@ -8,6 +8,7 @@ import logging as log
 import torch
 import torch.nn as nn
 
+from plenoxels.models.decoders.mlp_decoder import SigmaNNDecoder
 from plenoxels.models.utils import grid_sample_wrapper, init_grid_param
 from plenoxels.raymarching.spatial_distortions import SpatialDistortion
 
@@ -17,18 +18,23 @@ class TriplaneDensityField(nn.Module):
                  aabb: torch.Tensor,
                  resolution: List[int],
                  num_input_coords: int,
+                 num_output_coords: int,
                  rank: int,
                  spatial_distortion: Optional[SpatialDistortion],
                  density_act: Callable,
+                 decoder_type: str,
                  len_time: Optional[int] = None):
         super(TriplaneDensityField, self).__init__()
 
         self.hexplane = num_input_coords == 4
         if self.hexplane:
             assert len_time is not None
+        self.feature_dim = num_output_coords
+        if decoder_type == 'sh':
+            assert self.feature_dim == 1, 'SH decoder for density field requires 1 output coordinate'
         config = {
             "input_coordinate_dim": num_input_coords,
-            "output_coordinate_dim": 1,
+            "output_coordinate_dim": self.feature_dim,
             "grid_dimensions": 2,
             "resolution": resolution,
             "rank": rank
@@ -44,12 +50,18 @@ class TriplaneDensityField(nn.Module):
         # TODO: Enforce that when spatial_distribution is contraction, aabb must be [[-2, -2, -2], [2, 2, 2]]
         self.aabb = nn.Parameter(aabb, requires_grad=False)
         self.grids = gpdesc.grid_coefs
-        self.feature_dim = 1
         self.spatial_distortion = spatial_distortion
         self.rank = rank
         self.density_act = density_act
         self.len_time = len_time
-        log.info(f"Initialized TriplaneDensityField. hexplane={self.hexplane} - resolution={self.resolution} - time-length={self.len_time}")
+        if decoder_type == 'sh':
+            self.decoder = lambda x: x
+        elif decoder_type == 'nn':
+            self.decoder = SigmaNNDecoder(feature_dim=self.feature_dim)
+        else:
+            raise ValueError(f'invalid decoder type {decoder_type}.')
+        log.info(f"Initialized TriplaneDensityField. hexplane={self.hexplane} - "
+                 f"resolution={self.resolution} - time-length={self.len_time}")
         log.info(f"TriplaneDensityField grids: \n{self.grids}")
 
     def get_density(self, pts: torch.Tensor, timestamps: Optional[torch.Tensor] = None):
@@ -80,11 +92,17 @@ class TriplaneDensityField(nn.Module):
         coo_combs = list(itertools.combinations(range(pts.shape[-1]), 2))
         interp_out = None
         for ci, coo_comb in enumerate(coo_combs):
-            interp_out_plane = grid_sample_wrapper(self.grids[ci], pts[..., coo_comb]).view(-1, 1, self.rank)
+            interp_out_plane = grid_sample_wrapper(
+                self.grids[ci], pts[..., coo_comb]).view(-1, self.feature_dim, self.rank)
             interp_out = interp_out_plane if interp_out is None else interp_out * interp_out_plane
         # 5. Average over rank
         interp = interp_out.mean(dim=-1)
-        interp = self.density_act(interp.view(n_rays, n_samples, self.feature_dim))
+        # 6. Decode and activate
+        interp = self.density_act(
+            self.decoder(
+                interp.view(n_rays, n_samples, self.feature_dim)
+            )
+        )
         return interp
 
     def forward(self, pts: torch.Tensor):

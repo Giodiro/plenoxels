@@ -41,6 +41,8 @@ class LowrankModel(ABC, nn.Module):
                  raymarch_type: str = 'fixed',
                  spacing_fn: Optional[str] = None,
                  num_samples_multiplier: Optional[int] = None,
+                 proposal_feature_dim: Optional[int] = None,
+                 proposal_decoder_type: Optional[str] = None,
                  ):
         super().__init__()
         if isinstance(grid_config, str):
@@ -62,6 +64,8 @@ class LowrankModel(ABC, nn.Module):
         self.density_act = init_density_activation(density_activation)
         self.num_scenes = num_scenes
         self.timer = CudaTimer(enabled=False)
+        self.proposal_feature_dim = proposal_feature_dim
+        self.proposal_decoder_type = proposal_decoder_type
 
         self.pt_min, self.pt_max = None, None
         if self.use_F:
@@ -165,6 +169,8 @@ class LowrankModel(ABC, nn.Module):
             assert num_proposal_samples is not None
             assert density_field_rank is not None
             assert density_field_resolution is not None
+            assert self.proposal_feature_dim is not None
+            assert self.proposal_decoder_type is not None
             for reso in density_field_resolution:
                 real_resolution = [reso] * 3
                 if self.density_model == 'hexplane':
@@ -177,6 +183,8 @@ class LowrankModel(ABC, nn.Module):
                     spatial_distortion=self.spatial_distortion,
                     density_act=self.density_act,
                     len_time=self.len_time if self.density_model == 'hexplane' else None,
+                    num_output_coords=self.proposal_feature_dim,
+                    decoder_type=self.proposal_decoder_type,
                 )
                 density_fields.append(field)
                 density_fns.append(field.get_density)

@@ -46,6 +46,8 @@ class LowrankAppearance(LowrankModel):
                          density_field_resolution=kwargs.get('density_field_resolution', None),
                          density_field_rank=kwargs.get('density_field_rank', None),
                          num_proposal_samples=kwargs.get('num_proposal_samples', None),
+                         proposal_feature_dim=kwargs.get('proposal_feature_dim', None),
+                         proposal_decoder_type=kwargs.get('proposal_decoder_type', None),
                          n_intersections=n_intersections,
                          single_jitter=single_jitter,
                          raymarch_type=raymarch_type,

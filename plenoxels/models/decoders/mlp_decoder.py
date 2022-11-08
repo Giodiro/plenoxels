@@ -4,6 +4,36 @@ import tinycudann as tcnn
 from .base_decoder import BaseDecoder
 
 
+class SigmaNNDecoder(BaseDecoder):
+    def __init__(self, feature_dim, sigma_net_width=64, sigma_net_layers=1):
+        super(SigmaNNDecoder, self).__init__()
+
+        self.feature_dim = feature_dim
+        self.sigma_net_width = sigma_net_width
+        self.sigma_net_layers = sigma_net_layers
+        self.sigma_net = tcnn.Network(
+            n_input_dims=feature_dim,
+            n_output_dims=1,
+            network_config={
+                "otype": "FullyFusedMLP",
+                "activation": "ReLU",
+                "output_activation": "None",
+                "n_neurons": sigma_net_width,
+                "n_hidden_layers": sigma_net_layers,
+            },
+        )
+
+    def compute_density(self, features, rays_d, **kwargs):
+        sigmas = self.sigma_net(features)  # [batch, 1]
+        return sigmas[:, 0]  # [batch,]
+
+    def compute_color(self, features, rays_d):
+        raise NotImplementedError("SigmaNNDecoder does not implement color.")
+
+    def __repr__(self):
+        return f"SigmaNNDecoder(feature_dim={self.feature_dim}, sigma_net_width={self.sigma_net_width}, sigma_net_layers={self.sigma_net_layers})"
+
+
 class NNDecoder(BaseDecoder):
     def __init__(self, feature_dim, sigma_net_width=64, sigma_net_layers=1, appearance_code_size=0):
         super().__init__()
@@ -47,10 +77,7 @@ class NNDecoder(BaseDecoder):
     def compute_density(self, features, rays_d, precompute_color: bool = True):
         density_rgb = self.sigma_net(features)  # [batch, 16]
         density = density_rgb[:, -1]
-
-        #if precompute_color:
         self.density_rgb = density_rgb
-
         return density
 
     def compute_color(self, features, rays_d):
@@ -61,4 +88,5 @@ class NNDecoder(BaseDecoder):
         return color
 
     def __repr__(self):
-        return f"NNRender(feature_dim={self.feature_dim}, sigma_net_width={self.sigma_net_width}, sigma_net_layers={self.sigma_net_layers})"
+        return (f"NNRender(feature_dim={self.feature_dim}, sigma_net_width={self.sigma_net_width}, "
+                f"sigma_net_layers={self.sigma_net_layers})")
