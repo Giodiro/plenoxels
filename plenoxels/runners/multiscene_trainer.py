@@ -112,10 +112,7 @@ class Trainer():
             for b in range(math.ceil(rays_o.shape[0] / batch_size)):
                 rays_o_b = rays_o[b * batch_size: (b + 1) * batch_size].cuda()
                 rays_d_b = rays_d[b * batch_size: (b + 1) * batch_size].cuda()
-                if self.is_ndc:
-                    bg_color = None
-                else:
-                    bg_color = 1
+                bg_color = torch.tensor([1, 1, 1.0]).to(rays_o_b.device)
                 outputs = self.model(rays_o_b, rays_d_b, grid_id=dset_id, near_far=near_far,
                                      bg_color=bg_color, channels=channels)
                 for k, v in outputs.items():
@@ -137,8 +134,8 @@ class Trainer():
         elif C == 3:
             bg_color = 1
         else:  # Random bg-color
-            bg_color = torch.rand_like(imgs[..., :3])
-            imgs = imgs[..., :3] * imgs[..., 3:] + bg_color * (1.0 - imgs[..., 3:])
+            bg_color = torch.ones_like(imgs[..., :3])
+            imgs = imgs[..., :3] * imgs[..., 3:] + (1.0 - imgs[..., 3:]) * bg_color
         self.timer.check("step_prepare")
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
@@ -390,7 +387,7 @@ class Trainer():
             summary.update(self.calc_metrics(preds_rgb, gt))
             out_img = torch.cat((out_img, gt), dim=0)
             out_img = torch.cat((out_img, self._normalize_err(preds_rgb, gt)), dim=0)
-            
+
         out_img = (out_img * 255.0).byte().numpy()
         if out_depth is not None:
             out_depth = self._normalize_01(out_depth)

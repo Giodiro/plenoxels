@@ -406,7 +406,7 @@ class LowrankLearnableHash(LowrankModel):
         self.timer.check("color")
 
         if "rgb" in channels:
-            outputs["rgb"] = self.rgb_renderer(rgb, weights)
+            outputs["rgb"] = self.rgb_renderer.combine_rgb(rgb, weights, bg_color)
         if "depth" in channels:
             outputs["depth"] = self.depth_renderer(weights, ray_samples)
         self.timer.check("render")
