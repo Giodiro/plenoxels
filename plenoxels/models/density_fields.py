@@ -55,7 +55,7 @@ class TriplaneDensityField(nn.Module):
         self.density_act = density_act
         self.len_time = len_time
         if decoder_type == 'sh':
-            self.decoder = lambda x: x
+            self.decoder = lambda x, rays_d: x
         elif decoder_type == 'nn':
             self.decoder = SigmaNNDecoder(feature_dim=self.feature_dim)
         else:

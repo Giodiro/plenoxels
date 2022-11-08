@@ -60,10 +60,8 @@ class LowrankAppearance(LowrankModel):
         self.lookup_time = lookup_time
         self.trainable_rank = None
 
-        # For now, only allow a single index grid and a single feature grid, not multiple layers
-        assert len(self.config) == 2
         self.grids = nn.ModuleList()
-        appearance_code_size = 16 
+        appearance_code_size = 16
         self.appearance_coef = nn.Parameter(nn.init.uniform_(torch.empty([appearance_code_size, len_time]), a=-1.0, b=1.0))
 
         for res in self.multiscale_res:
@@ -87,7 +85,7 @@ class LowrankAppearance(LowrankModel):
                     self.set_resolution(gpdesc.reso, 0)
                     self.grids.append(gpdesc.grid_coefs)
                     #self.appearance_coef.append(gpdesc.appearance_coef)
-        
+
         if self.sh:
             self.decoder = SHDecoder(
                 feature_dim=self.feature_dim,
@@ -120,23 +118,23 @@ class LowrankAppearance(LowrankModel):
 
         multi_scale_interp = 0
         for scale_id, grid_space in enumerate(multiscale_space):
-            
+
             interp_space = 1  # [n, F_dim, rank]
             for ci, coo_comb in enumerate(coo_combs):
 
                 # interpolate in plane
                 interp_out_plane = grid_sample_wrapper(grid_space[ci], pts[..., coo_comb]).view(
                             -1, level_info["output_coordinate_dim"], level_info["rank"])
-                
+
                 # compute product
                 interp_space *= interp_out_plane
-            
+
             # Combine space over rank
             interp = interp_space.mean(dim=-1)  # [n, F_dim]
 
             # sum over scales
             multi_scale_interp += interp
-        
+
         return multi_scale_interp
 
     def forward(self, rays_o, rays_d, timestamps, bg_color,
@@ -185,11 +183,11 @@ class LowrankAppearance(LowrankModel):
             mask = ((aabb[0] <= pts) & (pts <= aabb[1])).all(dim=-1)  # noqa
             deltas = ray_samples.deltas.squeeze()
             z_vals = ((ray_samples.starts + ray_samples.ends) / 2).squeeze()
-            
+
             # if "proposal_depth" in channels:
             #     n_rays, n_intrs = pts.shape[:2]
             #     dev = rays_o.device
-                
+
             #     for proposal_id in range(len(density_list)):
             #         density_proposal = density_list[proposal_id].squeeze()
             #         deltas_proposal = ray_samples_list[proposal_id].deltas.squeeze()
@@ -253,7 +251,7 @@ class LowrankAppearance(LowrankModel):
         alpha, weight, transmission = raw2alpha(density, deltas)  # Each is shape [batch_size, n_samples]
         if self.use_proposal_sampling:
             outputs['weights_list'].append(weight[..., None])
-            
+
         # concatenate appearance code
         appearance_code = self.appearance_coef
         if appearance_idx.shape == torch.Size([]):
