@@ -13,6 +13,7 @@ from plenoxels.models.utils import (
 )
 from .decoders import NNDecoder, SHDecoder
 from .lowrank_model import LowrankModel
+from .renderers import RGBRenderer, DepthRenderer
 from ..ops.bbox_colliders import intersect_with_aabb
 from ..raymarching.ray_samplers import (
     RayBundle
@@ -116,6 +117,8 @@ class LowrankLearnableHash(LowrankModel):
                 decoder_type=self.extra_args.get('sh_decoder_type', 'manual'))
         else:
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
+        self.depth_renderer = DepthRenderer()
+        self.rgb_renderer = RGBRenderer(background_color="random")
         self.density_mask = nn.ModuleList([None] * num_scenes)
         log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes, "
                  f"decoder: {self.decoder}. Raymarcher: {self.raymarcher}")
@@ -300,6 +303,15 @@ class LowrankLearnableHash(LowrankModel):
             return density, features
         return density
 
+    def render_proposal_depth(self, weights_list, ray_samples_list):
+        outputs = {}
+        for proposal_id in range(len(weights_list)):
+            outputs[f"proposal_depth_{proposal_id}"] = self.depth_renderer(
+                weights=weights_list[proposal_id],
+                ray_samples=ray_samples_list[proposal_id],
+            )
+        return outputs
+
     def forward(self, rays_o, rays_d, bg_color, grid_id=0, channels: Sequence[str] = ("rgb", "depth"), near_far=None):
         """
         rays_o : [batch, 3]
@@ -310,13 +322,14 @@ class LowrankLearnableHash(LowrankModel):
         outputs = {}
 
         if self.use_proposal_sampling:
+            aabb = self.aabb(grid_id)
             # TODO: determining near-far should be done in a separate function this is super cluttered
             if near_far is None:
                 nears, fars = intersect_with_aabb(
                     near_plane=2.0,  # TODO: This is hard-coded from synthetic nerf.
                     rays_o=rays_o,
                     rays_d=rays_d,
-                    aabb=self.aabb(grid_id),
+                    aabb=aabb,
                     training=self.training)
                 nears = nears[..., None]
                 fars = fars[..., None]
@@ -328,8 +341,8 @@ class LowrankLearnableHash(LowrankModel):
                     fars = ones * fars
 
             ray_bundle = RayBundle(origins=rays_o, directions=rays_d, nears=nears, fars=fars)
-            ray_samples, weights_list, ray_samples_list, density_list = self.raymarcher.generate_ray_samples(
-                ray_bundle, density_fns=self.density_fns, return_density=True)
+            ray_samples, weights_list, ray_samples_list = self.raymarcher.generate_ray_samples(
+                ray_bundle, density_fns=self.density_fns, return_density=False)
             outputs['weights_list'] = weights_list
             outputs['ray_samples_list'] = ray_samples_list
             outputs['ray_samples_list'].append(ray_samples)
@@ -337,23 +350,15 @@ class LowrankLearnableHash(LowrankModel):
             pts = ray_samples.get_positions()
             if self.spatial_distortion is not None:
                 pts = self.spatial_distortion(pts)  # cube of side 2
-            aabb = self.aabb(grid_id)
             mask = ((aabb[0] <= pts) & (pts <= aabb[1])).all(dim=-1)  # noqa
             deltas = ray_samples.deltas.squeeze()
             mask[deltas <= 0] = False
-            z_vals = ((ray_samples.starts + ray_samples.ends) / 2).squeeze()
+            # z_vals = ((ray_samples.starts + ray_samples.ends) / 2).squeeze()
             # Output depth of the proposal samples for visualization purposes.
             if "proposal_depth" in channels:
-                for proposal_id in range(len(density_list)):
-                    density_proposal = density_list[proposal_id].squeeze()
-                    deltas_proposal = ray_samples_list[proposal_id].deltas.squeeze()
-                    z_vals_proposal = ((ray_samples_list[proposal_id].starts + ray_samples_list[proposal_id].ends) / 2).squeeze()
-                    _, weight_proposal, transmission_proposal = raw2alpha(density_proposal, deltas_proposal)  # Each is shape [batch_size, n_samples]
-                    acc_map_proposal = 1 - transmission_proposal[:, -1]
-                    depth_map_proposal = torch.sum(weight_proposal * z_vals_proposal, -1)  # [batch_size]
-                    depth_map_proposal = depth_map_proposal + (1.0 - acc_map_proposal) * rays_d[..., -1]  # Maybe the rays_d is to transform ray depth to absolute depth?
-                    outputs[f"proposal_depth_{proposal_id}"] = depth_map_proposal
-
+                outputs.update(
+                    self.render_proposal_depth(weights_list, ray_samples_list)
+                )
         else:
             rm_out = self.raymarcher.get_intersections2(
                 rays_o, rays_d, self.aabb(grid_id), self.resolution(grid_id), perturb=self.training,
@@ -366,16 +371,6 @@ class LowrankLearnableHash(LowrankModel):
 
         n_rays, n_intrs = pts.shape[:2]
         dev = rays_o.device
-
-        # Filter intersections which have a low density according to the density mask
-        # Contraction does not currently support density masking!
-        if self.density_mask[grid_id] is not None and not self.is_contracted:
-            # density_mask needs unnormalized coordinates: normalization happens internally
-            # and can be with a different aabb than the current one.
-            alpha_mask = self.density_mask[grid_id].sample_density(pts[mask]) > 0
-            invalid_mask = ~mask
-            invalid_mask[mask] |= (~alpha_mask)
-            mask = ~invalid_mask
 
         if len(pts) == 0:
             if "rgb" in channels:
@@ -393,38 +388,59 @@ class LowrankLearnableHash(LowrankModel):
 
         self.timer.check("raymarcher")
         # compute features and render
-        rays_d_rep = rays_d.view(-1, 1, 3).expand(pts.shape)
-        masked_rays_d_rep = rays_d_rep[mask]
         density_masked, features = self.query_density(pts=pts[mask], grid_id=grid_id, return_feat=True)
         density = torch.zeros(n_rays, n_intrs, device=dev, dtype=density_masked.dtype)
         density[mask] = density_masked.view(-1)
 
-        alpha, weight, transmission = raw2alpha(density, deltas * self.density_multiplier)  # Each is shape [batch_size, n_samples]
+        weights = ray_samples.get_weights(density[..., None])
         if self.use_proposal_sampling:
-            outputs['weights_list'].append(weight[..., None])
+            outputs['weights_list'].append(weights)
         self.timer.check("density")
 
+        rays_d_rep = rays_d.view(-1, 1, 3).expand(pts.shape)
+        masked_rays_d_rep = rays_d_rep[mask]
         rgb_masked = self.decoder.compute_color(features, rays_d=masked_rays_d_rep)
         rgb = torch.zeros(n_rays, n_intrs, 3, device=dev, dtype=rgb_masked.dtype)
         rgb[mask] = rgb_masked
         rgb = torch.sigmoid(rgb)
-
-        # Confirmed that torch.sum(weight, -1) matches 1-transmission[:,-1]
-        acc_map = 1 - transmission[:, -1]
         self.timer.check("color")
 
         if "rgb" in channels:
-            rgb_map = torch.sum(weight[..., None] * rgb, -2)
-            if bg_color is not None:
-                rgb_map = rgb_map + (1.0 - acc_map[..., None]) * bg_color#.to(rgb_map.device)
-            outputs["rgb"] = rgb_map
+            outputs["rgb"] = self.rgb_renderer(rgb, weights)
         if "depth" in channels:
-            depth_map = torch.sum(weight * z_vals, -1)  # [batch_size]
-            depth_map = depth_map + (1.0 - acc_map) * rays_d[..., -1]  # Maybe the rays_d is to transform ray depth to absolute depth?
-            outputs["depth"] = depth_map
-        outputs["deltas"] = deltas
-        outputs["weight"] = weight
+            outputs["depth"] = self.depth_renderer(weights, ray_samples)
         self.timer.check("render")
+
+
+        # rays_d_rep = rays_d.view(-1, 1, 3).expand(pts.shape)
+        # masked_rays_d_rep = rays_d_rep[mask]
+        #
+        # alpha, weight, transmission = raw2alpha(density, deltas * self.density_multiplier)  # Each is shape [batch_size, n_samples]
+        # if self.use_proposal_sampling:
+        #     outputs['weights_list'].append(weight[..., None])
+        # self.timer.check("density")
+        #
+        # rgb_masked = self.decoder.compute_color(features, rays_d=masked_rays_d_rep)
+        # rgb = torch.zeros(n_rays, n_intrs, 3, device=dev, dtype=rgb_masked.dtype)
+        # rgb[mask] = rgb_masked
+        # rgb = torch.sigmoid(rgb)
+        #
+        # # Confirmed that torch.sum(weight, -1) matches 1-transmission[:,-1]
+        # acc_map = 1 - transmission[:, -1]
+        # self.timer.check("color")
+        #
+        # if "rgb" in channels:
+        #     rgb_map = torch.sum(weight[..., None] * rgb, -2)
+        #     if bg_color is not None:
+        #         rgb_map = rgb_map + (1.0 - acc_map[..., None]) * bg_color#.to(rgb_map.device)
+        #     outputs["rgb"] = rgb_map
+        # if "depth" in channels:
+        #     depth_map = torch.sum(weight * z_vals, -1)  # [batch_size]
+        #     depth_map = depth_map + (1.0 - acc_map) * rays_d[..., -1]  # Maybe the rays_d is to transform ray depth to absolute depth?
+        #     outputs["depth"] = depth_map
+        # outputs["deltas"] = deltas
+        # outputs["weight"] = weight
+        # self.timer.check("render")
         return outputs
 
     def get_params(self, lr):
