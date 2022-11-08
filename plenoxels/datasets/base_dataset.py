@@ -57,6 +57,9 @@ class BaseDataset(Dataset, ABC):
     def reset_iter(self):
         if self.sampling_weights is None:
             self.perm = torch.randperm(self.num_samples)
+        else:
+            del self.perm
+            self.perm = None
 
     def get_rand_ids(self, index):
         assert self.batch_size is not None, "Can't get rand_ids for test split"
