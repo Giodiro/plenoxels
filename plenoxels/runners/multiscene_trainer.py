@@ -278,7 +278,8 @@ class Trainer():
                         pass
                         #visualize_planes_withF(self.model, self.log_dir, f"step{self.global_step}-D{dset_id}")
                     else:
-                        visualize_planes(self.model, self.log_dir, f"step{self.global_step}-D{dset_id}")
+                        pass
+                        # visualize_planes(self.model, self.log_dir, f"step{self.global_step}-D{dset_id}")
                 per_scene_metrics = {
                     "psnr": 0,
                     "ssim": 0,
@@ -430,9 +431,9 @@ class Trainer():
         else:
             # Loading model grids is complicated due to possible shrinkage.
             for k, v in checkpoint_data['model'].items():
-                if 'resolution' in k:
-                    grid_id = int(k[-1])  # TODO: won't work with more than 10 scenes
-                    self.model.upsample(v.cpu().tolist(), grid_id)
+                # if 'resolution' in k:
+                #     grid_id = int(k[-1])  # TODO: won't work with more than 10 scenes
+                    # self.model.upsample(v.cpu().tolist(), grid_id)
                 if 'density_volume' in k:
                     grid_id = int(k.split('.')[1])  # 'density_mask.0.density_volume'
                     self.model.density_mask[grid_id] = DensityMask(
@@ -711,18 +712,25 @@ def visualize_planes(model, save_dir: str, name: str):
 
             grid = grid.data.view(dim, rank, h, w)
             for r in range(rank):
-                density = model.density_act(
-                    grid[-1, r, :, :].cpu()
-                ).numpy()
+                #density = model.density_act(
+                #    grid[-1, r, :, :].cpu()
+                #).numpy()
+                # density = model.compute_density(features = grid[:, r, :, :].view(dim, h*w).permute(1,0))
                 # density = grid[-1, r, :, :].cpu().numpy()
+
+
+                rays_d = torch.ones((h*w, 3), device=grid.device)
+                rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
+                features = grid[:, r, :, :].view(dim, h*w).permute(1,0)
+
+                density = (
+                        torch.sigmoid(model.decoder.compute_density(features, rays_d))
+                ).view(h, w).cpu().numpy().astype(np.float32)
 
                 im = ax[plane_idx, r].imshow(density, norm=LogNorm(vmin=1e-6, vmax=density.max()))
                 ax[plane_idx, r].axis("off")
                 plt.colorbar(im, ax=ax[plane_idx, r], aspect=20, fraction=0.04)
 
-                rays_d = torch.ones((h*w, 3), device=grid.device)
-                rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
-                features = grid[:, r, :, :].view(dim, h*w).permute(1,0)
                 color = (
                         torch.sigmoid(model.decoder.compute_color(features, rays_d))
                 ).view(h, w, 3).cpu().numpy()
