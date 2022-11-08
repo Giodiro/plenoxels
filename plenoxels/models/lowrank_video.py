@@ -63,9 +63,10 @@ class LowrankVideo(LowrankModel):
         for res in self.multiscale_res:
             for li, grid_config in enumerate(self.config):
                 # initialize feature grid
-                if "feature_dim" in grid_config and self.use_F:
-                    self.features.append(init_features_param(grid_config, self.sh))
-                    self.feature_dim = self.features[-1].shape[0]
+                if "feature_dim" in grid_config:
+                    if self.use_F:
+                        self.features.append(init_features_param(grid_config, self.sh))
+                        self.feature_dim = self.features[-1].shape[0]
                 # initialize coordinate grid
                 else:
                     config = grid_config.copy()
