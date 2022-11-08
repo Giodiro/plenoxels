@@ -291,20 +291,18 @@ class VideoTrainer(Trainer):
         # turn gradients on
         for param in self.model.parameters():
             param.requires_grad = False
-        for param in self.model.appearance_coef.parameters():
-            param.requires_grad = True
+        self.model.appearance_coef.requires_grad = True
 
-        self.appearance_optimizer = torch.optim.Adam(params=self.model.appearance_coef.parameters(), lr=1e-3)
+        self.appearance_optimizer = torch.optim.Adam(params=[self.model.appearance_coef], lr=1e-3)
 
         for dset_id, dataset in enumerate(self.test_datasets):
             pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
 
             # reset the appearance codes for
-            test_frames = dataset.__len__()
-            for i in range(len(self.model.appearance_coef)):
-                mask = torch.ones_like(self.model.appearance_coef[i])
-                mask[: , -test_frames:] = 0
-                self.model.appearance_coef[i].data = self.model.appearance_coef[i].data * mask + abs(1 - mask)
+            test_frames = dataset.__len__()            
+            mask = torch.ones_like(self.model.appearance_coef)
+            mask[: , -test_frames:] = 0
+            self.model.appearance_coef.data = self.model.appearance_coef.data * mask + abs(1 - mask)
 
             batch_size = 4096
             for img_idx, data in enumerate(dataset):
@@ -328,7 +326,8 @@ class VideoTrainer(Trainer):
                     pass
                     #visualize_planes_withF(self.model, self.log_dir, f"step{self.global_step}")
                 else:
-                    visualize_planes(self.model, self.log_dir, f"step{self.global_step}")
+                    pass
+                    # visualize_planes(self.model, self.log_dir, f"step{self.global_step}")
 
             for dset_id, dataset in enumerate(self.test_datasets):
                 per_scene_metrics = {

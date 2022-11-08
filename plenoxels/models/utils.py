@@ -257,9 +257,8 @@ def init_grid_param(grid_config, is_video: bool, is_appearance: bool, grid_level
                 torch.empty([out_dim * rank[0], time_reso]),
                 a=-1.0, b=1.0))  # if time init is fixed at 1, then it learns a static video
         else:
-
             # if sh + density in grid, then we do not want appearance code to influence density
-            appearance_coef = nn.Parameter(nn.init.ones_(torch.empty([(out_dim-1) * rank[0], time_reso])))  # no time dependence
+            appearance_coef = nn.Parameter(nn.init.uniform_(torch.empty([16, time_reso]), a=-1.0, b=1.0))  # no time dependence
         return GridParamDescription(
             grid_coefs=grid_coefs, reso=pt_reso, time_reso=time_reso, appearance_coef=appearance_coef)
     

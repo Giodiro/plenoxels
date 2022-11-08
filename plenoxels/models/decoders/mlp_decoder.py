@@ -5,7 +5,7 @@ from .base_decoder import BaseDecoder
 
 
 class NNDecoder(BaseDecoder):
-    def __init__(self, feature_dim, sigma_net_width=64, sigma_net_layers=1):
+    def __init__(self, feature_dim, sigma_net_width=64, sigma_net_layers=1, appearance_code_size=0):
         super().__init__()
 
         self.feature_dim = feature_dim
@@ -30,7 +30,7 @@ class NNDecoder(BaseDecoder):
                 "degree": 4,
             },
         )
-        self.in_dim_color = self.direction_encoder.n_output_dims + 15
+        self.in_dim_color = self.direction_encoder.n_output_dims + 15 + appearance_code_size
         self.color_net = tcnn.Network(
             n_input_dims=self.in_dim_color,
             n_output_dims=3,

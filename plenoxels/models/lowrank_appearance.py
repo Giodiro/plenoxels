@@ -61,7 +61,8 @@ class LowrankAppearance(LowrankModel):
         # For now, only allow a single index grid and a single feature grid, not multiple layers
         assert len(self.config) == 2
         self.grids = nn.ModuleList()
-        self.appearance_coef = nn.ParameterList()
+        appearance_code_size = 16 
+        self.appearance_coef = nn.Parameter(nn.init.uniform_(torch.empty([appearance_code_size, len_time]), a=-1.0, b=1.0))
 
         for res in self.multiscale_res:
             for li, grid_config in enumerate(self.config):
@@ -83,27 +84,26 @@ class LowrankAppearance(LowrankModel):
                     gpdesc = init_grid_param(config, is_video=False, is_appearance=True, grid_level=li, use_F=self.use_F)
                     self.set_resolution(gpdesc.reso, 0)
                     self.grids.append(gpdesc.grid_coefs)
-                    self.appearance_coef.append(gpdesc.appearance_coef)
-                    
+                    #self.appearance_coef.append(gpdesc.appearance_coef)
+        
         if self.sh:
             self.decoder = SHDecoder(
                 feature_dim=self.feature_dim,
                 decoder_type=self.extra_args.get('sh_decoder_type', 'manual'))
         else:
-            self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
+            self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1, appearance_code_size=appearance_code_size)
 
         self.density_mask = None
         log.info(f"Initialized LowrankAppearance. "
-                 f"time-reso={self.appearance_coef[0].shape[1]} - decoder={self.decoder}")
+                 f"time-reso={self.appearance_coef.shape[1]} - decoder={self.decoder}")
 
     def compute_features(self,
                          pts,
                          timestamps,
-                         appearance_idx,
                          return_coords: bool = False
                          ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         multiscale_space : nn.ModuleList = self.grids  # space: 3 x [1, rank * F_dim, reso, reso]
-        appearance_coef : nn.ModuleList = self.appearance_coef  # time: [F_dim, time_reso]
+        #appearance_coef : nn.ModuleList = self.appearance_coef  # time: [F_dim, time_reso]
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
 
         # if there are 6 planes then
@@ -117,9 +117,9 @@ class LowrankAppearance(LowrankModel):
             level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
 
         multi_scale_interp = 0
-        for scale_id, (grid_space, appearance_code) in enumerate(zip(multiscale_space, appearance_coef)):
-            interp_space = None  # [n, F_dim, rank]
+        for scale_id, grid_space in enumerate(multiscale_space):
             
+            interp_space = 1  # [n, F_dim, rank]
             for ci, coo_comb in enumerate(coo_combs):
 
                 # interpolate in plane
@@ -127,41 +127,15 @@ class LowrankAppearance(LowrankModel):
                             -1, level_info["output_coordinate_dim"], level_info["rank"])
                 
                 # compute product
-                interp_space = interp_out_plane if interp_space is None else interp_space * interp_out_plane
+                interp_space *= interp_out_plane
             
-            # combine with appearance code
-            if appearance_idx.shape == torch.Size([]):
-                appearance_code = appearance_code[:, appearance_idx.long()].unsqueeze(1).repeat(1, pts.shape[0])  # [n, F_dim]
-            else:
-                appearance_code = appearance_code[:, appearance_idx.long()]
-                
-            if self.use_F:
-                appearance_code = appearance_code.view(level_info["output_coordinate_dim"], level_info["rank"], -1).permute(2,0,1)
-            else:
-                appearance_code = appearance_code.view(level_info["output_coordinate_dim"] - 1, level_info["rank"], -1).permute(2,0,1)
-
-            # add density one to appearance code
-            appearance_code = torch.cat([appearance_code, torch.ones_like(appearance_code[:, 0:1])], dim=1)
-
             # Combine space over rank
-            interp = (interp_space * appearance_code).mean(dim=-1)  # [n, F_dim]
+            interp = interp_space.mean(dim=-1)  # [n, F_dim]
 
             # sum over scales
             multi_scale_interp += interp
         
-        if self.use_F:
-            # Learned normalization
-            if interp.numel() > 0:
-                multi_scale_interp = (multi_scale_interp - self.pt_min) / (self.pt_max - self.pt_min)
-                multi_scale_interp = multi_scale_interp * 2 - 1
-
-            out = grid_sample_wrapper(self.features, multi_scale_interp).view(-1, self.feature_dim)
-        else:
-            out = multi_scale_interp
-
-        if return_coords:
-            return out, multi_scale_interp
-        return out
+        return multi_scale_interp
 
     def forward(self, rays_o, rays_d, timestamps, bg_color,
                 channels: Sequence[str] = ("rgb", "depth"), near_far=None):
@@ -210,20 +184,20 @@ class LowrankAppearance(LowrankModel):
             deltas = ray_samples.deltas.squeeze()
             z_vals = ((ray_samples.starts + ray_samples.ends) / 2).squeeze()
             
-            if "proposal_depth" in channels:
-                n_rays, n_intrs = pts.shape[:2]
-                dev = rays_o.device
+            # if "proposal_depth" in channels:
+            #     n_rays, n_intrs = pts.shape[:2]
+            #     dev = rays_o.device
                 
-                for proposal_id in range(len(density_list)):
-                    density_proposal = density_list[proposal_id].squeeze()
-                    deltas_proposal = ray_samples_list[proposal_id].deltas.squeeze()
-                    z_vals_proposal = ((ray_samples_list[proposal_id].starts + ray_samples_list[proposal_id].ends) / 2).squeeze()
-                    _, weight_proposal, transmission_proposal = raw2alpha(density_proposal, deltas_proposal)  # Each is shape [batch_size, n_samples]
-                    acc_map_proposal = 1 - transmission_proposal[:, -1]
-                    #outputs[f"proposal_depth_{proposal_id}"] = torch.zeros(n_rays, 1, device=dev, dtype=rays_o.dtype)
-                    depth_map_proposal = torch.sum(weight_proposal * z_vals_proposal, -1)  # [batch_size]
-                    depth_map_proposal = depth_map_proposal + (1.0 - acc_map_proposal) * rays_d[..., -1]  # Maybe the rays_d is to transform ray depth to absolute depth?
-                    outputs[f"proposal_depth_{proposal_id}"] = depth_map_proposal
+            #     for proposal_id in range(len(density_list)):
+            #         density_proposal = density_list[proposal_id].squeeze()
+            #         deltas_proposal = ray_samples_list[proposal_id].deltas.squeeze()
+            #         z_vals_proposal = ((ray_samples_list[proposal_id].starts + ray_samples_list[proposal_id].ends) / 2).squeeze()
+            #         _, weight_proposal, transmission_proposal = raw2alpha(density_proposal, deltas_proposal)  # Each is shape [batch_size, n_samples]
+            #         acc_map_proposal = 1 - transmission_proposal[:, -1]
+            #         #outputs[f"proposal_depth_{proposal_id}"] = torch.zeros(n_rays, 1, device=dev, dtype=rays_o.dtype)
+            #         depth_map_proposal = torch.sum(weight_proposal * z_vals_proposal, -1)  # [batch_size]
+            #         depth_map_proposal = depth_map_proposal + (1.0 - acc_map_proposal) * rays_d[..., -1]  # Maybe the rays_d is to transform ray depth to absolute depth?
+            #         outputs[f"proposal_depth_{proposal_id}"] = depth_map_proposal
         else:
             rm_out = self.raymarcher.get_intersections2(
                 rays_o, rays_d, self.aabb(0), self.resolution(0), perturb=self.training,
@@ -269,7 +243,7 @@ class LowrankAppearance(LowrankModel):
         # compute features and render
         rays_d_rep = rays_d.view(-1, 1, 3).expand(pts.shape)
         masked_rays_d_rep = rays_d_rep[mask]
-        features = self.compute_features(pts[mask], times, appearance_idx)
+        features = self.compute_features(pts[mask], times)
         density_masked = self.density_act(self.decoder.compute_density(features, rays_d=masked_rays_d_rep))
         density = torch.zeros(n_rays, n_intrs, device=pts.device, dtype=density_masked.dtype)
         density[mask] = density_masked.view(-1)
@@ -277,6 +251,14 @@ class LowrankAppearance(LowrankModel):
         alpha, weight, transmission = raw2alpha(density, deltas)  # Each is shape [batch_size, n_samples]
         if self.use_proposal_sampling:
             outputs['weights_list'].append(weight[..., None])
+            
+        # concatenate appearance code
+        appearance_code = self.appearance_coef
+        if appearance_idx.shape == torch.Size([]):
+            appearance_code = appearance_code[:, appearance_idx.long()].unsqueeze(0).repeat(pts[mask].shape[0], 1)  # [n, 16]
+        else:
+            appearance_code = appearance_code[:, appearance_idx.long()].permute(1, 0)  # [n, 16]
+        self.decoder.density_rgb = torch.cat([self.decoder.density_rgb, appearance_code], dim=1)
 
         rgb_masked = self.decoder.compute_color(features, rays_d=masked_rays_d_rep)
         rgb = torch.zeros(n_rays, n_intrs, 3, device=pts.device, dtype=rgb_masked.dtype)
