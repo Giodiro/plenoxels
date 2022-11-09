@@ -713,7 +713,7 @@ def visualize_planes(model, save_dir: str, name: str):
                 density = model.density_act(
                     model.decoder.compute_density(
                         features=features, rays_d=None)
-                ).view(h, w).cpu().float().numpy()
+                ).view(h, w).cpu().float().nan_to_num(neginf=-99.0, posinf=99.0).numpy()
 
                 im = ax[plane_idx, r].imshow(density, norm=LogNorm(vmin=1e-6, vmax=density.max()))
                 ax[plane_idx, r].axis("off")
@@ -723,7 +723,7 @@ def visualize_planes(model, save_dir: str, name: str):
                 rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
                 color = (
                         torch.sigmoid(model.decoder.compute_color(features, rays_d))
-                ).view(h, w, 3).cpu().numpy()
+                ).view(h, w, 3).cpu().float().numpy()
                 ax[plane_idx, r+rank].imshow(color)
                 ax[plane_idx, r+rank].axis("off")
 
