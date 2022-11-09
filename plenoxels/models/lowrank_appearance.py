@@ -59,12 +59,22 @@ class LowrankAppearance(LowrankModel):
         self.extra_args = kwargs
         self.lookup_time = lookup_time
         self.trainable_rank = None
-
+        
+        appearance_code_size=kwargs.get('appearance_code_size', 32),
+        color_net=kwargs.get('color_net', 2),
+        if isinstance(appearance_code_size, tuple):
+            appearance_code_size = appearance_code_size[0]
+        if isinstance(color_net, tuple):
+            color_net = color_net[0]
+        print("\n\n\n")
+        print("==> appearance_code_size", appearance_code_size)
+        print("==> color_net", color_net)
+        print("\n\n\n")
         self.grids = nn.ModuleList()
         #appearance_code_size = 48 # same as in nerf-w
-        appearance_code_size = 32 # seems to be a good sixe
+        #appearance_code_size = 32 # seems to be a good sixe
         #appearance_code_size = 16 # seems to be a bit too small
-        self.appearance_coef = nn.Parameter(nn.init.uniform_(torch.empty([appearance_code_size, len_time]), a=-1.0, b=1.0))
+        self.appearance_coef = nn.Parameter(nn.init.normal_(torch.empty([appearance_code_size, len_time]), a=-1.0, b=1.0))
 
         for res in self.multiscale_res:
             for li, grid_config in enumerate(self.config):
@@ -93,7 +103,7 @@ class LowrankAppearance(LowrankModel):
                 feature_dim=self.feature_dim,
                 decoder_type=self.extra_args.get('sh_decoder_type', 'manual'))
         else:
-            self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1, appearance_code_size=appearance_code_size)
+            self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1, color_net=color_net, appearance_code_size=appearance_code_size)
 
         self.density_mask = None
         log.info(f"Initialized LowrankAppearance. "
@@ -256,6 +266,8 @@ class LowrankAppearance(LowrankModel):
 
         # concatenate appearance code
         appearance_code = self.appearance_coef
+        # project codes onto unit sphere
+        appearance_code = appearance_code / (torch.norm(appearance_code, dim=-1, keepdim=True) + 1e-6)
         if appearance_idx.shape == torch.Size([]):
             appearance_code = appearance_code[:, appearance_idx.long()].unsqueeze(0).repeat(pts[mask].shape[0], 1)  # [n, 16]
         else:
