@@ -710,25 +710,19 @@ def visualize_planes(model, save_dir: str, name: str):
 
             grid = grid.data.view(dim, rank, h, w)
             for r in range(rank):
-                #density = model.density_act(
-                #    grid[-1, r, :, :].cpu()
-                #).numpy()
-                # density = model.compute_density(features = grid[:, r, :, :].view(dim, h*w).permute(1,0))
-                # density = grid[-1, r, :, :].cpu().numpy()
+                features = grid[:, r, :, :].view(dim, h*w).transpose(0, 1)
 
-
-                rays_d = torch.ones((h*w, 3), device=grid.device)
-                rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
-                features = grid[:, r, :, :].view(dim, h*w).permute(1,0)
-
-                density = (
-                        torch.sigmoid(model.decoder.compute_density(features, rays_d))
-                ).view(h, w).cpu().numpy().astype(np.float32)
+                density = model.density_act(
+                    model.decoder.compute_density(
+                        features=features, rays_d=None)
+                ).view(h, w).cpu().float().numpy()
 
                 im = ax[plane_idx, r].imshow(density, norm=LogNorm(vmin=1e-6, vmax=density.max()))
                 ax[plane_idx, r].axis("off")
                 plt.colorbar(im, ax=ax[plane_idx, r], aspect=20, fraction=0.04)
 
+                rays_d = torch.ones((h*w, 3), device=grid.device)
+                rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
                 color = (
                         torch.sigmoid(model.decoder.compute_color(features, rays_d))
                 ).view(h, w, 3).cpu().numpy()
