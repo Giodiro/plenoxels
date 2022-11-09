@@ -323,7 +323,7 @@ class Trainer():
         err = torch.abs(preds - gt)
         err = err.mean(-1, keepdim=True)  # mean over channels
         # normalize between 0, 1 where 1 corresponds to the 90th percentile
-        err = err.clamp_max(torch.quantile(err, 0.9))
+        # err = err.clamp_max(torch.quantile(err, 0.9))
         err = self._normalize_01(err)
         return err.repeat(1, 1, 3)
 

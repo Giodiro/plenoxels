@@ -131,7 +131,6 @@ class VideoTrainer(Trainer):
             # Reconstruction loss
             recon_loss = self.criterion(rgb_preds, imgs)
             loss = recon_loss
-            self.writer.add_scalar(f"train/loss/mse", recon_loss, self.global_step)
             # Regularization
             for r in self.regularizers:
                 reg_loss = r.regularize(self.model, grid_id=0, model_out=fwd_out)
