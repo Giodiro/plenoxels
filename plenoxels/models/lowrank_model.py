@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 
 from plenoxels.models.density_fields import TriplaneDensityField
+from plenoxels.models.renderers import DepthRenderer, RGBRenderer
 from plenoxels.models.utils import init_density_activation
 from plenoxels.raymarching.ray_samplers import (
     UniformLinDispPiecewiseSampler, UniformSampler,
@@ -92,6 +93,9 @@ class LowrankModel(ABC, nn.Module):
             spacing_fn=spacing_fn,
             num_sample_multiplier=num_samples_multiplier,
         )
+        self.depth_renderer = DepthRenderer()
+        # Note the background_color here is unused.
+        self.rgb_renderer = RGBRenderer(background_color="random")
 
     def step_cb(self, step, max_step):
         pass
@@ -212,3 +216,12 @@ class LowrankModel(ABC, nn.Module):
                 single_jitter=single_jitter,
                 spatial_distortion=self.spatial_distortion)
         return raymarcher, density_fields, density_fns
+
+    def render_proposal_depth(self, weights_list, ray_samples_list):
+        outputs = {}
+        for proposal_id in range(len(weights_list)):
+            outputs[f"proposal_depth_{proposal_id}"] = self.depth_renderer(
+                weights=weights_list[proposal_id],
+                ray_samples=ray_samples_list[proposal_id],
+            )
+        return outputs

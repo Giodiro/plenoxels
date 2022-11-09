@@ -117,8 +117,6 @@ class LowrankLearnableHash(LowrankModel):
                 decoder_type=self.extra_args.get('sh_decoder_type', 'manual'))
         else:
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
-        self.depth_renderer = DepthRenderer()
-        self.rgb_renderer = RGBRenderer(background_color="random")
         self.density_mask = nn.ModuleList([None] * num_scenes)
         log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes, "
                  f"decoder: {self.decoder}. Raymarcher: {self.raymarcher}")
@@ -302,15 +300,6 @@ class LowrankLearnableHash(LowrankModel):
         if return_feat:
             return density, features
         return density
-
-    def render_proposal_depth(self, weights_list, ray_samples_list):
-        outputs = {}
-        for proposal_id in range(len(weights_list)):
-            outputs[f"proposal_depth_{proposal_id}"] = self.depth_renderer(
-                weights=weights_list[proposal_id],
-                ray_samples=ray_samples_list[proposal_id],
-            )
-        return outputs
 
     def forward(self, rays_o, rays_d, bg_color, grid_id=0, channels: Sequence[str] = ("rgb", "depth"), near_far=None):
         """

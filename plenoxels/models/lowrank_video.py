@@ -145,13 +145,14 @@ class LowrankVideo(LowrankModel):
         rays_d = rays_d / torch.linalg.norm(rays_d, dim=-1, keepdim=True)
 
         if self.use_proposal_sampling:
+            aabb = self.aabb(0)
             # TODO: determining near-far should be done in a separate function this is super cluttered
             if near_far is None:
                 nears, fars = intersect_with_aabb(
                     near_plane=2.0,  # TODO: This is hard-coded from synthetic nerf.
                     rays_o=rays_o,
                     rays_d=rays_d,
-                    aabb=self.aabb(0),
+                    aabb=aabb,
                     training=self.training)
                 nears = nears[..., None]
                 fars = fars[..., None]
@@ -162,7 +163,6 @@ class LowrankVideo(LowrankModel):
                     nears = ones * nears
                     fars = ones * fars
 
-            aabb=self.aabb(0)
             ray_bundle = RayBundle(origins=rays_o, directions=rays_d, nears=nears, fars=fars)
             ray_samples, weights_list, ray_samples_list = self.raymarcher.generate_ray_samples(
                 ray_bundle, timestamps=timestamps, density_fns=self.density_fns)  # expects unnormalized times
@@ -175,7 +175,13 @@ class LowrankVideo(LowrankModel):
                 pts = self.spatial_distortion(pts)  # cube of side 2
             mask = ((aabb[0] <= pts) & (pts <= aabb[1])).all(dim=-1)  # noqa
             deltas = ray_samples.deltas.squeeze()
-            z_vals = ((ray_samples.starts + ray_samples.ends) / 2).squeeze()
+            mask[deltas <= 0] = False
+            # z_vals = ((ray_samples.starts + ray_samples.ends) / 2).squeeze()
+            # Output depth of the proposal samples for visualization purposes.
+            if "proposal_depth" in channels:
+                outputs.update(
+                    self.render_proposal_depth(weights_list, ray_samples_list)
+                )
         else:
             rm_out = self.raymarcher.get_intersections2(
                 rays_o, rays_d, self.aabb(0), self.resolution(0), perturb=self.training,
@@ -212,36 +218,26 @@ class LowrankVideo(LowrankModel):
         # compute features and render
         rays_d_rep = rays_d.view(-1, 1, 3).expand(pts.shape)
         masked_rays_d_rep = rays_d_rep[mask]
+
         features = self.compute_features(pts[mask], times)
-        density_masked = self.density_act(self.decoder.compute_density(features, rays_d=masked_rays_d_rep))
+        density_masked = self.density_act(
+            self.decoder.compute_density(features, rays_d=masked_rays_d_rep))
         density = torch.zeros(n_rays, n_intrs, device=pts.device, dtype=density_masked.dtype)
         density[mask] = density_masked.view(-1)
 
-        alpha, weight, transmission = raw2alpha(density, deltas)  # Each is shape [batch_size, n_samples]
+        weights = ray_samples.get_weights(density[..., None])
         if self.use_proposal_sampling:
-            outputs['weights_list'].append(weight[..., None])
+            outputs['weights_list'].append(weights)
 
         rgb_masked = self.decoder.compute_color(features, rays_d=masked_rays_d_rep)
         rgb = torch.zeros(n_rays, n_intrs, 3, device=pts.device, dtype=rgb_masked.dtype)
         rgb[mask] = rgb_masked
         rgb = torch.sigmoid(rgb)
 
-        # Confirmed that torch.sum(weight, -1) matches 1-transmission[:, -1]
-        acc_map = 1 - transmission[:, -1]
-
         if "rgb" in channels:
-            rgb_map = torch.sum(weight[..., None] * rgb, -2)
-            if bg_color is None:
-                pass
-            else:
-                rgb_map = rgb_map + (1.0 - acc_map[..., None]) * bg_color
-            outputs["rgb"] = rgb_map
+            outputs["rgb"] = self.rgb_renderer.combine_rgb(rgb, weights, bg_color)
         if "depth" in channels:
-            depth_map = torch.sum(weight * z_vals, -1)  # [batch_size]
-            depth_map = depth_map + (1.0 - acc_map) * rays_d[..., -1]  # Maybe the rays_d is to transform ray depth to absolute depth?
-            outputs["depth"] = depth_map
-        outputs["deltas"] = deltas
-        outputs["weight"] = weight
+            outputs["depth"] = self.depth_renderer(weights, ray_samples)
 
         return outputs
 
@@ -249,16 +245,6 @@ class LowrankVideo(LowrankModel):
         return [
             {"params": self.parameters(), "lr": lr},
         ]
-        #params = [
-        #    {"params": self.grids.parameters(), "lr": lr},
-        #    {"params": self.decoder.parameters(), "lr": lr},
-        #]
-        #if len(self.density_fields) > 0:
-        #    params.append({"params": self.density_fields.parameters(), "lr": lr})
-        #if self.use_F:
-        #    params.append({"params": [self.pt_min, self.pt_max], "lr": lr})
-        #    params.append({"params": self.features, "lr": lr})
-        #return params
 
     def update_trainable_rank(self):
         # Remove any existing hooks
