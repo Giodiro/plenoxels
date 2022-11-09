@@ -61,7 +61,9 @@ class LowrankAppearance(LowrankModel):
         self.trainable_rank = None
 
         self.grids = nn.ModuleList()
-        appearance_code_size = 16
+        #appearance_code_size = 48 # same as in nerf-w
+        appearance_code_size = 32 # seems to be a good sixe
+        #appearance_code_size = 16 # seems to be a bit too small
         self.appearance_coef = nn.Parameter(nn.init.uniform_(torch.empty([appearance_code_size, len_time]), a=-1.0, b=1.0))
 
         for res in self.multiscale_res:
@@ -239,7 +241,7 @@ class LowrankAppearance(LowrankModel):
             appearance_idx = timestamps[0]
         else:
             appearance_idx = timestamps[:, None].repeat(1, n_intrs)[mask]
-
+        
         # compute features and render
         rays_d_rep = rays_d.view(-1, 1, 3).expand(pts.shape)
         masked_rays_d_rep = rays_d_rep[mask]
@@ -258,6 +260,7 @@ class LowrankAppearance(LowrankModel):
             appearance_code = appearance_code[:, appearance_idx.long()].unsqueeze(0).repeat(pts[mask].shape[0], 1)  # [n, 16]
         else:
             appearance_code = appearance_code[:, appearance_idx.long()].permute(1, 0)  # [n, 16]
+
         self.decoder.density_rgb = torch.cat([self.decoder.density_rgb, appearance_code], dim=1)
 
         rgb_masked = self.decoder.compute_color(features, rays_d=masked_rays_d_rep)
