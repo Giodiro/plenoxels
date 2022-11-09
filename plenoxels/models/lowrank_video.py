@@ -58,8 +58,6 @@ class LowrankVideo(LowrankModel):
         self.extra_args = kwargs
         self.trainable_rank = None
         self.hooks = None
-        # For now, only allow a single index grid and a single feature grid, not multiple layers
-        assert len(self.config) == 2
         self.grids = torch.nn.ModuleList()
         self.features = torch.nn.ParameterList()
         for res in self.multiscale_res:

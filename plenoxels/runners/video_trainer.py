@@ -92,7 +92,7 @@ class VideoTrainer(Trainer):
                 if self.is_ndc:
                     bg_color = None
                 else:
-                    bg_color = 1
+                    bg_color = torch.tensor([1.0, 1.0, 1.0], device=rays_o_b.device)
                 outputs = self.model(rays_o_b, rays_d_b, timestamps_d_b, bg_color=bg_color,
                                      channels={"rgb", "depth", "proposal_depth"}, near_far=near_far)
                 for k, v in outputs.items():
@@ -120,7 +120,7 @@ class VideoTrainer(Trainer):
         C = imgs.shape[-1]
         # Random bg-color
         if C == 3:
-            bg_color = 1
+            bg_color = torch.tensor([1.0, 1.0, 1.0], device=rays_o.device)
         else:
             bg_color = torch.rand_like(imgs[..., :3])
             imgs = imgs[..., :3] * imgs[..., 3:] + bg_color * (1.0 - imgs[..., 3:])
@@ -298,7 +298,7 @@ class VideoTrainer(Trainer):
             pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
 
             # reset the appearance codes for
-            test_frames = dataset.__len__()            
+            test_frames = dataset.__len__()
             mask = torch.ones_like(self.model.appearance_coef)
             mask[: , -test_frames:] = 0
             self.model.appearance_coef.data = self.model.appearance_coef.data * mask + abs(1 - mask)
@@ -397,7 +397,7 @@ class VideoTrainer(Trainer):
                 "psnr": metrics.psnr(preds, gt),
                 "ssim": metrics.ssim(preds, gt),
             }
-            
+
     def load_model(self, checkpoint_data):
         for k, v in checkpoint_data['model'].items():
             if 'time_resolution' in k:
