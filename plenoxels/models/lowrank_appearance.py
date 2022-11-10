@@ -74,7 +74,7 @@ class LowrankAppearance(LowrankModel):
         #appearance_code_size = 48 # same as in nerf-w
         #appearance_code_size = 32 # seems to be a good sixe
         #appearance_code_size = 16 # seems to be a bit too small
-        self.appearance_coef = nn.Parameter(nn.init.normal_(torch.empty([appearance_code_size, len_time]), a=-1.0, b=1.0))
+        self.appearance_coef = nn.Parameter(nn.init.normal_(torch.empty([appearance_code_size, len_time])))
 
         for res in self.multiscale_res:
             for li, grid_config in enumerate(self.config):
@@ -266,8 +266,10 @@ class LowrankAppearance(LowrankModel):
 
         # concatenate appearance code
         appearance_code = self.appearance_coef
-        # project codes onto unit sphere
-        appearance_code = appearance_code / (torch.norm(appearance_code, dim=-1, keepdim=True) + 1e-6)
+        # project codes onto unit sphere or inide unit sphere. 
+        # (keeps thinggs compact such that interpolation should be easier)
+        div = torch.norm(appearance_code, dim=-1) + 1e-6
+        appearance_code = appearance_code / torch.max(div, torch.ones_like(div))[:, None]
         if appearance_idx.shape == torch.Size([]):
             appearance_code = appearance_code[:, appearance_idx.long()].unsqueeze(0).repeat(pts[mask].shape[0], 1)  # [n, 16]
         else:
