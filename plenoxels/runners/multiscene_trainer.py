@@ -712,10 +712,16 @@ def visualize_planes(model, save_dir: str, name: str):
             for r in range(rank):
                 features = grid[:, r, :, :].view(dim, h*w).transpose(0, 1)
 
-                density = model.density_act(
-                    model.decoder.compute_density(
-                        features=features, rays_d=None)
-                ).view(h, w).cpu().float().nan_to_num(posinf=99.0, neginf=-99.0).numpy()
+                density = (
+                    model.density_act(
+                        model.decoder.compute_density(
+                            features=features, rays_d=None)
+                    ).view(h, w)
+                     .cpu()
+                     .float()
+                     .nan_to_num(posinf=99.0, neginf=-99.0)
+                     .clamp_min(1e-6)
+                ).numpy()
 
                 im = ax[plane_idx, r].imshow(density, norm=LogNorm(vmin=1e-6, vmax=density.max()))
                 ax[plane_idx, r].axis("off")
