@@ -127,12 +127,15 @@ class LowrankLearnableHash(LowrankModel):
     def compute_features(self,
                          pts: torch.Tensor,
                          grid_id: int,
+                         max_scale: Optional[int] = None,
                          ) -> torch.Tensor:
         mulitres_grids: nn.ModuleList = self.scene_grids[grid_id]  # noqa
         grids_info = self.config
+        if max_scale is None:
+            max_scale = len(self.multiscale_res)
 
         multi_scale_interp = 0
-        for scale_id, res in enumerate(self.multiscale_res):  # noqa
+        for scale_id, res in enumerate(self.multiscale_res[:max_scale]):  # noqa
             grids: nn.ParameterList = mulitres_grids[scale_id]
             for level_info, grid in zip(grids_info, grids):
                 if "feature_dim" in level_info:
@@ -287,11 +290,11 @@ class LowrankLearnableHash(LowrankModel):
         pts = aabb[0] * (1 - pts) + aabb[1] * pts
         return pts
 
-    def query_density(self, pts: torch.Tensor, grid_id: int, return_feat: bool = False):
+    def query_density(self, pts: torch.Tensor, grid_id: int, return_feat: bool = False, max_scale = None):
         pts_norm = self.normalize_coords(pts, grid_id)
         selector = ((pts_norm >= -1.0) & (pts_norm <= 1.0)).all(dim=-1)
 
-        features = self.compute_features(pts_norm, grid_id)
+        features = self.compute_features(pts_norm, grid_id, max_scale)
         density = (
             self.density_act(self.decoder.compute_density(
                 features, rays_d=None, precompute_color=False)).view((*pts_norm.shape[:-1], 1))
@@ -376,8 +379,15 @@ class LowrankLearnableHash(LowrankModel):
             return outputs
 
         self.timer.check("raymarcher")
+        # Figure out maximum scale
+        max_scale = None
+        if self.training:
+            p = np.arange(len(self.multiscale_res), dtype=np.float32)
+            p = p ** 3
+            p = p / p.sum()
+            max_scale = np.random.choice(len(p), p=p) + 1
         # compute features and render
-        density_masked, features = self.query_density(pts=pts[mask], grid_id=grid_id, return_feat=True)
+        density_masked, features = self.query_density(pts=pts[mask], grid_id=grid_id, return_feat=True, max_scale=max_scale)
         density = torch.zeros(n_rays, n_intrs, device=dev, dtype=density_masked.dtype)
         density[mask] = density_masked.view(-1)
 

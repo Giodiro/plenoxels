@@ -58,9 +58,11 @@ class Video360Dataset(BaseDataset):
         if dset_type == "llff":
             per_cam_poses, self.per_cam_near_fars, intrinsics, videopaths = load_llffvideo_poses(
                 datadir, downsample=self.downsample, split=split, near_scaling=1.0)
+            if split == 'test':
+                keyframes = True
             poses, imgs, timestamps, self.median_imgs = load_llffvideo_data(
                 videopaths=videopaths, cam_poses=per_cam_poses, intrinsics=intrinsics, split=split,
-                keyframes=keyframes, keyframes_take_each=30)
+                keyframes=keyframes, keyframes_take_each=10)
             self.poses = poses.float()
             self.per_cam_near_fars = self.per_cam_near_fars.float()
             # These values are tuned for the salmon video
