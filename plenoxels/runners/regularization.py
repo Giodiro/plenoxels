@@ -6,6 +6,7 @@ import torch.optim.lr_scheduler
 from torch import nn
 
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash
+from plenoxels.models.lowrank_model import LowrankModel
 from plenoxels.models.lowrank_video import LowrankVideo
 from plenoxels.models.utils import compute_plane_tv, compute_plane_smoothness
 from plenoxels.ops.losses.distortion_loss import distortion_loss
@@ -175,6 +176,25 @@ class VideoPlaneTV(Regularizer):
 
             for grid_id in spatial_grids:
                 total += compute_plane_tv(grids[grid_id])
+        return total
+
+
+class DensityPlaneTV(VideoPlaneTV):
+    def __init__(self, initial_value):
+        super().__init__(initial_value)
+        self.reg_type = 'density-plane-TV'
+
+    def _regularize(self, model: LowrankModel, **kwargs) -> torch.Tensor:
+        total = 0
+        for field in model.density_fields:
+            grids = field.grids
+            if len(grids) == 3:
+                spatial_grids = [0, 1, 2]
+            else:
+                spatial_grids = [0, 1, 3]
+            for grid_id in spatial_grids:
+                total += compute_plane_tv(grids[grid_id])
+        total /= len(model.density_fields)
         return total
 
 

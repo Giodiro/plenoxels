@@ -18,7 +18,7 @@ from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_png
 from .regularization import (
     PlaneTV, L1PlaneColor, L1PlaneDensity, VolumeTV, L1Density, FloaterLoss,
-    HistogramLoss
+    HistogramLoss, DensityPlaneTV
 )
 from .timer import CudaTimer
 from .utils import (
@@ -552,6 +552,7 @@ class Trainer():
             PlaneTV(kwargs.get('plane_tv_weight', 0.0), features='all'),
             PlaneTV(kwargs.get('plane_tv_weight_sigma', 0.0), features='sigma'),
             PlaneTV(kwargs.get('plane_tv_weight_sh', 0.0), features='sh'),
+            DensityPlaneTV(kwargs.get('density_plane_tv_weight', 0.0)),
             VolumeTV(
                 kwargs.get('volume_tv_weight', 0.0),
                 what=kwargs.get('volume_tv_what'),
