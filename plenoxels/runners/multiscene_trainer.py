@@ -18,7 +18,7 @@ from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_png
 from .regularization import (
     PlaneTV, L1PlaneColor, L1PlaneDensity, VolumeTV, L1Density, FloaterLoss,
-    HistogramLoss
+    HistogramLoss, DensityPlaneTV
 )
 from .timer import CudaTimer
 from .utils import (
@@ -148,14 +148,12 @@ class Trainer():
             rgb_preds = fwd_out["rgb"]
             # Reconstruction loss
             recon_loss = self.criterion(rgb_preds, imgs)
-            self.writer.add_scalar(f"train/loss/mse", recon_loss, self.global_step)
 
             # Regularization
             loss = recon_loss
             for r in self.regularizers:
                 reg_loss = r.regularize(self.model, grid_id=dset_id, model_out=fwd_out)
                 loss = loss + reg_loss
-                self.writer.add_scalar(f"train/loss/{r.reg_type}", reg_loss, self.global_step)
             self.timer.check("step_loss")
         self.gscaler.scale(loss).backward()
 
@@ -326,7 +324,7 @@ class Trainer():
         err = torch.abs(preds - gt)
         err = err.mean(-1, keepdim=True)  # mean over channels
         # normalize between 0, 1 where 1 corresponds to the 90th percentile
-        err = err.clamp_max(torch.quantile(err, 0.9))
+        # err = err.clamp_max(torch.quantile(err, 0.9))
         err = self._normalize_01(err)
         return err.repeat(1, 1, 3)
 
@@ -390,7 +388,7 @@ class Trainer():
             summary.update(self.calc_metrics(preds_rgb, gt))
             out_img = torch.cat((out_img, gt), dim=0)
             out_img = torch.cat((out_img, self._normalize_err(preds_rgb, gt)), dim=0)
-            
+
         out_img = (out_img * 255.0).byte().numpy()
         if out_depth is not None:
             out_depth = self._normalize_01(out_depth)
@@ -555,6 +553,7 @@ class Trainer():
             PlaneTV(kwargs.get('plane_tv_weight', 0.0), features='all'),
             PlaneTV(kwargs.get('plane_tv_weight_sigma', 0.0), features='sigma'),
             PlaneTV(kwargs.get('plane_tv_weight_sh', 0.0), features='sh'),
+            DensityPlaneTV(kwargs.get('density_plane_tv_weight', 0.0)),
             VolumeTV(
                 kwargs.get('volume_tv_weight', 0.0),
                 what=kwargs.get('volume_tv_what'),
@@ -711,28 +710,22 @@ def visualize_planes(model, save_dir: str, name: str):
 
             grid = grid.data.view(dim, rank, h, w)
             for r in range(rank):
-                #density = model.density_act(
-                #    grid[-1, r, :, :].cpu()
-                #).numpy()
-                # density = model.compute_density(features = grid[:, r, :, :].view(dim, h*w).permute(1,0))
-                # density = grid[-1, r, :, :].cpu().numpy()
+                features = grid[:, r, :, :].view(dim, h*w).transpose(0, 1)
 
-
-                rays_d = torch.ones((h*w, 3), device=grid.device)
-                rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
-                features = grid[:, r, :, :].view(dim, h*w).permute(1,0)
-
-                density = (
-                        torch.sigmoid(model.decoder.compute_density(features, rays_d))
-                ).view(h, w).cpu().numpy().astype(np.float32)
+                density = model.density_act(
+                    model.decoder.compute_density(
+                        features=features, rays_d=None)
+                ).view(h, w).cpu().float().nan_to_num(posinf=99.0, neginf=-99.0).numpy()
 
                 im = ax[plane_idx, r].imshow(density, norm=LogNorm(vmin=1e-6, vmax=density.max()))
                 ax[plane_idx, r].axis("off")
                 plt.colorbar(im, ax=ax[plane_idx, r], aspect=20, fraction=0.04)
 
+                rays_d = torch.ones((h*w, 3), device=grid.device)
+                rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
                 color = (
                         torch.sigmoid(model.decoder.compute_color(features, rays_d))
-                ).view(h, w, 3).cpu().numpy()
+                ).view(h, w, 3).cpu().float().numpy()
                 ax[plane_idx, r+rank].imshow(color)
                 ax[plane_idx, r+rank].axis("off")
 
