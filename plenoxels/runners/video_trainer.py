@@ -202,7 +202,7 @@ class VideoTrainer(Trainer):
             global_scale = dset.global_scale
         except AttributeError:
             global_scale = None
-        if "sacre" in data_dir or "trevi" in data_dir:
+        if "sacre" in data_dir or "trevi" in data_dir or "brandenburg" in data_dir:
             model = LowrankAppearance(
                 aabb=dset.scene_bbox,
                 len_time=dset.len_time,
@@ -324,7 +324,7 @@ class VideoTrainer(Trainer):
             test_frames = dataset.__len__()            
             mask = torch.ones_like(self.model.appearance_coef)
             mask[: , -test_frames:] = 0
-            self.model.appearance_coef.data = self.model.appearance_coef.data * mask + abs(1 - mask)
+            self.model.appearance_coef.data = self.model.appearance_coef.data * mask + abs(1 - mask) #* torch.randn_like(self.model.appearance_coef)
 
             batch_size = 4096
             for img_idx, data in enumerate(dataset):                
@@ -465,7 +465,7 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
         )
         if ist:
             tr_dset.switch_isg2ist()  # this should only happen in case we're reloading
-    elif "sacre" in data_dir or "trevi" in data_dir:
+    elif "sacre" in data_dir or "trevi" in data_dir or "brandenburg" in data_dir:
         tr_dset = PhotoTourismDataset(
             data_dir, split='train', downsample=data_downsample, batch_size=batch_size,
         )
@@ -495,7 +495,7 @@ def init_ts_data(data_dir, **kwargs):
             max_tsteps=kwargs.get('max_test_tsteps'),
             is_contracted=False, is_ndc=False,
         )
-    elif "sacre" in data_dir or "trevi" in data_dir:
+    elif "sacre" in data_dir or "trevi" in data_dir or "brandenburg" in data_dir:
         ts_dset = PhotoTourismDataset(
             data_dir, split='test', downsample=1,
         )

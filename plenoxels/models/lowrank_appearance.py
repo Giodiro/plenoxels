@@ -268,8 +268,8 @@ class LowrankAppearance(LowrankModel):
         appearance_code = self.appearance_coef
         # project codes onto unit sphere or inide unit sphere. 
         # (keeps thinggs compact such that interpolation should be easier)
-        div = torch.norm(appearance_code, dim=-1) + 1e-6
-        appearance_code = appearance_code / torch.max(div, torch.ones_like(div))[:, None]
+        # div = torch.norm(appearance_code, dim=-1) + 1e-6
+        # appearance_code = appearance_code / torch.max(div, torch.ones_like(div))[:, None]
         if appearance_idx.shape == torch.Size([]):
             appearance_code = appearance_code[:, appearance_idx.long()].unsqueeze(0).repeat(pts[mask].shape[0], 1)  # [n, 16]
         else:
