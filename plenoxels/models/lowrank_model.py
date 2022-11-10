@@ -175,10 +175,12 @@ class LowrankModel(ABC, nn.Module):
             assert density_field_resolution is not None
             assert self.proposal_feature_dim is not None
             assert self.proposal_decoder_type is not None
+            model_reso = self.config[0]['resolution']
+            reso_proportions = [1.0, model_reso[0] / model_reso[1], model_reso[0] / model_reso[2]]
             for reso in density_field_resolution:
-                real_resolution = [reso] * 3
+                real_resolution = [int(reso / reso_proportions[0]), int(reso / reso_proportions[1]), int(reso / reso_proportions[2])]
                 if self.density_model == 'hexplane':
-                    real_resolution.append(self.config[0]['resolution'][-1])
+                    real_resolution.append(model_reso[3])
                 field = TriplaneDensityField(
                     aabb=self.aabb(0),
                     resolution=real_resolution,
