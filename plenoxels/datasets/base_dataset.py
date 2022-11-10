@@ -57,6 +57,7 @@ class BaseDataset(Dataset, ABC):
     def reset_iter(self):
         if self.sampling_weights is None:
             #self.perm = torch.randperm(self.num_samples)
+            pass
         else:
             del self.perm
             self.perm = None
