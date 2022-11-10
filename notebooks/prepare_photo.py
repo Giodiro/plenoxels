@@ -35,12 +35,14 @@ def get_rays_tourism(H, W, kinv, pose):
 
 
 train_images = {"sacre" : 1179,
-            "trevi" : 1689}
+            "trevi" : 1689,
+            "brandenburg" : 763}
 
 test_images = {"sacre" : 21,
-            "trevi" : 19}
+            "trevi" : 19,
+            "brandenburg": 10}
 
-datadir = "/work3/frwa/data/phototourism/trevi"
+datadir = "/work3/frwa/data/phototourism/brandenburg"
 name = os.path.basename(datadir)
 split = "train"
 

@@ -201,7 +201,7 @@ class VideoTrainer(Trainer):
             global_scale = dset.global_scale
         except AttributeError:
             global_scale = None
-        if "sacre" in data_dir or "trevi" in data_dir:
+        if "sacre" in data_dir or "trevi" in data_dir or "brandenburg" in data_dir:
             model = LowrankAppearance(
                 aabb=dset.scene_bbox,
                 len_time=dset.len_time,
@@ -257,9 +257,16 @@ class VideoTrainer(Trainer):
 
         # here we shuffle the rays to make optimization more stable
         n_steps = math.ceil(rays_o.shape[0] / batch_size)
-        epochs = 10
+        epochs = 20
+        lowest_loss = 100000
+        count = 0
+        self.appearance_optimizer = torch.optim.Adam(params=[self.model.appearance_coef], lr=1e-1)
+        appearance_scheduler = torch.optim.lr_scheduler.StepLR(self.appearance_optimizer, step_size=2*n_steps, gamma=0.5)
+        
         for n in range(epochs):
             idx = torch.randperm(rays_o.shape[0])
+            # half lr every epoch
+            
             for b in range(n_steps):
                 rays_o_b = rays_o[idx[b * batch_size: (b + 1) * batch_size]].cuda()
                 rays_d_b = rays_d[idx[b * batch_size: (b + 1) * batch_size]].cuda()
@@ -281,7 +288,25 @@ class VideoTrainer(Trainer):
 
                     self.appearance_optimizer.zero_grad(set_to_none=True)
 
-                    self.writer.add_scalar(f"appearance_loss_{self.global_step}/recon_loss_{im_id}", recon_loss.item(), b + n * n_steps)
+                
+                self.writer.add_scalar(f"appearance_loss_{self.global_step}/recon_loss_{im_id}", recon_loss.item(), b + n * n_steps)
+                curr_lr = appearance_scheduler.get_last_lr()
+                self.writer.add_scalar(f"appearance_lr_{self.global_step}/lr_{im_id}", curr_lr[0], b + n * n_steps)
+                
+                if loss.item() < lowest_loss:
+                    lowest_loss = loss.item()
+                    count = 0
+                
+                count += 1    
+                appearance_scheduler.step()
+                # 3 epoch without improvement, stop
+                if count > 3 * n_steps:
+                    print(f"break after {n} epochs")
+                    break
+            # 3 epoch without improvement, stop
+            if count > 3 * n_steps:
+               break
+                    
 
     def optimize_appearance_codes(self):
         # turn gradients off for anything but appearance codes
@@ -290,9 +315,7 @@ class VideoTrainer(Trainer):
         for param in self.model.parameters():
             param.requires_grad = False
         self.model.appearance_coef.requires_grad = True
-
-        self.appearance_optimizer = torch.optim.Adam(params=[self.model.appearance_coef], lr=1e-3)
-
+        
         for dset_id, dataset in enumerate(self.test_datasets):
             pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
 
@@ -300,10 +323,10 @@ class VideoTrainer(Trainer):
             test_frames = dataset.__len__()            
             mask = torch.ones_like(self.model.appearance_coef)
             mask[: , -test_frames:] = 0
-            self.model.appearance_coef.data = self.model.appearance_coef.data * mask + abs(1 - mask)
+            self.model.appearance_coef.data = self.model.appearance_coef.data * mask + abs(1 - mask) #* torch.randn_like(self.model.appearance_coef)
 
             batch_size = 4096
-            for img_idx, data in enumerate(dataset):
+            for img_idx, data in enumerate(dataset):                
                 self.optimize_appearance_step(data, batch_size, img_idx)
                 pb.update(1)
             pb.close()
@@ -440,7 +463,7 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
         )
         if ist:
             tr_dset.switch_isg2ist()  # this should only happen in case we're reloading
-    elif "sacre" in data_dir or "trevi" in data_dir:
+    elif "sacre" in data_dir or "trevi" in data_dir or "brandenburg" in data_dir:
         tr_dset = PhotoTourismDataset(
             data_dir, split='train', downsample=data_downsample, batch_size=batch_size,
         )
@@ -470,7 +493,7 @@ def init_ts_data(data_dir, **kwargs):
             max_tsteps=kwargs.get('max_test_tsteps'),
             is_contracted=False, is_ndc=False,
         )
-    elif "sacre" in data_dir or "trevi" in data_dir:
+    elif "sacre" in data_dir or "trevi" in data_dir or "brandenburg" in data_dir:
         ts_dset = PhotoTourismDataset(
             data_dir, split='test', downsample=1,
         )
