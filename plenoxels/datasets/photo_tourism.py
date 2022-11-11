@@ -14,7 +14,7 @@ train_images = {"sacre" : 1179,
 
 test_images = {"sacre" : 21,
             "trevi" : 19,
-            "brandenburg" : 710}
+            "brandenburg" : 10}
 
 def get_rays_tourism(H, W, kinv, pose):
     """

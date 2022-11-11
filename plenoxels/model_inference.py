@@ -15,8 +15,12 @@ from plenoxels.models.utils import grid_sample_wrapper, compute_plane_tv, comput
 #checkpoint_path = "logs/5nov_trevi/hexplane_lr001_tv0_histloss01_proposal128x256_256x96_ninsect48l1_appearance_planes_reg0.1/model.pth"
 #save_dir = "logs/trevi_rank_vis/hexplane_lr001_tv0_histloss01_proposal128x256_256x96_ninsect48l1_appearance_planes_reg0.1/"
 
-checkpoint_path = "logs/trevi/nov8/with_nn_tv1e3_l1time001_rank1_outdim32/model.pth"
-save_dir = "logs/trevi/nov8/with_nn_tv1e3_l1time001_rank1_outdim32/"
+#checkpoint_path = "logs/trevi/nov8/with_nn_tv1e3_l1time001_rank1_outdim32/model.pth"
+#save_dir = "logs/trevi/nov8/with_nn_tv1e3_l1time001_rank1_outdim32/"
+
+checkpoint_path =  "logs/brandenburg/nov10/hexplane_lr005_tv0_rank2_l101_outdim32_scales1_2_4_8_appearance_code32_colornet3/model.pth"
+save_dir = "logs/brandenburg/nov10/hexplane_lr005_tv0_rank2_l101_outdim32_scales1_2_4_8_appearance_code32_colornet3/"
+
 os.makedirs(save_dir, exist_ok=True)
 
 ranks = [0, 1, "avg"]
@@ -101,10 +105,11 @@ def evaluate_metrics(gt, preds, dset, img_idx):
 
     return summary, out_img
 
-grid_config = '[{"input_coordinate_dim": 4, "output_coordinate_dim": 32, "grid_dimensions" : 2, "resolution": [80, 40, 20, 1708], "rank": 1, "time_reso" : 1708}, {"input_coordinate_dim": 5, "resolution": [6, 6, 6, 6, 6], "feature_dim": 32, "init_std": 0.001}]'
+#grid_config = '[{"input_coordinate_dim": 4, "output_coordinate_dim": 32, "grid_dimensions" : 2, "resolution": [80, 40, 20, 1708], "rank": 1, "time_reso" : 1708}, {"input_coordinate_dim": 5, "resolution": [6, 6, 6, 6, 6], "feature_dim": 32, "init_std": 0.001}]'
+grid_config = '[{"input_coordinate_dim": 4, "output_coordinate_dim": 32, "grid_dimensions" : 2, "resolution": [80, 40, 20, 773], "rank": 2, "time_reso" : 773}, {"input_coordinate_dim": 5, "resolution": [6, 6, 6, 6, 6], "feature_dim": 32, "init_std": 0.001}]'
 model = LowrankAppearance(grid_config, 
                 aabb=torch.tensor([[-2., -2., -2.], [2., 2., 2.]]), 
-                len_time=1708, 
+                len_time=763+710, 
                 is_ndc=False, 
                 is_contracted=True, 
                 lookup_time=True, 
@@ -120,10 +125,12 @@ model = LowrankAppearance(grid_config,
                 num_proposal_samples=[256, 96],
                 density_field_rank = 1,
                 density_field_resolution = [128, 256],
-                density_model = 'triplane',
+                density_model = 'hexplane',
                 multiscale_res =[ 1, 2, 4, 8],
                 proposal_feature_dim=10,
                 proposal_decoder_type= "nn",
+                color_net=3,
+                appearance_code_size=32,
                 )
 
 model = model.cuda()
@@ -157,7 +164,7 @@ for plane_idx, grid in enumerate(model.grids):
 """
 
 # visualize time grid
-train_dataset = PhotoTourismDataset("/work3/frwa/data/phototourism/trevi", "train", debug=True)
+train_dataset = PhotoTourismDataset("/work3/frwa/data/phototourism/brandenburg", "train", debug=True)
 train_dataset.training = False
 rank_idx = "avg"
 with torch.no_grad():
