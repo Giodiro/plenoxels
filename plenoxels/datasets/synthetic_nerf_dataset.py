@@ -1,167 +1,180 @@
 import json
 import logging as log
-import math
 import os
-from typing import Optional, Tuple
+from typing import Tuple, Optional, Any
 
 import numpy as np
 import torch
-import torch.utils.data
 
-from .base_dataset import BaseDataset
 from .data_loading import parallel_load_images
+from .ray_utils import get_rays, get_ray_directions, generate_hemispherical_orbit
 from .intrinsics import Intrinsics
-from .ray_utils import gen_pixel_samples, gen_camera_dirs, add_color_bkgd
+from .base_dataset import BaseDataset
+from .patchloader import PatchLoader
+
+# y indexes from top to bottom so flip it
+# camera looks along negative z axis so flip that also
+blender2opencv = torch.tensor([
+    [1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]], dtype=torch.float32)
 
 
-def _load_renderings(data_dir: str,
-                     split: str,
-                     max_frames: int,
-                     downsample: float
-                     ) -> Tuple[torch.Tensor, torch.Tensor, Intrinsics]:
-    """Load images from disk."""
-    with open(os.path.join(data_dir, f"transforms_{split}.json"), "r") as fp:
-        meta = json.load(fp)
+class SyntheticNerfDataset(BaseDataset):
+    patchloader: Optional[PatchLoader]
 
-    frames = meta['frames']
+    def __init__(self,
+                 datadir,
+                 split: str,
+                 dset_id: int,
+                 batch_size: Optional[int] = None,
+                 downsample: float = 1.0,
+                 resolution: Optional[int] = 512,
+                 max_frames: Optional[int] = None,
+                 patch_size: Optional[int] = 8,
+                 extra_views: bool = False):
 
-    # Subsample frames
-    tot_frames = len(frames)
-    num_frames = min(tot_frames, max_frames or tot_frames)
-    if split == 'train' or split == 'test':
-        subsample = int(round(tot_frames / num_frames))
-        frame_ids = np.arange(tot_frames)[::subsample]
-        if subsample > 1:
-            log.info(f"Subsampling {split} set to 1 every {subsample} images.")
-    else:
-        frame_ids = np.arange(num_frames)
-    frames = np.take(frames, frame_ids).tolist()
+        self.downsample = downsample
+        self.resolution = (resolution, resolution)
+        self.max_frames = max_frames
+        self.patch_size = patch_size
+        self.dset_id = dset_id
+        self.near_far = [2.0, 6.0]
+        self.extra_views = split == 'train' and extra_views
+        self.patchloader = None
 
-    img_poses = parallel_load_images(
-        dset_type="synthetic",
-        tqdm_title=f'Loading {split} data',
-        num_images=len(frames),
-        frames=frames,
-        data_dir=data_dir,
-        out_h=None,
-        out_w=None,
-        downsample=downsample,
-        resolution=(None, None),
-    )
-    images, camtoworlds = zip(*img_poses)
-    images = torch.stack(images, 0).float()  # [N, H, W, 3/4]
-    camtoworlds = torch.stack(camtoworlds, 0).float()  # [N, ????]
+        frames, transform = load_360_frames(datadir, split, self.max_frames)
+        imgs, poses = load_360_images(frames, datadir, split, self.downsample, self.resolution)
+        intrinsics = load_360_intrinsics(transform, imgs, self.downsample)
+        rays_o, rays_d, imgs = create_360_rays(
+            imgs, poses, merge_all=split == 'train', intrinsics=intrinsics, is_blender_format=True)
+        super().__init__(datadir=datadir,
+                         split=split,
+                         scene_bbox=get_360_bbox(datadir, is_contracted=False),   # Can set to True to test contraction
+                         is_ndc=False,
+                         is_contracted=False,  # Can set to True to test contraction
+                         batch_size=batch_size,
+                         imgs=imgs,
+                         rays_o=rays_o,
+                         rays_d=rays_d,
+                         intrinsics=intrinsics)
 
-    h, w = images.shape[1:3]
-    camera_angle_x = float(meta["camera_angle_x"])
-    focal = 0.5 * w / math.tan(0.5 * camera_angle_x)
-    intrinsics = Intrinsics(
-        width=800, height=800, focal_x=focal,
-        focal_y=focal, center_x=800 / 2, center_y=800 / 2)
-    intrinsics.scale(1 / downsample)
+        if self.extra_views:
+            extra_poses = generate_hemispherical_orbit(poses, n_frames=120)
+            extra_rays_o, extra_rays_d, _ = create_360_rays(
+                imgs=None, poses=extra_poses, merge_all=False, intrinsics=intrinsics,
+                is_blender_format=True)
+            extra_rays_o = extra_rays_o.view(-1, self.img_h, self.img_w, 3)
+            extra_rays_d = extra_rays_d.view(-1, self.img_h, self.img_w, 3)
+            self.patchloader = PatchLoader(extra_rays_o, extra_rays_d, len_time=None,
+                                           batch_size=self.batch_size, patch_size=self.patch_size,
+                                           generator=self.generator)
+        log.info(f"SyntheticNerfDataset - Loaded {split} set from {datadir}: {len(poses)} images of size "
+                 f"{self.img_h}x{self.img_w} and {imgs.shape[-1]} channels. {intrinsics}")
 
-    return images, camtoworlds, intrinsics
+    def __getitem__(self, index):
+        out = super().__getitem__(index)
+        out["dset_id"] = self.dset_id
+        if self.split == 'train' and self.extra_views:
+            out.update(self.patchloader[index])
+        return out
 
 
-def _get_360_bbox(datadir):
-    if "ship" in datadir:
+def get_360_bbox(datadir, is_contracted=False):
+    if is_contracted:
+        radius = 2
+    elif "ship" in datadir:
         radius = 1.5
     else:
         radius = 1.3
     return torch.tensor([[-radius, -radius, -radius], [radius, radius, radius]])
 
 
-class SyntheticNerfDataset(BaseDataset):
-    """Single subject data loader for training and evaluation."""
+def create_360_rays(
+              imgs,
+              poses,
+              merge_all: bool,
+              intrinsics: Intrinsics,
+              is_blender_format: bool = True) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    directions = get_ray_directions(intrinsics)  # [H, W, 3]
+    directions = directions / torch.norm(directions, dim=-1, keepdim=True)
+    num_frames = poses.shape[0]
 
-    SPLITS = ["train", "val", "trainval", "test"]
-    NEAR, FAR = 2.0, 6.0
-    OPENGL_CAMERA = True
+    all_rays_o, all_rays_d = [], []
+    for i in range(num_frames):
+        pose_opencv = poses[i]
+        if is_blender_format:
+            pose_opencv = pose_opencv @ blender2opencv
+        rays_o, rays_d = get_rays(directions, pose_opencv)  # h*w, 3
+        all_rays_o.append(rays_o)
+        all_rays_d.append(rays_d)
 
-    def __init__(
-        self,
-        datadir: str,
-        split: str,
-        dset_id: int,
-        color_bkgd_aug: str = "white",
-        batch_size: int = None,
-        downsample: float = 1.0,
-        max_frames: Optional[int] = None,
-        generator: Optional[torch.random.Generator] = None,
-    ):
-        assert split in self.SPLITS, "%s" % split
-        assert color_bkgd_aug in ["white", "black", "random"]
-        self.dset_id = dset_id
-        self.near = self.NEAR
-        self.far = self.FAR
-        self.downsample = downsample
-        self.max_frames = max_frames
-        self.training = (batch_size is not None) and (
-            split in ["train", "trainval"]
-        )
-        self.color_bkgd_aug = color_bkgd_aug
-        images, camtoworlds, intrinsics = _load_renderings(
-            datadir, split=split, max_frames=self.max_frames, downsample=self.downsample
-        )
-        images = (images * 255).to(torch.uint8)
-        camtoworlds = camtoworlds.to(torch.float32)
-        super().__init__(
-            datadir=datadir,
-            scene_bbox=_get_360_bbox(datadir),
-            split=split,
-            is_ndc=False,
-            camtoworlds=camtoworlds,
-            intrinsics=intrinsics,
-            generator=generator,
-            batch_size=batch_size,
-            images=images,
-        )
-        log.info(f"SyntheticNerfDataset - Loaded {split} set from {datadir}: "
-                 f"{self.images.shape[0]} images of size {self.images.shape[1]}x{self.images.shape[2]} "
-                 f"and {self.images.shape[3]} channels. {self.intrinsics}")
+    all_rays_o = torch.cat(all_rays_o, 0).to(dtype=torch.float32)  # [n_frames * h * w, 3]
+    all_rays_d = torch.cat(all_rays_d, 0).to(dtype=torch.float32)  # [n_frames * h * w, 3]
+    if imgs is not None:
+        imgs = imgs.view(-1, imgs.shape[-1]).to(dtype=torch.float32)   # [N*H*W, 3/4]
+    if not merge_all:
+        num_pixels = intrinsics.height * intrinsics.width
+        if imgs is not None:
+            imgs = imgs.view(num_frames, num_pixels, -1)  # [N, H*W, 3/4]
+        all_rays_o = all_rays_o.view(num_frames, num_pixels, 3)  # [N, H*W, 3]
+        all_rays_d = all_rays_d.view(num_frames, num_pixels, 3)  # [N, H*W, 3]
+    return all_rays_o, all_rays_d, imgs
 
-    def preprocess(self, data):
-        """Process the fetched / cached data with randomness."""
-        rgba, rays_o, rays_d = data["rgba"], data["rays_o"], data["rays_d"]
-        pixels, color_bkgd = add_color_bkgd(rgba, self.color_bkgd_aug, self.training)
-        return {
-            "pixels": pixels,  # [n_rays, 3] or [h, w, 3]
-            "rays_o": rays_o,  # [n_rays,] or [h, w]
-            "rays_d": rays_d,  # [n_rays,] or [h, w]
-            "color_bkgd": color_bkgd,  # [3,]
-            "dset_id": self.dset_id,
-            **{k: v for k, v in data.items() if k not in {"rgba", "rays_o", "rays_d"}},
-        }
 
-    def fetch_data(self, index):
-        """Fetch the data (it maybe cached for multiple batches)."""
-        num_rays = self.batch_size
-        image_id, x, y = gen_pixel_samples(
-            self.training, self.images, index, num_rays, self.intrinsics)
-        # generate rays
-        rgba = self.images[image_id, y, x] / 255.0  # (num_rays, 4)   this converts to f32
-        c2w = self.camtoworlds[image_id]            # (num_rays, 3, 4)
-        camera_dirs = gen_camera_dirs(
-            x, y, self.intrinsics, self.OPENGL_CAMERA)  # [num_rays, 3]
+def load_360_frames(datadir, split, max_frames: int) -> Tuple[Any, Any]:
+    with open(os.path.join(datadir, f"transforms_{split}.json"), 'r') as f:
+        meta = json.load(f)
+        frames = meta['frames']
 
-        # [n_cams, height, width, 3]
-        directions = (camera_dirs[:, None, :] * c2w[:, :3, :3]).sum(dim=-1)
-        origins = torch.broadcast_to(c2w[:, :3, -1], directions.shape)
-        viewdirs = directions / torch.linalg.norm(
-            directions, dim=-1, keepdims=True
-        )
-
-        if self.training:
-            origins = torch.reshape(origins, (num_rays, 3))
-            viewdirs = torch.reshape(viewdirs, (num_rays, 3))
-            rgba = torch.reshape(rgba, (num_rays, 4))
+        # Subsample frames
+        tot_frames = len(frames)
+        num_frames = min(tot_frames, max_frames or tot_frames)
+        if split == 'train' or split == 'test':
+            subsample = int(round(tot_frames / num_frames))
+            frame_ids = np.arange(tot_frames)[::subsample]
+            if subsample > 1:
+                log.info(f"Subsampling {split} set to 1 every {subsample} images.")
         else:
-            origins = torch.reshape(origins, (self.intrinsics.height, self.intrinsics.width, 3))
-            viewdirs = torch.reshape(viewdirs, (self.intrinsics.height, self.intrinsics.width, 3))
-            rgba = torch.reshape(rgba, (self.intrinsics.height, self.intrinsics.width, 4))
+            frame_ids = np.arange(num_frames)
+        frames = np.take(frames, frame_ids).tolist()
+    return frames, meta
 
-        return {
-            "rgba": rgba,       # [h, w, 4] or [num_rays, 4]
-            "rays_o": origins,  # [h, w, 3] or [num_rays, 3]
-            "rays_d": viewdirs,
-        }
+
+def load_360_images(frames, datadir, split, downsample, resolution=(None, None)) -> Tuple[torch.Tensor, torch.Tensor]:
+    img_poses = parallel_load_images(
+        dset_type="synthetic",
+        tqdm_title=f'Loading {split} data',
+        num_images=len(frames),
+        frames=frames,
+        data_dir=datadir,
+        out_h=None,
+        out_w=None,
+        downsample=downsample,
+        resolution=resolution,
+    )
+    imgs, poses = zip(*img_poses)
+    imgs = torch.stack(imgs, 0)  # [N, H, W, 3/4]
+    poses = torch.stack(poses, 0)  # [N, ????]
+    return imgs, poses
+
+
+def load_360_intrinsics(transform, imgs, downsample) -> Intrinsics:
+    height = imgs[0].shape[0]
+    width = imgs[0].shape[1]
+    # load intrinsics
+    if 'fl_x' in transform or 'fl_y' in transform:
+        fl_x = (transform['fl_x'] if 'fl_x' in transform else transform['fl_y']) / downsample
+        fl_y = (transform['fl_y'] if 'fl_y' in transform else transform['fl_x']) / downsample
+    elif 'camera_angle_x' in transform or 'camera_angle_y' in transform:
+        # blender, assert in radians. already downscaled since we use H/W
+        fl_x = width / (2 * np.tan(transform['camera_angle_x'] / 2)) if 'camera_angle_x' in transform else None
+        fl_y = height / (2 * np.tan(transform['camera_angle_y'] / 2)) if 'camera_angle_y' in transform else None
+        if fl_x is None:
+            fl_x = fl_y
+        if fl_y is None:
+            fl_y = fl_x
+    else:
+        raise RuntimeError('Failed to load focal length, please check the transforms.json!')
+
+    cx = (transform['cx'] / downsample) if 'cx' in transform else (width / 2)
+    cy = (transform['cy'] / downsample) if 'cy' in transform else (height / 2)
+    return Intrinsics(height=height, width=width, focal_x=fl_x, focal_y=fl_y, center_x=cx, center_y=cy)

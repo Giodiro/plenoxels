@@ -85,7 +85,7 @@ class Trainer():
 
         self.scheduler_type = scheduler_type
         self.optim_type = optim_type
-        self.transfer_learning = kwargs.get('transfer_learning')
+        self.transfer_learning = kwargs['transfer_learning']
         self.train_fp16 = train_fp16
         self.save_every = save_every
         self.valid_every = valid_every
@@ -94,6 +94,9 @@ class Trainer():
         self.target_sample_batch_size = sample_batch_size
         self.render_n_samples = n_samples
         self.cone_angle = kwargs['cone_angle']
+        self._density_threshold = kwargs['density_threshold']
+        self._alpha_threshold = kwargs['alpha_threshold']
+
         # Set initial batch-size
         for dset in self.train_datasets:
             dset.update_num_rays(self.target_sample_batch_size // self.render_n_samples)
@@ -154,7 +157,7 @@ class Trainer():
                 render_bkgd=data['color_bkgd'],
                 cone_angle=self.cone_angle,
                 render_step_size=self.model.step_size(self.render_n_samples, dset_id),
-                alpha_thresh=self.cur_alpha_threshold(),
+                alpha_thresh=self.alpha_threshold,
                 device=self.device,
             )
         return {
@@ -173,7 +176,7 @@ class Trainer():
                 occ_eval_fn=lambda x: self.model.query_opacity(
                     x, dset_id, self.train_datasets[dset_id]
                 ),
-                occ_thre=self.cur_density_threshold(),
+                occ_thre=self.density_threshold,
             )
             # render
             rgb, acc, depth, n_rendering_samples = render_image(
@@ -189,14 +192,14 @@ class Trainer():
                 render_bkgd=data["color_bkgd"],
                 cone_angle=self.cone_angle,
                 render_step_size=self.model.step_size(self.render_n_samples, dset_id),
-                alpha_thresh=self.cur_alpha_threshold(),
+                alpha_thresh=self.alpha_threshold,
                 device=self.device,
             )
             if n_rendering_samples == 0:
                 return False
             # dynamic batch size for rays to keep sample batch size constant.
             num_rays = len(imgs)
-            num_rays = min(self.cur_max_rays(), int(
+            num_rays = min(self.max_rays, int(
                 num_rays
                 * (self.target_sample_batch_size / float(n_rendering_samples))
             ))
@@ -276,7 +279,7 @@ class Trainer():
             self.writer.add_scalar(
                 f"mse/D{dset_id}", self.loss_info[dset_id]["mse"].value, self.global_step)
             progress_bar.set_postfix_str(
-                losses_to_postfix(self.loss_info, lr=self.cur_lr()), refresh=False)
+                losses_to_postfix(self.loss_info, lr=self.lr), refresh=False)
         if self.global_step == 10_000:
             self.volume_tv_weight /= 2
             logging.info(f"Set vol-TV-weight to {self.volume_tv_weight}")
@@ -515,22 +518,24 @@ class Trainer():
             occupancy_grids.append(occupancy_grid)
         return occupancy_grids
 
-    def cur_lr(self):
-        if self.scheduler is not None:
-            return self.scheduler.get_last_lr()[0]
-        return None
+    @property
+    def lr(self):
+        return self.optimizer.param_groups[0]['lr']
 
-    def cur_density_threshold(self) -> float:
+    @property
+    def density_threshold(self):
         if self.global_step < 512:
-            return self.extra_args['density_threshold'] / 10
-        return self.extra_args['density_threshold']
+            return self._density_threshold / 10
+        return self._density_threshold
 
-    def cur_alpha_threshold(self) -> float:
+    @property
+    def alpha_threshold(self):
         if self.global_step < 512:
-            return self.extra_args['alpha_threshold']
-        return self.extra_args['alpha_threshold']
+            return self._alpha_threshold
+        return self._alpha_threshold
 
-    def cur_max_rays(self) -> int:
+    @property
+    def max_rays(self):
         if self.global_step < 512:
             return 15_000
         elif self.global_step < 1024:
@@ -576,10 +581,10 @@ def load_data(data_downsample, data_dirs, batch_size, **kwargs):
             tr_dsets.append(SyntheticNerfDataset(
                 data_dir, split='train', downsample=data_downsample,
                 max_frames=max_tr_frames, batch_size=batch_size,
-                dset_id=i, color_bkgd_aug='random'))
+                dset_id=i))
             ts_dsets.append(SyntheticNerfDataset(
                 data_dir, split='test', downsample=1, max_frames=max_ts_frames,
-                dset_id=i, color_bkgd_aug='random'))
+                dset_id=i))
         elif dset_type == "llff":
             hold_every = parse_optint(kwargs.get('hold_every'))
             logging.info(f"About to load LLFF data downsampled by {data_downsample} times.")

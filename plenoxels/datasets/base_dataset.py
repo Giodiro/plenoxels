@@ -1,4 +1,3 @@
-import abc
 from abc import ABC
 import os
 from typing import Optional
@@ -9,56 +8,43 @@ from torch.utils.data import Dataset
 from .intrinsics import Intrinsics
 
 
-class MultiSceneDataset(torch.utils.data.IterableDataset):
-    def __init__(self, datasets):
-        super(MultiSceneDataset, self).__init__()
-        self.datasets = list(datasets)
-        self.num_datasets = len(self.datasets)
-        assert self.num_datasets > 0, 'datasets should not be an empty iterable'
-
-    def __iter__(self):
-        idx = 0
-        while True:
-            dset_idx = idx % self.num_datasets
-            batch_idx = (idx // self.num_datasets) % len(self.datasets[dset_idx])
-            yield self.datasets[dset_idx][batch_idx]
-            idx += 1
-
-
 class BaseDataset(Dataset, ABC):
     def __init__(self,
                  datadir: str,
                  scene_bbox: torch.Tensor,
                  split: str,
                  is_ndc: bool,
-                 camtoworlds: torch.Tensor,
+                 is_contracted: bool,
+                 rays_o: Optional[torch.Tensor],
+                 rays_d: Optional[torch.Tensor],
                  intrinsics: Intrinsics,
-                 generator: Optional[torch.random.Generator],
                  batch_size: Optional[int] = None,
-                 images: Optional[torch.Tensor] = None,
+                 imgs: Optional[torch.Tensor] = None,
+                 sampling_weights: Optional[torch.Tensor] = None,
+                 weights_subsampled: int = 1,
                  ):
         self.datadir = datadir
         self.name = os.path.basename(self.datadir)
         self.scene_bbox = scene_bbox
         self.split = split
         self.is_ndc = is_ndc
+        self.is_contracted = is_contracted
+        self.weights_subsampled = weights_subsampled
         self.batch_size = batch_size
         if self.split == 'train':
             assert self.batch_size is not None
-
-        if generator is None:
-            seed = int(torch.empty((), dtype=torch.int64).random_().item())
-            self.generator = torch.Generator()
-            self.generator.manual_seed(seed)
-        else:
-            self.generator = generator
-
-        self.camtoworlds = camtoworlds
+        self.rays_o = rays_o
+        self.rays_d = rays_d
+        self.imgs = imgs
+        self.num_samples = self.imgs.shape[0]
         self.intrinsics = intrinsics
-        self.images = images  # [N, H, W, 3/4]
-
-        assert self.images.shape[0] == self.camtoworlds.shape[0]
-        assert self.images.shape[1:3] == (self.intrinsics.height, self.intrinsics.width)
+        self.sampling_weights = sampling_weights
+        if self.sampling_weights is not None:
+            assert len(self.sampling_weights) == self.num_samples, (
+                f"Expected {self.num_samples} sampling weights but given {len(self.sampling_weights)}."
+            )
+        self.sampling_batch_size = 2_000_000  # Increase this?
+        self.perm = None
 
     @property
     def img_h(self) -> int:
@@ -68,33 +54,47 @@ class BaseDataset(Dataset, ABC):
     def img_w(self) -> int:
         return self.intrinsics.width
 
-    @property
-    def num_images(self) -> int:
-        return self.images.shape[0]
+    def reset_iter(self):
+        if self.sampling_weights is None:
+            self.perm = torch.randperm(self.num_samples)
+        else:
+            del self.perm
+            self.perm = None
 
-    def update_num_rays(self, num_rays):
-        self.batch_size = num_rays
+    def get_rand_ids(self, index):
+        assert self.batch_size is not None, "Can't get rand_ids for test split"
+        if self.sampling_weights is not None:
+            batch_size = self.batch_size // (self.weights_subsampled ** 2)
+            num_weights = len(self.sampling_weights)
+            if num_weights > self.sampling_batch_size:
+                # Take a uniform random sample first, then according to the weights
+                subset = torch.randint(
+                    0, num_weights, size=(self.sampling_batch_size,),
+                    dtype=torch.int64, device=self.sampling_weights.device)
+                samples = torch.multinomial(
+                    input=self.sampling_weights[subset], num_samples=batch_size)
+                return subset[samples]
+            return torch.multinomial(
+                input=self.sampling_weights, num_samples=batch_size)
+        else:
+            batch_size = self.batch_size
+            return self.perm[index * batch_size: (index + 1) * batch_size]
 
     def __len__(self):
-        return self.images.shape[0]
+        if self.split == 'train':
+            return (self.num_samples + self.batch_size - 1) // self.batch_size
+        else:
+            return self.num_samples
 
-    def to(self, device):
-        self.images = self.images.to(device)
-        self.camtoworlds = self.camtoworlds.to(device)
-
-    @torch.no_grad()
-    def __getitem__(self, index):
-        if index >= len(self):
-            raise StopIteration()
-
-        data = self.fetch_data(index)
-        data = self.preprocess(data)
-        return data
-
-    @abc.abstractmethod
-    def fetch_data(self, index: int):
-        pass
-
-    @abc.abstractmethod
-    def preprocess(self, data):
-        pass
+    def __getitem__(self, index, return_idxs: bool = False):
+        if self.split == 'train':
+            index = self.get_rand_ids(index)
+        out = {
+            "rays_o": self.rays_o[index],
+            "rays_d": self.rays_d[index],
+        }
+        if self.imgs is not None:
+            out["imgs"] = self.imgs[index]
+        if return_idxs:
+            return out, index
+        return out

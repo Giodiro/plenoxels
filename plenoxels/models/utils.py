@@ -1,8 +1,9 @@
-from typing import Optional
+from typing import Optional, Callable
 
 import torch
 import torch.nn.functional as F
 
+from plenoxels.ops.activations import trunc_exp
 from plenoxels.ops.interpolation import grid_sample_4d, grid_sample_1d, grid_sample_nd
 
 
@@ -148,3 +149,12 @@ def raw2alpha(sigma, dist):
 
     weights = alpha * T[:, :-1]
     return alpha, weights, T#[:, -1:]  # Return full-length T so we can use the last one for background
+
+
+def init_density_activation(density_act: str) -> Callable:
+    if density_act == 'relu':
+        return torch.relu
+    elif density_act == 'trunc_exp':
+        return lambda x: trunc_exp(x - 1)
+    else:
+        raise ValueError(density_act)

@@ -1,4 +1,3 @@
-import gc
 import logging
 import math
 import os
@@ -12,14 +11,13 @@ import torch
 import torch.nn.functional as F
 import torch.utils.data
 
-from plenoxels.datasets.video_datasets import Video360Dataset, VideoLLFFDataset
+from plenoxels.datasets.video_datasets import Video360Dataset
 from plenoxels.ema import EMA
 from plenoxels.models.lowrank_video import LowrankVideo
 from plenoxels.my_tqdm import tqdm
 from plenoxels.ops.image import metrics
 from plenoxels.runners.multiscene_trainer import Trainer
 from plenoxels.runners.utils import render_image
-from ..datasets.base_dataset import MultiSceneDataset
 
 
 class VideoTrainer(Trainer):
@@ -39,9 +37,8 @@ class VideoTrainer(Trainer):
                  device,
                  sample_batch_size: int,
                  n_samples: int,
-                 upsample_time_resolution: [int],
-                 upsample_time_steps: [int],
                  ist_step: int,
+                 isg_step: int,
                  **kwargs
                  ):
         # Keys we wish to ignore
@@ -66,10 +63,7 @@ class VideoTrainer(Trainer):
                          n_samples=n_samples,
                          **kwargs)
         self.ist_step = ist_step
-
-        self.upsample_time_resolution = upsample_time_resolution
-        self.upsample_time_steps = upsample_time_steps
-        assert len(upsample_time_resolution) == len(upsample_time_steps)
+        self.isg_step = isg_step
 
         # Override base-class device (which is CPU)
         self.device = device
@@ -89,7 +83,7 @@ class VideoTrainer(Trainer):
                 render_bkgd=data['color_bkgd'],
                 cone_angle=self.cone_angle,
                 render_step_size=self.model.step_size(self.render_n_samples),
-                alpha_thresh=self.cur_alpha_threshold(),
+                alpha_thresh=self.alpha_threshold,
                 device=self.device,
             )
         return {
@@ -108,7 +102,7 @@ class VideoTrainer(Trainer):
                 occ_eval_fn=lambda x: self.model.query_opacity(
                     x, tstamps, self.train_datasets[0]
                 ),
-                occ_thre=self.cur_density_threshold(),
+                occ_thre=self.density_threshold,
             )
             # render
             rgb, acc, depth, n_rendering_samples = render_image(
@@ -124,14 +118,14 @@ class VideoTrainer(Trainer):
                 render_bkgd=data["color_bkgd"],
                 cone_angle=self.cone_angle,
                 render_step_size=self.model.step_size(self.render_n_samples),
-                alpha_thresh=self.cur_alpha_threshold(),
+                alpha_thresh=self.alpha_threshold,
                 device=self.device,
             )
             if n_rendering_samples == 0:
                 return False
             # dynamic batch size for rays to keep sample batch size constant.
             num_rays = len(imgs)
-            num_rays = min(self.cur_max_rays(), int(
+            num_rays = min(self.max_rays, int(
                 num_rays
                 * (self.target_sample_batch_size / float(n_rendering_samples))
             ))
@@ -149,7 +143,7 @@ class VideoTrainer(Trainer):
         self.gscaler.scale(loss).backward()
 
         # Report on losses
-        if self.global_step % 30 == 0:
+        if self.global_step % 5 == 0:
             with torch.no_grad():
                 mse = F.mse_loss(rgb[alive_ray_mask], imgs[alive_ray_mask]).item()
                 self.loss_info["psnr"].update(-10 * math.log10(mse))
@@ -165,42 +159,21 @@ class VideoTrainer(Trainer):
             scale = self.gscaler.get_scale()
             self.gscaler.update()
 
-            if self.global_step in self.upsample_time_steps:
-                # Upsample time resolution
-                self.model.upsample_time(self.upsample_time_resolution[self.upsample_time_steps.index(self.global_step)])
-                # Reset optimizer
-                self.optimizer = self.init_optim(**self.extra_args)
-                # After upsampling time, train with full time data
-                if self.train_datasets[0].use_keyframes:
-                    logging.info('Loading all the training frames. Will now train on full data.')
-                    self.train_datasets[0] = reload_dset_no_keyframes(self.train_datasets[0])
-                    self.train_data_loader = torch.utils.data.DataLoader(
-                        self.train_datasets[0], batch_size=None, num_workers=4,
-                        prefetch_factor=4, pin_memory=True)
-
+            if self.global_step == self.isg_step:
+                self.train_datasets[0].enable_isg()
+                raise StopIteration  # Whenever we change the dataset
             if self.global_step == self.ist_step:
-                datadir = self.train_data_loader.dataset.datadir
-                downsample = self.train_data_loader.dataset.downsample
-                keyframes = self.train_data_loader.dataset.keyframes
-                extra_views = self.train_data_loader.dataset.extra_views
-                batch_size = self.train_data_loader.dataset.batch_size
-                del self.train_data_loader, self.train_datasets
-                gc.collect()
-                tr_dset = VideoLLFFDataset(datadir, split='train', downsample=downsample,
-                                    keyframes=keyframes, isg=False, ist=True,
-                                    extra_views=extra_views, batch_size=batch_size)
-                self.train_data_loader = torch.utils.data.DataLoader(
-                    tr_dset, batch_size=None, shuffle=True, num_workers=4,
-                    prefetch_factor=4, pin_memory=True)
-                self.train_datasets = [tr_dset]
+                self.train_datasets[0].switch_isg2ist()
+                raise StopIteration  # Whenever we change the dataset
+
             return scale <= self.gscaler.get_scale()
         return True
 
     def post_step(self, data, progress_bar):
-        if self.global_step % 10 == 0:
-            self.writer.add_scalar(f"mse: ", self.loss_info["mse"].value, self.global_step)
-            progress_bar.set_postfix_str(
-                losses_to_postfix(self.loss_info), refresh=False)
+        progress_bar.set_postfix_str(
+            losses_to_postfix(self.loss_info, lr=self.lr), refresh=False)
+        for loss_name, loss_val in self.loss_info.items():
+            self.writer.add_scalar(f"train/loss/{loss_name}", loss_val.value, self.global_step)
         progress_bar.update(1)
 
         if self.valid_every > -1 and self.global_step % self.valid_every == 0:
@@ -309,70 +282,114 @@ class VideoTrainer(Trainer):
         if "depth" in preds:
             out_img = torch.cat((out_img, preds["depth"].expand_as(out_img)))
         out_img = (out_img * 255.0).byte().numpy()
-        # if not self.save_video:
-        #     write_exr(os.path.join(self.log_dir, out_name + ".exr"), exrdict)
-        #     write_png(os.path.join(self.log_dir, out_name + ".png"), out_img)
-
         return summary, out_img
 
-    def cur_alpha_threshold(self) -> float:
-        if self.global_step < 512:
-            return 0.0
-        return self.alpha_threshold
+
+def losses_to_postfix(loss_dict: Dict[str, EMA], lr: Optional[float]) -> str:
+    pfix = [f"{lname}={lval}" for lname, lval in loss_dict.items()]
+    if lr is not None:
+        pfix.append(f"lr={lr:.2e}")
+    return "  ".join(pfix)
 
 
-def losses_to_postfix(loss_dict: Dict[str, EMA]) -> str:
-    return ", ".join(f"{lname}={lval}" for lname, lval in loss_dict.items())
+def init_dloader_random(worker_id):
+    seed = torch.utils.data.get_worker_info().seed
+    torch.manual_seed(seed)
+    np.random.seed(seed % (2 ** 32 - 1))
 
 
-def reload_dset_no_keyframes(dset):
-    if isinstance(dset, Video360Dataset):
-        new_dset = Video360Dataset(
-            datadir=dset.datadir, split=dset.split, color_bkgd_aug=dset.color_bkgd_aug,
-            batch_size=dset.batch_size, generator=dset.generator, downsample=dset.downsample,
-            max_cameras=dset.max_cameras, max_tsteps=None, isg=False, ist=True,
-        )
-    elif isinstance(dset, VideoLLFFDataset):
-        new_dset = VideoLLFFDataset(
-            datadir=dset.datadir, split=dset.split, keyframes=False,
-            batch_size=dset.batch_size, generator=dset.generator, downsample=dset.downsample,
-            isg=False, ist=True,
-        )
-    else:
-        raise ValueError(dset)
-    return new_dset
-
-
-def load_data(data_downsample, data_dirs, batch_size, **kwargs):
-    assert len(data_dirs) == 1
-    data_dir = data_dirs[0]
-
-    keyframes = kwargs.get('keyframes')
-
+def init_tr_data(data_downsample, data_dir, **kwargs):
+    isg = kwargs.get('isg', False)
+    ist = kwargs.get('ist', False)
+    keyframes = kwargs.get('keyframes', False)
+    batch_size = kwargs['batch_size']
     if "lego" in data_dir:
         logging.info(f"Loading Video360Dataset with downsample={data_downsample}")
         tr_dset = Video360Dataset(
-            data_dir, split='train', color_bkgd_aug='white', batch_size=1024, generator=None,
-            downsample=data_downsample,
+            data_dir, split='train', downsample=data_downsample,
+            batch_size=batch_size,
             max_cameras=kwargs.get('max_train_cameras'),
             max_tsteps=kwargs.get('max_train_tsteps') if keyframes else None,
-            isg=kwargs.get('isg'),
+            isg=isg, keyframes=keyframes, is_contracted=False, is_ndc=False
         )
-        ts_dset = Video360Dataset(
-            data_dir, split='test', color_bkgd_aug='white', batch_size=None, generator=None,
-            downsample=1,
-            max_cameras=kwargs.get('max_test_cameras'),
-            max_tsteps=kwargs.get('max_test_tsteps'))
+        if ist:
+            tr_dset.switch_isg2ist()  # this should only happen in case we're reloading
+    elif "sacre" in data_dir or "trevi" in data_dir or "brandenburg" in data_dir:
+        tr_dset = PhotoTourismDataset(
+            data_dir, split='train', downsample=data_downsample, batch_size=batch_size,
+        )
+        tr_loader = torch.utils.data.DataLoader(
+            tr_dset, batch_size=batch_size, num_workers=4,
+            prefetch_factor=4, pin_memory=True, shuffle=True,)
+        return {"tr_loader": tr_loader, "tr_dset": tr_dset}
     else:
-        # For LLFF we downsample both train and test unlike 360.
-        # For LLFF the test-set is not time-subsampled!
-        logging.info(f"Loading VideoLLFFDataset with downsample={data_downsample}")
-        tr_dset = VideoLLFFDataset(data_dir, split='train', downsample=data_downsample,
-                                   keyframes=kwargs.get('keyframes'), isg=kwargs.get('isg'),  # Always start without ist
-                                   batch_size=batch_size)
-        ts_dset = VideoLLFFDataset(data_dir, split='test', downsample=4,
-                                   keyframes=False, batch_size=batch_size)
+        logging.info(f"Loading contracted Video360Dataset with downsample={data_downsample}")
+        tr_dset = Video360Dataset(
+            data_dir, split='train', downsample=data_downsample, batch_size=batch_size,
+            keyframes=keyframes, isg=isg, is_contracted=True, is_ndc=False
+        )
+        if ist:
+            tr_dset.switch_isg2ist()  # this should only happen in case we're reloading
     tr_loader = torch.utils.data.DataLoader(
-        MultiSceneDataset([tr_dset]), batch_size=None, num_workers=0,
-        prefetch_factor=2, pin_memory=True)
-    return {"tr_loader": tr_loader, "ts_dset": ts_dset, "tr_dset": tr_dset}
+        tr_dset, batch_size=None, num_workers=2,
+        prefetch_factor=4, pin_memory=True, worker_init_fn=init_dloader_random)
+    return {"tr_loader": tr_loader, "tr_dset": tr_dset}
+
+
+def init_ts_data(data_dir, **kwargs):
+    if "lego" in data_dir:
+        ts_dset = Video360Dataset(
+            data_dir, split='test', downsample=1,
+            max_cameras=kwargs.get('max_test_cameras'),
+            max_tsteps=kwargs.get('max_test_tsteps'),
+            is_contracted=False, is_ndc=False,
+        )
+    elif "sacre" in data_dir or "trevi" in data_dir or "brandenburg" in data_dir:
+        ts_dset = PhotoTourismDataset(
+            data_dir, split='test', downsample=1,
+        )
+    else:
+        ts_dset = Video360Dataset(
+            data_dir, split='test', downsample=2, keyframes=kwargs.get('keyframes', False),
+            is_contracted=True
+        )
+    return {"ts_dset": ts_dset}
+
+
+def load_data(data_downsample, data_dirs, validate_only, **kwargs):
+    assert len(data_dirs) == 1
+    od = {}
+    if not validate_only:
+        od.update(init_tr_data(data_downsample, data_dirs[0], **kwargs))
+    else:
+        od.update(tr_loader=None, tr_dset=None)
+    od.update(init_ts_data(data_dirs[0], **kwargs))
+    return od
+
+
+def load_video_model(config, state, validate_only):
+    if state is not None:
+        global_step = state['global_step']
+
+        if len(config["upsample_time_steps"]) > 0:
+            if global_step > config['upsample_time_steps'][0]:
+                config.update(keyframes=False)
+    data = load_data(**config, validate_only=validate_only)
+    config.update(data)
+    model = VideoTrainer(**config)
+
+    if state is not None:
+        init_hexplane_with_triplane = True
+        if init_hexplane_with_triplane:
+            keys = state['model'].keys()
+            newdict = {}
+            for key in keys:
+                old_key = key
+                if key in ("grids.0.2", "grids.1.2", "grids.2.2", "grids.3.2"):
+                    key = key[:-1] + "3"
+                newdict[key] = state['model'][old_key]
+            newdict["resolution0"] = torch.tensor([640, 320, 160, 1708], device="cuda:0")
+            state["model"] = newdict
+
+        model.load_model(state)
+    return model, config
