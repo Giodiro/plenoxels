@@ -1,17 +1,17 @@
 # configuration file to be used with `main.py` for normal (or multiscene) training
 # the configuration must be specified in a dictionary called `config`.
 config = {
-    "expname": "lego_mlp",
+    "expname": "ficus_test_wdenseweight",
     "logdir": "./logs",
 
     # Data settings
     "data_resolution": None,
     "data_downsample": 1,
-    "data_dirs": ["/work3/frwa/lego"],
+    "data_dirs": ["/data/DATASETS/SyntheticNerf/ficus"],
     #"data_dirs": ["/data/DATASETS/LLFF/fern"],
     # Data settings for 360
     "max_tr_frames": 100,
-    "max_ts_frames": 10,
+    "max_ts_frames": 200,
     # Data settings for LLFF
     "hold_every": 8,
 
@@ -21,15 +21,16 @@ config = {
     "num_batches_per_dset": 1,
     "scheduler_type": "warmup_cosine",
     "optim_type": "adam",
-    "lr": 2e-2,
+    "lr": 1e-2,
 
     # Regularization
     "floater_loss": 0,
-    "plane_tv_weight": 1e-5,
+    "plane_tv_weight": 2e-5,
     "plane_tv_what": "Gcoords",
-    "l1density_weight": 0.000,
-    "volume_tv_weight": 0.00,
-    "volume_tv_npts": 100,
+    "density_plane_tv_weight": 0.0,
+    #"l1density_weight": 0.000,
+    #"volume_tv_weight": 0.00,
+    #"volume_tv_npts": 100,
     "volume_tv_patch_size": 8,
     "volume_tv_what": "Gcoords",
     "l1_plane_color_weight": 0.0,
@@ -38,23 +39,23 @@ config = {
 
     # Training settings
     "train_fp16": True,
-    "save_every": 60000,
-    "valid_every": 10000,
-    "save_outputs": True,
+    "save_every": 30000,
+    "valid_every": 30000,
+    "save_outputs": False,
     "transfer_learning": False,
 
     # Raymarching settings
     "raymarch_type": "fixed",
     #"num_sample_multiplier": 2,  # Used when raymarch_type is 'voxel_size'
-    "n_intersections": 48,  # Used when raymarch_type is 'fixed'
+    "n_intersections": 64,  # Used when raymarch_type is 'fixed'
     #"spacing_fn": "linear",
     "single_jitter": False,
     # proposal sampling
     "density_field_resolution": [128, 256],
-    "num_proposal_samples": [256, 96],
     "density_field_rank": 1,
+    "num_proposal_samples": [256, 96],
+    "proposal_decoder_type": "nn",
     "proposal_feature_dim": 10,
-    "proposal_decoder_type": 'nn',
 
     # Model settings
     "sh": False,
@@ -72,10 +73,10 @@ config = {
 [
     {
         "input_coordinate_dim": 3,
-        "output_coordinate_dim": 32,
+        "output_coordinate_dim": 64,
         "grid_dimensions": 2,
-        "resolution": [64, 64, 64],#[256, 192, 168],
-        "rank": 2,
+        "resolution": [64, 64, 64],
+        "rank": 1,
     },
 ]
 """
