@@ -43,6 +43,7 @@ class LowrankModel(ABC, nn.Module):
                  num_samples_multiplier: Optional[int] = None,
                  proposal_feature_dim: Optional[int] = None,
                  proposal_decoder_type: Optional[str] = None,
+                 feature_len: Optional[List[int]] = None,
                  ):
         super().__init__()
         if isinstance(grid_config, str):
@@ -66,6 +67,7 @@ class LowrankModel(ABC, nn.Module):
         self.timer = CudaTimer(enabled=False)
         self.proposal_feature_dim = proposal_feature_dim
         self.proposal_decoder_type = proposal_decoder_type
+        self.feature_len = feature_len
 
         self.pt_min, self.pt_max = None, None
         if self.use_F:
