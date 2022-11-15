@@ -55,16 +55,31 @@ class LowrankAppearance(LowrankModel):
                          num_samples_multiplier=kwargs.get('num_samples_multiplier', None),
                          density_model=kwargs.get('density_model', None),
                          aabb=aabb,
-                         multiscale_res=multiscale_res)
+                         multiscale_res=multiscale_res,
+                         feature_len=kwargs.get('feature_len', None))
         self.extra_args = kwargs
         self.lookup_time = lookup_time
         self.trainable_rank = None
-
+        
+        appearance_code_size=kwargs.get('appearance_code_size', 32),
+        color_net=kwargs.get('color_net', 2),
+        if isinstance(appearance_code_size, tuple):
+            appearance_code_size = appearance_code_size[0]
+        if isinstance(color_net, tuple):
+            color_net = color_net[0]
+        print("\n\n\n")
+        print("==> appearance_code_size", appearance_code_size)
+        print("==> color_net", color_net)
+        print("\n\n\n")
         self.grids = nn.ModuleList()
-        appearance_code_size = 16
-        self.appearance_coef = nn.Parameter(nn.init.uniform_(torch.empty([appearance_code_size, len_time]), a=-1.0, b=1.0))
+        #appearance_code_size = 48 # same as in nerf-w
+        #appearance_code_size = 32 # seems to be a good sixe
+        #appearance_code_size = 16 # seems to be a bit too small
+        self.appearance_coef = nn.Parameter(nn.init.normal_(torch.empty([appearance_code_size, len_time])))
+        # Concatenate over feature len for each scale
+        self.feature_dim = sum(self.feature_len)
 
-        for res in self.multiscale_res:
+        for res, featlen in zip(self.multiscale_res, self.feature_len):
             for li, grid_config in enumerate(self.config):
                 # initialize feature grid
                 if "feature_dim" in grid_config:
@@ -81,7 +96,7 @@ class LowrankAppearance(LowrankModel):
                     if len(grid_config["resolution"]) == 4:
                         config["resolution"] += [grid_config["resolution"][-1]]
 
-                    gpdesc = init_grid_param(config, is_video=False, is_appearance=True, grid_level=li, use_F=self.use_F)
+                    gpdesc = init_grid_param(config, feature_len=featlen, is_video=False, is_appearance=True, grid_level=li, use_F=self.use_F)
                     self.set_resolution(gpdesc.reso, 0)
                     self.grids.append(gpdesc.grid_coefs)
                     #self.appearance_coef.append(gpdesc.appearance_coef)
@@ -91,7 +106,7 @@ class LowrankAppearance(LowrankModel):
                 feature_dim=self.feature_dim,
                 decoder_type=self.extra_args.get('sh_decoder_type', 'manual'))
         else:
-            self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1, appearance_code_size=appearance_code_size)
+            self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1, color_net=color_net, appearance_code_size=appearance_code_size)
 
         self.density_mask = None
         log.info(f"Initialized LowrankAppearance. "
@@ -117,14 +132,14 @@ class LowrankAppearance(LowrankModel):
             level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
 
         multi_scale_interp = 0
-        for scale_id, grid_space in enumerate(multiscale_space):
+        for scale_id, (grid_space, featlen) in enumerate(zip(multiscale_space, self.feature_len)):
 
             interp_space = 1  # [n, F_dim, rank]
             for ci, coo_comb in enumerate(coo_combs):
 
                 # interpolate in plane
                 interp_out_plane = grid_sample_wrapper(grid_space[ci], pts[..., coo_comb]).view(
-                            -1, level_info["output_coordinate_dim"], level_info["rank"])
+                            -1, featlen, level_info["rank"])
 
                 # compute product
                 interp_space *= interp_out_plane
@@ -133,7 +148,12 @@ class LowrankAppearance(LowrankModel):
             interp = interp_space.mean(dim=-1)  # [n, F_dim]
 
             # sum over scales
-            multi_scale_interp += interp
+            # multi_scale_interp += interp
+            # Concatenate over scale
+            if multi_scale_interp is 0:
+                multi_scale_interp = interp
+            else:
+                multi_scale_interp = torch.cat((multi_scale_interp, interp), dim=-1)
 
         return multi_scale_interp
 
@@ -239,7 +259,7 @@ class LowrankAppearance(LowrankModel):
             appearance_idx = timestamps[0]
         else:
             appearance_idx = timestamps[:, None].repeat(1, n_intrs)[mask]
-
+        
         # compute features and render
         rays_d_rep = rays_d.view(-1, 1, 3).expand(pts.shape)
         masked_rays_d_rep = rays_d_rep[mask]
@@ -254,10 +274,15 @@ class LowrankAppearance(LowrankModel):
 
         # concatenate appearance code
         appearance_code = self.appearance_coef
+        # project codes onto unit sphere or inide unit sphere. 
+        # (keeps thinggs compact such that interpolation should be easier)
+        # div = torch.norm(appearance_code, dim=-1) + 1e-6
+        # appearance_code = appearance_code / torch.max(div, torch.ones_like(div))[:, None]
         if appearance_idx.shape == torch.Size([]):
             appearance_code = appearance_code[:, appearance_idx.long()].unsqueeze(0).repeat(pts[mask].shape[0], 1)  # [n, 16]
         else:
             appearance_code = appearance_code[:, appearance_idx.long()].permute(1, 0)  # [n, 16]
+
         self.decoder.density_rgb = torch.cat([self.decoder.density_rgb, appearance_code], dim=1)
 
         rgb_masked = self.decoder.compute_color(features, rays_d=masked_rays_d_rep)

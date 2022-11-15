@@ -1,13 +1,13 @@
 # configuration file to be used with `main.py` for normal (or multiscene) training
 # the configuration must be specified in a dictionary called `config`.
 config = {
-    "expname": "ficus_multires_mlp_oldrender",
+    "expname": "lego_mlp",
     "logdir": "./logs",
 
     # Data settings
     "data_resolution": None,
     "data_downsample": 1,
-    "data_dirs": ["/data/DATASETS/SyntheticNerf/ficus"],
+    "data_dirs": ["/work3/frwa/lego"],
     #"data_dirs": ["/data/DATASETS/LLFF/fern"],
     # Data settings for 360
     "max_tr_frames": 100,

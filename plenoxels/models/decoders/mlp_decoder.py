@@ -38,7 +38,7 @@ class SigmaNNDecoder(BaseDecoder):
 
 
 class NNDecoder(BaseDecoder):
-    def __init__(self, feature_dim, sigma_net_width=64, sigma_net_layers=1, appearance_code_size=0):
+    def __init__(self, feature_dim, sigma_net_width=64, sigma_net_layers=1, color_net=2, appearance_code_size=0):
         super().__init__()
 
         self.feature_dim = feature_dim
@@ -72,7 +72,7 @@ class NNDecoder(BaseDecoder):
                 "activation": "ReLU",
                 "output_activation": "None",
                 "n_neurons": 64,
-                "n_hidden_layers": 2,
+                "n_hidden_layers": color_net,
             },
         )
         self.density_rgb = None  # output of the sigma-net

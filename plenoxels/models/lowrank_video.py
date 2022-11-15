@@ -54,13 +54,14 @@ class LowrankVideo(LowrankModel):
                          num_samples_multiplier=kwargs.get('num_samples_multiplier', None),
                          density_model=kwargs.get('density_model', None),
                          aabb=aabb,
-                         multiscale_res=multiscale_res)
+                         multiscale_res=multiscale_res,
+                         feature_len=kwargs.get('feature_len', None))
         self.extra_args = kwargs
         self.trainable_rank = None
         self.hooks = None
         self.grids = torch.nn.ModuleList()
         self.features = torch.nn.ParameterList()
-        for res in self.multiscale_res:
+        for res, featlen in zip(self.multiscale_res, self.feature_len):
             for li, grid_config in enumerate(self.config):
                 # initialize feature grid
                 if "feature_dim" in grid_config:
@@ -74,12 +75,14 @@ class LowrankVideo(LowrankModel):
                     # do not have multi resolution on time.
                     if len(grid_config["resolution"]) == 4:
                         config["resolution"] += [grid_config["resolution"][-1]]
-                    gpdesc = init_grid_param(config, grid_level=li, use_F=self.use_F, is_video=True, is_appearance=False)
+                    gpdesc = init_grid_param(config, feature_len=featlen, grid_level=li, use_F=self.use_F, is_video=True, is_appearance=False)
                     self.set_resolution(gpdesc.reso, 0)
                     self.grids.append(gpdesc.grid_coefs)
                     if not self.use_F:
                         # shape[1] is out-dim * rank
-                        self.feature_dim = gpdesc.grid_coefs[-1].shape[1] // config["rank"][0]
+                        # self.feature_dim = gpdesc.grid_coefs[-1].shape[1] // config["rank"][0]
+                        # Concatenate over feature len for each scale
+                        self.feature_dim = sum(self.feature_len)
         if self.sh:
             self.decoder = SHDecoder(
                 feature_dim=self.feature_dim,
@@ -109,12 +112,12 @@ class LowrankVideo(LowrankModel):
             level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
 
         multi_scale_interp = 0
-        for scale_id, grid_space in enumerate(multiscale_space):
+        for scale_id, (grid_space, featlen) in enumerate(zip(multiscale_space, self.feature_len)):
             interp_space = None  # [n, F_dim, rank]
             for ci, coo_comb in enumerate(coo_combs):
                 # interpolate in plane
                 interp_out_plane = grid_sample_wrapper(grid_space[ci], pts[..., coo_comb]).view(
-                            -1, level_info["output_coordinate_dim"], level_info["rank"])
+                            -1, featlen, level_info["rank"])
                 # compute product
                 interp_space = interp_out_plane if interp_space is None else interp_space * interp_out_plane
             # Combine space and time over rank
@@ -128,7 +131,12 @@ class LowrankVideo(LowrankModel):
                 multi_scale_interp += grid_sample_wrapper(
                     self.features[scale_id], interp).view(-1, self.feature_dim)
             else:
-                multi_scale_interp += interp
+                # multi_scale_interp += interp
+                # Concatenate over scale
+                if multi_scale_interp is 0:
+                    multi_scale_interp = interp
+                else:
+                    multi_scale_interp = torch.cat((multi_scale_interp, interp), dim=-1)
         return multi_scale_interp  # noqa
 
     def forward(self, rays_o, rays_d, timestamps, bg_color, channels: Sequence[str] = ("rgb", "depth"), near_far=None):

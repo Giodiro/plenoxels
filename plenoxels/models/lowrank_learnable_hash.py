@@ -76,7 +76,8 @@ class LowrankLearnableHash(LowrankModel):
                          spacing_fn=kwargs.get('spacing_fn', None),
                          num_samples_multiplier=kwargs.get('num_samples_multiplier', None),
                          aabb=aabb,
-                         multiscale_res=multiscale_res)
+                         multiscale_res=multiscale_res,
+                         feature_len=kwargs.get('feature_len', None))
         self.extra_args = kwargs
         self.density_multiplier = self.extra_args.get("density_multiplier")
         self.transfer_learning = self.extra_args["transfer_learning"]
@@ -86,7 +87,7 @@ class LowrankLearnableHash(LowrankModel):
         self.features = nn.ParameterList()
         for si in range(num_scenes):
             multi_scale_grids = nn.ModuleList()
-            for res in self.multiscale_res:
+            for res, featlen in zip(self.multiscale_res, self.feature_len):
                 grids = nn.ModuleList()
                 for li, grid_config in enumerate(self.config):
                     # initialize feature grid
@@ -99,7 +100,7 @@ class LowrankLearnableHash(LowrankModel):
                         config = grid_config.copy()
                         config["resolution"] = [r * res for r in config["resolution"]]
 
-                        gpdesc = init_grid_param(config, is_video=False, grid_level=li, use_F=self.use_F, is_appearance=False)
+                        gpdesc = init_grid_param(config, feature_len=featlen, is_video=False, grid_level=li, use_F=self.use_F, is_appearance=False)
                         if li == 0:
                             self.set_resolution(gpdesc.reso, grid_id=si)
                         grids.append(gpdesc.grid_coefs)
@@ -107,7 +108,9 @@ class LowrankLearnableHash(LowrankModel):
                             log.info(f"Initialized grid with shape {gc.shape}")
                         if not self.use_F:
                             # shape[1] is out-dim * rank
-                            self.feature_dim = gpdesc.grid_coefs[-1].shape[1] // config["rank"][0]
+                            # self.feature_dim = gpdesc.grid_coefs[-1].shape[1] // config["rank"][0]
+                            # Concatenate over feature len for each scale
+                            self.feature_dim = sum(self.feature_len)
                 multi_scale_grids.append(grids)
             self.scene_grids.append(multi_scale_grids)
         if self.sh:
@@ -131,7 +134,7 @@ class LowrankLearnableHash(LowrankModel):
         grids_info = self.config
 
         multi_scale_interp = 0
-        for scale_id, res in enumerate(self.multiscale_res):  # noqa
+        for scale_id, (res, featlen) in enumerate(zip(self.multiscale_res, self.feature_len)):  # noqa
             grids: nn.ParameterList = mulitres_grids[scale_id]
             for level_info, grid in zip(grids_info, grids):
                 if "feature_dim" in level_info:
@@ -146,7 +149,7 @@ class LowrankLearnableHash(LowrankModel):
                 for ci, coo_comb in enumerate(coo_combs):
                     # interpolate in plane
                     interp_out_plane = grid_sample_wrapper(grid[ci], pts[..., coo_comb]).view(
-                                -1, level_info["output_coordinate_dim"], level_info["rank"])
+                                -1, featlen, level_info["rank"])
                     # compute product
                     interp_out = interp_out_plane if interp_out is None else interp_out * interp_out_plane
             # average over rank
@@ -160,7 +163,12 @@ class LowrankLearnableHash(LowrankModel):
                     self.features[scale_id].to(dtype=interp.dtype), interp
                 ).view(-1, self.feature_dim)
             else:
-                multi_scale_interp += interp
+                # Concatenate over scale
+                if multi_scale_interp is 0:
+                    multi_scale_interp = interp
+                else:
+                    multi_scale_interp = torch.cat((multi_scale_interp, interp), dim=-1)
+                # multi_scale_interp += interp
         return multi_scale_interp  # noqa
 
     @torch.no_grad()
@@ -241,26 +249,34 @@ class LowrankLearnableHash(LowrankModel):
 
     @torch.no_grad()
     def upsample(self, new_reso, grid_id: int):
+
         grid_info = self.config[0]
         coo_combs = list(itertools.combinations(
             range(grid_info["input_coordinate_dim"]),
             grid_info.get("grid_dimensions", grid_info["input_coordinate_dim"])))
-        for ci, coo_comb in enumerate(coo_combs):
-            new_size = [new_reso[cc] for cc in coo_comb]
-            if len(coo_comb) == 3:
-                mode = 'trilinear'
-            elif len(coo_comb) == 2:
-                mode = 'bilinear'
-            elif len(coo_comb) == 1:
-                mode = 'linear'
-            else:
-                raise RuntimeError()
-            grid_data = self.scene_grids[grid_id][0][ci].data
-            self.scene_grids[grid_id][0][ci] = torch.nn.Parameter(
-                F.interpolate(grid_data, size=new_size[::-1], mode=mode, align_corners=True))
-        self.set_resolution(
-            torch.tensor(new_reso, dtype=torch.long, device=grid_data.device), grid_id)
-        log.info(f"Upsampled scene {grid_id} to resolution={new_reso}")
+
+        for scale in range(len(self.scene_grids[grid_id])):
+            scale_multiplier = 2**scale
+
+            for ci, coo_comb in enumerate(coo_combs):
+
+                new_reso_scale = [reso*scale_multiplier for reso in new_reso]
+                new_size = [new_reso_scale[cc] for cc in coo_comb]
+
+                if len(coo_comb) == 3:
+                    mode = 'trilinear'
+                elif len(coo_comb) == 2:
+                    mode = 'bilinear'
+                elif len(coo_comb) == 1:
+                    mode = 'linear'
+                else:
+                    raise RuntimeError()
+
+                grid_data = self.scene_grids[grid_id][scale][0][ci].data
+                self.scene_grids[grid_id][scale][0][ci] = torch.nn.Parameter(F.interpolate(grid_data, size=new_size[::-1], mode=mode, align_corners=True))
+            #self.set_resolution(
+            #    torch.tensor(new_reso, dtype=torch.long, device=grid_data.device), grid_id)
+            log.info(f"Upsampled scene {grid_id} to resolution={new_size}")
 
     def get_points_on_grid(self, aabb, grid_size, max_voxels: Optional[int] = None):
         """

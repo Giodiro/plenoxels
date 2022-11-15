@@ -148,14 +148,12 @@ class Trainer():
             rgb_preds = fwd_out["rgb"]
             # Reconstruction loss
             recon_loss = self.criterion(rgb_preds, imgs)
-            self.writer.add_scalar(f"train/loss/mse", recon_loss, self.global_step)
 
             # Regularization
             loss = recon_loss
             for r in self.regularizers:
                 reg_loss = r.regularize(self.model, grid_id=dset_id, model_out=fwd_out)
                 loss = loss + reg_loss
-                self.writer.add_scalar(f"train/loss/{r.reg_type}", reg_loss, self.global_step)
             self.timer.check("step_loss")
         self.gscaler.scale(loss).backward()
 
@@ -185,10 +183,10 @@ class Trainer():
                     opt_reset_required = True
         try:
             upsample_step_idx = self.upsample_steps.index(self.global_step)  # if not an upsample step will raise
-            new_num_voxels = self.upsample_resolution_list[upsample_step_idx]
-            logging.info(f"Upsampling all datasets at step {self.global_step} to {new_num_voxels} voxels.")
+            new_reso = self.upsample_resolution_list[upsample_step_idx]
+            logging.info(f"Upsampling all datasets at step {self.global_step} to {new_reso} reso.")
             for u_dset_id in range(self.num_dsets):
-                new_reso = N_to_reso(new_num_voxels, self.model.aabb(u_dset_id))
+                #new_reso = N_to_reso(np.prod(new_num_voxels), self.model.aabb(u_dset_id))
                 self.model.upsample(new_reso, u_dset_id)
             opt_reset_required = True
         except ValueError:
@@ -326,7 +324,7 @@ class Trainer():
         err = torch.abs(preds - gt)
         err = err.mean(-1, keepdim=True)  # mean over channels
         # normalize between 0, 1 where 1 corresponds to the 90th percentile
-        err = err.clamp_max(torch.quantile(err, 0.9))
+        # err = err.clamp_max(torch.quantile(err, 0.9))
         err = self._normalize_01(err)
         return err.repeat(1, 1, 3)
 
@@ -390,7 +388,7 @@ class Trainer():
             summary.update(self.calc_metrics(preds_rgb, gt))
             out_img = torch.cat((out_img, gt), dim=0)
             out_img = torch.cat((out_img, self._normalize_err(preds_rgb, gt)), dim=0)
-            
+
         out_img = (out_img * 255.0).byte().numpy()
         if out_depth is not None:
             out_depth = self._normalize_01(out_depth)
@@ -514,8 +512,6 @@ class Trainer():
         elif self.scheduler_type is not None and self.scheduler_type != "None":
             raise ValueError(self.scheduler_type)
         return lr_sched
-
-        # vy5bzxqg
 
     def init_optim(self, **kwargs) -> torch.optim.Optimizer:
         if self.optim_type == 'adam':
@@ -712,28 +708,22 @@ def visualize_planes(model, save_dir: str, name: str):
 
             grid = grid.data.view(dim, rank, h, w)
             for r in range(rank):
-                #density = model.density_act(
-                #    grid[-1, r, :, :].cpu()
-                #).numpy()
-                # density = model.compute_density(features = grid[:, r, :, :].view(dim, h*w).permute(1,0))
-                # density = grid[-1, r, :, :].cpu().numpy()
+                features = grid[:, r, :, :].view(dim, h*w).transpose(0, 1)
 
-
-                rays_d = torch.ones((h*w, 3), device=grid.device)
-                rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
-                features = grid[:, r, :, :].view(dim, h*w).permute(1,0)
-
-                density = (
-                        torch.sigmoid(model.decoder.compute_density(features, rays_d))
-                ).view(h, w).cpu().numpy().astype(np.float32)
+                density = model.density_act(
+                    model.decoder.compute_density(
+                        features=features, rays_d=None)
+                ).view(h, w).cpu().float().nan_to_num(posinf=99.0, neginf=-99.0).numpy()
 
                 im = ax[plane_idx, r].imshow(density, norm=LogNorm(vmin=1e-6, vmax=density.max()))
                 ax[plane_idx, r].axis("off")
                 plt.colorbar(im, ax=ax[plane_idx, r], aspect=20, fraction=0.04)
 
+                rays_d = torch.ones((h*w, 3), device=grid.device)
+                rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
                 color = (
                         torch.sigmoid(model.decoder.compute_color(features, rays_d))
-                ).view(h, w, 3).cpu().numpy()
+                ).view(h, w, 3).cpu().float().numpy()
                 ax[plane_idx, r+rank].imshow(color)
                 ax[plane_idx, r+rank].axis("off")
 
