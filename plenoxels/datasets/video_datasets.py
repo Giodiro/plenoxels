@@ -159,6 +159,7 @@ class Video360Dataset(BaseDataset):
                  f"{imgs.shape[-1]} channels. "
                  f"{len(torch.unique(timestamps))} timestamps up to time={self.len_time}. "
                  f"ISG={self.isg} - IST={self.ist} - weights_subsampled={self.weights_subsampled} - "
+                 f"Sampling without replacement={self.use_permutation} - "
                  f"{intrinsics}")
 
     def enable_isg(self):
