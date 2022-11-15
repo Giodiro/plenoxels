@@ -34,13 +34,13 @@ class TriplaneDensityField(nn.Module):
             assert self.feature_dim == 1, 'SH decoder for density field requires 1 output coordinate'
         config = {
             "input_coordinate_dim": num_input_coords,
-            "output_coordinate_dim": self.feature_dim,
             "grid_dimensions": 2,
             "resolution": resolution,
             "rank": rank
         }
         gpdesc = init_grid_param(
             config,
+            feature_len=self.feature_dim,
             is_video=self.hexplane,
             grid_level=0,
             use_F=False,

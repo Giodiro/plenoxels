@@ -197,8 +197,8 @@ def init_features_param(grid_config, sh: bool) -> torch.nn.Parameter:
     return features
 
 
-def init_grid_param(grid_config, is_video: bool, is_appearance: bool, grid_level: int, use_F: bool = True) -> GridParamDescription:
-    out_dim: int = grid_config["output_coordinate_dim"]
+def init_grid_param(grid_config, feature_len: int, is_video: bool, is_appearance: bool, grid_level: int, use_F: bool = True) -> GridParamDescription:
+    out_dim: int = feature_len
     grid_nd: int = grid_config["grid_dimensions"]
 
     reso: List[int] = grid_config["resolution"]
@@ -238,7 +238,7 @@ def init_grid_param(grid_config, is_video: bool, is_appearance: bool, grid_level
                         [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb[::-1]]
                     ), a=-1.0, b=1.0)))
         else:
-            if is_appearance and 3 in coo_comb:
+            if (is_appearance or is_video) and 3 in coo_comb:  # Initialize time planes to 1
                 grid_coefs.append(
                     nn.Parameter(nn.init.ones_(torch.empty(
                         [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb[::-1]]
