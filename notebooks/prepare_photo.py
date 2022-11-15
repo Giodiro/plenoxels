@@ -42,7 +42,7 @@ test_images = {"sacre" : 21,
             "trevi" : 19,
             "brandenburg": 10}
 
-datadir = "/work3/frwa/data/phototourism/brandenburg"
+datadir = "/home/warburg/data/phototourism/sacre"
 name = os.path.basename(datadir)
 split = "train"
 

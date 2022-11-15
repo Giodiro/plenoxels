@@ -183,10 +183,10 @@ class Trainer():
                     opt_reset_required = True
         try:
             upsample_step_idx = self.upsample_steps.index(self.global_step)  # if not an upsample step will raise
-            new_num_voxels = self.upsample_resolution_list[upsample_step_idx]
-            logging.info(f"Upsampling all datasets at step {self.global_step} to {new_num_voxels} voxels.")
+            new_reso = self.upsample_resolution_list[upsample_step_idx]
+            logging.info(f"Upsampling all datasets at step {self.global_step} to {new_reso} reso.")
             for u_dset_id in range(self.num_dsets):
-                new_reso = N_to_reso(new_num_voxels, self.model.aabb(u_dset_id))
+                #new_reso = N_to_reso(np.prod(new_num_voxels), self.model.aabb(u_dset_id))
                 self.model.upsample(new_reso, u_dset_id)
             opt_reset_required = True
         except ValueError:

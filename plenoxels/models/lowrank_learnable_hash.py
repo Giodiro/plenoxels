@@ -241,26 +241,34 @@ class LowrankLearnableHash(LowrankModel):
 
     @torch.no_grad()
     def upsample(self, new_reso, grid_id: int):
+
         grid_info = self.config[0]
         coo_combs = list(itertools.combinations(
             range(grid_info["input_coordinate_dim"]),
             grid_info.get("grid_dimensions", grid_info["input_coordinate_dim"])))
-        for ci, coo_comb in enumerate(coo_combs):
-            new_size = [new_reso[cc] for cc in coo_comb]
-            if len(coo_comb) == 3:
-                mode = 'trilinear'
-            elif len(coo_comb) == 2:
-                mode = 'bilinear'
-            elif len(coo_comb) == 1:
-                mode = 'linear'
-            else:
-                raise RuntimeError()
-            grid_data = self.scene_grids[grid_id][0][ci].data
-            self.scene_grids[grid_id][0][ci] = torch.nn.Parameter(
-                F.interpolate(grid_data, size=new_size[::-1], mode=mode, align_corners=True))
-        self.set_resolution(
-            torch.tensor(new_reso, dtype=torch.long, device=grid_data.device), grid_id)
-        log.info(f"Upsampled scene {grid_id} to resolution={new_reso}")
+
+        for scale in range(len(self.scene_grids[grid_id])):
+            scale_multiplier = 2**scale
+
+            for ci, coo_comb in enumerate(coo_combs):
+
+                new_reso_scale = [reso*scale_multiplier for reso in new_reso]
+                new_size = [new_reso_scale[cc] for cc in coo_comb]
+
+                if len(coo_comb) == 3:
+                    mode = 'trilinear'
+                elif len(coo_comb) == 2:
+                    mode = 'bilinear'
+                elif len(coo_comb) == 1:
+                    mode = 'linear'
+                else:
+                    raise RuntimeError()
+
+                grid_data = self.scene_grids[grid_id][scale][0][ci].data
+                self.scene_grids[grid_id][scale][0][ci] = torch.nn.Parameter(F.interpolate(grid_data, size=new_size[::-1], mode=mode, align_corners=True))
+            #self.set_resolution(
+            #    torch.tensor(new_reso, dtype=torch.long, device=grid_data.device), grid_id)
+            log.info(f"Upsampled scene {grid_id} to resolution={new_size}")
 
     def get_points_on_grid(self, aabb, grid_size, max_voxels: Optional[int] = None):
         """
