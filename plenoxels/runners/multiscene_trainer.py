@@ -513,8 +513,6 @@ class Trainer():
             raise ValueError(self.scheduler_type)
         return lr_sched
 
-        # vy5bzxqg
-
     def init_optim(self, **kwargs) -> torch.optim.Optimizer:
         if self.optim_type == 'adam':
             optim = torch.optim.Adam(params=self.model.get_params(kwargs['lr']))
