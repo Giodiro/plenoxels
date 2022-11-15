@@ -113,23 +113,20 @@ class LowrankModel(ABC, nn.Module):
         coo_combs = list(itertools.combinations(range(in_dim), grid_nd))
         grid_coefs = nn.ParameterList()
         for ci, coo_comb in enumerate(coo_combs):
-            if use_F:
+            if use_F:  # TODO: not updated
                 grid_coefs.append(
                     nn.Parameter(nn.init.uniform_(torch.empty(
                         [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb[::-1]]
                     ), a=-1.0, b=1.0)))
             else:
                 grid_coefs.append(
-                    nn.Parameter(nn.init.uniform_(torch.empty(
+                    nn.Parameter(torch.empty(
                         [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb[::-1]]
-                    ), a=0.1, b=0.5)))
-        if is_video:
-            time_reso = int(grid_config["time_reso"])
-            time_coef = nn.Parameter(nn.init.uniform_(
-                torch.empty([out_dim * rank[0], time_reso]),
-                a=-1.0, b=1.0))
-            return GridParamDescription(
-                grid_coefs=grid_coefs, reso=pt_reso, time_reso=time_reso, time_coef=time_coef)
+                    )))
+                if is_video and 3 in coo_comb:  # is a time-plane
+                    nn.init.ones_(grid_coefs[-1])
+                else:
+                    nn.init.uniform_(grid_coefs[-1], a=0.1, b=0.5)
         return GridParamDescription(
             grid_coefs=grid_coefs, reso=pt_reso)
 

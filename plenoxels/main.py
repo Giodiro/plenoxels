@@ -30,7 +30,8 @@ def setup_logging(log_level=logging.INFO):
     handlers = [logging.StreamHandler(sys.stdout)]
     logging.basicConfig(level=log_level,
                         format='%(asctime)s|%(levelname)8s| %(message)s',
-                        handlers=handlers)
+                        handlers=handlers,
+                        force=True)
 
 
 def load_data(is_video: bool, data_downsample, data_dirs, batch_size, **kwargs):
@@ -81,17 +82,35 @@ def main():
     overrides_dict = {ovr.split("=")[0]: ovr.split("=")[1] for ovr in overrides}
     config.update(overrides_dict)
     is_video = "keyframes" in config
+    validate_only = args.validate_only
 
     pprint.pprint(config)
-    data = load_data(is_video, **config)
-    config.update(data)
-    trainer: multiscene_trainer.Trainer = init_trainer(is_video, **config)
-    if trainer.transfer_learning:
-        # We have reloaded the model learned from args.log_dir
-        assert args.log_dir is not None and os.path.isdir(args.log_dir)
-    if args.log_dir is not None:
-        checkpoint_path = os.path.join(args.log_dir, "model.pth")
-        trainer.load_model(torch.load(checkpoint_path))
+    if not validate_only:
+        log_dir = os.path.join(config['logdir'], config['expname'])
+        os.makedirs(log_dir, exist_ok=True)
+        with open(os.path.join(log_dir, 'config.py'), 'wt') as out:
+            out.write('config = ' + pprint.pformat(config))
+
+        with open(os.path.join(log_dir, 'config.csv'), 'w') as f:
+            for key in config.keys():
+                f.write("%s\t%s\n"%(key,config[key]))
+
+    if is_video:
+        state = None
+        if args.log_dir is not None:
+            checkpoint_path = os.path.join(args.log_dir, "model.pth")
+            state = torch.load(checkpoint_path)
+        trainer, config = video_trainer.load_video_model(config, state, validate_only)
+    else:
+        data = load_data(is_video, **config)
+        config.update(data)
+        trainer: multiscene_trainer.Trainer = init_trainer(is_video, **config)
+        if trainer.transfer_learning:
+            # We have reloaded the model learned from args.log_dir
+            assert args.log_dir is not None and os.path.isdir(args.log_dir)
+        if args.log_dir is not None:
+            checkpoint_path = os.path.join(args.log_dir, "model.pth")
+            trainer.load_model(torch.load(checkpoint_path))
 
     if args.validate_only:
         assert args.log_dir is not None and os.path.isdir(args.log_dir)

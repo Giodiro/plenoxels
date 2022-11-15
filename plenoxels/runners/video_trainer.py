@@ -17,6 +17,10 @@ from plenoxels.models.lowrank_video import LowrankVideo
 from plenoxels.my_tqdm import tqdm
 from plenoxels.ops.image import metrics
 from plenoxels.runners.multiscene_trainer import Trainer
+from plenoxels.runners.regularization import (
+    VideoPlaneTV, TimeSmoothness, L1PlaneDensityVideo,
+    L1AppearancePlanes
+)
 from plenoxels.runners.utils import render_image
 
 
@@ -132,12 +136,12 @@ class VideoTrainer(Trainer):
             self.train_datasets[0].update_num_rays(num_rays)
             alive_ray_mask = acc.squeeze(-1) > 0
             # compute loss and add regularizers
-            loss = self.criterion(rgb[alive_ray_mask], imgs[alive_ray_mask])
-            plane_tv = None
-            if self.plane_tv_weight > 0:
-                plane_tv = self.model.compute_plane_tv() * self.plane_tv_weight
-                loss = loss + plane_tv
-
+            recon_loss = self.criterion(rgb[alive_ray_mask], imgs[alive_ray_mask])
+            # Regularization
+            loss = recon_loss
+            for r in self.regularizers:
+                reg_loss = r.regularize(self.model, grid_id=0)
+                loss = loss + reg_loss
         if do_update:
             self.optimizer.zero_grad(set_to_none=True)
         self.gscaler.scale(loss).backward()
@@ -151,8 +155,8 @@ class VideoTrainer(Trainer):
                 self.loss_info["alive_ray_mask"].update(float(alive_ray_mask.long().sum().item()))
                 self.loss_info["n_rendering_samples"].update(float(n_rendering_samples))
                 self.loss_info["n_rays"].update(float(len(imgs)))
-                if plane_tv is not None:
-                    self.loss_info["plane_tv"].update(plane_tv.item())
+                for r in self.regularizers:
+                    r.report(self.loss_info)
 
         if do_update:
             self.gscaler.step(self.optimizer)
@@ -199,6 +203,17 @@ class VideoTrainer(Trainer):
         logging.info(f"Initialized LowrankVideo model with "
                      f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters.")
         return model
+
+    def init_regularizers(self, **kwargs):
+        regularizers = [
+            VideoPlaneTV(kwargs.get('plane_tv_weight', 0.0)),
+            TimeSmoothness(kwargs.get('time_smoothness_weight', 0.0)),
+            L1PlaneDensityVideo(kwargs.get('l1_plane_density_reg', 0.0)),
+            L1AppearancePlanes(kwargs.get('l1_appearance_planes_reg', 0.0)),
+        ]
+        # Keep only the regularizers with a positive weight
+        regularizers = [r for r in regularizers if r.weight > 0]
+        return regularizers
 
     def validate(self):
         val_metrics = []

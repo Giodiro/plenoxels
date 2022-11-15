@@ -12,34 +12,19 @@ import torch.utils.data
 from torch.utils.tensorboard import SummaryWriter
 
 from nerfacc import ContractionType, OccupancyGrid
-from nerfacc.grid import _meshgrid3d
 from plenoxels.ema import EMA
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_exr, write_png
+from .regularization import (
+    PlaneTV, DensityPlaneTV, VolumeTV, L1PlaneColor, L1PlaneDensity,
+    L1Density
+)
 from .utils import render_image
 from ..datasets import SyntheticNerfDataset, LLFFDataset
-from ..datasets.base_dataset import MultiSceneDataset
 from ..my_tqdm import tqdm
 from ..utils import parse_optint
 from .utils import get_cosine_schedule_with_warmup, get_step_schedule_with_warmup
-
-
-class UpsamplingOccupancyGrid(OccupancyGrid):
-    def upsample(self, new_reso: torch.Tensor):
-        old_reso = self.resolution.cpu().tolist()
-        old_occs = self.occs.view(old_reso)
-        new_occs = F.interpolate(
-            old_occs[None, None, ...], size=new_reso[::-1], mode='trilinear', align_corners=True)
-
-        self.num_cells = int(new_reso.prod().item())
-        self._binary = torch.zeros(new_reso.tolist(), dtype=torch.bool)
-        self.resolution = new_reso
-        self.occs = new_occs
-        self.grid_coords = _meshgrid3d(new_reso).reshape(
-            self.num_cells, self.NUM_DIM
-        )
-        self.grid_indices = torch.arange(self.num_cells)
 
 
 class Trainer():
@@ -47,10 +32,6 @@ class Trainer():
                  tr_loader: torch.utils.data.DataLoader,
                  ts_dsets: List[torch.utils.data.TensorDataset],
                  tr_dsets: List[torch.utils.data.TensorDataset],
-                 plane_tv_weight: float,
-                 l1density_weight: float,
-                 volume_tv_weight: float,
-                 volume_tv_npts: int,
                  num_steps: int,
                  scheduler_type: Optional[str],
                  optim_type: str,
@@ -72,14 +53,6 @@ class Trainer():
 
         self.extra_args = kwargs
         self.num_dsets = len(self.train_datasets)
-
-        self.plane_tv_weight = plane_tv_weight
-        self.plane_tv_what = kwargs.get('plane_tv_what', 'features')
-        self.l1density_weight = l1density_weight
-        self.volume_tv_weight = volume_tv_weight
-        self.volume_tv_npts = volume_tv_npts
-        self.volume_tv_what = kwargs.get('volume_tv_what', 'Gcoords')
-        self.volume_tv_patch_size = kwargs.get('volume_tv_patch_size', 3)
 
         self.num_steps = num_steps
 
@@ -118,7 +91,7 @@ class Trainer():
         self.global_step = None
         self.loss_info = None
         self.train_iterators = None
-        self.contraction_type = ContractionType.AABB
+        self.contraction_type = ContractionType.UN_BOUNDED_SPHERE
         self.is_unbounded = self.contraction_type != ContractionType.AABB
 
         # self.criterion = torch.nn.MSELoss(reduction='mean')
@@ -129,6 +102,7 @@ class Trainer():
         self.optimizer = self.init_optim(**self.extra_args)
         self.scheduler = self.init_lr_scheduler(**self.extra_args)
         self.gscaler = torch.cuda.amp.GradScaler(enabled=self.train_fp16)
+        self.regularizers = self.init_regularizers(**self.extra_args)
 
         self.device = device
         self.model.to(device=self.device)
@@ -206,40 +180,28 @@ class Trainer():
             self.train_datasets[dset_id].update_num_rays(num_rays)
             alive_ray_mask = acc.squeeze(-1) > 0
             # compute loss and add regularizers
-            loss = self.criterion(rgb[alive_ray_mask], imgs[alive_ray_mask])
-            plane_tv: Optional[torch.Tensor] = None
-            if self.plane_tv_weight > 0:
-                plane_tv = self.model.compute_plane_tv(
-                    grid_id=dset_id,
-                    what=self.plane_tv_what) * self.plane_tv_weight
-                loss = loss + plane_tv
-            volume_tv: Optional[torch.Tensor] = None
-            if self.volume_tv_weight > 0:
-                volume_tv = self.model.compute_3d_tv(
-                    grid_id=dset_id,
-                    what=self.volume_tv_what,
-                    batch_size=self.volume_tv_npts,
-                    patch_size=self.volume_tv_patch_size) * self.volume_tv_weight
-                loss = loss + volume_tv
+            recon_loss = self.criterion(rgb[alive_ray_mask], imgs[alive_ray_mask])
+            # Regularization
+            loss = recon_loss
+            for r in self.regularizers:
+                reg_loss = r.regularize(self.model, grid_id=dset_id)
+                loss = loss + reg_loss
 
         if do_update:
             self.optimizer.zero_grad(set_to_none=True)
         self.gscaler.scale(loss).backward()
 
         # Report on losses
-        if self.global_step % 30 == 0:
+        if self.global_step % 10 == 0:
             with torch.no_grad():
                 mse = F.mse_loss(rgb[alive_ray_mask], imgs[alive_ray_mask]).item()
                 self.loss_info[dset_id]["psnr"].update(-10 * math.log10(mse))
-                if self.num_dsets < 5:
-                    self.loss_info[dset_id]["mse"].update(mse)
-                    self.loss_info[dset_id]["alive_ray_mask"].update(float(alive_ray_mask.long().sum().item()))
-                    self.loss_info[dset_id]["n_rendering_samples"].update(float(n_rendering_samples))
-                    self.loss_info[dset_id]["n_rays"].update(float(len(imgs)))
-                    if plane_tv is not None:
-                        self.loss_info[dset_id]["plane_tv"].update(plane_tv.item())
-                    if volume_tv is not None:
-                        self.loss_info[dset_id]["volume_tv"].update(volume_tv.item())
+                self.loss_info[dset_id]["mse"].update(mse)
+                self.loss_info[dset_id]["alive_ray_mask"].update(float(alive_ray_mask.long().sum().item()))
+                self.loss_info[dset_id]["n_rendering_samples"].update(float(n_rendering_samples))
+                self.loss_info[dset_id]["n_rays"].update(float(len(imgs)))
+                for r in self.regularizers:
+                    r.report(self.loss_info[dset_id])
 
         # Update weights
         if do_update:
@@ -280,11 +242,6 @@ class Trainer():
                 f"mse/D{dset_id}", self.loss_info[dset_id]["mse"].value, self.global_step)
             progress_bar.set_postfix_str(
                 losses_to_postfix(self.loss_info, lr=self.lr), refresh=False)
-        if self.global_step == 10_000:
-            self.volume_tv_weight /= 2
-            logging.info(f"Set vol-TV-weight to {self.volume_tv_weight}")
-
-
         progress_bar.update(1)
 
         if self.valid_every > -1 and self.global_step % self.valid_every == 0:
@@ -310,6 +267,8 @@ class Trainer():
                 self.global_step += 1
                 if step_successful and self.scheduler is not None:
                     self.scheduler.step()
+                for r in self.regularizers:
+                    r.step(self.global_step)
                 self.post_step(data=data, progress_bar=pb)
         finally:
             pb.close()
@@ -517,6 +476,26 @@ class Trainer():
             ).cuda()
             occupancy_grids.append(occupancy_grid)
         return occupancy_grids
+
+    def init_regularizers(self, **kwargs):
+        regularizers = [
+            PlaneTV(kwargs.get('plane_tv_weight', 0.0), features='all'),
+            PlaneTV(kwargs.get('plane_tv_weight_sigma', 0.0), features='sigma'),
+            PlaneTV(kwargs.get('plane_tv_weight_sh', 0.0), features='sh'),
+            DensityPlaneTV(kwargs.get('density_plane_tv_weight', 0.0)),
+            VolumeTV(
+                kwargs.get('volume_tv_weight', 0.0),
+                what=kwargs.get('volume_tv_what'),
+                patch_size=kwargs.get('volume_tv_patch_size', 3),
+                batch_size=kwargs.get('volume_tv_npts', 100),
+            ),
+            L1PlaneColor(kwargs.get('l1_plane_color_weight', 0.0)),
+            L1PlaneDensity(kwargs.get('l1_plane_density_weight', 0.0)),
+            L1Density(kwargs.get('l1density_weight', 0.0), max_voxels=100_000),
+        ]
+        # Keep only the regularizers with a positive weight
+        regularizers = [r for r in regularizers if r.weight > 0]
+        return regularizers
 
     @property
     def lr(self):
