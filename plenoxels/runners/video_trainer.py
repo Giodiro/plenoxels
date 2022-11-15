@@ -82,8 +82,8 @@ class VideoTrainer(Trainer):
                 data['rays_o'],
                 data['rays_d'],
                 timestamps=data['timestamps'],
-                near_plane=None,
-                far_plane=None,
+                near_plane=data['near_far'][:, 0],
+                far_plane=data['near_far'][:, 1],
                 render_bkgd=data['color_bkgd'],
                 cone_angle=self.cone_angle,
                 render_step_size=self.model.step_size(self.render_n_samples),
@@ -96,7 +96,7 @@ class VideoTrainer(Trainer):
         }
 
     def step(self, data, do_update=True):
-        imgs = data["pixels"].to(self.device)
+        imgs = data["imgs"].to(self.device)
         tstamps = data["timestamps"].to(self.device)
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
@@ -117,8 +117,8 @@ class VideoTrainer(Trainer):
                 data["rays_d"],
                 timestamps=tstamps,
                 # rendering options
-                near_plane=None,
-                far_plane=None,
+                near_plane=data['near_far'][:, 0],
+                far_plane=data['near_far'][:, 1],
                 render_bkgd=data["color_bkgd"],
                 cone_angle=self.cone_angle,
                 render_step_size=self.model.step_size(self.render_n_samples),
@@ -192,13 +192,24 @@ class VideoTrainer(Trainer):
         self.loss_info = defaultdict(lambda: EMA(ema_weight))
 
     def init_model(self, **kwargs) -> torch.nn.Module:
-        dset = self.train_datasets[0]
+        dset = self.test_datasets[0]
+        try:
+            global_translation = dset.global_translation
+        except AttributeError:
+            global_translation = None
+        try:
+            global_scale = dset.global_scale
+        except AttributeError:
+            global_scale = None
         model = LowrankVideo(
             aabb=dset.scene_bbox,
             len_time=dset.len_time,
             is_ndc=dset.is_ndc,
+            is_contracted=dset.is_contracted,
             render_n_samples=self.render_n_samples,
             grid_config=kwargs.pop("grid_config"),
+            global_scale=global_scale,
+            global_translation=global_translation,
             **kwargs)
         logging.info(f"Initialized LowrankVideo model with "
                      f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters.")
@@ -228,7 +239,7 @@ class VideoTrainer(Trainer):
             for img_idx, data in enumerate(dataset):
                 preds = self.eval_step(data, dset_id=0)
                 out_metrics, out_img = self.evaluate_metrics(
-                    data["pixels"], preds, dset=dataset, img_idx=img_idx, name=None)
+                    data["imgs"], preds, dset=dataset, img_idx=img_idx, name=None)
                 pred_frames.append(out_img)
                 per_scene_metrics["psnr"] += out_metrics["psnr"]
                 per_scene_metrics["ssim"] += out_metrics["ssim"]

@@ -106,10 +106,11 @@ class Trainer():
 
         self.device = device
         self.model.to(device=self.device)
-        for dset in self.train_datasets:
-            dset.to(device=self.device)
-        for dset in self.test_datasets:
-            dset.to(device=self.device)
+        if False:
+            for dset in self.train_datasets:
+                dset.to(device=self.device)
+            for dset in self.test_datasets:
+                dset.to(device=self.device)
 
     def eval_step(self, data, dset_id) -> MutableMapping[str, torch.Tensor]:
         """
@@ -471,7 +472,7 @@ class Trainer():
         for scene in range(self.num_dsets):
             occupancy_grid = OccupancyGrid(
                 roi_aabb=self.model.aabb(scene).view(-1),
-                resolution=self.model.resolution(scene),
+                resolution=self.model.resolution(scene)[:3],
                 contraction_type=self.contraction_type,
             ).cuda()
             occupancy_grids.append(occupancy_grid)

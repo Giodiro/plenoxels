@@ -62,6 +62,9 @@ class BaseDataset(Dataset, ABC):
             del self.perm
             self.perm = None
 
+    def update_num_rays(self, new_batch_size):
+        self.batch_size = new_batch_size
+
     def get_rand_ids(self, index):
         assert self.batch_size is not None, "Can't get rand_ids for test split"
         if self.sampling_weights is not None:
@@ -79,7 +82,7 @@ class BaseDataset(Dataset, ABC):
                 input=self.sampling_weights, num_samples=batch_size)
         else:
             batch_size = self.batch_size
-            return torch.randint(0, self.num_samples, size=(batch_size, 1))
+            return torch.randint(0, self.num_samples, size=(batch_size, ))
             # return self.perm[index * batch_size: (index + 1) * batch_size]
 
     def __len__(self):

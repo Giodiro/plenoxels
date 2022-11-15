@@ -239,6 +239,7 @@ class Video360Dataset(BaseDataset):
             "imgs": rgba.reshape(-1, rgba.shape[-1]),
             "timestamps": ts,
             "near_far": near_fars,
+            "color_bkgd": torch.tensor([1.0, 1.0, 1.0]),
         }
 
 

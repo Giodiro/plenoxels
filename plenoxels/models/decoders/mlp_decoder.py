@@ -47,9 +47,7 @@ class NNDecoder(BaseDecoder):
     def compute_density(self, features, rays_d, precompute_color: bool = True):
         density_rgb = self.sigma_net(features)  # [batch, 16]
         density = density_rgb[:, :1]
-
-        if precompute_color:
-            self.density_rgb = density_rgb
+        self.density_rgb = density_rgb
 
         return density
 

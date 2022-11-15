@@ -4,6 +4,7 @@ import math
 from typing import Dict, List, Union, Tuple
 
 import torch
+import torch.nn as nn
 
 from plenoxels.models.utils import (
     grid_sample_wrapper, compute_plane_tv, compute_line_tv,
@@ -49,6 +50,7 @@ class LowrankVideo(LowrankModel):
         if self.use_F:
             raise NotImplementedError()
 
+        self.grids = nn.ModuleList()
         for res in self.multiscale_res:
             for li, grid_config in enumerate(self.config):
                 if "feature_dim" in grid_config:
@@ -68,7 +70,7 @@ class LowrankVideo(LowrankModel):
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
 
         log.info(f"Initialized LowrankVideo. "
-                 f"time-reso={self.time_coef.shape[1]} - decoder={self.decoder}")
+                 f" decoder={self.decoder}")
         log.info(f"Model grids: {self.grids}")
 
     def compute_features(self,
@@ -86,12 +88,12 @@ class LowrankVideo(LowrankModel):
             level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
 
         multi_scale_interp = 0
-        for scale_id, (grid_space, featlen) in enumerate(zip(multiscale_space, self.feature_len)):
+        for scale_id, grid_space in enumerate(multiscale_space):
             interp_space = None  # [n, F_dim, rank]
             for ci, coo_comb in enumerate(coo_combs):
                 # interpolate in plane
                 interp_out_plane = grid_sample_wrapper(grid_space[ci], pts[..., coo_comb]).view(
-                            -1, featlen, level_info["rank"])
+                            -1, self.feature_dim, level_info["rank"])
                 # compute product
                 interp_space = interp_out_plane if interp_space is None else interp_space * interp_out_plane
             # Combine space and time over rank

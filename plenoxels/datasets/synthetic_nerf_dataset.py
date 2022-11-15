@@ -80,7 +80,7 @@ class SyntheticNerfDataset(BaseDataset):
 
 def get_360_bbox(datadir, is_contracted=False):
     if is_contracted:
-        radius = 2
+        radius = 2.0
     elif "ship" in datadir:
         radius = 1.5
     else:

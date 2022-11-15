@@ -330,26 +330,26 @@ def render_image(
     for i in range(0, num_rays, chunk):
         chunk_rays_o = rays_o[i: i + chunk].to(device=device)
         chunk_rays_d = rays_d[i: i + chunk].to(device=device)
-        packed_info, t_starts, t_ends = ray_marching(
+        ray_indices, t_starts, t_ends = ray_marching(
             chunk_rays_o,
             chunk_rays_d,
             scene_aabb=aabb,
             grid=occupancy_grid,
             sigma_fn=sigma_fn,
-            near_plane=near_plane,
-            far_plane=far_plane,
+            near_plane=near_plane.to(device=device) if near_plane is not None else None,
+            far_plane=far_plane.to(device=device) if far_plane is not None else None,
             render_step_size=render_step_size,
             stratified=radiance_field.training,  # add random perturbations
             cone_angle=cone_angle,
             alpha_thre=alpha_thresh,
         )
         rgb, opacity, depth = rendering(
-            rgb_sigma_fn,
-            packed_info,
-            t_starts,
-            t_ends,
+            t_starts=t_starts,
+            t_ends=t_ends,
+            ray_indices=ray_indices,
+            n_rays=chunk_rays_o.shape[0],
+            rgb_sigma_fn=rgb_sigma_fn,
             render_bkgd=render_bkgd.to(device=device) if render_bkgd is not None else None,
-            alpha_thre=alpha_thresh,
         )
         chunk_results = [rgb, opacity, depth, len(t_starts)]
         results.append(chunk_results)
