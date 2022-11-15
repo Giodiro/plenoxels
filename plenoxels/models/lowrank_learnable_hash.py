@@ -74,7 +74,7 @@ class LowrankLearnableHash(LowrankModel):
                          single_jitter=single_jitter,
                          raymarch_type=raymarch_type,
                          spacing_fn=kwargs.get('spacing_fn', None),
-                         num_samples_multiplier=kwargs.get('num_samples_multiplier', None),
+                         num_sample_multiplier=kwargs.get('num_sample_multiplier', None),
                          aabb=aabb,
                          multiscale_res=multiscale_res,
                          feature_len=kwargs.get('feature_len', None))

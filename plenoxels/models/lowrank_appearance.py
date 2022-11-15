@@ -52,7 +52,7 @@ class LowrankAppearance(LowrankModel):
                          single_jitter=single_jitter,
                          raymarch_type=raymarch_type,
                          spacing_fn=kwargs.get('spacing_fn', None),
-                         num_samples_multiplier=kwargs.get('num_samples_multiplier', None),
+                         num_sample_multiplier=kwargs.get('num_sample_multiplier', None),
                          density_model=kwargs.get('density_model', None),
                          aabb=aabb,
                          multiscale_res=multiscale_res,

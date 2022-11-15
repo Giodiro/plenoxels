@@ -59,8 +59,8 @@ config = {
 
     # Raymarching settings
     "raymarch_type": "fixed",
-    "num_samples_multiplier": 2,
-    "n_intersections": 64,
+    "num_sample_multiplier": 2,
+    "n_intersections": 440,
     "spacing_fn": "linear",
     "single_jitter": False,
     

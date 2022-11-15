@@ -34,7 +34,7 @@ config = {
     "volume_tv_what": "Gcoords",
     "l1_plane_color_weight": 0.0,
     "l1_plane_density_weight": 0.000,
-    "histogram_loss_weight": 1.0,  # this should be set > 0 when using proposal sampling
+    "histogram_loss_weight": 0.0,  # this should be set > 0 when using proposal sampling
 
     # Training settings
     "train_fp16": True,
@@ -45,13 +45,13 @@ config = {
 
     # Raymarching settings
     "raymarch_type": "fixed",
-    #"num_sample_multiplier": 2,  # Used when raymarch_type is 'voxel_size'
-    "n_intersections": 48,  # Used when raymarch_type is 'fixed'
-    #"spacing_fn": "linear",
+    "num_sample_multiplier": 2,  # Used when raymarch_type is 'voxel_size'
+    "n_intersections": 96,  # Used when raymarch_type is 'fixed'
+    "spacing_fn": "linear",
     "single_jitter": False,
     # proposal sampling
-    "density_field_resolution": [128, 256],
-    "num_proposal_samples": [256, 96],
+    "density_field_resolution": [128],
+    "num_proposal_samples": [128],
     "density_field_rank": 1,
     "proposal_feature_dim": 10,
     "proposal_decoder_type": 'nn',
@@ -61,21 +61,22 @@ config = {
     #"sh_decoder_type": "manual",  # can be 'tcnn' or 'manual'
     "density_threshold": 4e-4,
     "dmask_update": [],
-    "upsample_resolution": [(64, 64, 64), (96, 96, 96), (128, 128, 128), (156, 156, 156)],  # 148^3, 180^3, 224^3, 256^3
-    "upsample_steps": [1000,2000,3000,4000],
+    "upsample_resolution": [], #[(64, 64, 64), (96, 96, 96), (128, 128, 128), (156, 156, 156)],  # 148^3, 180^3, 224^3, 256^3
+    "upsample_steps": [], #[1000,2000,3000,4000],
     "density_multiplier": 1,
     "use_F": False,
     "density_activation": "trunc_exp",  # can be 'relu' or 'trunc_exp'
     "multiscale_res": [1, 2, 4],
+    "feature_len": [8, 16, 40],
 
     "grid_config": """
 [
     {
         "input_coordinate_dim": 3,
-        "output_coordinate_dim": 32,
+        "output_coordinate_dim": 64,
         "grid_dimensions": 2,
         "resolution": [64, 64, 64],#[256, 192, 168],
-        "rank": 2,
+        "rank": 1,
     },
 ]
 """

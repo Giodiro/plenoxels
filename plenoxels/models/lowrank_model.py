@@ -40,10 +40,14 @@ class LowrankModel(ABC, nn.Module):
                  single_jitter: bool = False,
                  raymarch_type: str = 'fixed',
                  spacing_fn: Optional[str] = None,
-                 num_samples_multiplier: Optional[int] = None,
+                 num_sample_multiplier: Optional[int] = None,
                  proposal_feature_dim: Optional[int] = None,
                  proposal_decoder_type: Optional[str] = None,
+<<<<<<< HEAD
                  feature_len: Optional[List[int]] = None,
+=======
+                 feature_len: Optional[list] = None,
+>>>>>>> 685c26d (fixed some small stuff)
                  ):
         super().__init__()
         if isinstance(grid_config, str):
@@ -67,7 +71,11 @@ class LowrankModel(ABC, nn.Module):
         self.timer = CudaTimer(enabled=False)
         self.proposal_feature_dim = proposal_feature_dim
         self.proposal_decoder_type = proposal_decoder_type
+<<<<<<< HEAD
         self.feature_len = feature_len
+=======
+        self.feature_len =feature_len
+>>>>>>> 685c26d (fixed some small stuff)
 
         self.pt_min, self.pt_max = None, None
         if self.use_F:
@@ -92,7 +100,7 @@ class LowrankModel(ABC, nn.Module):
             single_jitter=single_jitter,
             raymarch_type=raymarch_type,
             spacing_fn=spacing_fn,
-            num_sample_multiplier=num_samples_multiplier,
+            num_sample_multiplier=num_sample_multiplier,
         )
 
     def step_cb(self, step, max_step):
