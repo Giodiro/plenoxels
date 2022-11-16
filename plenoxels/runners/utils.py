@@ -302,7 +302,7 @@ def render_image(
             t = (
                 timestamps[ray_indices]
                 if radiance_field.training
-                else timestamps.expand_as(positions[:, :1])
+                else timestamps.expand_as(positions[:, 0])
             )
             return radiance_field.query_density(positions, t)
         return radiance_field.query_density(positions, grid_id)
@@ -316,7 +316,7 @@ def render_image(
             t = (
                 timestamps[ray_indices]
                 if radiance_field.training
-                else timestamps.expand_as(positions[:, :1])
+                else timestamps.expand_as(positions[:, 0])
             )
             return radiance_field(positions, t_dirs, t)
         return radiance_field(positions, t_dirs, grid_id)
@@ -330,6 +330,8 @@ def render_image(
     for i in range(0, num_rays, chunk):
         chunk_rays_o = rays_o[i: i + chunk].to(device=device)
         chunk_rays_d = rays_d[i: i + chunk].to(device=device)
+        chunk_rays_d = chunk_rays_d / torch.linalg.norm(chunk_rays_d, dim=-1, keepdim=True)
+
         ray_indices, t_starts, t_ends = ray_marching(
             chunk_rays_o,
             chunk_rays_d,

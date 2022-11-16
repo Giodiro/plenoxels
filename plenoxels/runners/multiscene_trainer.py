@@ -92,6 +92,7 @@ class Trainer():
         self.loss_info = None
         self.train_iterators = None
         self.contraction_type = ContractionType.UN_BOUNDED_SPHERE
+        self.contraction_type = ContractionType.AABB#UN_BOUNDED_SPHERE
         self.is_unbounded = self.contraction_type != ContractionType.AABB
 
         # self.criterion = torch.nn.MSELoss(reduction='mean')
@@ -472,7 +473,7 @@ class Trainer():
         for scene in range(self.num_dsets):
             occupancy_grid = OccupancyGrid(
                 roi_aabb=self.model.aabb(scene).view(-1),
-                resolution=self.model.resolution(scene)[:3],
+                resolution=(self.model.resolution(scene)[:3] // 2),
                 contraction_type=self.contraction_type,
             ).cuda()
             occupancy_grids.append(occupancy_grid)
@@ -517,7 +518,7 @@ class Trainer():
     @property
     def max_rays(self):
         if self.global_step < 512:
-            return 15_000
+            return 10_000
         elif self.global_step < 1024:
             return 100_000
         return 1_000_000

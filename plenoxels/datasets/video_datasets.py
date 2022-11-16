@@ -92,6 +92,10 @@ class Video360Dataset(BaseDataset):
             imgs = imgs.view(-1, intrinsics.height * intrinsics.width, imgs.shape[-1])
 
         # ISG/IST weights are computed on 4x subsampled data.
+        if False:
+            bbox = get_360_bbox(datadir, is_contracted=is_contracted)
+        else:
+            bbox = torch.tensor([[-1.5, -1.67, -1.2], [1.5, 1.67, 1.2]]) * 4
         weights_subsampled = int(4 / downsample)
         super().__init__(
             datadir=datadir,
@@ -99,7 +103,7 @@ class Video360Dataset(BaseDataset):
             batch_size=batch_size,
             is_ndc=is_ndc,
             is_contracted=is_contracted,
-            scene_bbox=get_360_bbox(datadir, is_contracted=is_contracted),
+            scene_bbox=bbox,
             rays_o=None,
             rays_d=None,
             intrinsics=intrinsics,
