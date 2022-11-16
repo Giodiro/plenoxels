@@ -433,10 +433,10 @@ class VideoTrainer(Trainer):
 
         self.model.load_state_dict(checkpoint_data["model"], strict=False)
         logging.info("=> Loaded model state from checkpoint")
-        #self.optimizer.load_state_dict(checkpoint_data["optimizer"])
+        self.optimizer.load_state_dict(checkpoint_data["optimizer"])
         logging.info("=> Loaded optimizer state from checkpoint")
         if self.scheduler is not None:
-            #self.scheduler.load_state_dict(checkpoint_data['lr_scheduler'], strict=False)
+            self.scheduler.load_state_dict(checkpoint_data['lr_scheduler'], strict=False)
             logging.info("=> Loaded scheduler state from checkpoint")
         self.global_step = checkpoint_data["global_step"]
         logging.info(f"=> Loaded step {self.global_step} from checkpoints")

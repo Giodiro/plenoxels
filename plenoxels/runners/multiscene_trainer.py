@@ -227,7 +227,7 @@ class Trainer():
             self.global_step = 0
         logging.info(f"Starting training from step {self.global_step + 1}")
         self.pre_epoch()
-        pb = tqdm(total=self.num_steps, desc=f"")
+        pb = tqdm(initial=self.global_step, total=self.num_steps, desc=f"")
         batch_iter = iter(self.train_data_loader)
         while self.global_step < self.num_steps:
             try:
