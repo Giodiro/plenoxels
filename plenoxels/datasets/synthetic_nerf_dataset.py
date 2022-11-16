@@ -68,7 +68,8 @@ class SyntheticNerfDataset(BaseDataset):
                                            batch_size=self.batch_size, patch_size=self.patch_size,
                                            generator=self.generator)
         log.info(f"SyntheticNerfDataset - Loaded {split} set from {datadir}: {len(poses)} images of size "
-                 f"{self.img_h}x{self.img_w} and {imgs.shape[-1]} channels. {intrinsics}")
+                 f"{self.img_h}x{self.img_w} and {imgs.shape[-1]} channels. "
+                 f"Sampling without replacement={self.use_permutation}. {intrinsics}")
 
     def __getitem__(self, index):
         out = super().__getitem__(index)

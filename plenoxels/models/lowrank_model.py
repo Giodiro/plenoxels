@@ -40,9 +40,10 @@ class LowrankModel(ABC, nn.Module):
                  single_jitter: bool = False,
                  raymarch_type: str = 'fixed',
                  spacing_fn: Optional[str] = None,
-                 num_samples_multiplier: Optional[int] = None,
+                 num_sample_multiplier: Optional[int] = None,
                  proposal_feature_dim: Optional[int] = None,
                  proposal_decoder_type: Optional[str] = None,
+                 feature_len: Optional[List[int]] = None,
                  ):
         super().__init__()
         if isinstance(grid_config, str):
@@ -50,6 +51,9 @@ class LowrankModel(ABC, nn.Module):
         else:
             self.config: List[Dict] = grid_config
         self.multiscale_res = multiscale_res
+        self.feature_len = feature_len
+        if self.feature_len is not None:
+            assert len(self.multiscale_res) == len(self.feature_len), 'must provide one feature_len per multiscale_res'
         self.set_aabb(aabb)  # set_aabb handles both single tensor and a list.
         self.is_ndc = is_ndc
         self.is_contracted = is_contracted
@@ -90,7 +94,7 @@ class LowrankModel(ABC, nn.Module):
             single_jitter=single_jitter,
             raymarch_type=raymarch_type,
             spacing_fn=spacing_fn,
-            num_sample_multiplier=num_samples_multiplier,
+            num_sample_multiplier=num_sample_multiplier,
         )
 
     def step_cb(self, step, max_step):

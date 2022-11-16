@@ -347,8 +347,8 @@ class VideoTrainer(Trainer):
                     pass
                     #visualize_planes_withF(self.model, self.log_dir, f"step{self.global_step}")
                 else:
-                    pass
-                    #visualize_planes(self.model, self.log_dir, f"step{self.global_step}")
+                    # pass
+                    visualize_planes(self.model, self.log_dir, f"step{self.global_step}")
 
             for dset_id, dataset in enumerate(self.test_datasets):
                 per_scene_metrics = {

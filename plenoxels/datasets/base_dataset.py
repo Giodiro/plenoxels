@@ -44,6 +44,7 @@ class BaseDataset(Dataset, ABC):
                 f"Expected {self.num_samples} sampling weights but given {len(self.sampling_weights)}."
             )
         self.sampling_batch_size = 2_000_000  # Increase this?
+        self.use_permutation = self.num_samples < 100_000_000  # 64M is static
         self.perm = None
 
     @property
@@ -55,7 +56,7 @@ class BaseDataset(Dataset, ABC):
         return self.intrinsics.width
 
     def reset_iter(self):
-        if self.sampling_weights is None:
+        if self.sampling_weights is None and self.use_permutation:
             self.perm = torch.randperm(self.num_samples)
         else:
             del self.perm
@@ -78,7 +79,10 @@ class BaseDataset(Dataset, ABC):
                 input=self.sampling_weights, num_samples=batch_size)
         else:
             batch_size = self.batch_size
-            return self.perm[index * batch_size: (index + 1) * batch_size]
+            if self.use_permutation:
+                return self.perm[index * batch_size: (index + 1) * batch_size]
+            else:
+                return torch.randint(0, self.num_samples, size=(batch_size, ))
 
     def __len__(self):
         if self.split == 'train':

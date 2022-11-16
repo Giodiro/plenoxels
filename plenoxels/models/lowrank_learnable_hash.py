@@ -74,7 +74,7 @@ class LowrankLearnableHash(LowrankModel):
                          single_jitter=single_jitter,
                          raymarch_type=raymarch_type,
                          spacing_fn=kwargs.get('spacing_fn', None),
-                         num_samples_multiplier=kwargs.get('num_samples_multiplier', None),
+                         num_sample_multiplier=kwargs.get('num_sample_multiplier', None),
                          aabb=aabb,
                          multiscale_res=multiscale_res,
                          feature_len=kwargs.get('feature_len', None))
@@ -82,6 +82,11 @@ class LowrankLearnableHash(LowrankModel):
         self.density_multiplier = self.extra_args.get("density_multiplier")
         self.transfer_learning = self.extra_args["transfer_learning"]
         self.alpha_mask_threshold = self.extra_args["density_threshold"]
+        self.concat_features = False
+        if self.feature_len is not None:
+            self.concat_features = True
+        else:
+            self.feature_len = [self.config[0]["output_coordinate_dim"]] * len(self.multiscale_res)
 
         self.scene_grids = nn.ModuleList()
         self.features = nn.ParameterList()
@@ -100,7 +105,8 @@ class LowrankLearnableHash(LowrankModel):
                         config = grid_config.copy()
                         config["resolution"] = [r * res for r in config["resolution"]]
 
-                        gpdesc = init_grid_param(config, feature_len=featlen, is_video=False, grid_level=li, use_F=self.use_F, is_appearance=False)
+                        gpdesc = init_grid_param(config, feature_len=featlen, is_video=False,
+                                grid_level=li, use_F=self.use_F, is_appearance=False)
                         if li == 0:
                             self.set_resolution(gpdesc.reso, grid_id=si)
                         grids.append(gpdesc.grid_coefs)
@@ -108,9 +114,11 @@ class LowrankLearnableHash(LowrankModel):
                             log.info(f"Initialized grid with shape {gc.shape}")
                         if not self.use_F:
                             # shape[1] is out-dim * rank
-                            # self.feature_dim = gpdesc.grid_coefs[-1].shape[1] // config["rank"][0]
                             # Concatenate over feature len for each scale
-                            self.feature_dim = sum(self.feature_len)
+                            if self.concat_features:
+                                self.feature_dim = sum(self.feature_len)
+                            else:
+                                self.feature_dim = gpdesc.grid_coefs[-1].shape[1] // config["rank"][0]
                 multi_scale_grids.append(grids)
             self.scene_grids.append(multi_scale_grids)
         if self.sh:
@@ -163,12 +171,15 @@ class LowrankLearnableHash(LowrankModel):
                     self.features[scale_id].to(dtype=interp.dtype), interp
                 ).view(-1, self.feature_dim)
             else:
-                # Concatenate over scale
-                if multi_scale_interp is 0:
-                    multi_scale_interp = interp
+                if self.concat_features:
+                    # Concatenate over scale
+                    if multi_scale_interp is 0:
+                        multi_scale_interp = interp
+                    else:
+                        multi_scale_interp = torch.cat((multi_scale_interp, interp), dim=-1)
                 else:
-                    multi_scale_interp = torch.cat((multi_scale_interp, interp), dim=-1)
-                # multi_scale_interp += interp
+                    # Sum over scales
+                    multi_scale_interp += interp
         return multi_scale_interp  # noqa
 
     @torch.no_grad()
