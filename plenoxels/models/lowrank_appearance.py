@@ -66,8 +66,8 @@ class LowrankAppearance(LowrankModel):
         else:
             self.feature_len = [self.config[0]["output_coordinate_dim"]] * len(self.multiscale_res)
         
-        appearance_code_size=kwargs.get('appearance_code_size', 32),
-        color_net=kwargs.get('color_net', 2),
+        appearance_code_size = kwargs.get('appearance_code_size', 32),
+        color_net = kwargs.get('color_net', 2),
         if isinstance(appearance_code_size, tuple):
             appearance_code_size = appearance_code_size[0]
         if isinstance(color_net, tuple):
@@ -77,9 +77,9 @@ class LowrankAppearance(LowrankModel):
         print("==> color_net", color_net)
         print("\n\n\n")
         self.grids = nn.ModuleList()
-        #appearance_code_size = 48 # same as in nerf-w
-        #appearance_code_size = 32 # seems to be a good sixe
-        #appearance_code_size = 16 # seems to be a bit too small
+        # appearance_code_size = 48 # same as in nerf-w
+        # appearance_code_size = 32 # seems to be a good size
+        # appearance_code_size = 16 # seems to be a bit too small
         self.appearance_coef = nn.Parameter(nn.init.normal_(torch.empty([appearance_code_size, len_time])))
         
         for res, featlen in zip(self.multiscale_res, self.feature_len):
@@ -132,16 +132,15 @@ class LowrankAppearance(LowrankModel):
         # if there are 6 planes then
         # interpolate in space and time
         if len(multiscale_space[0]) == 6:
-            pts = torch.cat([pts, timestamps[:,None]], dim=-1)  # [batch, 4] for xyzt
+            pts = torch.cat([pts, timestamps[:, None]], dim=-1)  # [batch, 4] for xyzt
 
         # Interpolate in space
         coo_combs = list(itertools.combinations(
             range(pts.shape[-1]),
             level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
 
-        multi_scale_interp = 0
+        multi_scale_interp = [] if self.concat_features else 0
         for scale_id, (grid_space, featlen) in enumerate(zip(multiscale_space, self.feature_len)):
-
             interp_space = 1  # [n, F_dim, rank]
             for ci, coo_comb in enumerate(coo_combs):
 
@@ -155,16 +154,14 @@ class LowrankAppearance(LowrankModel):
             # Combine space over rank
             interp = interp_space.mean(dim=-1)  # [n, F_dim]
 
-            if self.concat_features:
-                # Concatenate over scale
-                if multi_scale_interp is 0:
-                    multi_scale_interp = interp
-                else:
-                    multi_scale_interp = torch.cat((multi_scale_interp, interp), dim=-1)
-            else:
-                # Sum over scales
+            # Merge features across scales
+            if self.concat_features:  # Concatenate over scale
+                multi_scale_interp.append(interp)
+            else:  # Sum over scales
                 multi_scale_interp += interp
-                
+
+        if self.concat_features:
+            multi_scale_interp = torch.cat(multi_scale_interp, dim=-1)
         return multi_scale_interp
 
     def forward(self, rays_o, rays_d, timestamps, bg_color,

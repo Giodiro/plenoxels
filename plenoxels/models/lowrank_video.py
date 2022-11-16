@@ -117,38 +117,37 @@ class LowrankVideo(LowrankModel):
             range(pts.shape[-1]),
             level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
 
-        if self.concat_features:
-            multi_scale_interp = []
-        else:
-            multi_scale_interp = 0
+        multi_scale_interp = [] if self.concat_features else 0
         for scale_id, (grid_space, featlen) in enumerate(zip(multiscale_space, self.feature_len)):
-            interp_space = None  # [n, F_dim, rank]
+            interp_space = 1  # [n, F_dim, rank]
             for ci, coo_comb in enumerate(coo_combs):
                 # interpolate in plane
-                interp_out_plane = grid_sample_wrapper(grid_space[ci], pts[..., coo_comb]).view(
-                            -1, featlen, level_info["rank"])
+                interp_out_plane = grid_sample_wrapper(
+                    grid_space[ci], pts[..., coo_comb]
+                ).view(-1, featlen, level_info["rank"])
                 # compute product
-                interp_space = interp_out_plane if interp_space is None else interp_space * interp_out_plane
-            # Combine space and time over rank
+                interp_space = interp_space * interp_out_plane
             interp = interp_space.mean(dim=-1)  # Mean over rank
-            # sum over scales
+
+            # When F is used we need to interpolate over F.
             if self.use_F:
                 # Learned normalization
                 if interp.numel() > 0:
                     interp = (interp - self.pt_min[scale_id]) / (self.pt_max[scale_id] - self.pt_min[scale_id])
                     interp = interp * 2 - 1
-                multi_scale_interp += grid_sample_wrapper(
-                    self.features[scale_id], interp).view(-1, self.feature_dim)
-            else:
-                if self.concat_features:
-                    # Concatenate over scale
-                    multi_scale_interp.append(interp)
-                else:
-                    # Sum over scales
-                    multi_scale_interp += interp
+                interp = grid_sample_wrapper(
+                    self.features[scale_id].to(dtype=interp.dtype), interp
+                ).view(-1, self.feature_dim)
+
+            # Merge features across scales
+            if self.concat_features:  # Concatenate over scale
+                multi_scale_interp.append(interp)
+            else:  # Sum over scales
+                multi_scale_interp += interp
+
         if self.concat_features:
             multi_scale_interp = torch.cat(multi_scale_interp, dim=-1)
-        return multi_scale_interp  # noqa
+        return multi_scale_interp
 
     def forward(self, rays_o, rays_d, timestamps, bg_color, channels: Sequence[str] = ("rgb", "depth"), near_far=None):
         """
