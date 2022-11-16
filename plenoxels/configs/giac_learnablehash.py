@@ -1,7 +1,7 @@
 # configuration file to be used with `main.py` for normal (or multiscene) training
 # the configuration must be specified in a dictionary called `config`.
 config = {
-    "expname": "ficus_test_wdenseweight",
+    "expname": "ficus_test_wdenseweight2e-6",
     "logdir": "./logs",
 
     # Data settings
@@ -27,7 +27,7 @@ config = {
     "floater_loss": 0,
     "plane_tv_weight": 2e-5,
     "plane_tv_what": "Gcoords",
-    "density_plane_tv_weight": 0.0,
+    "density_plane_tv_weight": 2e-6,
     #"l1density_weight": 0.000,
     #"volume_tv_weight": 0.00,
     #"volume_tv_npts": 100,
