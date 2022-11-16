@@ -1,5 +1,7 @@
+import sys
 import math
 from collections import defaultdict
+import logging as log
 
 import numpy as np
 import torch
@@ -9,6 +11,12 @@ from plenoxels.models.lowrank_video import LowrankVideo
 from plenoxels.datasets.video_datasets import load_llffvideo_poses
 from plenoxels.datasets.ray_utils import gen_camera_dirs, normalize, average_poses, viewmatrix
 from plenoxels.ops.image.io import write_video_to_file
+
+
+log.basicConfig(level=log.INFO,
+                format='%(asctime)s|%(levelname)8s| %(message)s',
+                handlers=[log.StreamHandler(sys.stdout)],
+                force=True)
 
 
 def generate_spiral_path(poses: np.ndarray,
@@ -113,7 +121,7 @@ def load_data(datadir, num_frames):
         # Find the closest cam TODO: This is the crappiest way to calculate distance between cameras!
         closest_cam_idx = torch.linalg.norm(
             per_cam_poses.view(per_cam_poses.shape[0], -1) - c2w.view(-1), dim=1).argmin()
-        near_fars.append(per_cam_near_fars[closest_cam_idx].float().repeat(origins.shape[0], 1))
+        near_fars.append((per_cam_near_fars[closest_cam_idx].float() + torch.tensor([0.15, 0.0])).repeat(origins.shape[0], 1))
 
     rays_o = torch.cat(rays_o, 0)
     rays_d = torch.cat(rays_d, 0)
@@ -126,6 +134,7 @@ def load_data(datadir, num_frames):
         "near_far": near_fars,
         "timestamps": timestamps,
     }
+    log.info(f"Loaded {rays_o.shape[0]} rays")
     return data, intrinsics
 
 
@@ -138,7 +147,7 @@ def load_model(checkpoint_path):
         m_data['model']['grids.0.1'].shape[-2],
         150
     ]
-    print("Model resolution: ", reso)
+    log.info("Will load model with resolutioin: %s" % (reso, ))
 
     model = LowrankVideo(
         aabb=torch.tensor([[-2., -2., -2.], [2., 2., 2.]]),
@@ -175,6 +184,7 @@ def load_model(checkpoint_path):
 
     model.load_state_dict(m_data['model'])
     model.cuda()
+    log.info("Loaded model")
     return model
 
 
@@ -183,7 +193,7 @@ def save_video(out_file, spiral_outputs, intrinsics, output_key='rgb'):
 
     image_len = intrinsics.width * intrinsics.height
     num_images = imgs.shape[0] // image_len
-    print("Output contains %d frames" % (num_images, ))
+    log.info("Output contains %d frames" % (num_images, ))
 
     frames = (
         (imgs.view(num_images, intrinsics.height, intrinsics.width, 3) * 255.0)
@@ -195,13 +205,13 @@ def save_video(out_file, spiral_outputs, intrinsics, output_key='rgb'):
 
 def run():
     datadir = "/data/DATASETS/VidNerf/flame_salmon"
-    checkpoint_path = '../logs/salmonvideo/mlp_downsample2_istonly_rank1_higherres/model.pth'
-    output_path = '../logs/salmonvideo/mlp_downsample2_istonly_rank1_higherres/test_video.mp4'
+    checkpoint_path = 'logs/salmonvideo/mlp_downsample2_istonly_rank1_higherres/model.pth'
+    output_path = 'logs/salmonvideo/mlp_downsample2_istonly_rank1_higherres/test_video.mp4'
     num_frames = 150
 
     data, intrinsics = load_data(datadir, num_frames)
     model = load_model(checkpoint_path)
-    spiral_outputs = eval_step(data, model, batch_size=8192)
+    spiral_outputs = eval_step(data, model, batch_size=8192 * 2)
     save_video(output_path, spiral_outputs, intrinsics, output_key='rgb')
 
 
