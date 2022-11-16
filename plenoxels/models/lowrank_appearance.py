@@ -81,12 +81,7 @@ class LowrankAppearance(LowrankModel):
         #appearance_code_size = 32 # seems to be a good sixe
         #appearance_code_size = 16 # seems to be a bit too small
         self.appearance_coef = nn.Parameter(nn.init.normal_(torch.empty([appearance_code_size, len_time])))
-        if not self.use_F:
-            # Concatenate over feature len for each scale
-            if self.concat_features:
-                self.feature_dim = sum(self.feature_len)
-            else:
-                self.feature_dim = gpdesc.grid_coefs[-1].shape[1] // config["rank"][0]
+        
         for res, featlen in zip(self.multiscale_res, self.feature_len):
             for li, grid_config in enumerate(self.config):
                 # initialize feature grid
@@ -108,7 +103,12 @@ class LowrankAppearance(LowrankModel):
                     self.set_resolution(gpdesc.reso, 0)
                     self.grids.append(gpdesc.grid_coefs)
                     #self.appearance_coef.append(gpdesc.appearance_coef)
-
+        if not self.use_F:
+            # Concatenate over feature len for each scale
+            if self.concat_features:
+                self.feature_dim = sum(self.feature_len)
+            else:
+                self.feature_dim = gpdesc.grid_coefs[-1].shape[1] // config["rank"][0]
         if self.sh:
             self.decoder = SHDecoder(
                 feature_dim=self.feature_dim,

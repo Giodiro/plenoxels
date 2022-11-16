@@ -721,11 +721,11 @@ def visualize_planes(model, save_dir: str, name: str):
 
                 rays_d = torch.ones((h*w, 3), device=grid.device)
                 rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
-                color = (
-                        torch.sigmoid(model.decoder.compute_color(features, rays_d))
-                ).view(h, w, 3).cpu().float().numpy()
-                ax[plane_idx, r+rank].imshow(color)
-                ax[plane_idx, r+rank].axis("off")
+                # color = (
+                #         torch.sigmoid(model.decoder.compute_color(features, rays_d))
+                # ).view(h, w, 3).cpu().float().numpy()
+                # ax[plane_idx, r+rank].imshow(color)
+                # ax[plane_idx, r+rank].axis("off")
 
         fig.tight_layout()
         plt.savefig(os.path.join(save_dir, f"{name}-planes-scale-{scale_id}.png"))
