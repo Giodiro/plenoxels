@@ -61,6 +61,11 @@ class LowrankVideo(LowrankModel):
         self.hooks = None
         self.grids = torch.nn.ModuleList()
         self.features = torch.nn.ParameterList()
+        self.concat_features = False
+        if self.feature_len is not None:
+            self.concat_features = True
+        else:
+            self.feature_len = [self.config[0]["output_coordinate_dim"]] * len(self.multiscale_res)
         for res, featlen in zip(self.multiscale_res, self.feature_len):
             for li, grid_config in enumerate(self.config):
                 # initialize feature grid
@@ -79,10 +84,11 @@ class LowrankVideo(LowrankModel):
                     self.set_resolution(gpdesc.reso, 0)
                     self.grids.append(gpdesc.grid_coefs)
                     if not self.use_F:
-                        # shape[1] is out-dim * rank
-                        # self.feature_dim = gpdesc.grid_coefs[-1].shape[1] // config["rank"][0]
                         # Concatenate over feature len for each scale
-                        self.feature_dim = sum(self.feature_len)
+                        if self.concat_features:
+                            self.feature_dim = sum(self.feature_len)
+                        else:
+                            self.feature_dim = gpdesc.grid_coefs[-1].shape[1] // config["rank"][0]
         if self.sh:
             self.decoder = SHDecoder(
                 feature_dim=self.feature_dim,
@@ -131,12 +137,15 @@ class LowrankVideo(LowrankModel):
                 multi_scale_interp += grid_sample_wrapper(
                     self.features[scale_id], interp).view(-1, self.feature_dim)
             else:
-                # multi_scale_interp += interp
-                # Concatenate over scale
-                if multi_scale_interp is 0:
-                    multi_scale_interp = interp
+                if self.concat_features:
+                    # Concatenate over scale
+                    if multi_scale_interp is 0:
+                        multi_scale_interp = interp
+                    else:
+                        multi_scale_interp = torch.cat((multi_scale_interp, interp), dim=-1)
                 else:
-                    multi_scale_interp = torch.cat((multi_scale_interp, interp), dim=-1)
+                    # Sum over scales
+                    multi_scale_interp += interp
         return multi_scale_interp  # noqa
 
     def forward(self, rays_o, rays_d, timestamps, bg_color, channels: Sequence[str] = ("rgb", "depth"), near_far=None):

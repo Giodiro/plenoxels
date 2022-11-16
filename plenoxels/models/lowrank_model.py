@@ -27,7 +27,6 @@ class LowrankModel(ABC, nn.Module):
                  use_proposal_sampling: bool,
                  aabb: Union[List[torch.Tensor], torch.Tensor],
                  multiscale_res: Sequence[int],
-                 feature_len: Sequence[int],
                  num_scenes: int = 1,
                  global_translation: Optional[torch.Tensor] = None,
                  global_scale: Optional[torch.Tensor] = None,
@@ -53,7 +52,8 @@ class LowrankModel(ABC, nn.Module):
             self.config: List[Dict] = grid_config
         self.multiscale_res = multiscale_res
         self.feature_len = feature_len
-        assert len(self.multiscale_res) == len(self.feature_len), 'must provide one feature_len per multiscale_res'
+        if self.feature_len is not None:
+            assert len(self.multiscale_res) == len(self.feature_len), 'must provide one feature_len per multiscale_res'
         self.set_aabb(aabb)  # set_aabb handles both single tensor and a list.
         self.is_ndc = is_ndc
         self.is_contracted = is_contracted
@@ -70,7 +70,6 @@ class LowrankModel(ABC, nn.Module):
         self.timer = CudaTimer(enabled=False)
         self.proposal_feature_dim = proposal_feature_dim
         self.proposal_decoder_type = proposal_decoder_type
-        self.feature_len =feature_len
 
         self.pt_min, self.pt_max = None, None
         if self.use_F:

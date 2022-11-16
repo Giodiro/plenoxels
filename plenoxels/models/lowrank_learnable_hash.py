@@ -82,10 +82,11 @@ class LowrankLearnableHash(LowrankModel):
         self.density_multiplier = self.extra_args.get("density_multiplier")
         self.transfer_learning = self.extra_args["transfer_learning"]
         self.alpha_mask_threshold = self.extra_args["density_threshold"]
-        # Modify the following three lines to re-enable concat-features
         self.concat_features = False
-        assert self.feature_len is None, "feature_len specified but concatenation of features not enabled"
-        self.feature_len = [self.config[0]["output_coordinate_dim"]] * len(self.multiscale_res)
+        if self.feature_len is not None:
+            self.concat_features = True
+        else:
+            self.feature_len = [self.config[0]["output_coordinate_dim"]] * len(self.multiscale_res)
 
         self.scene_grids = nn.ModuleList()
         self.features = nn.ParameterList()

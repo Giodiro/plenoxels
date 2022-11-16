@@ -60,6 +60,11 @@ class LowrankAppearance(LowrankModel):
         self.extra_args = kwargs
         self.lookup_time = lookup_time
         self.trainable_rank = None
+        self.concat_features = False
+        if self.feature_len is not None:
+            self.concat_features = True
+        else:
+            self.feature_len = [self.config[0]["output_coordinate_dim"]] * len(self.multiscale_res)
         
         appearance_code_size=kwargs.get('appearance_code_size', 32),
         color_net=kwargs.get('color_net', 2),
@@ -76,9 +81,12 @@ class LowrankAppearance(LowrankModel):
         #appearance_code_size = 32 # seems to be a good sixe
         #appearance_code_size = 16 # seems to be a bit too small
         self.appearance_coef = nn.Parameter(nn.init.normal_(torch.empty([appearance_code_size, len_time])))
-        # Concatenate over feature len for each scale
-        self.feature_dim = sum(self.feature_len)
-
+        if not self.use_F:
+            # Concatenate over feature len for each scale
+            if self.concat_features:
+                self.feature_dim = sum(self.feature_len)
+            else:
+                self.feature_dim = gpdesc.grid_coefs[-1].shape[1] // config["rank"][0]
         for res, featlen in zip(self.multiscale_res, self.feature_len):
             for li, grid_config in enumerate(self.config):
                 # initialize feature grid
@@ -147,14 +155,16 @@ class LowrankAppearance(LowrankModel):
             # Combine space over rank
             interp = interp_space.mean(dim=-1)  # [n, F_dim]
 
-            # sum over scales
-            # multi_scale_interp += interp
-            # Concatenate over scale
-            if multi_scale_interp is 0:
-                multi_scale_interp = interp
+            if self.concat_features:
+                # Concatenate over scale
+                if multi_scale_interp is 0:
+                    multi_scale_interp = interp
+                else:
+                    multi_scale_interp = torch.cat((multi_scale_interp, interp), dim=-1)
             else:
-                multi_scale_interp = torch.cat((multi_scale_interp, interp), dim=-1)
-
+                # Sum over scales
+                multi_scale_interp += interp
+                
         return multi_scale_interp
 
     def forward(self, rays_o, rays_d, timestamps, bg_color,
