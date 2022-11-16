@@ -117,7 +117,10 @@ class LowrankVideo(LowrankModel):
             range(pts.shape[-1]),
             level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
 
-        multi_scale_interp = 0
+        if self.concat_feature:
+            multi_scale_interp = []
+        else:
+            multi_scale_interp = 0
         for scale_id, (grid_space, featlen) in enumerate(zip(multiscale_space, self.feature_len)):
             interp_space = None  # [n, F_dim, rank]
             for ci, coo_comb in enumerate(coo_combs):
@@ -139,13 +142,12 @@ class LowrankVideo(LowrankModel):
             else:
                 if self.concat_features:
                     # Concatenate over scale
-                    if multi_scale_interp is 0:
-                        multi_scale_interp = interp
-                    else:
-                        multi_scale_interp = torch.cat((multi_scale_interp, interp), dim=-1)
+                    multi_scale_interp.append(interp)
                 else:
                     # Sum over scales
                     multi_scale_interp += interp
+        if self.concat_features:
+            multi_scale_interp = torch.cat(multi_scale_interp, dim=-1)
         return multi_scale_interp  # noqa
 
     def forward(self, rays_o, rays_d, timestamps, bg_color, channels: Sequence[str] = ("rgb", "depth"), near_far=None):
