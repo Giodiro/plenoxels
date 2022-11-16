@@ -117,7 +117,7 @@ class LowrankVideo(LowrankModel):
             range(pts.shape[-1]),
             level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
 
-        if self.concat_feature:
+        if self.concat_features:
             multi_scale_interp = []
         else:
             multi_scale_interp = 0
