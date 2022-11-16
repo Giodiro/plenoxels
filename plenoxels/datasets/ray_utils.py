@@ -15,6 +15,9 @@ __all__ = (
     "generate_spiral_path",
     "generate_hemispherical_orbit",
     "gen_camera_dirs",
+    "normalize",
+    "average_poses",
+    "viewmatrix",
 )
 
 
