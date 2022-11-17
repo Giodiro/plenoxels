@@ -159,12 +159,8 @@ class LowrankLearnableHash(LowrankModel):
                     interp_out_plane = grid_sample_wrapper(grid[ci], pts[..., coo_comb]).view(
                                 -1, featlen, level_info["rank"])
                     # compute product
-<<<<<<< HEAD
-                    interp_out = interp_out * interp_out_plane
-=======
                     interp_out = interp_out_plane if interp_out is None else interp_out * interp_out_plane
                     # interp_out = interp_out_plane if interp_out is None else interp_out + interp_out_plane # Addition ablation study
->>>>>>> 76dc30b (adding ms-ssim)
             # average over rank
             interp = interp_out.mean(dim=-1)
 
