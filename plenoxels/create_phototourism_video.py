@@ -4,6 +4,7 @@ from collections import defaultdict
 import logging as log
 
 import numpy as np
+from plenoxels.models.lowrank_appearance import LowrankAppearance
 import torch
 from tqdm import trange
 from pathlib import Path
@@ -17,6 +18,15 @@ from plenoxels.datasets.ray_utils import gen_camera_dirs, normalize, average_pos
 from plenoxels.ops.image.io import write_video_to_file
 from plenoxels.datasets.photo_tourism import get_rays_tourism
 
+train_images = {"sacre" : 1179,
+            "trevi" : 1689,
+            "brandenburg" : 763}
+
+test_images = {"sacre" : 21,
+            "trevi" : 19,
+            "brandenburg" : 10}
+
+dataset = "brandenburg"
 
 log.basicConfig(level=log.INFO,
                 format='%(asctime)s|%(levelname)8s| %(message)s',
@@ -50,8 +60,8 @@ def generate_spiral_path(poses: np.ndarray,
 
     # Generate poses for spiral path.
     render_poses = []
-    for theta in np.linspace(0., 2. * np.pi * n_rots, n_frames, endpoint=False):
-        t = radii * [np.cos(theta), -np.sin(theta), -np.sin(theta * zrate), 1.]
+    for theta in np.linspace(0., 0.1, n_frames, endpoint=False):
+        t = radii * [0,1.,-theta,1.] #[1np.cos(theta), 1, -np.sin(theta * zrate), 1.] #-0.001 * np.sin(theta)
         position = c2w @ t
         lookat = c2w @ np.array([0, 0, -focal, 1.0])
         z_axis = normalize(position - lookat)
@@ -66,11 +76,11 @@ def eval_step(data, model, batch_size=8192):
     """
     with torch.no_grad():
         with torch.cuda.amp.autocast(enabled=True):
-            rays_o = data["rays_o"]
+            rays_o = data["rays_o"].squeeze()
             rays_d = data["rays_d"]
             near_far = data["near_far"]
             timestamp = data["timestamps"]
-
+            
             preds = defaultdict(list)
             num_batches = math.ceil(rays_o.shape[0] / batch_size)
             for b in trange(num_batches):
@@ -105,44 +115,43 @@ def load_data(datadir, num_frames, H, W):
     bounds = np.load(Path(datadir) / "bds.npy")[idx]
     kinv = torch.from_numpy(kinvs[0]).to(torch.float32) # Just pick one camera intrinsic
 
+    scale = 0.05
+    poses[:, :3, 3:4] = poses[:, :3, 3:4] * scale 
+    poses = torch.tensor(poses)[:, :3, :].float()
+    bounds = bounds * np.array([0.9, 1.2]) * scale
+
     spiral_poses = generate_spiral_path(
         poses=poses,
         near_fars=bounds,
         n_frames=num_frames
     )
     spiral_poses = torch.from_numpy(spiral_poses).float()
+    bounds = torch.from_numpy(bounds).float()
 
-    dev = "cpu"
     rays_o = []
     rays_d = []
     timestamps = []
     near_fars = []
-    interp_time = torch.linspace(0, 299, spiral_poses.shape[0], dtype=torch.int)
+    interp_time = torch.tensor(0)# torch.linspace(0, 1708, dtype=torch.int)
     for pose_id in range(spiral_poses.shape[0]):
-        # x, y = torch.meshgrid(
-        #     torch.arange(W, device=dev),
-        #     torch.arange(H, device=dev),
-        #     indexing="xy",
-        # )
-        # x = x.flatten()
-        # y = y.flatten()
-        # camera_dirs = gen_camera_dirs(
-        #     x, y, intrinsics, True)  # [num_rays, 3]
+
         c2w = spiral_poses[pose_id]  # [3, 4]
-        # directions = (camera_dirs[:, None, :] * c2w[None, :3, :3]).sum(dim=-1)
-        # origins = torch.broadcast_to(c2w[None, :3, -1], directions.shape)
+
         origins, directions = get_rays_tourism(H, W, kinv, c2w)
 
+        origins = origins.reshape(-1, 3)
+        directions = directions.reshape(-1, 3)
 
         rays_o.append(origins)
         rays_d.append(directions)
-        timestamps.append(interp_time[pose_id].repeat(origins.shape[0]))
+        timestamps.append(interp_time.repeat(origins.shape[0]))
         # Find the closest cam TODO: This is the crappiest way to calculate distance between cameras!
         # TODO: continue updating for phototourism here
         closest_cam_idx = torch.linalg.norm(
             poses.view(poses.shape[0], -1) - c2w.view(-1), dim=1).argmin()
-        near_fars.append((bounds[closest_cam_idx].float() + torch.tensor([0.15, 0.0])).repeat(origins.shape[0], 1))
-
+        
+        near_fars.append((bounds[closest_cam_idx] + torch.tensor([0.15, 0.0])).repeat(origins.shape[0], 1))
+    
     rays_o = torch.cat(rays_o, 0)
     rays_d = torch.cat(rays_d, 0)
     timestamps = torch.cat(timestamps, 0)
@@ -155,7 +164,7 @@ def load_data(datadir, num_frames, H, W):
         "timestamps": timestamps,
     }
     log.info(f"Loaded {rays_o.shape[0]} rays")
-    return data, intrinsics
+    return data
 
 
 def load_model(checkpoint_path):
@@ -165,13 +174,12 @@ def load_model(checkpoint_path):
         m_data['model']['grids.0.0'].shape[-1],
         m_data['model']['grids.0.0'].shape[-2],
         m_data['model']['grids.0.1'].shape[-2],
-        150
     ]
     log.info("Will load model with resolution: %s" % (reso, ))
 
     model = LowrankAppearance(
         aabb=torch.tensor([[-2., -2., -2.], [2., 2., 2.]]),
-        len_time=299,
+        len_time=train_images[dataset] + test_images[dataset],
         is_ndc=False,
         is_contracted=True,
         lookup_time=False,
@@ -190,14 +198,15 @@ def load_model(checkpoint_path):
         proposal_feature_dim=10,
         proposal_decoder_type='nn',
         density_model='triplane',
-        multiscale_res=[1, 2, 4],
+        multiscale_res=[1, 2, 4, 8],
         grid_config=[
             {
-                "input_coordinate_dim": 4,
-                "output_coordinate_dim": 64,
+                "input_coordinate_dim": 3,
+                "output_coordinate_dim": 32,
                 "grid_dimensions": 2,
                 "resolution": reso,
-                "rank": 1,
+                "rank": 2,
+                "time_reso" : test_images[dataset] + train_images[dataset],
             }
         ],
     )
@@ -208,15 +217,15 @@ def load_model(checkpoint_path):
     return model
 
 
-def save_video(out_file, spiral_outputs, intrinsics, output_key='rgb'):
+def save_video(out_file, spiral_outputs, output_key='rgb'):
     imgs = spiral_outputs[output_key]
 
-    image_len = intrinsics.width * intrinsics.height
+    image_len = 800 * 800
     num_images = imgs.shape[0] // image_len
     log.info("Output contains %d frames" % (num_images, ))
 
     frames = (
-        (imgs.view(num_images, intrinsics.height, intrinsics.width, 3) * 255.0)
+        (imgs.view(num_images, 800, 800, 3) * 255.0)
         .to(torch.uint8)
     ).cpu().detach().numpy()
     frames = [frames[i] for i in range(num_images)]
@@ -225,14 +234,14 @@ def save_video(out_file, spiral_outputs, intrinsics, output_key='rgb'):
 
 def run():
     datadir = '/home/warburg/data/phototourism/brandenburg'
-    checkpoint_path = 'logs/phototourism/brandenburg_cvpr/model.pth'
-    output_path = 'logs/phototourism/brandenburg_cvpr/test_video.mp4'
-    num_frames = 150
+    checkpoint_path = '/home/sfk/plenoxels/logs/phototourism/brandenburg_cvpr/model.pth'
+    output_path = 'test_video2.mp4' #'/home/sfk/plenoxels/logs/phototourism/brandenburg_cvpr/test_video.mp4'
+    num_frames = 20
 
-    data, intrinsics = load_data(datadir, num_frames, H=800, W=800)
+    data = load_data(datadir, num_frames, H=800, W=800)
     model = load_model(checkpoint_path)
     spiral_outputs = eval_step(data, model, batch_size=8192 * 2)
-    save_video(output_path, spiral_outputs, intrinsics, output_key='rgb')
+    save_video(output_path, spiral_outputs, output_key='rgb')
 
 
 if __name__ == "__main__":
