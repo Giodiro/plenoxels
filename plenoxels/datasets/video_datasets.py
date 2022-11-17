@@ -63,6 +63,9 @@ class Video360Dataset(BaseDataset):
             poses, imgs, timestamps, self.median_imgs = load_llffvideo_data(
                 videopaths=videopaths, cam_poses=per_cam_poses, intrinsics=intrinsics, split=split,
                 keyframes=keyframes, keyframes_take_each=10)
+            # Scale and offset poses
+            poses[:, :, 3] = poses[:, :, 3] * torch.tensor([1., 1., 1.]) + torch.tensor([0.0, 0.0, 1.5])
+
             self.poses = poses.float()
             self.per_cam_near_fars = self.per_cam_near_fars.float()
             # These values are tuned for the salmon video
@@ -95,7 +98,7 @@ class Video360Dataset(BaseDataset):
         if False:
             bbox = get_360_bbox(datadir, is_contracted=is_contracted)
         else:
-            bbox = torch.tensor([[-1.5, -1.67, -1.2], [1.5, 1.67, 1.2]]) * 4
+            bbox = torch.tensor([[-2.8, -1.8, -2.], [2.8, 2., 2.]])
         weights_subsampled = int(4 / downsample)
         super().__init__(
             datadir=datadir,
