@@ -355,7 +355,7 @@ class VideoTrainer(Trainer):
 
             for dset_id, dataset in enumerate(self.test_datasets):
                 per_scene_metrics = {
-                    "psnr": 0, "ssim": 0, "dset_id": dset_id,
+                    "psnr": 0, "ssim": 0, "dset_id": dset_id, "ms-ssim": 0,
                 }
 
                 pred_frames, out_depths = [], []
@@ -376,6 +376,7 @@ class VideoTrainer(Trainer):
                         out_depths.append(out_depth)
                     per_scene_metrics["psnr"] += out_metrics["psnr"]
                     per_scene_metrics["ssim"] += out_metrics["ssim"]
+                    per_scene_metrics["ms-ssim"] += out_metrics["ms-ssim"]
                     pb.set_postfix_str(f"PSNR={out_metrics['psnr']:.2f}", refresh=False)
                     pb.update(1)
                 pb.close()
@@ -390,13 +391,15 @@ class VideoTrainer(Trainer):
                     )
                 per_scene_metrics["psnr"] /= len(dataset)  # noqa
                 per_scene_metrics["ssim"] /= len(dataset)  # noqa
+                per_scene_metrics["ms-ssim"] /= len(dataset)  # noqa
                 log_text = f"step {self.global_step}/{self.num_steps}"
                 log_text += f" | PSNR: {per_scene_metrics['psnr']:.2f}"
                 log_text += f" | SSIM: {per_scene_metrics['ssim']:.6f}"
+                log_text += f" | MSSSIM: {per_scene_metrics['ms-ssim']:.6f}"
                 logging.info(log_text)
                 val_metrics.append(per_scene_metrics)
                 self.writer.add_scalar(f"test/loss/psnr", per_scene_metrics['psnr'], self.global_step)
-                self.writer.add_scalar(f"test/loss/ssim", per_scene_metrics['ssim'], self.global_step)
+                self.writer.add_scalar(f"test/loss/ms-ssim", per_scene_metrics['ms-ssim'], self.global_step)
 
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
@@ -420,6 +423,7 @@ class VideoTrainer(Trainer):
                 "mse": torch.mean(err),
                 "psnr": metrics.psnr(preds_rgb_right, gt_right),
                 "ssim": metrics.ssim(preds_rgb_right, gt_right),
+                "ms-ssim": metrics.msssim(preds_rgb_right, gt_right),
             }
         else:
             err = (gt - preds) ** 2
@@ -427,6 +431,7 @@ class VideoTrainer(Trainer):
                 "mse": torch.mean(err),
                 "psnr": metrics.psnr(preds, gt),
                 "ssim": metrics.ssim(preds, gt),
+                "ms-ssim": metrics.msssim(preds, gt),
             }
 
     def load_model(self, checkpoint_data):

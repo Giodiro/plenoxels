@@ -95,14 +95,13 @@ class PhotoTourismDataset(torch.utils.data.Dataset):
         self.training = split == 'train'
         self.name = os.path.basename(datadir)
         self.datadir = datadir
-        # TODO: tune these for each dataset
         if 'trevi' in datadir:
             self.global_translation = torch.tensor([0, 0, -1])
             self.global_scale = torch.tensor([3.2, 3.2, 3])
         elif 'sacre' in datadir:
             self.global_translation = torch.tensor([0, 0, -1])
             self.global_scale = torch.tensor([5, 5, 3])
-        elif 'brandenburg' in datadir: # Not tuned yet
+        elif 'brandenburg' in datadir:
             self.global_translation = torch.tensor([0, 0, -1])
             self.global_scale = torch.tensor([5, 5, 3])
 

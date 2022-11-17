@@ -345,6 +345,7 @@ class Trainer():
             "mse": torch.mean(err),
             "psnr": metrics.psnr(preds, gt),
             "ssim": metrics.ssim(preds, gt),
+            "ms-ssim": metrics.msssim(preds, gt),
         }
 
     def evaluate_metrics(self,

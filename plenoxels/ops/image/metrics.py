@@ -9,7 +9,8 @@ import math
 
 import skimage.metrics
 import torch
-
+from torchmetrics import MultiScaleStructuralSimilarityIndexMeasure
+ms_ssim = MultiScaleStructuralSimilarityIndexMeasure(data_range=1.0)
 
 """ A module for image based metrics """
 
@@ -55,3 +56,9 @@ def ssim(rgb, gts):
         data_range=1,
         gaussian_weights=True,
         sigma=1.5)
+
+
+def msssim(rgb, gts):
+    assert (rgb.max() <= 1.05 and rgb.min() >= -0.05)
+    assert (gts.max() <= 1.05 and gts.min() >= -0.05)
+    return ms_ssim(torch.permute(rgb[None,...], (0,3,1,2)), torch.permute(gts[None,...], (0,3,1,2))).item()
