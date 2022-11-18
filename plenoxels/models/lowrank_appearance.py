@@ -4,6 +4,7 @@ from typing import Dict, List, Union, Sequence, Tuple
 
 import torch
 import torch.nn as nn
+import numpy as np
 
 from plenoxels.models.utils import (
     grid_sample_wrapper, compute_plane_tv, raw2alpha, init_features_param, init_grid_param
@@ -285,8 +286,18 @@ class LowrankAppearance(LowrankModel):
         # (keeps thinggs compact such that interpolation should be easier)
         # div = torch.norm(appearance_code, dim=-1) + 1e-6
         # appearance_code = appearance_code / torch.max(div, torch.ones_like(div))[:, None]
+        
         if appearance_idx.shape == torch.Size([]):
-            appearance_code = appearance_code[:, appearance_idx.long()].unsqueeze(0).repeat(pts[mask].shape[0], 1)  # [n, 16]
+            # Interpolate instead of rounding (used for video generation)
+            code0 = appearance_code[:, torch.floor(appearance_idx).long()]
+            code1 = appearance_code[:, torch.ceil(appearance_idx).long()]
+            interpweight = appearance_idx - torch.floor(appearance_idx)
+            # print(f'weight {interpweight} between {torch.floor(appearance_idx).long()} and {torch.ceil(appearance_idx).long()}')
+            appearance_code = interpweight * code1 + (1.0 - interpweight) * code0
+            # print(f'appearance_code is {appearance_code}')
+            appearance_code = appearance_code.unsqueeze(0).repeat(pts[mask].shape[0], 1)  # [n, 16]
+            # Rounding (used in training)
+            # appearance_code = appearance_code[:, appearance_idx.long()].unsqueeze(0).repeat(pts[mask].shape[0], 1)  # [n, 16]
         else:
             appearance_code = appearance_code[:, appearance_idx.long()].permute(1, 0)  # [n, 16]
 

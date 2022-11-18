@@ -37,7 +37,7 @@ log.basicConfig(level=log.INFO,
 def generate_spiral_path(poses: np.ndarray,
                          near_fars: np.ndarray,
                          n_frames=120,
-                         n_rots=2,
+                         n_rots=0.8,
                          zrate=.5) -> np.ndarray:
     # center pose
     if poses.shape[1] > 3:
@@ -49,7 +49,7 @@ def generate_spiral_path(poses: np.ndarray,
 
     # Find a reasonable "focus depth" for this dataset as a weighted average
     # of near and far bounds in disparity space.
-    close_depth, inf_depth = np.min(near_fars) * 0.9, np.max(near_fars) * 5.0
+    close_depth, inf_depth = np.min(near_fars) * 0.1, np.max(near_fars) * 5.0
     dt = 0.75
     focal = 1.0 / (((1.0 - dt) / close_depth + dt / inf_depth))
 
@@ -60,12 +60,12 @@ def generate_spiral_path(poses: np.ndarray,
 
     # Generate poses for spiral path.
     render_poses = []
-    for theta in np.linspace(0., 0.1, n_frames, endpoint=False):
-        t = radii * [0,1.,-theta,1.] #[1np.cos(theta), 1, -np.sin(theta * zrate), 1.] #-0.001 * np.sin(theta)
-        position = c2w @ t
-        lookat = c2w @ np.array([0, 0, -focal, 1.0])
-        z_axis = normalize(position - lookat)
-        render_poses.append(viewmatrix(z_axis, up, position))
+    for theta in np.linspace(0., 2. * np.pi * n_rots, n_frames, endpoint=False):
+        # t = radii * [np.cos(theta), np.sin(theta), -np.sin(theta * zrate), 1.]
+        rotation = c2w[:3,:3]
+        translation = c2w[:,3:4] + np.array([[0.1*np.cos(theta), -0.05-0.01*np.sin(theta), -0.2+0.2*np.sin(theta * zrate)]]).T
+        pose = np.concatenate([rotation, translation],axis=1)
+        render_poses.append(pose)
     return np.stack(render_poses, axis=0)
 
 
@@ -132,7 +132,8 @@ def load_data(datadir, num_frames, H, W):
     rays_d = []
     timestamps = []
     near_fars = []
-    interp_time = torch.tensor(0)# torch.linspace(0, 1708, dtype=torch.int)
+    # interp_time = torch.tensor(0)
+    # torch.linspace(0, 1708, dtype=torch.int)
     for pose_id in range(spiral_poses.shape[0]):
 
         c2w = spiral_poses[pose_id]  # [3, 4]
@@ -144,18 +145,20 @@ def load_data(datadir, num_frames, H, W):
 
         rays_o.append(origins)
         rays_d.append(directions)
-        timestamps.append(interp_time.repeat(origins.shape[0]))
+        # timestamps.append(interp_time.repeat(origins.shape[0]))
+        timestamps.append(torch.tensor(100 + pose_id / spiral_poses.shape[0]).repeat(origins.shape[0]))
         # Find the closest cam TODO: This is the crappiest way to calculate distance between cameras!
         # TODO: continue updating for phototourism here
         closest_cam_idx = torch.linalg.norm(
             poses.view(poses.shape[0], -1) - c2w.view(-1), dim=1).argmin()
         
-        near_fars.append((bounds[closest_cam_idx] + torch.tensor([0.15, 0.0])).repeat(origins.shape[0], 1))
+        near_fars.append((bounds[closest_cam_idx] + torch.tensor([0.05, 0.0])).repeat(origins.shape[0], 1))
     
     rays_o = torch.cat(rays_o, 0)
     rays_d = torch.cat(rays_d, 0)
     timestamps = torch.cat(timestamps, 0)
     near_fars = torch.cat(near_fars, 0)
+
 
     data = {
         "rays_o": rays_o,
@@ -235,8 +238,8 @@ def save_video(out_file, spiral_outputs, output_key='rgb'):
 def run():
     datadir = '/home/warburg/data/phototourism/brandenburg'
     checkpoint_path = '/home/sfk/plenoxels/logs/phototourism/brandenburg_cvpr/model.pth'
-    output_path = 'test_video2.mp4' #'/home/sfk/plenoxels/logs/phototourism/brandenburg_cvpr/test_video.mp4'
-    num_frames = 20
+    output_path = '/home/sfk/plenoxels/logs/phototourism/brandenburg_cvpr/test_video.mp4'
+    num_frames = 200
 
     data = load_data(datadir, num_frames, H=800, W=800)
     model = load_model(checkpoint_path)
