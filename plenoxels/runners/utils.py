@@ -1,30 +1,24 @@
-import os
 import math
+import os
 from typing import Tuple, Optional
-import logging as log
 
 import imageio
-import numpy as np
-import scipy.spatial
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.utils.data
 import matplotlib.pyplot as plt
+import numpy as np
+import torch
+import torch.utils.data
 from tqdm import tqdm
 
 from nerfacc import OccupancyGrid, ray_marching, rendering
-from plenoxels.nerf_rendering import sigma2alpha, shrgb2rgb
-from plenoxels.datasets.synthetic_nerf_dataset import SyntheticNerfDataset#, get_rays
 
 __all__ = (
     "get_freer_gpu",
-    "init_data",
-    "init_data_single_dset",
     "plot_ts",
     "test_model",
-    "render_patches",
     "user_ask_options",
+    "get_cosine_schedule_with_warmup",
+    "get_step_schedule_with_warmup",
+    "render_image",
 )
 
 
@@ -35,53 +29,6 @@ def get_freer_gpu():
         return np.argmax(memory_available)
     except:  # On some Giacomo GPUs this fails due to newer drivers. But I have 1 GPU anyways
         return 0
-
-
-def init_data_single_dset(cfg):
-    resolution = cfg.data.resolution
-    downsample = cfg.data.downsample
-    if cfg.data.resolution is None:
-        # None is code for automatic resolution adjustment to match the model resolution
-        # also adjusting the downsampling.
-        resolution = cfg.model.resolution
-        downsample = max(1.0, 800 / (resolution * 2))
-    if downsample is None:
-        downsample = 1.0
-    print(f"Loading dataset with resolution={resolution}, downsample={downsample}")
-    train = SyntheticNerfDataset(cfg.data.datadir, split='train', downsample=downsample,
-                                 resolution=resolution, max_frames=cfg.data.max_tr_frames)
-    train_load = torch.utils.data.DataLoader(train, batch_size=cfg.optim.batch_size, shuffle=True,
-                                             num_workers=4, prefetch_factor=2, pin_memory=True)
-    test = SyntheticNerfDataset(cfg.data.datadir, split='test', downsample=1, resolution=800,
-                                max_frames=cfg.data.max_ts_frames)
-    return train, train_load, test
-
-
-def init_data(cfg):
-    resolution = cfg.data.resolution
-    downsample = cfg.data.downsample
-    if cfg.data.resolution is None:
-        # None is code for automatic resolution adjustment to match the model resolution
-        # also adjusting the downsampling.
-        resolution = cfg.model.resolution
-        downsample = max(1.0, 800 / (resolution * 2))
-    if downsample is None:
-        downsample = 1.0
-    # Training datasets are lists of lists, where each inner list is different resolutions for the same scene
-    # Test datasets are a single list over the different scenes, all at full resolution
-    log.info(f"About to load data at reso={resolution}, downsample={downsample}")
-    tr_dsets, tr_loaders, ts_dsets = [], [], []
-    for data_dir in cfg.data.datadir:
-        tr_dsets.append(SyntheticNerfDataset(
-            data_dir, split='train', downsample=downsample, resolution=resolution,
-            max_frames=cfg.data.max_tr_frames))
-        tr_loaders.append(torch.utils.data.DataLoader(
-            tr_dsets[-1], batch_size=cfg.optim.batch_size, shuffle=True, num_workers=3,
-            prefetch_factor=4, pin_memory=True))
-        ts_dsets.append(SyntheticNerfDataset(
-            data_dir, split='test', downsample=1, resolution=800,
-            max_frames=cfg.data.max_ts_frames))
-    return tr_dsets, tr_loaders, ts_dsets
 
 
 def save_image(img_or_fig, log_dir, img_name, iteration, summary_writer):
@@ -179,76 +126,6 @@ def test_model(renderer, ts_dset, log_dir, batch_size, render_fn, plot_type="ima
     print(f"Average PSNR (over {num_test_imgs} poses): {np.mean(psnrs):.2f}")
 
 
-def render_patches(renderer, patch_level, log_dir, iteration, summary_writer=None):
-    def get_intersections(rays_o: torch.Tensor, rays_d: torch.Tensor, radius: float, step_size: float, n_samples: int):
-        dev, dt = rays_o.device, rays_o.dtype
-        offsets_pos = (radius - rays_o) / rays_d  # [batch, 3]
-        offsets_neg = (-radius - rays_o) / rays_d  # [batch, 3]
-        offsets_in = torch.minimum(offsets_pos, offsets_neg)  # [batch, 3]
-        start = torch.amax(offsets_in, dim=-1, keepdim=True)  # [batch, 1]
-        steps = torch.arange(n_samples, dtype=dt, device=dev).unsqueeze(0)  # [1, n_intrs]
-        steps = steps.repeat(rays_d.shape[0], 1)  # [batch, n_intrs]
-        intersections = start + steps * step_size  # [batch, n_intrs]
-        return intersections
-
-    def render(sh_encoder, n_samples, angle, orig, img_size, patch):
-        voxel_len = math.sqrt(3) / n_samples
-        rot = scipy.spatial.transform.Rotation.from_euler('ZYX', angle, degrees=True)
-        orig = rot.apply(orig)  # This is random
-        rot_mat = rot.as_matrix()
-        rot_mat = np.concatenate((rot_mat, orig.reshape(3, 1)), axis=1)
-        rays = get_rays(img_size, img_size, focal=img_size * 2, c2w=torch.from_numpy(rot_mat))
-        rays_o = rays[0].view(-1, 3).float()
-        rays_d = rays[1].view(-1, 3).float()
-        intersections = get_intersections(
-            rays_o=rays_o, rays_d=rays_d, step_size=voxel_len,
-            n_samples=n_samples, radius=1.0)
-        intersections_trunc = intersections[:, :-1]
-        intrs_pts = rays_o.unsqueeze(1) + intersections_trunc.unsqueeze(2) * rays_d.unsqueeze(1)
-        intrs_pts = intrs_pts.flip(-1).to(device=patch.device)
-        intersections = intersections.to(device=patch.device)
-        rays_d = rays_d.to(device=patch.device)
-        data_interp = F.grid_sample(
-            patch.unsqueeze(0), intrs_pts.view(1, -1, 1, 1, 3), mode='bilinear',
-            align_corners=False, padding_mode='zeros')  # [1, ch, n, 1, 1]
-        data_interp = data_interp.squeeze().transpose(0, 1)
-        sigma = data_interp[:, -1].view(intersections_trunc.shape)
-        cdata = data_interp[:, :-1].view(*intersections_trunc.shape, -1)
-
-        sigma = F.relu(sigma)
-        alpha, abs_light = sigma2alpha(sigma, intersections, rays_d)
-        sh_mult = sh_encoder(rays_d)  # batch, ch/3
-        sh_mult = sh_mult.unsqueeze(1).unsqueeze(1).expand(-1, cdata.shape[1], -1, -1)
-        cdata = cdata.view(cdata.shape[0], cdata.shape[1], 3, sh_mult.shape[-1])
-
-        rgb = torch.sum(sh_mult * cdata, dim=-1)
-        rgb = shrgb2rgb(rgb, abs_light, True)
-        return rgb.cpu()
-
-    with torch.autograd.no_grad():
-        atoms = renderer.atoms
-        if isinstance(atoms, nn.ParameterList):
-            atoms = atoms[patch_level].detach().float()
-        sh_encoder = renderer.sh_encoder
-        if atoms.dim() == 3:
-            reso = int(np.round(atoms.shape[0] ** (1/3)))
-            atoms = atoms.view(reso, reso, reso, atoms.shape[1], atoms.shape[2])
-        atoms = atoms.permute(3, 4, 0, 1, 2)  # n_atoms, data_dim, reso, reso, reso
-
-        n_atoms_perside = min(8, int(math.sqrt(atoms.shape[0])))
-        fig, ax = plt.subplots(nrows=n_atoms_perside, ncols=n_atoms_perside)
-        ax = ax.flatten()
-        origin = np.array([0, 0, 4], dtype=np.float32)
-
-        for i in range(len(ax)):
-            rgb = render(sh_encoder, n_samples=40, angle=(0, 0, 90), orig=origin, img_size=60, patch=atoms[i])
-            ax[i].imshow(rgb.view(int(math.sqrt(rgb.shape[0])), int(math.sqrt(rgb.shape[0])), 3))
-            ax[i].set_xticks([])
-            ax[i].set_yticks([])
-        fig.tight_layout(pad=0.4, h_pad=0.0, w_pad=0.0)
-        save_image(fig, log_dir, f"patches-{patch_level}", iteration, summary_writer)
-
-
 def user_ask_options(prompt: str, opt1: str, opt2: str) -> str:
     prompt_wopt = f"{prompt} ({opt1}, {opt2})"
     while True:
@@ -271,8 +148,8 @@ def render_image(
     timestamps: Optional[torch.Tensor] = None,
     # rendering options
     aabb: Optional[torch.Tensor] = None,
-    near_plane: Optional[float] = None,
-    far_plane: Optional[float] = None,
+    near_plane: Optional[torch.Tensor] = None,
+    far_plane: Optional[torch.Tensor] = None,
     render_step_size: float = 1e-3,
     render_bkgd: Optional[torch.Tensor] = None,
     cone_angle: float = 0.0,
@@ -400,4 +277,3 @@ def get_step_schedule_with_warmup(
             out *= gamma
         return out
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda, last_epoch)
-

@@ -5,9 +5,8 @@ from typing import Dict, List, Union, Tuple
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-from plenoxels.models.utils import grid_sample_wrapper, compute_plane_tv
+from plenoxels.models.utils import grid_sample_wrapper
 from .decoders import NNDecoder, SHDecoder
 from .lowrank_model import LowrankModel
 from ..ops.activations import trunc_exp
@@ -17,7 +16,6 @@ class LowrankLearnableHash(LowrankModel):
     def __init__(self,
                  grid_config: Union[str, List[Dict]],
                  aabb: List[torch.Tensor],
-                 is_ndc: bool,
                  sh: bool,
                  render_n_samples: int,
                  num_scenes: int = 1,
@@ -30,7 +28,6 @@ class LowrankLearnableHash(LowrankModel):
             self.config: List[Dict] = grid_config
         self.set_aabb(aabb)
         self.extra_args = kwargs
-        self.is_ndc = is_ndc
         self.sh = sh
         self.use_F = use_F
         self.cone_angle = kwargs.get('cone_angle', 0.0)
@@ -109,85 +106,6 @@ class LowrankLearnableHash(LowrankModel):
             return out, interp
         return out
 
-    @torch.no_grad()
-    def shrink(self, occ_grid, grid_id: int):
-        log.info(f"Calculating occupancy {grid_id}")
-        aabb = self.aabb(grid_id)
-        occ_grid_reso = occ_grid.resolution
-        cur_grid_size = self.resolution(grid_id)
-        pts = occ_grid.grid_coords.view([*occ_grid_reso, 3])
-        # Transpose to get correct Depth, Height, Width format
-        pts = pts.transpose(0, 2).contiguous()
-        mask = occ_grid.binary.transpose(0, 2).contiguous()
-
-        # Obtain the bounds which we can resize to
-        valid_pts = pts[mask]
-        pts_min = valid_pts.amin(0)
-        pts_max = valid_pts.amax(0)
-        # Normalize pts_min, pts_max from [0, reso] to world-coordinates
-        pts_min = (pts_min / occ_grid_reso)
-        pts_min = aabb[0] * (1 - pts_min) + aabb[1] * pts_min
-        pts_max = (pts_max / occ_grid_reso)
-        pts_max = aabb[0] * (1 - pts_max) + aabb[1] * pts_max
-        new_aabb = torch.stack((pts_min, pts_max), 0)
-        log.info(f"Scene {grid_id} can be shrunk to new bounding box: {new_aabb.view(-1)}.")
-
-        # Compute the new bounds on the parameter grid
-        log.info(f"Shrinking grid {grid_id}...")
-        cur_units = (aabb[1] - aabb[0]) / (cur_grid_size - 1)
-        t_l, b_r = (new_aabb[0] - aabb[0]) / cur_units, (new_aabb[1] - aabb[0]) / cur_units
-        t_l = torch.round(t_l).long()
-        b_r = torch.round(b_r).long() + 1
-        b_r = torch.minimum(b_r, cur_grid_size)  # don't exceed current grid dimensions
-
-        # Truncate the parameter grid to the new grid-size
-        # IMPORTANT: This will only work if input-dim is 3!
-        grid_info = self.config[0]
-        coo_combs = list(itertools.combinations(
-            range(grid_info["input_coordinate_dim"]),
-            grid_info.get("grid_dimensions", grid_info["input_coordinate_dim"])))
-        for ci, coo_comb in enumerate(coo_combs):
-            slices = [slice(None), slice(None)] + [slice(t_l[cc].item(), b_r[cc].item()) for cc in coo_comb[::-1]]
-            self.scene_grids[grid_id][0][ci] = torch.nn.Parameter(
-                self.scene_grids[grid_id][0][ci].data[slices]
-            )
-
-        if not torch.all(occ_grid_reso == cur_grid_size):
-            t_l_r, b_r_r = t_l / (cur_grid_size - 1), (b_r - 1) / (cur_grid_size - 1)
-            correct_aabb = torch.zeros_like(new_aabb)
-            correct_aabb[0] = (1 - t_l_r) * aabb[0] + t_l_r * aabb[1]
-            correct_aabb[1] = (1 - b_r_r) * aabb[0] + b_r_r * aabb[1]
-            log.info(f"Corrected new AABB from {new_aabb.view(-1)} to {correct_aabb.view(-1)}")
-            new_aabb = correct_aabb
-
-        new_size = b_r - t_l
-        self.set_aabb(new_aabb, grid_id)
-        self.set_resolution(new_size, grid_id)
-        log.info(f"Shrunk scene {grid_id}. New AABB={new_aabb.view(-1)} New resolution={new_size.view(-1)}")
-
-    @torch.no_grad()
-    def upsample(self, new_reso, grid_id: int):
-        grid_info = self.config[0]
-        coo_combs = list(itertools.combinations(
-            range(grid_info["input_coordinate_dim"]),
-            grid_info.get("grid_dimensions", grid_info["input_coordinate_dim"])))
-        for ci, coo_comb in enumerate(coo_combs):
-            new_size = [new_reso[cc] for cc in coo_comb]
-            if len(coo_comb) == 3:
-                mode = 'trilinear'
-            elif len(coo_comb) == 2:
-                mode = 'bilinear'
-            elif len(coo_comb) == 1:
-                mode = 'linear'
-            else:
-                raise RuntimeError()
-            grid_data = self.scene_grids[grid_id][0][ci].data
-            self.scene_grids[grid_id][0][ci] = torch.nn.Parameter(
-                F.interpolate(grid_data, size=new_size[::-1], mode=mode, align_corners=True))
-        self.set_resolution(
-            torch.tensor(new_reso, dtype=torch.long, device=grid_data.device), grid_id)
-        log.info(f"Upsampled scene {grid_id} to resolution={new_reso}")
-
     def step_size(self, n_samples: int, grid_id: int):
         aabb = self.aabb(grid_id)
         return (
@@ -262,60 +180,3 @@ class LowrankLearnableHash(LowrankModel):
             if self.use_F:
                 params.append({"params": self.features, "lr": lr})
         return params
-
-    """Regularizers"""
-    def compute_plane_tv(self, grid_id: int, what='Gcoords'):
-        grids: nn.ModuleList = self.scene_grids[grid_id]  # noqa
-        total = 0
-        for grid_ls in grids:
-            for grid in grid_ls:
-                if what == 'Gcoords':
-                    total += compute_plane_tv(grid)
-                elif what == 'features':
-                    # Look up the features so we do tv on features rather than coordinates
-                    coords = grid.view(-1, len(self.features.shape) - 1)
-                    features = grid_sample_wrapper(self.features, coords).reshape(-1, self.feature_dim, grid.shape[-2], grid.shape[-1])
-                    total += compute_plane_tv(features)
-        return total
-
-    def compute_3d_tv(self, grid_id, what='Gcoords', batch_size=100, patch_size=3):
-        aabb = self.aabb(grid_id)
-        grid_size_l = self.resolution(grid_id)
-        dev = aabb.device
-        pts = torch.stack(torch.meshgrid(
-            torch.linspace(0, 1, patch_size, device=dev),
-            torch.linspace(0, 1, patch_size, device=dev),
-            torch.linspace(0, 1, patch_size, device=dev), indexing='ij'
-        ), dim=-1)  # [gs0, gs1, gs2, 3]
-        pts = pts.view(-1, 3)
-
-        start = torch.rand(batch_size, 3, device=dev) * (1 - patch_size / grid_size_l[None, :])
-        end = start + (patch_size / grid_size_l[None, :])
-
-        # pts: [1, gs0, gs1, gs2, 3] * (bs, 1, 1, 1, 3) + (bs, 1, 1, 1, 3)
-        pts = (
-            pts[None, ...] * (end - start)[:, None, None, None, :] + start[:, None, None, None, :]
-        ).view(-1, 3)  # [bs*gs0*gs1*gs2, 3]
-        # Normalize between [aabb0, aabb1]
-        pts = aabb[0] * (1 - pts) + aabb[1] * pts
-
-        if what == 'density':
-            # Compute density on the grid
-            patches = (
-                self.query_density(pts, grid_id, return_feat=False)
-                .view(-1, patch_size, patch_size, patch_size)
-            )
-        elif what == 'Gcoords':
-            assert self.use_F, "Gcoords regularization not compatible with use_F=False"
-            pts = self.normalize_coords(pts, grid_id)
-            _, coords = self.compute_features(pts, grid_id, return_coords=True)
-            patches = coords.view(-1, patch_size, patch_size, patch_size, coords.shape[-1])
-        else:
-            raise ValueError(what)
-
-        d0 = patches[:, 1:, :, :, :] - patches[:, :-1, :, :, :]
-        d1 = patches[:, :, 1:, :, :] - patches[:, :, :-1, :, :]
-        d2 = patches[:, :, :, 1:, :] - patches[:, :, :, :-1, :]
-
-        return (d0.square().mean() + d1.square().mean() + d2.square().mean())  # l2
-        # return (d0.abs().mean() + d1.abs().mean() + d2.abs().mean())  # l1
