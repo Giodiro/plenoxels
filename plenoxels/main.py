@@ -48,7 +48,7 @@ def init_trainer(is_video: bool, **kwargs):
     if is_video:
         return video_trainer.VideoTrainer(**kwargs)
     else:
-        return multiscene_trainer.Trainer(**kwargs)
+        return multiscene_trainer.MultisceneTrainer(**kwargs)
 
 
 def main():
@@ -104,10 +104,7 @@ def main():
     else:
         data = load_data(is_video, **config)
         config.update(data)
-        trainer: multiscene_trainer.Trainer = init_trainer(is_video, **config)
-        if trainer.transfer_learning:
-            # We have reloaded the model learned from args.log_dir
-            assert args.log_dir is not None and os.path.isdir(args.log_dir)
+        trainer = init_trainer(is_video, **config)
         if args.log_dir is not None:
             checkpoint_path = os.path.join(args.log_dir, "model.pth")
             trainer.load_model(torch.load(checkpoint_path))
