@@ -16,7 +16,7 @@ from plenoxels.ema import EMA
 from plenoxels.models.lowrank_video import LowrankVideo
 from plenoxels.my_tqdm import tqdm
 from plenoxels.ops.image import metrics
-from plenoxels.runners.multiscene_trainer import Trainer
+from plenoxels.runners.base_trainer import BaseTrainer
 from plenoxels.runners.regularization import (
     VideoPlaneTV, TimeSmoothness, L1PlaneDensityVideo,
     L1AppearancePlanes
@@ -24,7 +24,7 @@ from plenoxels.runners.regularization import (
 from plenoxels.runners.utils import render_image
 
 
-class VideoTrainer(Trainer):
+class VideoTrainer(BaseTrainer):
     def __init__(self,
                  tr_loader: torch.utils.data.DataLoader,
                  tr_dset: torch.utils.data.Dataset,

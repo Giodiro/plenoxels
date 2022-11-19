@@ -1,4 +1,4 @@
-from collections import Sequence
+from typing import Sequence
 
 from torch.utils.data import Sampler, SequentialSampler
 

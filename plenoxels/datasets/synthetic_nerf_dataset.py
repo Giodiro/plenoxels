@@ -34,7 +34,7 @@ class SyntheticNerfDataset(BaseDataset):
         self.near_far = torch.tensor([2.0, 6.0])
 
         frames, transform = load_360_frames(datadir, split, self.max_frames)
-        imgs, poses = load_360_images(frames, datadir, split, self.downsample, self.resolution)
+        imgs, poses = load_360_images(frames, datadir, split, self.downsample, (None, None))
         intrinsics = load_360_intrinsics(transform, imgs, self.downsample)
         rays_o, rays_d, imgs = create_360_rays(
             imgs, poses, merge_all=split == 'train', intrinsics=intrinsics, is_blender_format=True)
@@ -57,6 +57,15 @@ class SyntheticNerfDataset(BaseDataset):
         out["dset_id"] = self.dset_id
         out["near"] = self.near_far[0]
         out["far"] = self.near_far[1]
+        # Background color
+        imgs = out["imgs"]
+        if self.split == 'train':  # randomize
+            bg_color = torch.rand_like(imgs[:1, :3])  # [1, 3]
+        else:
+            bg_color = torch.ones_like(imgs[:1, :3])
+        imgs = imgs[..., :3] * imgs[..., 3:] + bg_color * (1.0 - imgs[..., 3:])
+        out["imgs"] = imgs
+        out["color_bkgd"] = bg_color
         return out
 
 

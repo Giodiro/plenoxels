@@ -94,10 +94,12 @@ class BaseTrainer():
                 batch_iter = iter(self.train_data_loader)
                 self.pre_epoch()
                 try:
+                    print("Before next", flush=True)
+
                     self.model.train()
                     data = next(batch_iter)
                     self.model.train()
-                    step_successful = self.step(data)
+                    step_successful = self.train_step(data)
 
                     self.global_step += 1
 

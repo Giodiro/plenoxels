@@ -34,14 +34,13 @@ def setup_logging(log_level=logging.INFO):
                         force=True)
 
 
-def load_data(is_video: bool, data_downsample, data_dirs, batch_size, **kwargs):
+def load_data(is_video: bool, validate_only: bool, data_downsample, data_dirs, **kwargs):
     data_downsample = parse_optfloat(data_downsample, default_val=1.0)
-    batch_size = parse_optint(batch_size)
 
     if is_video:
-        return video_trainer.load_data(data_downsample, data_dirs, batch_size, **kwargs)
+        return video_trainer.load_data(data_downsample, data_dirs, validate_only, **kwargs)
     else:
-        return multiscene_trainer.load_data(data_downsample, data_dirs, batch_size, **kwargs)
+        return multiscene_trainer.load_data(data_downsample, data_dirs, validate_only, **kwargs)
 
 
 def init_trainer(is_video: bool, **kwargs):
@@ -102,14 +101,14 @@ def main():
             state = torch.load(checkpoint_path)
         trainer, config = video_trainer.load_video_model(config, state, validate_only)
     else:
-        data = load_data(is_video, **config)
+        data = load_data(is_video, validate_only, **config)
         config.update(data)
         trainer = init_trainer(is_video, **config)
         if args.log_dir is not None:
             checkpoint_path = os.path.join(args.log_dir, "model.pth")
             trainer.load_model(torch.load(checkpoint_path))
 
-    if args.validate_only:
+    if validate_only:
         assert args.log_dir is not None and os.path.isdir(args.log_dir)
         trainer.validate()
     else:

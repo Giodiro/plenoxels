@@ -45,6 +45,19 @@ class MultisceneTrainer(BaseTrainer):
                  n_samples: int,
                  **kwargs
                  ):
+        self.test_datasets = ts_dsets
+        self.train_datasets = tr_dsets
+        if self.test_datasets[0].is_contracted:
+            self.contraction_type = ContractionType.UN_BOUNDED_SPHERE
+        else:
+            self.contraction_type = ContractionType.AABB
+        self.num_dsets = len(self.train_datasets)
+        self.target_sample_batch_size = sample_batch_size
+        self.render_n_samples = n_samples
+        self.cone_angle = kwargs['cone_angle']
+        self._density_threshold = kwargs['density_threshold']
+        self._alpha_threshold = kwargs['alpha_threshold']
+
         super().__init__(
             train_data_loader=tr_loader,
             num_steps=num_steps,
@@ -58,18 +71,6 @@ class MultisceneTrainer(BaseTrainer):
             save_outputs=save_outputs,
             **kwargs
         )
-        self.test_datasets = ts_dsets
-        self.train_datasets = tr_dsets
-        if self.test_datasets[0].is_contracted:
-            self.contraction_type = ContractionType.UN_BOUNDED_SPHERE
-        else:
-            self.contraction_type = ContractionType.AABB
-        self.num_dsets = len(self.train_datasets)
-        self.target_sample_batch_size = sample_batch_size
-        self.render_n_samples = n_samples
-        self.cone_angle = kwargs['cone_angle']
-        self._density_threshold = kwargs['density_threshold']
-        self._alpha_threshold = kwargs['alpha_threshold']
 
         # self.criterion = torch.nn.MSELoss(reduction='mean')
         self.criterion = torch.nn.SmoothL1Loss(reduction='mean')
@@ -111,7 +112,7 @@ class MultisceneTrainer(BaseTrainer):
     def train_step(self, data: Dict[str, Union[int, torch.Tensor]], **kwargs):
         super().train_step(data, **kwargs)
         dset_id = data["dset_id"]
-        imgs = data["imgs"]
+        imgs = data["imgs"].to(self.device)
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             # update occupancy grid
             self.occupancy_grids[dset_id].every_n_step(
@@ -292,6 +293,12 @@ def decide_dset_type(dd) -> str:
         raise RuntimeError(f"data_dir {dd} not recognized as LLFF or Synthetic dataset.")
 
 
+def init_dloader_random(worker_id):
+    seed = torch.utils.data.get_worker_info().seed
+    torch.manual_seed(seed)
+    np.random.seed(seed % (2 ** 32 - 1))
+
+
 def init_tr_data(data_downsample: float, data_dirs: Sequence[str], **kwargs):
     initial_batch_size = int(kwargs['sample_batch_size']) // int(kwargs['n_samples'])
     dsets = []
@@ -308,12 +315,14 @@ def init_tr_data(data_downsample: float, data_dirs: Sequence[str], **kwargs):
             dsets.append(LLFFDataset(
                 data_dir, split='train', downsample=int(data_downsample), hold_every=hold_every,
                 batch_size=initial_batch_size, dset_id=i))
+        dsets[-1].reset_iter()
 
     tr_sampler = MultiSceneSampler(dsets, num_samples_per_dataset=1)
     cat_tr_dset = torch.utils.data.ConcatDataset(dsets)
     tr_loader = torch.utils.data.DataLoader(
-        cat_tr_dset, num_workers=4, prefetch_factor=4, pin_memory=True,
-        batch_size=None, sampler=tr_sampler)
+        cat_tr_dset, num_workers=4, prefetch_factor=4,
+        pin_memory=True,
+        batch_size=None, sampler=tr_sampler, worker_init_fn=init_dloader_random)
 
     return {"tr_dsets": dsets, "tr_loader": tr_loader}
 
@@ -325,11 +334,11 @@ def init_ts_data(data_dirs: Sequence[str], **kwargs):
         if dset_type == "synthetic":
             max_ts_frames = parse_optint(kwargs.get('max_ts_frames'))
             dsets.append(SyntheticNerfDataset(
-                data_dir, split='train', downsample=1, max_frames=max_ts_frames, dset_id=i))
+                data_dir, split='test', downsample=1, max_frames=max_ts_frames, dset_id=i))
         elif dset_type == "llff":
             hold_every = parse_optint(kwargs.get('hold_every'))
             dsets.append(LLFFDataset(
-                data_dir, split='train', downsample=4, hold_every=hold_every, dset_id=i))
+                data_dir, split='test', downsample=4, hold_every=hold_every, dset_id=i))
     return {"ts_dsets": dsets}
 
 
