@@ -1,18 +1,11 @@
-import itertools
 import logging as log
 import math
-from typing import Dict, List, Union, Tuple
+from typing import Dict, List, Union, Sequence
 
 import torch
 import torch.nn as nn
 
-from plenoxels.models.utils import (
-    grid_sample_wrapper, compute_plane_tv, compute_line_tv,
-    init_density_activation
-)
-from .decoders import NNDecoder, SHDecoder
 from .lowrank_model import LowrankModel
-from ..ops.activations import trunc_exp
 
 
 class LowrankVideo(LowrankModel):
@@ -24,21 +17,19 @@ class LowrankVideo(LowrankModel):
                  use_F: bool,
                  density_activation: str,
                  render_n_samples: int,
-                 multiscale_res: List[int] = [1],
+                 multiscale_res: Sequence[int] = (1, ),
                  global_translation=None,
                  global_scale=None,
                  **kwargs):
         self.len_time = len_time  # maximum timestep - used for normalization
-        super().__init__()
-        if isinstance(grid_config, str):
-            self.config: List[Dict] = eval(grid_config)
-        else:
-            self.config: List[Dict] = grid_config
+        super().__init__(
+            grid_config=grid_config,
+            sh=sh,
+            use_F=use_F,
+            density_activation=density_activation,
+            aabb=aabb,
+        )
         self.multiscale_res = multiscale_res
-        self.set_aabb(aabb, 0)
-        self.sh = sh
-        self.use_F = use_F
-        self.density_act = init_density_activation(density_activation)
         self.render_n_samples = render_n_samples
         self.extra_args = kwargs
 
@@ -59,11 +50,6 @@ class LowrankVideo(LowrankModel):
                 self.grids.append(gpdesc.grid_coefs)
                 self.feature_dim = gpdesc.grid_coefs[-1].shape[1]
 
-        if self.sh:
-            self.decoder = SHDecoder(feature_dim=self.feature_dim)
-        else:
-            self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
-
         log.info(f"Initialized LowrankVideo. decoder={self.decoder}")
         log.info(f"Model grids: {self.grids}")
 
@@ -77,24 +63,9 @@ class LowrankVideo(LowrankModel):
         # Interpolate in space and time
         pts = torch.cat([pts, timestamps[:, None]], dim=-1)  # [batch, 4] for xyzt
 
-        coo_combs = list(itertools.combinations(
-            range(pts.shape[-1]),
-            level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
-
-        multi_scale_interp = torch.zeros_like(pts[0, 0])
-        for scale_id, grid_space in enumerate(multiscale_space):
-            interp_space = 1  # [n, F_dim, rank]
-            for ci, coo_comb in enumerate(coo_combs):
-                # interpolate in plane
-                interp_out_plane = (
-                    grid_sample_wrapper(grid_space[ci], pts[..., coo_comb])
-                    .view(-1, self.feature_dim)
-                )
-                # compute product
-                interp_space = interp_space * interp_out_plane
-            # sum over scales
-            multi_scale_interp += interp_space
-        return multi_scale_interp
+        multiscale_interp = self.interpolate_ms_features(
+            pts, multiscale_space, level_info, self.feature_dim)
+        return multiscale_interp
 
     def step_size(self, n_samples: int):
         aabb = self.aabb(0)

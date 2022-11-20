@@ -19,6 +19,7 @@ __all__ = (
     "get_cosine_schedule_with_warmup",
     "get_step_schedule_with_warmup",
     "render_image",
+    "init_dloader_random",
 )
 
 
@@ -277,3 +278,9 @@ def get_step_schedule_with_warmup(
             out *= gamma
         return out
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda, last_epoch)
+
+
+def init_dloader_random(worker_id):
+    seed = torch.utils.data.get_worker_info().seed
+    torch.manual_seed(seed)
+    np.random.seed(seed % (2 ** 32 - 1))

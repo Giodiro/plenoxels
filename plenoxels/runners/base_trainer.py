@@ -27,12 +27,14 @@ class BaseTrainer():
                  save_every: int,
                  valid_every: int,
                  save_outputs: bool,
+                 device: Union[str, torch.device],
                  **kwargs
                  ):
         self.eval_batch_size = kwargs.get('eval_batch_size', 8192)
         self.extra_args = kwargs
 
         self.num_steps = num_steps
+        self.device = device
 
         self.scheduler_type = scheduler_type
         self.optim_type = optim_type
@@ -56,6 +58,8 @@ class BaseTrainer():
         self.regularizers = self.init_regularizers(**self.extra_args)
         self.gscaler = torch.cuda.amp.GradScaler(enabled=self.train_fp16)
 
+        self.model.to(self.device)
+
     @abc.abstractmethod
     def eval_step(self, data, **kwargs) -> MutableMapping[str, torch.Tensor]:
         self.model.eval()
@@ -67,10 +71,12 @@ class BaseTrainer():
         return False
 
     def post_step(self, progress_bar):
-        progress_bar.set_postfix_str(
-            losses_to_postfix(self.loss_info, lr=self.lr), refresh=False)
-        for loss_name, loss_val in self.loss_info.items():
-            self.writer.add_scalar(f"train/loss/{loss_name}", loss_val.value, self.global_step)
+        if self.global_step % self.calc_metrics_every == 0:
+            progress_bar.set_postfix_str(
+                losses_to_postfix(self.loss_info, lr=self.lr), refresh=False)
+            for loss_name, loss_val in self.loss_info.items():
+                self.writer.add_scalar(f"train/loss/{loss_name}", loss_val.value, self.global_step)
+
         progress_bar.update(1)
 
         if self.valid_every > -1 and self.global_step % self.valid_every == 0:
@@ -99,14 +105,14 @@ class BaseTrainer():
                     self.model.train()
                     step_successful = self.train_step(data)
 
-                    self.global_step += 1
-
                     if step_successful and self.scheduler is not None:
                         self.scheduler.step()
                     for r in self.regularizers:
                         r.step(self.global_step)
                     self.post_step(progress_bar=pb)
                     #self.model.step_cb(self.global_step, self.num_steps)
+
+                    self.global_step += 1
                 except StopIteration as e:
                     # This get thrown in `next` or `step`
                     # Still need to increment the step, otherwise we get stuck in a loop
@@ -151,7 +157,6 @@ class BaseTrainer():
                          gt: Optional[torch.Tensor],
                          preds: MutableMapping[str, torch.Tensor],
                          dset,
-                         dset_id: int,
                          img_idx: int,
                          name: Optional[str] = None,
                          save_outputs: bool = True) -> Tuple[dict, torch.Tensor, torch.Tensor]:
@@ -190,7 +195,7 @@ class BaseTrainer():
             out_depth = (out_depth * 255.0).repeat(1, 1, 3).byte().numpy()
 
         if save_outputs:
-            out_name = f"step{self.global_step}-D{dset_id}-{img_idx}"
+            out_name = f"step{self.global_step}-{img_idx}"
             if name is not None and name != "":
                 out_name += "-" + name
             write_png(os.path.join(self.log_dir, out_name + ".png"), out_img)
@@ -283,26 +288,7 @@ class BaseTrainer():
         pass
 
     def get_regularizers(self, **kwargs) -> Sequence[Regularizer]:
-        return (
-            # PlaneTV(kwargs.get('plane_tv_weight', 0.0), features='all'),
-            # PlaneTV(kwargs.get('plane_tv_weight_sigma', 0.0), features='sigma'),
-            # PlaneTV(kwargs.get('plane_tv_weight_sh', 0.0), features='sh'),
-            # DensityPlaneTV(kwargs.get('density_plane_tv_weight', 0.0)),
-            # VolumeTV(
-            #     kwargs.get('volume_tv_weight', 0.0),
-            #     what=kwargs.get('volume_tv_what'),
-            #     patch_size=kwargs.get('volume_tv_patch_size', 3),
-            #     batch_size=kwargs.get('volume_tv_npts', 100),
-            # ),
-            # L1PlaneColor(kwargs.get('l1_plane_color_weight', 0.0)),
-            # L1PlaneDensity(kwargs.get('l1_plane_density_weight', 0.0)),
-            # L1Density(kwargs.get('l1density_weight', 0.0), max_voxels=100_000),
-
-            # VideoPlaneTV(kwargs.get('plane_tv_weight', 0.0)),
-            # TimeSmoothness(kwargs.get('time_smoothness_weight', 0.0)),
-            # L1PlaneDensityVideo(kwargs.get('l1_plane_density_reg', 0.0)),
-            # L1AppearancePlanes(kwargs.get('l1_appearance_planes_reg', 0.0)),
-        )
+        return ()
 
     def init_regularizers(self, **kwargs):
         # Keep only the regularizers with a positive weight
@@ -312,6 +298,10 @@ class BaseTrainer():
     @property
     def lr(self):
         return self.optimizer.param_groups[0]['lr']
+
+    @property
+    def calc_metrics_every(self):
+        return 1
 
 
 def losses_to_postfix(loss_dict: Dict[str, EMA], lr: Optional[float]) -> str:

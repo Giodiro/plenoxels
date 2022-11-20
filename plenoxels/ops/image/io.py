@@ -209,3 +209,30 @@ def hwc_to_chw(img):
         (np.array): [C,H,W] image.
     """
     return np.array(img).transpose((2, 0, 1))
+
+
+def write_video_to_file(file_name, frames):
+    log.info(f"Saving video ({len(frames)} frames) to {file_name}")
+    # Photo tourisme the image sizes differs
+    sizes = np.array([frame.shape[:2] for frame in frames])
+    same_size_frames = np.unique(sizes, axis=0).shape[0] == 1
+    if same_size_frames:
+        height, width = frames[0].shape[:2]
+        video = cv2.VideoWriter(
+            file_name, cv2.VideoWriter_fourcc(*'mp4v'), 30, (width, height))
+        for img in frames:
+            video.write(img[:, :, ::-1])  # opencv uses BGR instead of RGB
+        cv2.destroyAllWindows()
+        video.release()
+    else:
+        height = sizes[:, 0].max()
+        width = sizes[:, 1].max()
+        video = cv2.VideoWriter(
+            file_name, cv2.VideoWriter_fourcc(*'mp4v'), 5, (width, height))
+        for img in frames:
+            image = np.zeros((height, width, 3), dtype=np.uint8)
+            h, w = img.shape[:2]
+            image[(height-h)//2:(height-h)//2+h, (width-w)//2:(width-w)//2+w, :] = img
+            video.write(image[:, :, ::-1])  # opencv uses BGR instead of RGB
+        cv2.destroyAllWindows()
+        video.release()

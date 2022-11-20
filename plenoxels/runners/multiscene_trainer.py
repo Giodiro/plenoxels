@@ -1,4 +1,4 @@
-import logging
+import logging as log
 import math
 import os
 from collections import defaultdict
@@ -18,7 +18,7 @@ from .regularization import (
     PlaneTV, DensityPlaneTV, VolumeTV, L1PlaneColor, L1PlaneDensity,
     L1Density
 )
-from .utils import render_image
+from .utils import render_image, init_dloader_random
 from ..datasets import SyntheticNerfDataset, LLFFDataset
 from ..datasets.base_dataset import BaseDataset
 from ..datasets.multi_dataset_sampler import MultiSceneSampler
@@ -69,19 +69,19 @@ class MultisceneTrainer(BaseTrainer):
             save_every=save_every,
             valid_every=valid_every,
             save_outputs=save_outputs,
+            device=device,
             **kwargs
         )
 
         # self.criterion = torch.nn.MSELoss(reduction='mean')
         self.criterion = torch.nn.SmoothL1Loss(reduction='mean')
         self.occupancy_grids = self.init_occupancy_grid(**self.extra_args)
-
-        self.device = device
-        self.model.to(device=self.device)
         for og in self.occupancy_grids:
             og.to(device=self.device)
 
-    def eval_step(self, data: Dict[str, Union[int, torch.Tensor]], **kwargs) -> MutableMapping[str, torch.Tensor]:
+    def eval_step(self,
+                  data: Dict[str, Union[int, torch.Tensor]],
+                  **kwargs) -> MutableMapping[str, torch.Tensor]:
         """
         Note that here `data` contains a whole image. we need to split it up before tracing
         for memory constraints.
@@ -104,10 +104,7 @@ class MultisceneTrainer(BaseTrainer):
                 alpha_thresh=self.alpha_threshold,
                 device=self.device,
             )
-        return {
-            "rgb": rgb,
-            "depth": depth,
-        }
+        return dict(rgb=rgb, depth=depth)
 
     def train_step(self, data: Dict[str, Union[int, torch.Tensor]], **kwargs):
         super().train_step(data, **kwargs)
@@ -166,16 +163,17 @@ class MultisceneTrainer(BaseTrainer):
         self.gscaler.update()
 
         # Report on losses
-        if self.global_step % (self.num_dsets * 2 + 1) == 0:
-        with torch.no_grad():
-            mse = F.mse_loss(rgb, imgs).item()
-            self.loss_info[f"psnr_{dset_id}"].update(-10 * math.log10(mse))
-            self.loss_info[f"mse_{dset_id}"].update(mse)
-            self.loss_info[f"alive_ray_mask_{dset_id}"].update(float(alive_ray_mask.long().sum().item()))
-            self.loss_info[f"n_rendering_samples_{dset_id}"].update(float(n_rendering_samples))
-            self.loss_info[f"n_rays_{dset_id}"].update(float(len(imgs)))
-            for r in self.regularizers:
-                r.report(self.loss_info)
+        if self.global_step % self.calc_metrics_every == 0:
+            with torch.no_grad():
+                mse = F.mse_loss(rgb, imgs).item()
+                self.loss_info[f"psnr_{dset_id}"].update(-10 * math.log10(mse))
+                self.loss_info[f"mse_{dset_id}"].update(mse)
+                self.loss_info[f"alive_ray_mask_{dset_id}"].update(
+                    float(alive_ray_mask.long().sum().item()))
+                self.loss_info[f"n_rendering_samples_{dset_id}"].update(float(n_rendering_samples))
+                self.loss_info[f"n_rays_{dset_id}"].update(float(len(imgs)))
+                for r in self.regularizers:
+                    r.report(self.loss_info)
 
         return scale <= self.gscaler.get_scale()
 
@@ -185,29 +183,29 @@ class MultisceneTrainer(BaseTrainer):
         for d in self.train_datasets:
             d.reset_iter()
 
+    @torch.no_grad()
     def validate(self):
         val_metrics = []
-        with torch.no_grad():
-            for dset_id, dataset in enumerate(self.test_datasets):
-                pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
-                per_scene_metrics = defaultdict(list)
-                for img_idx, data in enumerate(dataset):
-                    preds = self.eval_step(data, dset_id=dset_id)
-                    out_metrics, _, _ = self.evaluate_metrics(
-                        data["imgs"], preds, dset_id=dset_id, dset=dataset, img_idx=img_idx,
-                        name=None, save_outputs=self.save_outputs)
-                    for k, v in out_metrics.items():
-                        per_scene_metrics[k].append(v)
-                    pb.set_postfix_str(f"PSNR={out_metrics['psnr']:.2f}", refresh=False)
-                    pb.update(1)
-                pb.close()
+        for dset_id, dataset in enumerate(self.test_datasets):
+            pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
+            per_scene_metrics = defaultdict(list)
+            for img_idx, data in enumerate(dataset):
+                preds = self.eval_step(data, dset_id=dset_id)
+                out_metrics, _, _ = self.evaluate_metrics(
+                    data["imgs"], preds, dset=dataset, img_idx=img_idx,
+                    name=f"D{dset_id}", save_outputs=self.save_outputs)
+                for k, v in out_metrics.items():
+                    per_scene_metrics[k].append(v)
+                pb.set_postfix_str(f"PSNR={out_metrics['psnr']:.2f}", refresh=False)
+                pb.update(1)
+            pb.close()
 
-                log_text = f"step {self.global_step}/{self.num_steps} | scene {dset_id}"
-                for k in per_scene_metrics:
-                    per_scene_metrics[k] = np.mean(np.asarray(per_scene_metrics[k]))  # noqa
-                    log_text += f" | D{dset_id} {k}: {per_scene_metrics[k]:.4f}"
-                logging.info(log_text)
-                val_metrics.append(per_scene_metrics)
+            log_text = f"step {self.global_step}/{self.num_steps} | scene {dset_id}"
+            for k in per_scene_metrics:
+                per_scene_metrics[k] = np.mean(np.asarray(per_scene_metrics[k]))  # noqa
+                log_text += f" | {k}: {per_scene_metrics[k]:.4f}"
+            log.info(log_text)
+            val_metrics.append(per_scene_metrics)
 
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
@@ -217,12 +215,17 @@ class MultisceneTrainer(BaseTrainer):
         base_save_dict["occupancy_grids"] = [og.state_dict() for og in self.occupancy_grids]
         return base_save_dict
 
+    def load_model(self, checkpoint_data):
+        super().load_model(checkpoint_data)
+        for i in range(len(self.occupancy_grids)):
+            self.occupancy_grids[i].load_state_dict(checkpoint_data["occupancy_grids"][i])
+
     def init_epoch_info(self):
         ema_weight = 0.9  # higher places higher weight to new observations
         loss_info = defaultdict(lambda: EMA(ema_weight))
         return loss_info
 
-    def init_model(self, **kwargs) -> torch.nn.Module:
+    def init_model(self, **kwargs) -> LowrankLearnableHash:
         aabbs = [d.scene_bbox for d in self.train_datasets]
         model = LowrankLearnableHash(
             num_scenes=self.num_dsets,
@@ -230,19 +233,22 @@ class MultisceneTrainer(BaseTrainer):
             aabb=aabbs,
             render_n_samples=self.render_n_samples,
             **kwargs)
-        logging.info(f"Initialized LowrankLearnableHash model with "
-                     f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters.")
+        log.info(f"Initialized LowrankLearnableHash model with "
+                 f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters.")
         return model
 
-    def init_occupancy_grid(self, **kwargs):
+    def init_occupancy_grid(self, **kwargs) -> List[OccupancyGrid]:
         occupancy_grids = []
         for scene in range(self.num_dsets):
-            occupancy_grid = OccupancyGrid(
+            og = OccupancyGrid(
                 roi_aabb=self.model.aabb(scene).view(-1),
                 resolution=(self.model.resolution(scene)[:3] // 2),
                 contraction_type=self.contraction_type,
-            ).cuda()
-            occupancy_grids.append(occupancy_grid)
+            )
+            occupancy_grids.append(og)
+            log.info("Initialized OccupancyGrid(dset=%d). resolution: %s - #parameters: %d" % (
+                scene, og.resolution.tolist(), og.sum(np.prod(p.shape) for p in og.parameters()),
+            ))
         return occupancy_grids
 
     def get_regularizers(self, **kwargs):
@@ -282,24 +288,20 @@ class MultisceneTrainer(BaseTrainer):
             return 100_000
         return 1_000_000
 
+    @property
+    def calc_metrics_every(self):
+        return self.num_dsets * 2 + 1
 
-def decide_dset_type(dd) -> str:
-    if ("chair" in dd or "drums" in dd or "ficus" in dd or "hotdog" in dd
-            or "lego" in dd or "materials" in dd or "mic" in dd
-            or "ship" in dd):
+
+def decide_dset_type(dd: str) -> str:
+    if ("chair" in dd or "drums" in dd or "ficus" in dd or "hotdog" in dd or "lego" in dd or
+            "materials" in dd or "mic" in dd or "ship" in dd):
         return "synthetic"
-    elif ("fern" in dd or "flower" in dd or "fortress" in dd
-          or "horns" in dd or "leaves" in dd or "orchids" in dd
-          or "room" in dd or "trex" in dd):
+    elif ("fern" in dd or "flower" in dd or "fortress" in dd or "horns" in dd or "leaves" in dd or
+          "orchids" in dd or "room" in dd or "trex" in dd):
         return "llff"
     else:
         raise RuntimeError(f"data_dir {dd} not recognized as LLFF or Synthetic dataset.")
-
-
-def init_dloader_random(worker_id):
-    seed = torch.utils.data.get_worker_info().seed
-    torch.manual_seed(seed)
-    np.random.seed(seed % (2 ** 32 - 1))
 
 
 def init_tr_data(data_downsample: float, data_dirs: Sequence[str], **kwargs):
@@ -314,7 +316,7 @@ def init_tr_data(data_downsample: float, data_dirs: Sequence[str], **kwargs):
                 max_frames=max_tr_frames, batch_size=initial_batch_size, dset_id=i))
         elif dset_type == "llff":
             hold_every = parse_optint(kwargs.get('hold_every'))
-            logging.info(f"About to load LLFF data downsampled by {data_downsample} times.")
+            log.info(f"About to load LLFF data downsampled by {data_downsample} times.")
             dsets.append(LLFFDataset(
                 data_dir, split='train', downsample=int(data_downsample), hold_every=hold_every,
                 batch_size=initial_batch_size, dset_id=i))
@@ -323,8 +325,7 @@ def init_tr_data(data_downsample: float, data_dirs: Sequence[str], **kwargs):
     tr_sampler = MultiSceneSampler(dsets, num_samples_per_dataset=1)
     cat_tr_dset = torch.utils.data.ConcatDataset(dsets)
     tr_loader = torch.utils.data.DataLoader(
-        cat_tr_dset, num_workers=4, prefetch_factor=4,
-        pin_memory=True,
+        cat_tr_dset, num_workers=4, prefetch_factor=4, pin_memory=True,
         batch_size=None, sampler=tr_sampler, worker_init_fn=init_dloader_random)
 
     return {"tr_dsets": dsets, "tr_loader": tr_loader}

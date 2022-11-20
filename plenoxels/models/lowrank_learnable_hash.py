@@ -1,13 +1,10 @@
-import itertools
 import logging as log
 import math
-from typing import Dict, List, Union
+from typing import Dict, List, Union, Sequence
 
 import torch
 import torch.nn as nn
 
-from plenoxels.models.utils import grid_sample_wrapper, init_density_activation
-from .decoders import NNDecoder, SHDecoder
 from .lowrank_model import LowrankModel
 
 
@@ -19,19 +16,17 @@ class LowrankLearnableHash(LowrankModel):
                  use_F: bool,
                  density_activation: str,
                  render_n_samples: int,
-                 multiscale_res: List[int] = [1],
+                 multiscale_res: Sequence[int] = (1, ),
                  num_scenes: int = 1,
                  **kwargs):
-        super().__init__()
-        if isinstance(grid_config, str):
-            self.config: List[Dict] = eval(grid_config)
-        else:
-            self.config: List[Dict] = grid_config
+        super().__init__(
+            grid_config=grid_config,
+            sh=sh,
+            use_F=use_F,
+            density_activation=density_activation,
+            aabb=aabb,
+        )
         self.multiscale_res = multiscale_res
-        self.set_aabb(aabb)
-        self.sh = sh
-        self.use_F = use_F
-        self.density_act = init_density_activation(density_activation)
         self.cone_angle = kwargs.get('cone_angle', 0.0)
         # render_n_samples: number of intersections in each ray. Used for computing step-size.
         self.render_n_samples = render_n_samples
@@ -56,11 +51,6 @@ class LowrankLearnableHash(LowrankModel):
                 grids.append(gpdesc.grid_coefs)
             self.scene_grids.append(grids)
 
-        if self.sh:
-            self.decoder = SHDecoder(feature_dim=self.feature_dim)
-        else:
-            self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
-
         log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes, "
                  f"decoder: {self.decoder}, use-F: {self.use_F}")
         log.info(f"Model grids: {self.scene_grids}")
@@ -71,25 +61,9 @@ class LowrankLearnableHash(LowrankModel):
                          ) -> torch.Tensor:
         grids: nn.ModuleList = self.scene_grids[grid_id]  # noqa
         grid_info = self.config[0]
-
-        grid: nn.ParameterList
-        coo_combs = list(itertools.combinations(
-            range(pts.shape[-1]),
-            grid_info.get("grid_dimensions", grid_info["input_coordinate_dim"]))
-        )
-        multi_scale_interp = 0#torch.zeros_like(pts[0, 0])
-        for scale_id, grid in enumerate(grids):
-            interp = 1
-            for ci, coo_comb in enumerate(coo_combs):
-                interp_out_plane = (
-                    grid_sample_wrapper(grid[ci], pts[..., coo_comb])
-                    .view(-1, self.feature_dim)
-                )
-                # compute product
-                interp = interp * interp_out_plane
-            # sum over scales
-            multi_scale_interp = multi_scale_interp + interp
-        return multi_scale_interp
+        multiscale_interp = self.interpolate_ms_features(
+            pts, grids, grid_info, self.feature_dim)
+        return multiscale_interp
 
     def step_size(self, n_samples: int, grid_id: int):
         aabb = self.aabb(grid_id)

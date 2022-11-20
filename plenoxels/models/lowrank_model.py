@@ -3,10 +3,13 @@ import itertools
 import math
 from abc import ABC
 from dataclasses import dataclass
-from typing import List, Sequence, Optional, Union
+from typing import List, Sequence, Optional, Union, Dict
 
 import torch
 import torch.nn as nn
+
+from plenoxels.models.decoders import SHDecoder, NNDecoder, BaseDecoder
+from plenoxels.models.utils import init_density_activation, grid_sample_wrapper
 
 
 @dataclass
@@ -18,22 +21,51 @@ class GridParamDescription:
 
 
 class LowrankModel(ABC, nn.Module):
+    def __init__(self,
+                 grid_config: Union[str, List[Dict]],
+                 sh: bool,
+                 use_F: bool,
+                 density_activation: str,
+                 aabb: Union[Sequence[torch.Tensor], torch.Tensor]):
+        super().__init__()
+        if isinstance(grid_config, str):
+            self.config: List[Dict] = eval(grid_config)
+        else:
+            self.config: List[Dict] = grid_config
+        self.sh = sh
+        self.use_F = use_F
+        self.density_act = init_density_activation(density_activation)
+        self.set_aabb(aabb)
+
+        self.decoder: BaseDecoder
+        if self.sh:
+            self.decoder = SHDecoder(feature_dim=self.feature_dim)
+        else:
+            self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
+
     def set_aabb(self, aabb: Union[torch.Tensor, List[torch.Tensor]], grid_id: Optional[int] = None):
         if grid_id is None:
-            # aabb needs to be BufferList (but BufferList doesn't exist so we emulate it)
-            for i, p in enumerate(aabb):
-                if hasattr(self, f'aabb{i}'):
-                    setattr(self, f'aabb{i}', p)
-                else:
-                    self.register_buffer(f'aabb{i}', p)
+            if isinstance(aabb, list):
+                # aabb needs to be BufferList (but BufferList doesn't exist so we emulate it)
+                for i, p in enumerate(aabb):
+                    assert p.shape == (2, 3)
+                    if hasattr(self, f'aabb{i}'):
+                        setattr(self, f'aabb{i}', p)
+                    else:
+                        self.register_buffer(f'aabb{i}', p)
+            else:
+                assert isinstance(aabb, torch.Tensor)
+                assert aabb.shape == (2, 3)
+                self.register_buffer('aabb0', aabb)
         else:
             assert isinstance(aabb, torch.Tensor)
+            assert aabb.shape == (2, 3)
             if hasattr(self, f'aabb{grid_id}'):
                 setattr(self, f'aabb{grid_id}', aabb)
             else:
                 self.register_buffer(f'aabb{grid_id}', aabb)
 
-    def aabb(self, i: int) -> torch.Tensor:
+    def aabb(self, i: int = 0) -> torch.Tensor:
         return getattr(self, f'aabb{i}')
 
     def set_resolution(self, resolution: Union[torch.Tensor, List[torch.Tensor]], grid_id: Optional[int] = None):
@@ -65,6 +97,31 @@ class LowrankModel(ABC, nn.Module):
         """
         aabb = self.aabb(grid_id)
         return (pts - aabb[0]) * (2.0 / (aabb[1] - aabb[0])) - 1
+
+    @staticmethod
+    def interpolate_ms_features(pts: torch.Tensor,
+                                ms_grids: nn.ModuleList,
+                                grid_info: Dict[str, int],
+                                feature_dim: int) -> torch.Tensor:
+        coo_combs = list(itertools.combinations(
+            range(pts.shape[-1]),
+            grid_info.get("grid_dimensions", grid_info["input_coordinate_dim"]))
+        )
+        multi_scale_interp = torch.zeros_like(pts[0, 0])
+        grid: nn.ParameterList
+        for scale_id, grid in enumerate(ms_grids):
+            interp_space = torch.ones_like(pts[0, 0])  # [n, F_dim]
+            for ci, coo_comb in enumerate(coo_combs):
+                # interpolate in plane
+                interp_out_plane = (
+                    grid_sample_wrapper(grid[ci], pts[..., coo_comb])
+                    .view(-1, feature_dim)
+                )
+                # compute product
+                interp_space = interp_space * interp_out_plane
+            # sum over scales
+            multi_scale_interp += interp_space
+        return multi_scale_interp
 
     @staticmethod
     def init_features_param(grid_config, sh: bool) -> torch.nn.Parameter:
