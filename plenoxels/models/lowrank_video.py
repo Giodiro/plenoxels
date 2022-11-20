@@ -20,8 +20,6 @@ class LowrankVideo(LowrankModel):
                  grid_config: Union[str, List[Dict]],
                  aabb: torch.Tensor,  # [[x_min, y_min, z_min], [x_max, y_max, z_max]]
                  len_time: int,
-                 is_ndc: bool,
-                 is_contracted: bool,
                  sh: bool,
                  use_F: bool,
                  density_activation: str,
@@ -38,14 +36,11 @@ class LowrankVideo(LowrankModel):
             self.config: List[Dict] = grid_config
         self.multiscale_res = multiscale_res
         self.set_aabb(aabb, 0)
-        self.is_ndc = is_ndc
-        self.is_contracted = is_contracted
         self.sh = sh
         self.use_F = use_F
         self.density_act = init_density_activation(density_activation)
-        self.extra_args = kwargs
         self.render_n_samples = render_n_samples
-        self.density_act = lambda x: trunc_exp(x - 1)
+        self.extra_args = kwargs
 
         if self.use_F:
             raise NotImplementedError()
@@ -59,24 +54,23 @@ class LowrankVideo(LowrankModel):
                 config['resolution'] = [r * res for r in config['resolution'][:3]]
                 if len(grid_config['resolution']) == 4:
                     config['resolution'].append(grid_config['resolution'][3])
-                gpdesc = self.init_grid_param(config, grid_level=0, is_video=True, use_F=False)
+                gpdesc = self.init_grid_param(config, grid_level=li, is_video=True, use_F=False)
                 self.set_resolution(gpdesc.reso, 0)
                 self.grids.append(gpdesc.grid_coefs)
-                self.feature_dim = gpdesc.grid_coefs[-1].shape[1] // config["rank"][0]
+                self.feature_dim = gpdesc.grid_coefs[-1].shape[1]
 
         if self.sh:
             self.decoder = SHDecoder(feature_dim=self.feature_dim)
         else:
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
 
-        log.info(f"Initialized LowrankVideo. "
-                 f" decoder={self.decoder}")
+        log.info(f"Initialized LowrankVideo. decoder={self.decoder}")
         log.info(f"Model grids: {self.grids}")
 
     def compute_features(self,
                          pts,
                          timestamps,
-                         ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+                         ) -> torch.Tensor:
         # space: 6 x [1, rank * F_dim, reso, reso] where the reso can be different in different grids and dimensions
         multiscale_space: torch.nn.ModuleList = self.grids
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
@@ -87,20 +81,20 @@ class LowrankVideo(LowrankModel):
             range(pts.shape[-1]),
             level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
 
-        multi_scale_interp = 0
+        multi_scale_interp = torch.zeros_like(pts[0, 0])
         for scale_id, grid_space in enumerate(multiscale_space):
-            interp_space = None  # [n, F_dim, rank]
+            interp_space = 1  # [n, F_dim, rank]
             for ci, coo_comb in enumerate(coo_combs):
                 # interpolate in plane
-                interp_out_plane = grid_sample_wrapper(grid_space[ci], pts[..., coo_comb]).view(
-                            -1, self.feature_dim, level_info["rank"])
+                interp_out_plane = (
+                    grid_sample_wrapper(grid_space[ci], pts[..., coo_comb])
+                    .view(-1, self.feature_dim)
+                )
                 # compute product
-                interp_space = interp_out_plane if interp_space is None else interp_space * interp_out_plane
-            # Combine space and time over rank
-            interp = interp_space.mean(dim=-1)  # Mean over rank
+                interp_space = interp_space * interp_out_plane
             # sum over scales
-            multi_scale_interp += interp
-        return multi_scale_interp  # noqa
+            multi_scale_interp += interp_space
+        return multi_scale_interp
 
     def step_size(self, n_samples: int):
         aabb = self.aabb(0)
@@ -149,12 +143,3 @@ class LowrankVideo(LowrankModel):
         return [
             {"params": self.parameters(), "lr": lr},
         ]
-
-    def compute_plane_tv(self):
-        grid_space = self.grids  # space: 3 x [1, rank * F_dim, reso, reso]
-        grid_time = self.time_coef  # time: [rank * F_dim, time_reso]
-        total = 0
-        for grid in grid_space:
-            total += compute_plane_tv(grid)
-        total += compute_line_tv(grid_time)
-        return total
