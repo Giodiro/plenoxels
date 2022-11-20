@@ -19,7 +19,7 @@ config = {
     # Optimization settings
     "num_steps": 35000,
     "scheduler_type": "warmup_cosine",
-    "lr": 1e-2,
+    "lr": 5e-3,
     "cone_angle": 0.00,
     "optim_type": "adam",
 
@@ -51,16 +51,15 @@ config = {
     "use_F": False,
     "density_activation": "trunc_exp",
     "density_threshold": 1e-2,
-    "multiscale_res": [1, 2],
+    "multiscale_res": [1, 2, 4],
 
     "grid_config": """
 [
     {
         "input_coordinate_dim": 3,
-        "output_coordinate_dim": 32,
+        "output_coordinate_dim": 64,
         "grid_dimensions": 2,
-        "resolution": [128, 128, 128],
-        "rank": 2,
+        "resolution": [64, 64, 64],
     },
 ]
 """

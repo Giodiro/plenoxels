@@ -247,7 +247,7 @@ class MultisceneTrainer(BaseTrainer):
             )
             occupancy_grids.append(og)
             log.info("Initialized OccupancyGrid(dset=%d). resolution: %s - #parameters: %d" % (
-                scene, og.resolution.tolist(), og.sum(np.prod(p.shape) for p in og.parameters()),
+                scene, og.resolution.tolist(), sum(np.prod(p.shape) for p in og.parameters()),
             ))
         return occupancy_grids
 

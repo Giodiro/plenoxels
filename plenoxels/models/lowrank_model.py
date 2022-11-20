@@ -120,7 +120,7 @@ class LowrankModel(ABC, nn.Module):
                 # compute product
                 interp_space = interp_space * interp_out_plane
             # sum over scales
-            multi_scale_interp += interp_space
+            multi_scale_interp = multi_scale_interp + interp_space
         return multi_scale_interp
 
     @staticmethod

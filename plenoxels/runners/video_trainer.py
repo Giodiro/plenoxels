@@ -276,7 +276,7 @@ class VideoTrainer(BaseTrainer):
             contraction_type=self.contraction_type,
         )
         log.info("Initialized OccupancyGrid. resolution: %s - #parameters: %d" % (
-            og.resolution.tolist(), og.sum(np.prod(p.shape) for p in og.parameters()),
+            og.resolution.tolist(), sum(np.prod(p.shape) for p in og.parameters()),
         ))
         return og
 

@@ -79,10 +79,10 @@ class BaseTrainer():
 
         progress_bar.update(1)
 
-        if self.valid_every > -1 and self.global_step % self.valid_every == 0:
+        if self.valid_every > -1 and self.global_step > 0 and self.global_step % self.valid_every == 0:
             print()
             self.validate()
-        if self.save_every > -1 and self.global_step % self.save_every == 0:
+        if self.save_every > -1 and self.global_step > 0 and self.global_step % self.save_every == 0:
             print()
             self.save_model()
 
