@@ -50,6 +50,8 @@ class LowrankVideo(LowrankModel):
                 self.grids.append(gpdesc.grid_coefs)
                 self.feature_dim = gpdesc.grid_coefs[-1].shape[1]
 
+        self.decoder = self.init_decoder()
+
         log.info(f"Initialized LowrankVideo. decoder={self.decoder}")
         log.info(f"Model grids: {self.grids}")
 

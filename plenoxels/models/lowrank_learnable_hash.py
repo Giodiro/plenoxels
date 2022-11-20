@@ -51,6 +51,8 @@ class LowrankLearnableHash(LowrankModel):
                 grids.append(gpdesc.grid_coefs)
             self.scene_grids.append(grids)
 
+        self.decoder = self.init_decoder()
+
         log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes, "
                  f"decoder: {self.decoder}, use-F: {self.use_F}")
         log.info(f"Model grids: {self.scene_grids}")

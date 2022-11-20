@@ -37,12 +37,6 @@ class LowrankModel(ABC, nn.Module):
         self.density_act = init_density_activation(density_activation)
         self.set_aabb(aabb)
 
-        self.decoder: BaseDecoder
-        if self.sh:
-            self.decoder = SHDecoder(feature_dim=self.feature_dim)
-        else:
-            self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
-
     def set_aabb(self, aabb: Union[torch.Tensor, List[torch.Tensor]], grid_id: Optional[int] = None):
         if grid_id is None:
             if isinstance(aabb, list):
@@ -85,6 +79,12 @@ class LowrankModel(ABC, nn.Module):
 
     def resolution(self, i: int) -> torch.Tensor:
         return getattr(self, f'resolution{i}')
+
+    def init_decoder(self) -> BaseDecoder:
+        if self.sh:
+            return SHDecoder(feature_dim=self.feature_dim)
+        else:
+            return NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
 
     @torch.autograd.no_grad()
     def normalize_coords(self, pts: torch.Tensor, grid_id: int = 0) -> torch.Tensor:
