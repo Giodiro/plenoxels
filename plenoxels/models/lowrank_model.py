@@ -96,8 +96,6 @@ class LowrankModel(ABC, nn.Module):
             raise ValueError("Configuration incorrect: resolution must be a list.")
         pt_reso = torch.tensor(reso, dtype=torch.long)
         num_comp = math.comb(in_dim, grid_nd)
-        rank: Sequence[int] = to_list(grid_config["rank"], num_comp, "rank")
-        grid_config["rank"] = rank
         # Configuration correctness checks
         assert in_dim == grid_config["input_coordinate_dim"]
         if grid_level == 0:
@@ -108,20 +106,18 @@ class LowrankModel(ABC, nn.Module):
         if use_F:
             assert out_dim in {1, 2, 3, 4, 5, 6, 7}
         assert grid_nd <= in_dim
-        if grid_nd == in_dim:
-            assert all(r == 1 for r in rank)
         coo_combs = list(itertools.combinations(range(in_dim), grid_nd))
         grid_coefs = nn.ParameterList()
         for ci, coo_comb in enumerate(coo_combs):
             if use_F:  # TODO: not updated
                 grid_coefs.append(
                     nn.Parameter(nn.init.uniform_(torch.empty(
-                        [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb[::-1]]
+                        [1, out_dim] + [reso[cc] for cc in coo_comb[::-1]]
                     ), a=-1.0, b=1.0)))
             else:
                 grid_coefs.append(
                     nn.Parameter(torch.empty(
-                        [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb[::-1]]
+                        [1, out_dim] + [reso[cc] for cc in coo_comb[::-1]]
                     )))
                 if is_video and 3 in coo_comb:  # is a time-plane
                     nn.init.ones_(grid_coefs[-1])
