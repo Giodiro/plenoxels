@@ -140,6 +140,7 @@ class MultisceneTrainer(BaseTrainer):
                 device=self.device,
             )
             if n_rendering_samples == 0:
+                self.loss_info[f"n_rendering_samples_{dset_id}"].update(float(n_rendering_samples))
                 return False
             # dynamic batch size for rays to keep sample batch size constant.
             num_rays = len(imgs)
@@ -165,15 +166,16 @@ class MultisceneTrainer(BaseTrainer):
         self.gscaler.update()
 
         # Report on losses
+        if self.global_step % (self.num_dsets * 2 + 1) == 0:
         with torch.no_grad():
-            mse = F.mse_loss(rgb[alive_ray_mask], imgs[alive_ray_mask]).item()
+            mse = F.mse_loss(rgb, imgs).item()
             self.loss_info[f"psnr_{dset_id}"].update(-10 * math.log10(mse))
             self.loss_info[f"mse_{dset_id}"].update(mse)
             self.loss_info[f"alive_ray_mask_{dset_id}"].update(float(alive_ray_mask.long().sum().item()))
             self.loss_info[f"n_rendering_samples_{dset_id}"].update(float(n_rendering_samples))
             self.loss_info[f"n_rays_{dset_id}"].update(float(len(imgs)))
             for r in self.regularizers:
-                r.report(self.loss_info[dset_id])
+                r.report(self.loss_info)
 
         return scale <= self.gscaler.get_scale()
 
@@ -203,7 +205,7 @@ class MultisceneTrainer(BaseTrainer):
                 log_text = f"step {self.global_step}/{self.num_steps} | scene {dset_id}"
                 for k in per_scene_metrics:
                     per_scene_metrics[k] = np.mean(np.asarray(per_scene_metrics[k]))  # noqa
-                    log_text += f" | D{dset_id} k: {per_scene_metrics[k]:.4f}"
+                    log_text += f" | D{dset_id} {k}: {per_scene_metrics[k]:.4f}"
                 logging.info(log_text)
                 val_metrics.append(per_scene_metrics)
 
@@ -217,7 +219,8 @@ class MultisceneTrainer(BaseTrainer):
 
     def init_epoch_info(self):
         ema_weight = 0.9  # higher places higher weight to new observations
-        self.loss_info = defaultdict(lambda: EMA(ema_weight))
+        loss_info = defaultdict(lambda: EMA(ema_weight))
+        return loss_info
 
     def init_model(self, **kwargs) -> torch.nn.Module:
         aabbs = [d.scene_bbox for d in self.train_datasets]

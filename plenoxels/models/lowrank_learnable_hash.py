@@ -77,7 +77,7 @@ class LowrankLearnableHash(LowrankModel):
             range(pts.shape[-1]),
             grid_info.get("grid_dimensions", grid_info["input_coordinate_dim"]))
         )
-        multi_scale_interp = torch.zeros_like(pts[0, 0])
+        multi_scale_interp = 0#torch.zeros_like(pts[0, 0])
         for scale_id, grid in enumerate(grids):
             interp = 1
             for ci, coo_comb in enumerate(coo_combs):
@@ -88,7 +88,7 @@ class LowrankLearnableHash(LowrankModel):
                 # compute product
                 interp = interp * interp_out_plane
             # sum over scales
-            multi_scale_interp += interp
+            multi_scale_interp = multi_scale_interp + interp
         return multi_scale_interp
 
     def step_size(self, n_samples: int, grid_id: int):

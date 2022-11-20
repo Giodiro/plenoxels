@@ -93,11 +93,10 @@ class L1PlaneDensity(Regularizer):
         total = 0
 
         for grids in multi_res_grids:
-            for grid_ls in grids:
-                for grid in grid_ls:
-                    grid = grid.view(model.feature_dim, -1, grid.shape[-2], grid.shape[-1])
-                    # density is on last feature. Apply activation before computing loss.
-                    total += torch.abs(grid[-1, ...]).mean()
+            for grid in grids:
+                grid = grid.view(model.feature_dim, -1, grid.shape[-2], grid.shape[-1])
+                # density is on last feature. Apply activation before computing loss.
+                total += torch.abs(grid[-1, ...]).mean()
         return total
 
 
@@ -109,11 +108,10 @@ class L1PlaneColor(Regularizer):
         multi_res_grids: nn.ModuleList = model.scene_grids[grid_id]
         total = 0
         for grids in multi_res_grids:
-            for grid_ls in grids:
-                for grid in grid_ls:
-                    grid = grid.view(model.feature_dim, -1, grid.shape[-2], grid.shape[-1])
-                    # color is on all features apart the last
-                    total += torch.abs(grid[:-1, ...]).mean()
+            for grid in grids:
+                grid = grid.view(model.feature_dim, -1, grid.shape[-2], grid.shape[-1])
+                # color is on all features apart the last
+                total += torch.abs(grid[:-1, ...]).mean()
         return total
 
 
@@ -139,16 +137,15 @@ class PlaneTV(Regularizer):
         total = 0
         # Note: input to compute_plane_tv should be of shape [batch_size, c, h, w]
         for grids in multi_res_grids:
-            for grid_ls in grids:
-                for grid in grid_ls:
-                    if self.features == 'all':
-                        total += compute_plane_tv(grid)
+            for grid in grids:
+                if self.features == 'all':
+                    total += compute_plane_tv(grid)
+                else:
+                    grid = grid.view(1, model.feature_dim, -1, grid.shape[-2], grid.shape[-1])
+                    if self.features == 'sigma':
+                        total += compute_plane_tv(grid[:, -1, ...])
                     else:
-                        grid = grid.view(1, model.feature_dim, -1, grid.shape[-2], grid.shape[-1])
-                        if self.features == 'sigma':
-                            total += compute_plane_tv(grid[:, -1, ...])
-                        else:
-                            total += compute_plane_tv(grid[:, :-1, ...].view(1, -1, grid.shape[-2], grid.shape[-1]))
+                        total += compute_plane_tv(grid[:, :-1, ...].view(1, -1, grid.shape[-2], grid.shape[-1]))
         return total
 
 

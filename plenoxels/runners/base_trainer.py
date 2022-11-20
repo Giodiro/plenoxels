@@ -90,12 +90,10 @@ class BaseTrainer():
         logging.info(f"Starting training from step {self.global_step + 1}")
         pb = tqdm(initial=self.global_step, total=self.num_steps)
         try:
+            batch_iter = iter(self.train_data_loader)
+            self.pre_epoch()
             while self.global_step < self.num_steps:
-                batch_iter = iter(self.train_data_loader)
-                self.pre_epoch()
                 try:
-                    print("Before next", flush=True)
-
                     self.model.train()
                     data = next(batch_iter)
                     self.model.train()
@@ -108,13 +106,15 @@ class BaseTrainer():
                     for r in self.regularizers:
                         r.step(self.global_step)
                     self.post_step(progress_bar=pb)
-                    self.model.step_cb(self.global_step, self.num_steps)
+                    #self.model.step_cb(self.global_step, self.num_steps)
                 except StopIteration as e:
                     # This get thrown in `next` or `step`
                     # Still need to increment the step, otherwise we get stuck in a loop
                     self.global_step += 1
                     logging.info(str(e))
                     logging.info(f'resetting after a full pass through the data, or when the dataset changed')
+                    batch_iter = iter(self.train_data_loader)
+                    self.pre_epoch()
         finally:
             pb.close()
             self.writer.close()
@@ -175,11 +175,6 @@ class BaseTrainer():
         out_depth = None
         if "depth" in preds:
             out_depth = preds['depth'].cpu().reshape(img_h, img_w)[..., None]
-
-        for proposal_id in range(len(self.model.density_fields)):
-            if f"proposal_depth_{proposal_id}" in preds:
-                prop_depth = preds[f"proposal_depth_{proposal_id}"].cpu().reshape(img_h, img_w)[..., None]
-                out_depth = torch.cat((out_depth, prop_depth)) if out_depth is not None else prop_depth
 
         if gt is not None:
             gt = gt.reshape(img_h, img_w, -1).cpu()

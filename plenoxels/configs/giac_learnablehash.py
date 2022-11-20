@@ -6,13 +6,12 @@ config = {
     "device": "cuda:0",
 
     # Data settings
-    "data_resolution": None,
     "data_downsample": 1,
     "data_dirs": ["/data/DATASETS/SyntheticNerf/lego"],
     #"data_dirs": ["/data/DATASETS/LLFF/fern"],
     # Data settings for 360
     "max_tr_frames": None,
-    "max_ts_frames": 50,
+    "max_ts_frames": 10,
     # Data settings for 360
     # Data settings for LLFF
     "hold_every": 8,
@@ -20,14 +19,13 @@ config = {
     # Optimization settings
     "num_steps": 35000,
     "scheduler_type": "warmup_cosine",
-    "lr": 2e-2,
+    "lr": 1e-2,
     "cone_angle": 0.00,
-    "batch_size": 12,  # needed but ignored
     "optim_type": "adam",
 
     "alpha_threshold": 1e-3,
 
-    "plane_tv_weight": 0.003,
+    "plane_tv_weight": 0.000,
     "plane_tv_what": "Gcoords",
 
     "l1density_weight": 0.000,
@@ -49,19 +47,17 @@ config = {
     "n_samples": 1024,
 
     # Model settings
-    "sh": True,
-    "density_threshold": 1e-2,
-    "shrink_steps": [2000],
-    "upsample_steps": [2500, 4000],
-    "upsample_resolution": [4410944, 11239424],
-    "density_multiplier": 1,
+    "sh": False,
     "use_F": False,
+    "density_activation": "trunc_exp",
+    "density_threshold": 1e-2,
+    "multiscale_res": [1, 2],
 
     "grid_config": """
 [
     {
         "input_coordinate_dim": 3,
-        "output_coordinate_dim": 28,
+        "output_coordinate_dim": 32,
         "grid_dimensions": 2,
         "resolution": [128, 128, 128],
         "rank": 2,
