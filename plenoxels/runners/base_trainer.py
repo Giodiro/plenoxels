@@ -94,10 +94,10 @@ class BaseTrainer():
 
         progress_bar.update(1)
 
-        if self.valid_every > -1 and self.global_step > 0 and self.global_step % self.valid_every == 0:
+        if self.valid_every > -1 and self.global_step % self.valid_every == 0:
             print()
             self.validate()
-        if self.save_every > -1 and self.global_step > 0 and self.global_step % self.save_every == 0:
+        if self.save_every > -1 and self.global_step % self.save_every == 0:
             print()
             self.save_model()
 
@@ -114,6 +114,7 @@ class BaseTrainer():
             self.pre_epoch()
             batch_iter = iter(self.train_data_loader)
             while self.global_step < self.num_steps:
+                self.global_step += 1
                 try:
                     data = next(batch_iter)
                 except StopIteration as e:
@@ -132,8 +133,6 @@ class BaseTrainer():
                     r.step(self.global_step)
                 self.post_step(progress_bar=pb)
                 #self.model.step_cb(self.global_step, self.num_steps)
-
-                self.global_step += 1
         finally:
             pb.close()
             self.writer.close()

@@ -18,6 +18,7 @@ class LowrankVideo(LowrankModel):
                  density_activation: str,
                  render_n_samples: int,
                  multiscale_res: Sequence[int] = (1, ),
+                 concat_features: bool = False,
                  global_translation=None,
                  global_scale=None,
                  **kwargs):
@@ -28,6 +29,7 @@ class LowrankVideo(LowrankModel):
             use_F=use_F,
             density_activation=density_activation,
             aabb=aabb,
+            concat_features=concat_features,
         )
         self.multiscale_res = multiscale_res
         self.render_n_samples = render_n_samples
@@ -36,6 +38,7 @@ class LowrankVideo(LowrankModel):
         if self.use_F:
             raise NotImplementedError()
 
+        self.feature_dim: int = 0
         self.grids = nn.ModuleList()
         for res in self.multiscale_res:
             for li, grid_config in enumerate(self.config):
@@ -47,12 +50,17 @@ class LowrankVideo(LowrankModel):
                     config['resolution'].append(grid_config['resolution'][3])
                 gpdesc = self.init_grid_param(config, grid_level=li, is_video=True, use_F=False)
                 self.set_resolution(gpdesc.reso, 0)
+                if self.concat_features:
+                    self.feature_dim += gpdesc.grid_coefs[-1].shape[1]
+                else:
+                    self.feature_dim = gpdesc.grid_coefs[-1].shape[1]
                 self.grids.append(gpdesc.grid_coefs)
                 self.feature_dim = gpdesc.grid_coefs[-1].shape[1]
 
         self.decoder = self.init_decoder()
 
-        log.info(f"Initialized LowrankVideo. decoder={self.decoder}")
+        log.info(f"Initialized LowrankVideo. decoder={self.decoder}, use-F: {self.use_F}, "
+                 f"concat-features: {self.concat_features}")
         log.info(f"Model grids: {self.grids}")
 
     def compute_features(self,
@@ -66,7 +74,7 @@ class LowrankVideo(LowrankModel):
         pts = torch.cat([pts, timestamps[:, None]], dim=-1)  # [batch, 4] for xyzt
 
         multiscale_interp = self.interpolate_ms_features(
-            pts, multiscale_space, level_info, self.feature_dim)
+            pts, multiscale_space, level_info, concat_features=self.concat_features)
         return multiscale_interp
 
     def step_size(self, n_samples: int):

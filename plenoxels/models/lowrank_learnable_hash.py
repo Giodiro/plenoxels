@@ -18,23 +18,39 @@ class LowrankLearnableHash(LowrankModel):
                  render_n_samples: int,
                  multiscale_res: Sequence[int] = (1, ),
                  num_scenes: int = 1,
+                 concat_features: bool = False,
                  **kwargs):
+        """
+        :param grid_config:
+        :param aabb:
+        :param sh:
+        :param use_F:
+        :param density_activation:
+        :param render_n_samples:
+            number of intersections in each ray. Used for computing step-size.
+        :param multiscale_res:
+        :param num_scenes:
+        :param concat_features:
+            Whether to concatenate features from each resolution. The alternative is to sum them.
+        :param kwargs:
+        """
         super().__init__(
             grid_config=grid_config,
             sh=sh,
             use_F=use_F,
             density_activation=density_activation,
             aabb=aabb,
+            concat_features=concat_features,
         )
         self.multiscale_res = multiscale_res
         self.cone_angle = kwargs.get('cone_angle', 0.0)
-        # render_n_samples: number of intersections in each ray. Used for computing step-size.
         self.render_n_samples = render_n_samples
         self.extra_args = kwargs
 
         if self.use_F:
             raise NotImplementedError()
 
+        self.feature_dim: int = 0
         self.scene_grids = nn.ModuleList()
         grid_config = self.config[0]
         for si in range(num_scenes):
@@ -43,18 +59,23 @@ class LowrankLearnableHash(LowrankModel):
                 if "feature_dim" in grid_config:
                     raise ValueError(f"use_F is False but found 'feature_dim' key in grid-config.")
                 config = grid_config.copy()
-                config['resolution'] = [r * res for r in config['resolution'][:3]]
+                config['resolution'] = [int(r * res) for r in config['resolution'][:3]]
+
                 gpdesc = self.init_grid_param(
                     config, is_video=False, grid_level=0, use_F=False)
                 self.set_resolution(gpdesc.reso, grid_id=si)
-                self.feature_dim = gpdesc.grid_coefs[-1].shape[1]
+                if self.concat_features:
+                    self.feature_dim += gpdesc.grid_coefs[-1].shape[1]
+                else:
+                    self.feature_dim = gpdesc.grid_coefs[-1].shape[1]
                 grids.append(gpdesc.grid_coefs)
             self.scene_grids.append(grids)
 
         self.decoder = self.init_decoder()
 
         log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes, "
-                 f"decoder: {self.decoder}, use-F: {self.use_F}")
+                 f"decoder: {self.decoder}, use-F: {self.use_F}, "
+                 f"concat-features: {self.concat_features}")
         log.info(f"Model grids: {self.scene_grids}")
 
     def compute_features(self,
@@ -64,7 +85,7 @@ class LowrankLearnableHash(LowrankModel):
         grids: nn.ModuleList = self.scene_grids[grid_id]  # noqa
         grid_info = self.config[0]
         multiscale_interp = self.interpolate_ms_features(
-            pts, grids, grid_info, self.feature_dim)
+            pts, grids, grid_info, concat_features=self.concat_features)
         return multiscale_interp
 
     def step_size(self, n_samples: int, grid_id: int):

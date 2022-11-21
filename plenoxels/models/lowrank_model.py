@@ -26,6 +26,7 @@ class LowrankModel(ABC, nn.Module):
                  sh: bool,
                  use_F: bool,
                  density_activation: str,
+                 concat_features: bool,
                  aabb: Union[Sequence[torch.Tensor], torch.Tensor]):
         super().__init__()
         if isinstance(grid_config, str):
@@ -35,6 +36,7 @@ class LowrankModel(ABC, nn.Module):
         self.sh = sh
         self.use_F = use_F
         self.density_act = init_density_activation(density_activation)
+        self.concat_features = concat_features
         self.set_aabb(aabb)
 
     def set_aabb(self, aabb: Union[torch.Tensor, List[torch.Tensor]], grid_id: Optional[int] = None):
@@ -102,17 +104,18 @@ class LowrankModel(ABC, nn.Module):
     def interpolate_ms_features(pts: torch.Tensor,
                                 ms_grids: nn.ModuleList,
                                 grid_info: Dict[str, int],
-                                feature_dim: int) -> torch.Tensor:
+                                concat_features: bool) -> torch.Tensor:
         coo_combs = list(itertools.combinations(
             range(pts.shape[-1]),
             grid_info.get("grid_dimensions", grid_info["input_coordinate_dim"]))
         )
-        multi_scale_interp = 0.
+        multi_scale_interp = [] if concat_features else 0.
         grid: nn.ParameterList
         for scale_id, grid in enumerate(ms_grids):
             interp_space = 1.
             for ci, coo_comb in enumerate(coo_combs):
                 # interpolate in plane
+                feature_dim = grid[ci].shape[1]  # shape of grid[ci]: 1, out_dim, *reso
                 interp_out_plane = (
                     grid_sample_wrapper(grid[ci], pts[..., coo_comb])
                     .view(-1, feature_dim)
@@ -120,7 +123,13 @@ class LowrankModel(ABC, nn.Module):
                 # compute product
                 interp_space = interp_space * interp_out_plane
             # sum over scales
-            multi_scale_interp = multi_scale_interp + interp_space
+            if concat_features:
+                multi_scale_interp.append(interp_space)
+            else:
+                multi_scale_interp = multi_scale_interp + interp_space
+
+        if concat_features:
+            multi_scale_interp = torch.cat(multi_scale_interp, dim=-1)
         return multi_scale_interp
 
     @staticmethod
