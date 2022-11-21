@@ -107,10 +107,10 @@ class LowrankModel(ABC, nn.Module):
             range(pts.shape[-1]),
             grid_info.get("grid_dimensions", grid_info["input_coordinate_dim"]))
         )
-        multi_scale_interp = torch.zeros_like(pts[0, 0])
+        multi_scale_interp = 0.
         grid: nn.ParameterList
         for scale_id, grid in enumerate(ms_grids):
-            interp_space = torch.ones_like(pts[0, 0])  # [n, F_dim]
+            interp_space = 1.
             for ci, coo_comb in enumerate(coo_combs):
                 # interpolate in plane
                 interp_out_plane = (

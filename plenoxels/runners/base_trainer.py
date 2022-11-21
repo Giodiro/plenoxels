@@ -111,31 +111,29 @@ class BaseTrainer():
         logging.info(f"Starting training from step {self.global_step + 1}")
         pb = tqdm(initial=self.global_step, total=self.num_steps)
         try:
-            batch_iter = iter(self.train_data_loader)
             self.pre_epoch()
+            batch_iter = iter(self.train_data_loader)
             while self.global_step < self.num_steps:
                 try:
-                    self.model.train()
                     data = next(batch_iter)
-                    self.model.train()
-                    step_successful = self.train_step(data)
-
-                    if step_successful and self.scheduler is not None:
-                        self.scheduler.step()
-                    for r in self.regularizers:
-                        r.step(self.global_step)
-                    self.post_step(progress_bar=pb)
-                    #self.model.step_cb(self.global_step, self.num_steps)
-
-                    self.global_step += 1
                 except StopIteration as e:
-                    # This get thrown in `next` or `step`
-                    # Still need to increment the step, otherwise we get stuck in a loop
-                    self.global_step += 1
-                    logging.info(str(e))
-                    logging.info(f'resetting after a full pass through the data, or when the dataset changed')
-                    batch_iter = iter(self.train_data_loader)
+                    print("Stop iteration", e)
                     self.pre_epoch()
+                    batch_iter = iter(self.train_data_loader)
+                    data = next(batch_iter)
+                    logging.info("Reset data-iterator")
+
+                self.model.train()
+                step_successful = self.train_step(data)
+
+                if step_successful and self.scheduler is not None:
+                    self.scheduler.step()
+                for r in self.regularizers:
+                    r.step(self.global_step)
+                self.post_step(progress_bar=pb)
+                #self.model.step_cb(self.global_step, self.num_steps)
+
+                self.global_step += 1
         finally:
             pb.close()
             self.writer.close()

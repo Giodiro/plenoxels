@@ -290,7 +290,7 @@ def init_tr_data(data_downsample: float, data_dirs: Sequence[str], **kwargs):
     tr_sampler = MultiSceneSampler(dsets, num_samples_per_dataset=1)
     cat_tr_dset = torch.utils.data.ConcatDataset(dsets)
     tr_loader = torch.utils.data.DataLoader(
-        cat_tr_dset, num_workers=4, prefetch_factor=4, pin_memory=True,
+        cat_tr_dset, num_workers=0, prefetch_factor=2, pin_memory=True,
         batch_size=None, sampler=tr_sampler, worker_init_fn=init_dloader_random)
 
     return {"tr_dsets": dsets, "tr_loader": tr_loader}
