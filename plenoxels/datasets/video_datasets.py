@@ -174,12 +174,14 @@ class Video360Dataset(BaseDataset):
         self.isg = True
         self.ist = False
         self.sampling_weights = self.isg_weights
+        self.reset_iter()
         log.info(f"Enabled ISG weights.")
 
     def switch_isg2ist(self):
         self.isg = False
         self.ist = True
         self.sampling_weights = self.ist_weights
+        self.reset_iter()
         log.info(f"Switched from ISG to IST weights.")
 
     def __getitem__(self, index):
