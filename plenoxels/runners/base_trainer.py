@@ -221,6 +221,23 @@ class BaseTrainer():
     def validate(self):
         pass
 
+    def report_test_metrics(self, scene_metrics: Dict[str, Sequence[float]], extra_name: Optional[str]):
+        log_text = f"step {self.global_step}/{self.num_steps}"
+        if extra_name is not None:
+            log_text += f" | {extra_name}"
+        scene_metrics_agg: Dict[str, float] = {}
+        for k in scene_metrics:
+            ak = f"{k}_{extra_name}"
+            scene_metrics_agg[ak] = np.mean(np.asarray(scene_metrics[k]))  # noqa
+            log_text += f" | {k}: {scene_metrics_agg[ak]:.4f}"
+            self.writer.add_scalar(f"test/{ak}", scene_metrics_agg[ak], self.global_step)
+
+        if self.extra_args.get('wandb', False):
+            wandb.log(scene_metrics_agg, step=self.global_step)
+
+        logging.info(log_text)
+        return scene_metrics_agg
+
     def get_save_dict(self):
         return {
             "model": self.model.state_dict(),

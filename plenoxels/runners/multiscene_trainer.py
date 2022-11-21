@@ -184,13 +184,8 @@ class MultisceneTrainer(BaseTrainer):
                 pb.set_postfix_str(f"PSNR={out_metrics['psnr']:.2f}", refresh=False)
                 pb.update(1)
             pb.close()
-
-            log_text = f"step {self.global_step}/{self.num_steps} | scene {dset_id}"
-            for k in per_scene_metrics:
-                per_scene_metrics[k] = np.mean(np.asarray(per_scene_metrics[k]))  # noqa
-                log_text += f" | {k}: {per_scene_metrics[k]:.4f}"
-            log.info(log_text)
-            val_metrics.append(per_scene_metrics)
+            val_metrics.append(
+                self.report_test_metrics(per_scene_metrics, extra_name=f"scene_{dset_id}"))
 
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))

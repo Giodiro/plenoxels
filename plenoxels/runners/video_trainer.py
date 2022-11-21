@@ -165,7 +165,6 @@ class VideoTrainer(BaseTrainer):
 
     @torch.no_grad()
     def validate(self):
-        val_metrics = []
         dataset = self.test_dataset
         per_scene_metrics = defaultdict(list)
         pred_frames, out_depths = [], []
@@ -193,13 +192,9 @@ class VideoTrainer(BaseTrainer):
                     os.path.join(self.log_dir, f"step{self.global_step}-depth.mp4"),
                     out_depths
                 )
-        log_text = f"step {self.global_step}/{self.num_steps}"
-        for k in per_scene_metrics:
-            per_scene_metrics[k] = np.mean(np.asarray(per_scene_metrics[k]))  # noqa
-            log_text += f" | {k}: {per_scene_metrics[k]:.4f}"
-        log.info(log_text)
-        val_metrics.append(per_scene_metrics)
-
+        val_metrics = [
+            self.report_test_metrics(per_scene_metrics, extra_name=None),
+        ]
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
 
