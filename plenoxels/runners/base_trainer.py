@@ -1,18 +1,28 @@
 import abc
 import logging
 import os
-from typing import Dict, Optional, MutableMapping, Union, Iterable, Tuple, Sequence
+from dataclasses import dataclass
+from typing import Dict, Optional, Union, Iterable, Tuple, Sequence
 
 import torch
 import torch.utils.data
+import wandb
 from torch.utils.tensorboard import SummaryWriter
 
 from plenoxels.ema import EMA
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_png
 from .regularization import Regularizer
-from .utils import get_cosine_schedule_with_warmup, get_step_schedule_with_warmup
+from .utils import get_cosine_schedule_with_warmup, get_step_schedule_with_warmup, render_image
 from ..my_tqdm import tqdm
+
+
+@dataclass(frozen=True)
+class RenderResult:
+    rgb: torch.Tensor
+    depth: torch.Tensor
+    acc: torch.Tensor
+    n_rendering_samples: int
 
 
 class BaseTrainer():
@@ -61,9 +71,9 @@ class BaseTrainer():
         self.model.to(self.device)
 
     @abc.abstractmethod
-    def eval_step(self, data, **kwargs) -> MutableMapping[str, torch.Tensor]:
+    def eval_step(self, data, **kwargs) -> RenderResult:
         self.model.eval()
-        return {}
+        return None  # noqa
 
     @abc.abstractmethod
     def train_step(self, data: Dict[str, Union[int, torch.Tensor]], **kwargs) -> bool:
@@ -76,6 +86,11 @@ class BaseTrainer():
                 losses_to_postfix(self.loss_info, lr=self.lr), refresh=False)
             for loss_name, loss_val in self.loss_info.items():
                 self.writer.add_scalar(f"train/loss/{loss_name}", loss_val.value, self.global_step)
+        if self.log_wandb:
+            num_items = len(self.loss_info)
+            for i, (loss_name, loss_val) in enumerate(self.loss_info.items()):
+                wandb.log({f'train/loss/{loss_name}': loss_val.value},
+                          step=self.global_step, commit=i >= num_items - 1)
 
         progress_bar.update(1)
 
@@ -155,7 +170,7 @@ class BaseTrainer():
 
     def evaluate_metrics(self,
                          gt: Optional[torch.Tensor],
-                         preds: MutableMapping[str, torch.Tensor],
+                         preds: RenderResult,
                          dset,
                          img_idx: int,
                          name: Optional[str] = None,
@@ -165,7 +180,7 @@ class BaseTrainer():
         else:
             img_h, img_w = dset.img_h[img_idx], dset.img_w[img_idx]
         preds_rgb = (
-            preds["rgb"]
+            preds.rgb
             .reshape(img_h, img_w, 3)
             .cpu()
             .clamp(0, 1)
@@ -178,8 +193,8 @@ class BaseTrainer():
         summary = dict()
 
         out_depth = None
-        if "depth" in preds:
-            out_depth = preds['depth'].cpu().reshape(img_h, img_w)[..., None]
+        if preds.depth is not None:
+            out_depth = preds.depth.cpu().reshape(img_h, img_w)[..., None]
 
         if gt is not None:
             gt = gt.reshape(img_h, img_w, -1).cpu()
@@ -302,6 +317,82 @@ class BaseTrainer():
     @property
     def calc_metrics_every(self):
         return 1
+
+    @property
+    def log_wandb(self):
+        return (
+            self.extra_args.get('wandb', False) and
+            self.global_step > 0 and
+            self.global_step % 50 == 0
+        )
+
+
+class NerfaccHelper():
+    def __init__(self,
+                 target_sample_batch_size: int,
+                 render_n_samples: int,
+                 cone_angle: float,
+                 density_threshold: float,
+                 alpha_threshold: float,
+                 ):
+        self.target_sample_batch_size = target_sample_batch_size
+        self.render_n_samples = render_n_samples
+        self.cone_angle = cone_angle
+        self._density_threshold = density_threshold
+        self._alpha_threshold = alpha_threshold
+
+        self.global_step = None
+
+    @property
+    def density_threshold(self):
+        if self.global_step < 512:
+            return self._density_threshold / 10
+        return self._density_threshold
+
+    @property
+    def alpha_threshold(self):
+        if self.global_step < 512:
+            return self._alpha_threshold
+        return self._alpha_threshold
+
+    @property
+    def max_rays(self):
+        if self.global_step < 512:
+            return 10_000
+        elif self.global_step < 1024:
+            return 100_000
+        return 1_000_000
+
+    def render(self, model, occupancy_grid, data, device, is_training: bool) -> RenderResult:
+        rgb, acc, depth, n_rendering_samples = render_image(
+                model,
+                occupancy_grid,
+                grid_id=data["dset_id"] if 'dset_id' in data else 0,
+                rays_o=data["rays_o"],
+                rays_d=data["rays_d"],
+                timestamps=data['timestamps'] if 'timestamps' in data else None,
+                # rendering options
+                near_plane=data["near"],
+                far_plane=data["far"],
+                render_bkgd=data["color_bkgd"],
+                cone_angle=self.cone_angle,
+                render_step_size=model.step_size(self.render_n_samples),
+                alpha_thresh=self.alpha_threshold,
+                device=device,
+            )
+        return RenderResult(
+            rgb=rgb, depth=depth, acc=acc, n_rendering_samples=n_rendering_samples
+        )
+
+    def calc_batch_size(self, old_batch_size: int, n_rendered_samples: int):
+        # dynamic batch size for rays to keep sample batch size constant.
+        return min(self.max_rays, int(
+            old_batch_size
+            * (self.target_sample_batch_size / float(n_rendered_samples))
+        ))
+
+    def step_cb(self, step):
+        self.global_step = step
 
 
 def losses_to_postfix(loss_dict: Dict[str, EMA], lr: Optional[float]) -> str:

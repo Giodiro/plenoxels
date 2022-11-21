@@ -2,7 +2,7 @@ import logging as log
 import math
 import os
 from collections import defaultdict
-from typing import Dict, Optional, MutableMapping, Sequence, Union
+from typing import Dict, Optional, Sequence, Union
 
 import numpy as np
 import pandas as pd
@@ -16,12 +16,12 @@ from plenoxels.ema import EMA
 from plenoxels.models.lowrank_video import LowrankVideo
 from plenoxels.my_tqdm import tqdm
 from plenoxels.ops.image.io import write_video_to_file
-from plenoxels.runners.base_trainer import BaseTrainer
+from plenoxels.runners.base_trainer import BaseTrainer, NerfaccHelper, RenderResult
 from plenoxels.runners.regularization import (
     VideoPlaneTV, TimeSmoothness, L1PlaneDensityVideo,
     L1AppearancePlanes, Regularizer
 )
-from plenoxels.runners.utils import render_image, init_dloader_random
+from plenoxels.runners.utils import init_dloader_random
 
 
 class VideoTrainer(BaseTrainer):
@@ -51,14 +51,18 @@ class VideoTrainer(BaseTrainer):
             self.contraction_type = ContractionType.UN_BOUNDED_SPHERE
         else:
             self.contraction_type = ContractionType.AABB
-        self.target_sample_batch_size = sample_batch_size
-        self.render_n_samples = n_samples
-        self.cone_angle = kwargs['cone_angle']
-        self._density_threshold = kwargs['density_threshold']
-        self._alpha_threshold = kwargs['alpha_threshold']
         self.ist_step = ist_step
         self.isg_step = isg_step
         self.save_video = save_outputs
+
+        self.nerfacc_helper = NerfaccHelper(
+            target_sample_batch_size=sample_batch_size,
+            render_n_samples=n_samples,
+            cone_angle=kwargs['cone_angle'],
+            density_threshold=kwargs['density_threshold'],
+            alpha_threshold=kwargs['alpha_threshold'],
+        )
+
         super().__init__(train_data_loader=tr_loader,
                          num_steps=num_steps,
                          scheduler_type=scheduler_type,
@@ -78,69 +82,46 @@ class VideoTrainer(BaseTrainer):
 
     def eval_step(self,
                   data: Dict[str, Union[int, torch.Tensor]],
-                  **kwargs) -> MutableMapping[str, torch.Tensor]:
+                  **kwargs) -> RenderResult:
         super().eval_step(data, **kwargs)
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            rgb, acc, depth, _ = render_image(
+            return self.nerfacc_helper.render(
                 self.model,
                 self.occupancy_grid,
-                0,
-                data['rays_o'],
-                data['rays_d'],
-                timestamps=data['timestamps'],
-                near_plane=data['near_far'][:, 0],
-                far_plane=data['near_far'][:, 1],
-                render_bkgd=data['color_bkgd'],
-                cone_angle=self.cone_angle,
-                render_step_size=self.model.step_size(self.render_n_samples),
-                alpha_thresh=self.alpha_threshold,
-                device=self.device,
-            )
-        return dict(rgb=rgb, depth=depth)
+                data,
+                self.device,
+                is_training=False)
 
     def train_step(self, data: Dict[str, Union[int, torch.Tensor]], **kwargs):
         super().train_step(data, **kwargs)
         imgs = data["imgs"].to(self.device)
-        tstamps = data["timestamps"].to(self.device)
+        data["timestamps"] = data["timestamps"].to(self.device)
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             # update occupancy grid
             self.occupancy_grid.every_n_step(
                 step=self.global_step,
                 occ_eval_fn=lambda x: self.model.query_opacity(
-                    x, tstamps, self.train_dataset
+                    x, data["timestamps"], self.train_dataset
                 ),
-                occ_thre=self.density_threshold,
+                occ_thre=self.nerfacc_helper.density_threshold,
             )
             # render
-            rgb, acc, depth, n_rendering_samples = render_image(
+            rendered = self.nerfacc_helper.render(
                 self.model,
                 self.occupancy_grid,
-                0,
-                data["rays_o"],
-                data["rays_d"],
-                timestamps=tstamps,
-                # rendering options
-                near_plane=data['near_far'][:, 0],
-                far_plane=data['near_far'][:, 1],
-                render_bkgd=data["color_bkgd"],
-                cone_angle=self.cone_angle,
-                render_step_size=self.model.step_size(self.render_n_samples),
-                alpha_thresh=self.alpha_threshold,
-                device=self.device,
-            )
-            if n_rendering_samples == 0:
-                self.loss_info[f"n_rendering_samples"].update(float(n_rendering_samples))
+                data,
+                self.device,
+                is_training=True)
+            if rendered.n_rendering_samples == 0:
+                self.loss_info[f"n_rendering_samples"].update(float(0.0))
                 return False
             # dynamic batch size for rays to keep sample batch size constant.
-            num_rays = len(imgs)
-            num_rays = min(self.max_rays, int(
-                num_rays
-                * (self.target_sample_batch_size / float(n_rendering_samples))
+            self.train_dataset.update_num_rays(self.nerfacc_helper.calc_batch_size(
+                old_batch_size=len(imgs), n_rendered_samples=rendered.n_rendering_samples
             ))
-            self.train_dataset.update_num_rays(num_rays)
-            alive_ray_mask = acc.squeeze(-1) > 0
+            alive_ray_mask = rendered.acc.squeeze(-1) > 0
             # compute loss and add regularizers
-            recon_loss = self.criterion(rgb[alive_ray_mask], imgs[alive_ray_mask])
+            recon_loss = self.criterion(rendered.rgb[alive_ray_mask], imgs[alive_ray_mask])
             # Regularization
             loss = recon_loss
             for r in self.regularizers:
@@ -157,23 +138,25 @@ class VideoTrainer(BaseTrainer):
         # Report on losses
         if self.global_step % self.calc_metrics_every == 0:
             with torch.no_grad():
-                mse = F.mse_loss(rgb[alive_ray_mask], imgs[alive_ray_mask]).item()
+                mse = F.mse_loss(rendered.rgb[alive_ray_mask], imgs[alive_ray_mask]).item()
                 self.loss_info["psnr"].update(-10 * math.log10(mse))
                 self.loss_info["mse"].update(mse)
                 self.loss_info["alive_ray_mask"].update(float(alive_ray_mask.long().sum().item()))
-                self.loss_info["n_rendering_samples"].update(float(n_rendering_samples))
+                self.loss_info["n_rendering_samples"].update(float(rendered.n_rendering_samples))
                 self.loss_info["n_rays"].update(float(len(imgs)))
                 for r in self.regularizers:
                     r.report(self.loss_info)
 
         if self.global_step == self.isg_step:
             self.train_dataset.enable_isg()
-            raise StopIteration  # Whenever we change the dataset
         if self.global_step == self.ist_step:
             self.train_dataset.switch_isg2ist()
-            raise StopIteration  # Whenever we change the dataset
 
         return scale <= self.gscaler.get_scale()
+
+    def post_step(self, progress_bar):
+        self.nerfacc_helper.step_cb(self.global_step)
+        super().post_step(progress_bar)
 
     def pre_epoch(self):
         super().pre_epoch()
@@ -252,7 +235,7 @@ class VideoTrainer(BaseTrainer):
         model = LowrankVideo(
             aabb=dset.scene_bbox,
             len_time=dset.len_time,
-            render_n_samples=self.render_n_samples,
+            render_n_samples=self.nerfacc_helper.render_n_samples,
             grid_config=kwargs.pop("grid_config"),
             global_scale=global_scale,
             global_translation=global_translation,
@@ -279,26 +262,6 @@ class VideoTrainer(BaseTrainer):
             og.resolution.tolist(), sum(np.prod(p.shape) for p in og.parameters()),
         ))
         return og
-
-    @property
-    def density_threshold(self):
-        if self.global_step < 512:
-            return self._density_threshold / 10
-        return self._density_threshold
-
-    @property
-    def alpha_threshold(self):
-        if self.global_step < 512:
-            return self._alpha_threshold
-        return self._alpha_threshold
-
-    @property
-    def max_rays(self):
-        if self.global_step < 512:
-            return 10_000
-        elif self.global_step < 1024:
-            return 100_000
-        return 1_000_000
 
     @property
     def calc_metrics_every(self):

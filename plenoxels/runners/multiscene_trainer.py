@@ -2,7 +2,7 @@ import logging as log
 import math
 import os
 from collections import defaultdict
-from typing import Dict, List, Optional, MutableMapping, Union, Sequence, Any
+from typing import Dict, List, Optional, Union, Sequence, Any
 
 import numpy as np
 import pandas as pd
@@ -13,12 +13,12 @@ from nerfacc import ContractionType, OccupancyGrid
 
 from plenoxels.ema import EMA
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash
-from .base_trainer import BaseTrainer
+from .base_trainer import BaseTrainer, RenderResult, NerfaccHelper
 from .regularization import (
     PlaneTV, DensityPlaneTV, VolumeTV, L1PlaneColor, L1PlaneDensity,
     L1Density
 )
-from .utils import render_image, init_dloader_random
+from .utils import init_dloader_random
 from ..datasets import SyntheticNerfDataset, LLFFDataset
 from ..datasets.base_dataset import BaseDataset
 from ..datasets.multi_dataset_sampler import MultiSceneSampler
@@ -52,11 +52,14 @@ class MultisceneTrainer(BaseTrainer):
         else:
             self.contraction_type = ContractionType.AABB
         self.num_dsets = len(self.train_datasets)
-        self.target_sample_batch_size = sample_batch_size
-        self.render_n_samples = n_samples
-        self.cone_angle = kwargs['cone_angle']
-        self._density_threshold = kwargs['density_threshold']
-        self._alpha_threshold = kwargs['alpha_threshold']
+
+        self.nerfacc_helper = NerfaccHelper(
+            target_sample_batch_size=sample_batch_size,
+            render_n_samples=n_samples,
+            cone_angle=kwargs['cone_angle'],
+            density_threshold=kwargs['density_threshold'],
+            alpha_threshold=kwargs['alpha_threshold'],
+        )
 
         super().__init__(
             train_data_loader=tr_loader,
@@ -81,7 +84,7 @@ class MultisceneTrainer(BaseTrainer):
 
     def eval_step(self,
                   data: Dict[str, Union[int, torch.Tensor]],
-                  **kwargs) -> MutableMapping[str, torch.Tensor]:
+                  **kwargs) -> RenderResult:
         """
         Note that here `data` contains a whole image. we need to split it up before tracing
         for memory constraints.
@@ -89,22 +92,12 @@ class MultisceneTrainer(BaseTrainer):
         super().eval_step(data, **kwargs)
         dset_id = data["dset_id"]
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            rgb, acc, depth, _ = render_image(
+            return self.nerfacc_helper.render(
                 self.model,
                 self.occupancy_grids[dset_id],
-                dset_id,
-                data["rays_o"],
-                data["rays_d"],
-                aabb=self.model.aabb(dset_id).view(-1),
-                near_plane=data["near"],
-                far_plane=data["far"],
-                render_bkgd=data["color_bkgd"],
-                cone_angle=self.cone_angle,
-                render_step_size=self.model.step_size(self.render_n_samples, dset_id),
-                alpha_thresh=self.alpha_threshold,
-                device=self.device,
-            )
-        return dict(rgb=rgb, depth=depth)
+                data,
+                self.device,
+                is_training=False)
 
     def train_step(self, data: Dict[str, Union[int, torch.Tensor]], **kwargs):
         super().train_step(data, **kwargs)
@@ -117,38 +110,26 @@ class MultisceneTrainer(BaseTrainer):
                 occ_eval_fn=lambda x: self.model.query_opacity(
                     x, dset_id, self.train_datasets[dset_id]
                 ),
-                occ_thre=self.density_threshold,
+                occ_thre=self.nerfacc_helper.density_threshold,
             )
             # render
-            rgb, acc, depth, n_rendering_samples = render_image(
+            rendered = self.nerfacc_helper.render(
                 self.model,
                 self.occupancy_grids[dset_id],
-                dset_id,
-                data["rays_o"],
-                data["rays_d"],
-                # rendering options
-                aabb=self.model.aabb(dset_id).view(-1),
-                near_plane=data["near"],
-                far_plane=data["far"],
-                render_bkgd=data["color_bkgd"],
-                cone_angle=self.cone_angle,
-                render_step_size=self.model.step_size(self.render_n_samples, dset_id),
-                alpha_thresh=self.alpha_threshold,
-                device=self.device,
-            )
-            if n_rendering_samples == 0:
-                self.loss_info[f"n_rendering_samples_{dset_id}"].update(float(n_rendering_samples))
+                data,
+                self.device,
+                is_training=True)
+            if rendered.n_rendering_samples == 0:
+                self.loss_info[f"n_rendering_samples_{dset_id}"].update(0.0)
                 return False
+
             # dynamic batch size for rays to keep sample batch size constant.
-            num_rays = len(imgs)
-            num_rays = min(self.max_rays, int(
-                num_rays
-                * (self.target_sample_batch_size / float(n_rendering_samples))
+            self.train_datasets[dset_id].update_num_rays(self.nerfacc_helper.calc_batch_size(
+                old_batch_size=len(imgs), n_rendered_samples=rendered.n_rendering_samples
             ))
-            self.train_datasets[dset_id].update_num_rays(num_rays)
-            alive_ray_mask = acc.squeeze(-1) > 0
+            alive_ray_mask = rendered.acc.squeeze(-1) > 0
             # compute loss and add regularizers
-            recon_loss = self.criterion(rgb[alive_ray_mask], imgs[alive_ray_mask])
+            recon_loss = self.criterion(rendered.rgb[alive_ray_mask], imgs[alive_ray_mask])
             # Regularization
             loss = recon_loss
             for r in self.regularizers:
@@ -165,17 +146,21 @@ class MultisceneTrainer(BaseTrainer):
         # Report on losses
         if self.global_step % self.calc_metrics_every == 0:
             with torch.no_grad():
-                mse = F.mse_loss(rgb, imgs).item()
+                mse = F.mse_loss(rendered.rgb, imgs).item()
                 self.loss_info[f"psnr_{dset_id}"].update(-10 * math.log10(mse))
                 self.loss_info[f"mse_{dset_id}"].update(mse)
                 self.loss_info[f"alive_ray_mask_{dset_id}"].update(
                     float(alive_ray_mask.long().sum().item()))
-                self.loss_info[f"n_rendering_samples_{dset_id}"].update(float(n_rendering_samples))
+                self.loss_info[f"n_rendered_samples_{dset_id}"].update(float(rendered.n_rendering_samples))
                 self.loss_info[f"n_rays_{dset_id}"].update(float(len(imgs)))
                 for r in self.regularizers:
                     r.report(self.loss_info)
 
         return scale <= self.gscaler.get_scale()
+
+    def post_step(self, progress_bar):
+        self.nerfacc_helper.step_cb(self.global_step)
+        super().post_step(progress_bar)
 
     def pre_epoch(self):
         super().pre_epoch()
@@ -190,9 +175,9 @@ class MultisceneTrainer(BaseTrainer):
             pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
             per_scene_metrics = defaultdict(list)
             for img_idx, data in enumerate(dataset):
-                preds = self.eval_step(data, dset_id=dset_id)
+                ts_render = self.eval_step(data, dset_id=dset_id)
                 out_metrics, _, _ = self.evaluate_metrics(
-                    data["imgs"], preds, dset=dataset, img_idx=img_idx,
+                    data["imgs"], ts_render, dset=dataset, img_idx=img_idx,
                     name=f"D{dset_id}", save_outputs=self.save_outputs)
                 for k, v in out_metrics.items():
                     per_scene_metrics[k].append(v)
@@ -231,7 +216,7 @@ class MultisceneTrainer(BaseTrainer):
             num_scenes=self.num_dsets,
             grid_config=kwargs.pop("grid_config"),
             aabb=aabbs,
-            render_n_samples=self.render_n_samples,
+            render_n_samples=self.nerfacc_helper.render_n_samples,
             **kwargs)
         log.info(f"Initialized LowrankLearnableHash model with "
                  f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters.")
@@ -267,26 +252,6 @@ class MultisceneTrainer(BaseTrainer):
             L1PlaneDensity(kwargs.get('l1_plane_density_weight', 0.0)),
             L1Density(kwargs.get('l1density_weight', 0.0), max_voxels=100_000),
         ]
-
-    @property
-    def density_threshold(self):
-        if self.global_step < 512:
-            return self._density_threshold / 10
-        return self._density_threshold
-
-    @property
-    def alpha_threshold(self):
-        if self.global_step < 512:
-            return self._alpha_threshold
-        return self._alpha_threshold
-
-    @property
-    def max_rays(self):
-        if self.global_step < 512:
-            return 10_000
-        elif self.global_step < 1024:
-            return 100_000
-        return 1_000_000
 
     @property
     def calc_metrics_every(self):

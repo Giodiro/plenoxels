@@ -1,4 +1,5 @@
 import argparse
+import datetime
 import importlib.util
 import logging
 import os
@@ -7,6 +8,7 @@ import sys
 from typing import List, Dict, Any
 
 import numpy as np
+import wandb
 
 
 def get_freer_gpu():
@@ -20,10 +22,8 @@ print(f'gpu is {gpu}')
 
 import torch
 import torch.utils.data
-
 from plenoxels.runners import video_trainer, multiscene_trainer
-from plenoxels.runners.utils import get_freer_gpu
-from plenoxels.utils import parse_optfloat, parse_optint
+from plenoxels.utils import parse_optfloat
 
 
 def setup_logging(log_level=logging.INFO):
@@ -83,6 +83,12 @@ def main():
     is_video = "keyframes" in config
     validate_only = args.validate_only
 
+    if config['wandb']:
+        import wandb
+        wandb_run = wandb.init(project="k_plane", config=config)
+        tstamp = datetime.datetime.now(tz=datetime.timezone.utc).strftime("%y%m%d_%H%M%S")
+        wandb_run.name = f"config['expname']_{tstamp}"
+
     pprint.pprint(config)
     if not validate_only:
         log_dir = os.path.join(config['logdir'], config['expname'])
@@ -94,19 +100,12 @@ def main():
             for key in config.keys():
                 f.write("%s\t%s\n"%(key,config[key]))
 
-    if is_video:
-        state = None
-        if args.log_dir is not None:
-            checkpoint_path = os.path.join(args.log_dir, "model.pth")
-            state = torch.load(checkpoint_path)
-        trainer, config = video_trainer.load_video_model(config, state, validate_only)
-    else:
-        data = load_data(is_video, validate_only, **config)
-        config.update(data)
-        trainer = init_trainer(is_video, **config)
-        if args.log_dir is not None:
-            checkpoint_path = os.path.join(args.log_dir, "model.pth")
-            trainer.load_model(torch.load(checkpoint_path))
+    data = load_data(is_video, validate_only, **config)
+    config.update(data)
+    trainer = init_trainer(is_video, **config)
+    if args.log_dir is not None:
+        checkpoint_path = os.path.join(args.log_dir, "model.pth")
+        trainer.load_model(torch.load(checkpoint_path))
 
     if validate_only:
         assert args.log_dir is not None and os.path.isdir(args.log_dir)
