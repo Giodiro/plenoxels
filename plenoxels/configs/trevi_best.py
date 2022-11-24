@@ -1,12 +1,12 @@
 config = {'add_rank_steps': [],
  'batch_size': 4096,
- 'data_dirs': ['/work3/frwa/data/phototourism/trevi'],
+ 'data_dirs': ['/home/warburg/data/phototourism/trevi'],
  'data_downsample': 1.0,
  'density_activation': 'trunc_exp',
  'density_field_rank': 1,
  'density_field_resolution': [128, 256],
  'density_model': 'triplane',
- 'expname': 'with_nn_tv0_rank2_outdim32_triplane_scales1_2_4_8_medium_appearance_code',
+ 'expname': 'trevi_cvpr',
  'floater_loss': 0.0,
  'grid_config': '\n'
                 '[\n'
@@ -16,7 +16,7 @@ config = {'add_rank_steps': [],
                 '        "grid_dimensions": 2,\n'
                 '        "resolution": [80, 40, 20], \n'
                 '        "rank": 2,\n'
-                '        "time_reso": 1708,\n'
+                '        "time_reso": 1708,\n'  # 1708 for trevi, 1200 for sacre, 773 for brandenburg
                 '    },\n'
                 '    {\n'
                 '        "input_coordinate_dim": 2,\n'
@@ -32,7 +32,7 @@ config = {'add_rank_steps': [],
  'keyframes': False,
  'l1_appearance_planes_reg': 0.0,
  'l1density_weight': 0,
- 'logdir': './logs/trevi/nov9',
+ 'logdir': './logs/phototourism',
  'lr': 0.01,
  'multiscale_res': [1, 2, 4, 8],
  'n_intersections': 64,

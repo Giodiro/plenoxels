@@ -26,7 +26,7 @@ test_images = {"sacre" : 21,
             "trevi" : 19,
             "brandenburg" : 10}
 
-dataset = "brandenburg"
+dataset = "sacre"
 
 log.basicConfig(level=log.INFO,
                 format='%(asctime)s|%(levelname)8s| %(message)s',
@@ -37,7 +37,7 @@ log.basicConfig(level=log.INFO,
 def generate_spiral_path(poses: np.ndarray,
                          near_fars: np.ndarray,
                          n_frames=120,
-                         n_rots=0.8,
+                         n_rots=1,
                          zrate=.5) -> np.ndarray:
     # center pose
     if poses.shape[1] > 3:
@@ -63,7 +63,12 @@ def generate_spiral_path(poses: np.ndarray,
     for theta in np.linspace(0., 2. * np.pi * n_rots, n_frames, endpoint=False):
         # t = radii * [np.cos(theta), np.sin(theta), -np.sin(theta * zrate), 1.]
         rotation = c2w[:3,:3]
-        translation = c2w[:,3:4] + np.array([[0.1*np.cos(theta), -0.05-0.01*np.sin(theta), -0.2+0.2*np.sin(theta * zrate)]]).T
+        # For brandenburg
+        # translation = c2w[:,3:4] + np.array([[0.1*np.cos(theta), -0.05-0.01*np.sin(theta), -0.2+0.2*np.sin(theta * zrate)]]).T
+        # For trevi
+        # translation = c2w[:,3:4] + np.array([[0.05+0.1*np.cos(theta), -0.1-0.01*np.sin(theta), 0.02+0.1*np.sin(theta * zrate)]]).T
+        # For sacre
+        translation = c2w[:,3:4] + np.array([[-0.04+0.01*np.cos(theta), -0.01*np.sin(theta), 0.05+0.001*np.sin(theta * zrate)]]).T
         pose = np.concatenate([rotation, translation],axis=1)
         render_poses.append(pose)
     return np.stack(render_poses, axis=0)
@@ -146,13 +151,18 @@ def load_data(datadir, num_frames, H, W):
         rays_o.append(origins)
         rays_d.append(directions)
         # timestamps.append(interp_time.repeat(origins.shape[0]))
-        timestamps.append(torch.tensor(100 + pose_id / spiral_poses.shape[0]).repeat(origins.shape[0]))
+        # For brandenburg and trevi
+        # timestamps.append(torch.tensor(100 + pose_id / spiral_poses.shape[0]).repeat(origins.shape[0]))
+        # For sacre
+        timestamps.append(torch.tensor(13 + pose_id / spiral_poses.shape[0]).repeat(origins.shape[0]))
         # Find the closest cam TODO: This is the crappiest way to calculate distance between cameras!
         # TODO: continue updating for phototourism here
         closest_cam_idx = torch.linalg.norm(
             poses.view(poses.shape[0], -1) - c2w.view(-1), dim=1).argmin()
         
-        near_fars.append((bounds[closest_cam_idx] + torch.tensor([0.05, 0.0])).repeat(origins.shape[0], 1))
+        # For brandenburg and trevi
+        # near_fars.append((bounds[closest_cam_idx] + torch.tensor([0.05, 0.0])).repeat(origins.shape[0], 1))
+        near_fars.append((bounds[closest_cam_idx] + torch.tensor([0.07, 0.0])).repeat(origins.shape[0], 1))
     
     rays_o = torch.cat(rays_o, 0)
     rays_d = torch.cat(rays_d, 0)
@@ -236,9 +246,9 @@ def save_video(out_file, spiral_outputs, output_key='rgb'):
 
 
 def run():
-    datadir = '/home/warburg/data/phototourism/brandenburg'
-    checkpoint_path = '/home/sfk/plenoxels/logs/phototourism/brandenburg_cvpr/model.pth'
-    output_path = '/home/sfk/plenoxels/logs/phototourism/brandenburg_cvpr/test_video.mp4'
+    datadir = '/home/warburg/data/phototourism/sacre'
+    checkpoint_path = '/home/sfk/plenoxels/logs/phototourism/sacre_cvpr/model.pth'
+    output_path = '/home/sfk/plenoxels/logs/phototourism/sacre_cvpr/test_video.mp4'
     num_frames = 200
 
     data = load_data(datadir, num_frames, H=800, W=800)
