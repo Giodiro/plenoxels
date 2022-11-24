@@ -50,7 +50,7 @@ class Video360Dataset(BaseDataset):
         self.global_scale = torch.tensor([1, 1, 1])
         if is_contracted and is_ndc:
             raise ValueError("Options 'is_contracted' and 'is_ndc' are exclusive.")
-        if "lego" in datadir:
+        if "lego" in datadir or "dnerf" in datadir:
             dset_type = "synthetic"
         else:
             dset_type = "llff"
@@ -72,9 +72,11 @@ class Video360Dataset(BaseDataset):
             frames, transform = load_360video_frames(datadir, split, max_cameras=self.max_cameras, max_tsteps=self.max_tsteps)
             imgs, self.poses = load_360_images(frames, datadir, split, self.downsample)
             self.median_imgs = calc_360_camera_medians(frames, imgs)
-            timestamps = [parse_360_file_path(frame['file_path'])[0] or float(frame['time'])*len(frames) for frame in frames]
-            timestamps = torch.tensor(timestamps, dtype=torch.int32)
+            timestamps = [parse_360_file_path(frame['file_path'])[0] or float(frame['time']) for frame in frames]
+            timestamps = torch.tensor(timestamps, dtype=torch.float32)
             intrinsics = load_360_intrinsics(transform, imgs, self.downsample)
+
+            # The problem is that dnerf has fewer timesteps for the test video than the train
 
         else:
             raise ValueError(datadir)
@@ -153,6 +155,7 @@ class Video360Dataset(BaseDataset):
                 1, intrinsics.height, intrinsics.width).reshape(-1)  # [n_frames * h * w]
         else:
             self.timestamps = timestamps
+        print(f'timestamps are {timestamps}')
 
         log.info(f"VideoDataset contracted={self.is_contracted}, ndc={self.is_ndc} - Loaded {self.split} set from {self.datadir}: "
                  f"{self.poses.shape[0]} images of size {self.img_h}x{self.img_w} and "
