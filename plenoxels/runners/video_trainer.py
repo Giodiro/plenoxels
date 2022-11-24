@@ -469,7 +469,7 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
     ist = kwargs.get('ist', False)
     keyframes = kwargs.get('keyframes', False)
     batch_size = kwargs['batch_size']
-    if "lego" in data_dir:
+    if "lego" in data_dir or "dnerf" in data_dir:
         logging.info(f"Loading Video360Dataset with downsample={data_downsample}")
         tr_dset = Video360Dataset(
             data_dir, split='train', downsample=data_downsample,

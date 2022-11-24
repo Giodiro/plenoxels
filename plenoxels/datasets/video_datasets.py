@@ -72,7 +72,7 @@ class Video360Dataset(BaseDataset):
             frames, transform = load_360video_frames(datadir, split, max_cameras=self.max_cameras, max_tsteps=self.max_tsteps)
             imgs, self.poses = load_360_images(frames, datadir, split, self.downsample)
             self.median_imgs = calc_360_camera_medians(frames, imgs)
-            timestamps = [parse_360_file_path(frame['file_path'])[0] for frame in frames]
+            timestamps = [parse_360_file_path(frame['file_path'])[0] or float(frame['time'])*len(frames) for frame in frames]
             timestamps = torch.tensor(timestamps, dtype=torch.int32)
             intrinsics = load_360_intrinsics(transform, imgs, self.downsample)
 
@@ -108,7 +108,7 @@ class Video360Dataset(BaseDataset):
 
         self.isg_weights = None
         self.ist_weights = None
-        if split == "train":
+        if split == "train" and '3DVideo' in datadir:  # Only use importance sampling with DyNeRF videos
             if os.path.exists(os.path.join(datadir, f"isg_weights.pt")):
                 self.isg_weights = torch.load(os.path.join(datadir, f"isg_weights.pt"))
                 log.info(f"Reloaded {self.isg_weights.shape[0]} ISG weights from file.")
@@ -178,6 +178,7 @@ class Video360Dataset(BaseDataset):
         h = self.intrinsics.height
         w = self.intrinsics.width
         dev = "cpu"
+        originalindex = index
         if self.split == 'train':
             index = self.get_rand_ids(index)  # [batch_size // (weights_subsampled**2)]
             if len(index) == self.batch_size:
@@ -219,9 +220,11 @@ class Video360Dataset(BaseDataset):
                 camera_id = torch.div(image_id, num_frames_per_camera, rounding_mode='floor')  # [num_rays]
                 near_fars = self.per_cam_near_fars[camera_id, :]
             else:
-                near_fars = self.per_cam_near_fars  # Only one test camera
-
-        rgba = self.imgs[index] / 255.0  # (num_rays, 4)   this converts to f32
+                near_fars = self.per_cam_near_fars  # Only one test camera  # TODO: might need to change this for dnerf
+        try:
+            rgba = self.imgs[index] / 255.0  # (num_rays, 4)   this converts to f32
+        except:
+            raise StopIteration  # Somehow after a pass through the data it needs to be told to reset # TODO: find a cleaner fix for this
         c2w = self.poses[image_id]       # (num_rays, 3, 4)
         ts = self.timestamps[index]      # (num_rays or 1, )
         camera_dirs = gen_camera_dirs(
@@ -242,8 +245,13 @@ class Video360Dataset(BaseDataset):
 
 
 def parse_360_file_path(fp):
-    timestamp = int(fp.split('t')[-1].split('_')[0])
-    pose_id = int(fp.split('r')[-1])
+    timestamp = None
+    if '_r' in fp:
+        timestamp = int(fp.split('t')[-1].split('_')[0])
+    if 'r_' in fp:
+        pose_id = int(fp.split('r_')[-1])
+    else:
+        pose_id = int(fp.split('r')[-1])
     return timestamp, pose_id
 
 
@@ -257,6 +265,8 @@ def load_360video_frames(datadir, split, max_cameras: int, max_tsteps: Optional[
     fpath2poseid = defaultdict(list)
     for frame in frames:
         timestamp, pose_id = parse_360_file_path(frame['file_path'])
+        if timestamp is None:
+            timestamp = float(frame['time'])
         timestamps.add(timestamp)
         pose_ids.add(pose_id)
         fpath2poseid[frame['file_path']].append(pose_id)
@@ -270,10 +280,12 @@ def load_360video_frames(datadir, split, max_cameras: int, max_tsteps: Optional[
     num_timestamps = min(len(timestamps), max_tsteps or len(timestamps))
     subsample_time = int(math.floor(len(timestamps) / (num_timestamps - 1)))
     timestamps = set(timestamps[::subsample_time])
-    log.info(f"Selected subset of timestamps: {timestamps}")
+    log.info(f"Selected subset of timestamps: {sorted(timestamps)} of length {len(timestamps)}")
     sub_frames = []
     for frame in frames:
         timestamp, pose_id = parse_360_file_path(frame['file_path'])
+        if timestamp is None:
+            timestamp = float(frame['time'])
         if timestamp in timestamps and pose_id in pose_ids:
             sub_frames.append(frame)
     # We need frames to be sorted by pose_id
