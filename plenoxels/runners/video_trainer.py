@@ -22,6 +22,15 @@ from plenoxels.runners.multiscene_trainer import Trainer, visualize_planes, visu
 from plenoxels.runners.regularization import VideoPlaneTV, TimeSmoothness, HistogramLoss, L1PlaneDensityVideo, L1AppearancePlanes, DistortionLoss
 import matplotlib.pyplot as plt
 import cv2
+
+try:
+    import wandb
+except ImportError:
+    logging.warning("wandb is not installed!")
+    wandb = None
+
+
+
 class VideoTrainer(Trainer):
     def __init__(self,
                  tr_loader: torch.utils.data.DataLoader,
@@ -401,6 +410,12 @@ class VideoTrainer(Trainer):
                 val_metrics.append(per_scene_metrics)
                 self.writer.add_scalar(f"test/loss/psnr", per_scene_metrics['psnr'], self.global_step)
                 self.writer.add_scalar(f"test/loss/ms-ssim", per_scene_metrics['ms-ssim'], self.global_step)
+
+                try:
+                    wandb.log({"test_psnr": per_scene_metrics["psnr"],
+                               "test_ssim": per_scene_metrics["ssim"]})
+                except:
+                    print(f'Not logging to wandb!')
 
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))

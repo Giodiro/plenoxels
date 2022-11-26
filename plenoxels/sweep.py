@@ -63,39 +63,73 @@ def main():
     # Set random seed
     np.random.seed(42)
     torch.manual_seed(42)
-    
+
     # Import config
     spec = importlib.util.spec_from_file_location(os.path.basename(wandb.config.config_path), wandb.config.config_path)
-    #spec = importlib.util.spec_from_file_location("plenoxels/config/giac_learnablehash.py")
     cfg = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(cfg)
     config: Dict[str, Any] = cfg.config
-    print("config", config)
-    print("wandb.config", wandb.config)
-    # note that we define values from `wandb.config` instead of 
-    # defining hard values
-    for k, v in wandb.config.items():
-        if k != 'config_path':
-            # ensure that all values we tune are in the config
-            assert k in config
-            
-            config[k] = v
-    
+    # Process overrides from argparse into config
+    # overrides can be passed from the command line as key=value pairs. E.g.
+    # python plenoxels/main.py --config-path plenoxels/config/cfg.py max_ts_frames=200
+    # note that all values are strings, so code should assume incorrect data-types for anything
+    # that's derived from config - and should not a string.
+    is_video = "keyframes" in config
+
     pprint.pprint(config)
-    
     log_dir = os.path.join(config['logdir'], config['expname'])
     os.makedirs(log_dir, exist_ok=True)
-    with open(os.path.join(log_dir, 'config.py'), 'wt') as out: 
+    with open(os.path.join(log_dir, 'config.py'), 'wt') as out:
         out.write('config = ' + pprint.pformat(config))
 
     with open(os.path.join(log_dir, 'config.csv'), 'w') as f:
         for key in config.keys():
             f.write("%s\t%s\n"%(key,config[key]))
-    
-    data = load_data(False, **config)
-    config.update(data)
-    trainer: multiscene_trainer.Trainer = init_trainer(False, **config)
+
+    if is_video:
+        state = None
+        trainer, config = video_trainer.load_video_model(config, state, validate_only=False)
+    else:
+        data = load_data(is_video, **config)
+        config.update(data)
+        trainer: multiscene_trainer.Trainer = init_trainer(is_video, **config)
+
     trainer.train()
+
+
+    
+    # # Import config
+    # spec = importlib.util.spec_from_file_location(os.path.basename(wandb.config.config_path), wandb.config.config_path)
+    # #spec = importlib.util.spec_from_file_location("plenoxels/config/giac_learnablehash.py")
+    # cfg = importlib.util.module_from_spec(spec)
+    # spec.loader.exec_module(cfg)
+    # config: Dict[str, Any] = cfg.config
+    # print("config", config)
+    # print("wandb.config", wandb.config)
+    # # note that we define values from `wandb.config` instead of 
+    # # defining hard values
+    # for k, v in wandb.config.items():
+    #     if k != 'config_path':
+    #         # ensure that all values we tune are in the config
+    #         assert k in config
+            
+    #         config[k] = v
+    
+    # pprint.pprint(config)
+    
+    # log_dir = os.path.join(config['logdir'], config['expname'])
+    # os.makedirs(log_dir, exist_ok=True)
+    # with open(os.path.join(log_dir, 'config.py'), 'wt') as out: 
+    #     out.write('config = ' + pprint.pformat(config))
+
+    # with open(os.path.join(log_dir, 'config.csv'), 'w') as f:
+    #     for key in config.keys():
+    #         f.write("%s\t%s\n"%(key,config[key]))
+    
+    # data = load_data(False, **config)
+    # config.update(data)
+    # trainer: multiscene_trainer.Trainer = init_trainer(False, **config)
+    # trainer.train()
 
 
 if __name__ == "__main__":

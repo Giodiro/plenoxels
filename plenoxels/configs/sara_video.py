@@ -1,12 +1,13 @@
 config = {'add_rank_steps': [-1],
  'batch_size': 4096,
- 'data_dirs': ['/home/sfk/data/dnerf/data/lego'],
- 'data_downsample': 2.0,
+ 'data_dirs': ['/home/sfk/data/dnerf/data/standup'],
+ 'data_downsample': 1.0,
  'density_activation': 'trunc_exp',
  'density_field_rank': 1,
  'density_field_resolution': [128, 256],
- 'density_model': 'triplane',
- 'expname': 'lego',
+ 'density_model': 'hexplane',
+#  'expname': 'standup_hexsampler_fullres_halftime_planetv0.05_smooth1_density64.128',
+ 'expname': 'standup_wandb',
  'floater_loss': 0.0,
  'grid_config': '\n'
                 '[\n'
@@ -14,7 +15,7 @@ config = {'add_rank_steps': [-1],
                 '        "input_coordinate_dim": 4,\n'
                 '        "output_coordinate_dim": 64,\n'
                 '        "grid_dimensions": 2,\n'
-                '        "resolution": [64, 64, 64, 50],\n'
+                '        "resolution": [64, 64, 64, 75],\n'
                 '        "rank": 1,\n'
                 '    },\n'
                 ']\n',
@@ -36,26 +37,26 @@ config = {'add_rank_steps': [-1],
  'multiscale_res': [1, 2, 4],
  'n_intersections': 48,
  'num_proposal_samples': [256, 96],
- 'num_steps': 10001,
+ 'num_steps': 30001,
  'optim_type': 'adam',
- 'plane_tv_weight': 0.02,
+ 'plane_tv_weight': 0.05,
  'proposal_decoder_type': 'nn',
  'proposal_feature_dim': 10,
  'raymarch_type': 'fixed',
- 'save_every': 10000,
+ 'save_every': 30000,
  'save_outputs': True,
  'save_video': True,
  'scheduler_type': 'warmup_cosine',
  'sh': False,
  'sh_decoder_type': 'manual',
  'single_jitter': False,
- 'time_smoothness_weight': 0.05,
+ 'time_smoothness_weight': 1.0,
  'train_fp16': True,
  'upsample_time_resolution': [150],
  'upsample_time_steps': [-1],
  'use_F': False,
  'use_trainable_rank': False,
- 'valid_every': 10000,
+ 'valid_every': 30000,
  'volume_tv_npts': 1024,
  'volume_tv_weight': 0.0,
  'volume_tv_what': 'Gcoords'}
