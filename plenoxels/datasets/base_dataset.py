@@ -44,7 +44,7 @@ class BaseDataset(Dataset, ABC):
                 f"Expected {self.num_samples} sampling weights but given {len(self.sampling_weights)}."
             )
         self.sampling_batch_size = 2_000_000  # Increase this?
-        self.use_permutation = self.num_samples < 100_000_000  # 64M is static
+        self.use_permutation = self.num_samples < 10_000_000  # 64M is static
         self.perm = None
 
     @property

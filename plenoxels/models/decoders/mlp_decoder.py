@@ -37,7 +37,7 @@ class NNDecoder(BaseDecoder):
             network_config={
                 "otype": "FullyFusedMLP",
                 "activation": "ReLU",
-                "output_activation": "None",
+                "output_activation": "Sigmoid",
                 "n_neurons": 64,
                 "n_hidden_layers": 2,
             },

@@ -75,7 +75,8 @@ class LowrankLearnableHash(LowrankModel):
 
         log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes, "
                  f"decoder: {self.decoder}, use-F: {self.use_F}, "
-                 f"concat-features: {self.concat_features}")
+                 f"concat-features: {self.concat_features}"
+                 f"feature-dim: {self.feature_dim}")
         log.info(f"Model grids: {self.scene_grids}")
 
     def compute_features(self,
