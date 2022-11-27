@@ -31,6 +31,7 @@ class LowrankVideo(LowrankModel):
                  multiscale_res: List[int] = [1],
                  global_translation=None,
                  global_scale=None,
+                 concat_planes=False,
                  **kwargs):
         self.len_time = len_time  # maximum timestep - used for normalization
         super().__init__(grid_config=grid_config,
@@ -62,6 +63,7 @@ class LowrankVideo(LowrankModel):
         self.grids = torch.nn.ModuleList()
         self.features = torch.nn.ParameterList()
         self.concat_features = False
+        self.concat_planes = concat_planes
         if self.feature_len is not None:
             self.concat_features = True
         else:
@@ -89,6 +91,8 @@ class LowrankVideo(LowrankModel):
                             self.feature_dim = sum(self.feature_len)
                         else:
                             self.feature_dim = gpdesc.grid_coefs[-1].shape[1] // config["rank"][0]
+                        if self.concat_planes:
+                            self.feature_dim = self.feature_dim * 6  # concatenating 6 planes
         if self.sh:
             self.decoder = SHDecoder(
                 feature_dim=self.feature_dim,
@@ -119,14 +123,22 @@ class LowrankVideo(LowrankModel):
 
         multi_scale_interp = [] if self.concat_features else 0
         for scale_id, (grid_space, featlen) in enumerate(zip(multiscale_space, self.feature_len)):
-            interp_space = 1  # [n, F_dim, rank]
+            if self.concat_planes:
+                interp_space = []
+            else:
+                interp_space = 1  # [n, F_dim, rank]
             for ci, coo_comb in enumerate(coo_combs):
                 # interpolate in plane
                 interp_out_plane = grid_sample_wrapper(
                     grid_space[ci], pts[..., coo_comb]
                 ).view(-1, featlen, level_info["rank"])
-                # compute product
-                interp_space = interp_space * interp_out_plane
+                if self.concat_planes:
+                    interp_space.append(interp_out_plane)
+                else:
+                    # compute product
+                    interp_space = interp_space * interp_out_plane
+            if self.concat_planes:
+                interp_space = torch.cat(interp_space, dim=1)  # [n, features, rank]
             interp = interp_space.mean(dim=-1)  # Mean over rank
 
             # When F is used we need to interpolate over F.
