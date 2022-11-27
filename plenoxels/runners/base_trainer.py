@@ -6,6 +6,7 @@ from typing import Dict, Optional, Union, Iterable, Tuple, Sequence
 
 import torch
 import torch.utils.data
+import numpy as np
 import wandb
 from torch.utils.tensorboard import SummaryWriter
 
@@ -307,7 +308,7 @@ class BaseTrainer():
 
     def init_optim(self, **kwargs) -> torch.optim.Optimizer:
         if self.optim_type == 'adam':
-            optim = torch.optim.Adam(params=self.model.get_params(kwargs['lr']))
+            optim = torch.optim.Adam(params=self.model.get_params(kwargs['lr']), eps=1e-15)
         else:
             raise NotImplementedError()
         return optim
@@ -359,8 +360,8 @@ class NerfaccHelper():
 
     @property
     def density_threshold(self):
-        if self.global_step < 512:
-            return self._density_threshold / 10
+        #if self.global_step < 512:
+        #    return self._density_threshold# / 10
         return self._density_threshold
 
     @property
@@ -377,7 +378,7 @@ class NerfaccHelper():
             return 100_000
         return 1_000_000
 
-    def render(self, model, occupancy_grid, data, device, is_training: bool) -> RenderResult:
+    def render(self, model, occupancy_grid, data, device, step_size: float, is_training: bool) -> RenderResult:
         rgb, acc, depth, n_rendering_samples = render_image(
                 model,
                 occupancy_grid,
@@ -390,7 +391,7 @@ class NerfaccHelper():
                 far_plane=data["far"],
                 render_bkgd=data["color_bkgd"],
                 cone_angle=self.cone_angle,
-                render_step_size=model.step_size(self.render_n_samples),
+                render_step_size=step_size,
                 alpha_thresh=self.alpha_threshold,
                 device=device,
             )

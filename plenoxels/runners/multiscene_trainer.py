@@ -16,7 +16,7 @@ from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash
 from .base_trainer import BaseTrainer, RenderResult, NerfaccHelper
 from .regularization import (
     PlaneTV, DensityPlaneTV, VolumeTV, L1PlaneColor, L1PlaneDensity,
-    L1Density
+    L1Density,
 )
 from .utils import init_dloader_random
 from ..datasets import SyntheticNerfDataset, LLFFDataset
@@ -52,6 +52,7 @@ class MultisceneTrainer(BaseTrainer):
         else:
             self.contraction_type = ContractionType.AABB
         self.num_dsets = len(self.train_datasets)
+        self.og_resolution = torch.tensor(kwargs.get('occupancy_grid_resolution'), dtype=torch.long)
 
         self.nerfacc_helper = NerfaccHelper(
             target_sample_batch_size=sample_batch_size,
@@ -97,6 +98,7 @@ class MultisceneTrainer(BaseTrainer):
                 self.occupancy_grids[dset_id],
                 data,
                 self.device,
+                step_size=self.model.step_size(self.nerfacc_helper.render_n_samples, grid_id=dset_id),
                 is_training=False)
 
     def train_step(self, data: Dict[str, Union[int, torch.Tensor]], **kwargs):
@@ -118,6 +120,7 @@ class MultisceneTrainer(BaseTrainer):
                 self.occupancy_grids[dset_id],
                 data,
                 self.device,
+                step_size=self.model.step_size(self.nerfacc_helper.render_n_samples, grid_id=dset_id),
                 is_training=True)
             if rendered.n_rendering_samples == 0:
                 self.loss_info[f"n_rendering_samples_{dset_id}"].update(0.0)
@@ -167,6 +170,7 @@ class MultisceneTrainer(BaseTrainer):
         # Reset randomness in every train-dataset
         for d in self.train_datasets:
             d.reset_iter()
+        self.nerfacc_helper.step_cb(self.global_step)
 
     @torch.no_grad()
     def validate(self):
@@ -222,7 +226,7 @@ class MultisceneTrainer(BaseTrainer):
         for scene in range(self.num_dsets):
             og = OccupancyGrid(
                 roi_aabb=self.model.aabb(scene).view(-1),
-                resolution=(self.model.resolution(scene)[:3] // 2),
+                resolution=self.og_resolution,
                 contraction_type=self.contraction_type,
             )
             occupancy_grids.append(og)
