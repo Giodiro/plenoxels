@@ -120,7 +120,7 @@ class MultisceneTrainer(BaseTrainer):
                 self.device,
                 is_training=True)
             if rendered.n_rendering_samples == 0:
-                self.loss_info[f"n_rendering_samples_{dset_id}"].update(0.0)
+                self.loss_info[f"n_rendered_samples_{dset_id}"].update(0.0)
                 return False
 
             # dynamic batch size for rays to keep sample batch size constant.
