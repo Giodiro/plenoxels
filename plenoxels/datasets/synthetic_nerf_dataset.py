@@ -27,7 +27,8 @@ class SyntheticNerfDataset(BaseDataset):
                  dset_id: int,
                  batch_size: Optional[int] = None,
                  downsample: float = 1.0,
-                 max_frames: Optional[int] = None,):
+                 max_frames: Optional[int] = None,
+                 batch_size_queue = None):
         self.downsample = downsample
         self.max_frames = max_frames
         self.dset_id = dset_id
@@ -47,7 +48,8 @@ class SyntheticNerfDataset(BaseDataset):
                          imgs=imgs,
                          rays_o=rays_o,
                          rays_d=rays_d,
-                         intrinsics=intrinsics)
+                         intrinsics=intrinsics,
+                         batch_size_queue=batch_size_queue)
 
         log.info(f"SyntheticNerfDataset - Loaded {split} set from {datadir}: {len(poses)} images of size "
                  f"{self.img_h}x{self.img_w} and {imgs.shape[-1]} channels. {intrinsics}")

@@ -22,6 +22,7 @@ class BaseDataset(Dataset, ABC):
                  imgs: Optional[torch.Tensor] = None,
                  sampling_weights: Optional[torch.Tensor] = None,
                  weights_subsampled: int = 1,
+                 batch_size_queue=None,
                  ):
         self.datadir = datadir
         self.name = os.path.basename(self.datadir)
@@ -46,6 +47,7 @@ class BaseDataset(Dataset, ABC):
         self.sampling_batch_size = 2_000_000  # Increase this?
         self.use_permutation = self.num_samples < 10_000_000  # 64M is static
         self.perm = None
+        self.batch_size_queue = batch_size_queue
 
     @property
     def img_h(self) -> int:
@@ -94,6 +96,9 @@ class BaseDataset(Dataset, ABC):
             return self.num_samples
 
     def __getitem__(self, index, return_idxs: bool = False):
+        if self.batch_size_queue is not None:
+            if not self.batch_size_queue.empty():
+                print("Getting from queue", self.batch_size_queue.get())
         if self.split == 'train':
             index = self.get_rand_ids(index)
         out = {
