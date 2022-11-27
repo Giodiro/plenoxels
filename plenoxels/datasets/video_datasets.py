@@ -3,6 +3,7 @@ import json
 import logging as log
 import math
 import os
+import queue
 import time
 from collections import defaultdict
 from typing import Optional, List, Tuple, Any
@@ -17,7 +18,6 @@ from .llff_dataset import load_llff_poses_helper
 from .ray_utils import gen_camera_dirs, ndc_rays_blender
 from .synthetic_nerf_dataset import (
     load_360_images, load_360_intrinsics,
-    get_360_bbox
 )
 
 
@@ -37,7 +37,8 @@ class Video360Dataset(BaseDataset):
                  max_tsteps: Optional[int] = None,
                  isg: bool = False,
                  is_contracted: bool = False,
-                 is_ndc: bool = False):
+                 is_ndc: bool = False,
+                 batch_size_queue=None):
         self.keyframes = keyframes
         self.max_cameras = max_cameras
         self.max_tsteps = max_tsteps
@@ -94,11 +95,11 @@ class Video360Dataset(BaseDataset):
         else:
             imgs = imgs.view(-1, intrinsics.height * intrinsics.width, imgs.shape[-1])
 
-        # ISG/IST weights are computed on 4x subsampled data.
-        if False:
-            bbox = get_360_bbox(datadir, is_contracted=is_contracted)
+        if is_contracted:
+            bbox = torch.tensor([[-2., -2., -2.], [2., 2., 2.]])
         else:
             bbox = torch.tensor([[-2.8, -1.8, -2.], [2.8, 2., 2.]])
+        # ISG/IST weights are computed on 4x subsampled data.
         weights_subsampled = int(4 / downsample)
         super().__init__(
             datadir=datadir,
@@ -113,6 +114,7 @@ class Video360Dataset(BaseDataset):
             imgs=imgs,
             sampling_weights=None,  # Start without importance sampling, by default
             weights_subsampled=weights_subsampled,
+            batch_size_queue=batch_size_queue,
         )
 
         self.isg_weights = None
@@ -188,6 +190,11 @@ class Video360Dataset(BaseDataset):
         h = self.intrinsics.height
         w = self.intrinsics.width
         dev = "cpu"
+        if self.batch_size_queue is not None:
+            try:
+                self.update_num_rays(self.batch_size_queue.get(block=False))
+            except queue.Empty:
+                pass
         if self.split == 'train':
             index = self.get_rand_ids(index)  # [batch_size // (weights_subsampled**2)]
             if len(index) == self.batch_size:
@@ -242,12 +249,16 @@ class Video360Dataset(BaseDataset):
         if self.is_ndc:
             origins, directions = ndc_rays_blender(
                 intrinsics=self.intrinsics, near=1.0, rays_o=origins, rays_d=directions)
+        near, far = torch.split(near_fars, 1, dim=1)
+        # Scaling
+        origins = origins * self.global_scale + self.global_translation
         return {
             "rays_o": origins.reshape(-1, 3),
             "rays_d": directions.reshape(-1, 3),
             "imgs": rgba.reshape(-1, rgba.shape[-1]),
             "timestamps": ts,
-            "near_far": near_fars,
+            "near": near,
+            "far": far,
             "color_bkgd": torch.tensor([1.0, 1.0, 1.0]),
         }
 

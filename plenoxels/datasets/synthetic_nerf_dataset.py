@@ -28,7 +28,7 @@ class SyntheticNerfDataset(BaseDataset):
                  batch_size: Optional[int] = None,
                  downsample: float = 1.0,
                  max_frames: Optional[int] = None,
-                 batch_size_queue = None):
+                 batch_size_queue=None):
         self.downsample = downsample
         self.max_frames = max_frames
         self.dset_id = dset_id
@@ -41,7 +41,8 @@ class SyntheticNerfDataset(BaseDataset):
             imgs, poses, merge_all=split == 'train', intrinsics=intrinsics, is_blender_format=True)
         super().__init__(datadir=datadir,
                          split=split,
-                         scene_bbox=get_360_bbox(datadir, is_contracted=False),   # Can set to True to test contraction
+                         scene_bbox=get_360_bbox(datadir, is_contracted=False),
+                         # Can set to True to test contraction
                          is_ndc=False,
                          is_contracted=False,  # Can set to True to test contraction
                          batch_size=batch_size,
@@ -51,8 +52,9 @@ class SyntheticNerfDataset(BaseDataset):
                          intrinsics=intrinsics,
                          batch_size_queue=batch_size_queue)
 
-        log.info(f"SyntheticNerfDataset - Loaded {split} set from {datadir}: {len(poses)} images of size "
-                 f"{self.img_h}x{self.img_w} and {imgs.shape[-1]} channels. {intrinsics}")
+        log.info(
+            f"SyntheticNerfDataset - Loaded {split} set from {datadir}: {len(poses)} images of size "
+            f"{self.img_h}x{self.img_w} and {imgs.shape[-1]} channels. {intrinsics}")
 
     def __getitem__(self, index):
         out = super().__getitem__(index)
@@ -82,11 +84,11 @@ def get_360_bbox(datadir, is_contracted=False):
 
 
 def create_360_rays(
-              imgs,
-              poses,
-              merge_all: bool,
-              intrinsics: Intrinsics,
-              is_blender_format: bool = True) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        imgs,
+        poses,
+        merge_all: bool,
+        intrinsics: Intrinsics,
+        is_blender_format: bool = True) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     directions = get_ray_directions(intrinsics)  # [H, W, 3]
     directions = directions / torch.norm(directions, dim=-1, keepdim=True)
     num_frames = poses.shape[0]
@@ -103,7 +105,7 @@ def create_360_rays(
     all_rays_o = torch.cat(all_rays_o, 0).to(dtype=torch.float32)  # [n_frames * h * w, 3]
     all_rays_d = torch.cat(all_rays_d, 0).to(dtype=torch.float32)  # [n_frames * h * w, 3]
     if imgs is not None:
-        imgs = imgs.view(-1, imgs.shape[-1]).to(dtype=torch.float32)   # [N*H*W, 3/4]
+        imgs = imgs.view(-1, imgs.shape[-1]).to(dtype=torch.float32)  # [N*H*W, 3/4]
     if not merge_all:
         num_pixels = intrinsics.height * intrinsics.width
         if imgs is not None:
@@ -132,7 +134,8 @@ def load_360_frames(datadir, split, max_frames: int) -> Tuple[Any, Any]:
     return frames, meta
 
 
-def load_360_images(frames, datadir, split, downsample, resolution=(None, None)) -> Tuple[torch.Tensor, torch.Tensor]:
+def load_360_images(frames, datadir, split, downsample, resolution=(None, None)) -> Tuple[
+    torch.Tensor, torch.Tensor]:
     img_poses = parallel_load_images(
         dset_type="synthetic",
         tqdm_title=f'Loading {split} data',
@@ -159,8 +162,10 @@ def load_360_intrinsics(transform, imgs, downsample) -> Intrinsics:
         fl_y = (transform['fl_y'] if 'fl_y' in transform else transform['fl_x']) / downsample
     elif 'camera_angle_x' in transform or 'camera_angle_y' in transform:
         # blender, assert in radians. already downscaled since we use H/W
-        fl_x = width / (2 * np.tan(transform['camera_angle_x'] / 2)) if 'camera_angle_x' in transform else None
-        fl_y = height / (2 * np.tan(transform['camera_angle_y'] / 2)) if 'camera_angle_y' in transform else None
+        fl_x = width / (2 * np.tan(
+            transform['camera_angle_x'] / 2)) if 'camera_angle_x' in transform else None
+        fl_y = height / (2 * np.tan(
+            transform['camera_angle_y'] / 2)) if 'camera_angle_y' in transform else None
         if fl_x is None:
             fl_x = fl_y
         if fl_y is None:
@@ -170,4 +175,5 @@ def load_360_intrinsics(transform, imgs, downsample) -> Intrinsics:
 
     cx = (transform['cx'] / downsample) if 'cx' in transform else (width / 2)
     cy = (transform['cy'] / downsample) if 'cy' in transform else (height / 2)
-    return Intrinsics(height=height, width=width, focal_x=fl_x, focal_y=fl_y, center_x=cx, center_y=cy)
+    return Intrinsics(height=height, width=width, focal_x=fl_x, focal_y=fl_y, center_x=cx,
+                      center_y=cy)

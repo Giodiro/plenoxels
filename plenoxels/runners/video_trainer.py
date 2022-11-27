@@ -3,6 +3,7 @@ import math
 import os
 from collections import defaultdict
 from typing import Dict, Optional, Sequence, Union
+import multiprocessing as mp
 
 import numpy as np
 import pandas as pd
@@ -43,6 +44,7 @@ class VideoTrainer(BaseTrainer):
                  n_samples: int,
                  ist_step: int,
                  isg_step: int,
+                 batch_size_queue,
                  **kwargs
                  ):
         self.train_dataset = tr_dset
@@ -54,6 +56,7 @@ class VideoTrainer(BaseTrainer):
         self.ist_step = ist_step
         self.isg_step = isg_step
         self.save_video = save_outputs
+        self.batch_size_queue = batch_size_queue
 
         self.nerfacc_helper = NerfaccHelper(
             target_sample_batch_size=sample_batch_size,
@@ -90,6 +93,7 @@ class VideoTrainer(BaseTrainer):
                 self.occupancy_grid,
                 data,
                 self.device,
+                step_size=self.model.step_size(self.nerfacc_helper.render_n_samples),
                 is_training=False)
 
     def train_step(self, data: Dict[str, Union[int, torch.Tensor]], **kwargs):
@@ -111,14 +115,18 @@ class VideoTrainer(BaseTrainer):
                 self.occupancy_grid,
                 data,
                 self.device,
+                step_size=self.model.step_size(self.nerfacc_helper.render_n_samples),
                 is_training=True)
             if rendered.n_rendering_samples == 0:
-                self.loss_info[f"n_rendering_samples"].update(float(0.0))
+                self.loss_info[f"n_rendered_samples"].update(0.0)
                 return False
+
             # dynamic batch size for rays to keep sample batch size constant.
-            self.train_dataset.update_num_rays(self.nerfacc_helper.calc_batch_size(
+            new_batch_size = self.nerfacc_helper.calc_batch_size(
                 old_batch_size=len(imgs), n_rendered_samples=rendered.n_rendering_samples
-            ))
+            )
+            self.batch_size_queue.put(new_batch_size, block=False)
+            self.train_dataset.update_num_rays(new_batch_size)
             alive_ray_mask = rendered.acc.squeeze(-1) > 0
             # compute loss and add regularizers
             recon_loss = self.criterion(rendered.rgb[alive_ray_mask], imgs[alive_ray_mask])
@@ -138,7 +146,7 @@ class VideoTrainer(BaseTrainer):
         # Report on losses
         if self.global_step % self.calc_metrics_every == 0:
             with torch.no_grad():
-                mse = F.mse_loss(rendered.rgb[alive_ray_mask], imgs[alive_ray_mask]).item()
+                mse = F.mse_loss(rendered.rgb, imgs).item()
                 self.loss_info["psnr"].update(-10 * math.log10(mse))
                 self.loss_info["mse"].update(mse)
                 self.loss_info["alive_ray_mask"].update(float(alive_ray_mask.long().sum().item()))
@@ -149,8 +157,10 @@ class VideoTrainer(BaseTrainer):
 
         if self.global_step == self.isg_step:
             self.train_dataset.enable_isg()
+            raise StopIteration
         if self.global_step == self.ist_step:
             self.train_dataset.switch_isg2ist()
+            raise StopIteration
 
         return scale <= self.gscaler.get_scale()
 
@@ -162,6 +172,7 @@ class VideoTrainer(BaseTrainer):
         super().pre_epoch()
         # Reset randomness in train-dataset
         self.train_dataset.reset_iter()
+        self.nerfacc_helper.step_cb(self.global_step)
 
     @torch.no_grad()
     def validate(self):
@@ -200,7 +211,7 @@ class VideoTrainer(BaseTrainer):
 
     def get_save_dict(self):
         base_save_dict = super().get_save_dict()
-        base_save_dict["occupancy_grid"] = self.occupancy_grid
+        base_save_dict["occupancy_grid"] = self.occupancy_grid.state_dict()
         return base_save_dict
 
     def load_model(self, checkpoint_data):
@@ -219,25 +230,29 @@ class VideoTrainer(BaseTrainer):
 
     def init_model(self, **kwargs) -> LowrankVideo:
         dset = self.test_dataset
-        try:
-            global_translation = dset.global_translation
-        except AttributeError:
-            global_translation = None
-        try:
-            global_scale = dset.global_scale
-        except AttributeError:
-            global_scale = None
         model = LowrankVideo(
             aabb=dset.scene_bbox,
             len_time=dset.len_time,
             render_n_samples=self.nerfacc_helper.render_n_samples,
             grid_config=kwargs.pop("grid_config"),
-            global_scale=global_scale,
-            global_translation=global_translation,
+            global_scale=None,
+            global_translation=None,
             **kwargs)
         log.info(f"Initialized LowrankVideo model with "
                  f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters.")
         return model
+
+    def init_occupancy_grid(self, **kwargs) -> OccupancyGrid:
+        og_resolution = torch.tensor(kwargs.get('occupancy_grid_resolution'), dtype=torch.long)
+        og = OccupancyGrid(
+            roi_aabb=self.model.aabb().view(-1),
+            resolution=og_resolution,
+            contraction_type=self.contraction_type,
+        )
+        log.info("Initialized OccupancyGrid. resolution: %s - #parameters: %d" % (
+            og.resolution.tolist(), sum(np.prod(p.shape) for p in og.parameters()),
+        ))
+        return og
 
     def get_regularizers(self, **kwargs) -> Sequence[Regularizer]:
         return (
@@ -246,17 +261,6 @@ class VideoTrainer(BaseTrainer):
             L1PlaneDensityVideo(kwargs.get('l1_plane_density_reg', 0.0)),
             L1AppearancePlanes(kwargs.get('l1_appearance_planes_reg', 0.0)),
         )
-
-    def init_occupancy_grid(self, **kwargs) -> OccupancyGrid:
-        og = OccupancyGrid(
-            roi_aabb=self.model.aabb().view(-1),
-            resolution=(self.model.resolution()[:3] // 2),
-            contraction_type=self.contraction_type,
-        )
-        log.info("Initialized OccupancyGrid. resolution: %s - #parameters: %d" % (
-            og.resolution.tolist(), sum(np.prod(p.shape) for p in og.parameters()),
-        ))
-        return og
 
     @property
     def calc_metrics_every(self):
@@ -268,6 +272,7 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
     ist = kwargs.get('ist', False)
     keyframes = kwargs.get('keyframes', False)
     batch_size = kwargs['batch_size']
+    tr_queue = mp.Queue(maxsize=1000)
     if "lego" in data_dir:
         log.info(f"Loading Video360Dataset with downsample={data_downsample}")
         tr_dset = Video360Dataset(
@@ -275,7 +280,8 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
             batch_size=batch_size,
             max_cameras=kwargs.get('max_train_cameras'),
             max_tsteps=kwargs.get('max_train_tsteps') if keyframes else None,
-            isg=isg, keyframes=keyframes, is_contracted=False, is_ndc=False
+            isg=isg, keyframes=keyframes, is_contracted=False, is_ndc=False,
+            batch_size_queue=tr_queue
         )
         if ist:
             tr_dset.switch_isg2ist()  # this should only happen in case we're reloading
@@ -298,7 +304,7 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
     tr_loader = torch.utils.data.DataLoader(
         tr_dset, batch_size=None, num_workers=2,
         prefetch_factor=4, pin_memory=True, worker_init_fn=init_dloader_random)
-    return {"tr_loader": tr_loader, "tr_dset": tr_dset}
+    return {"tr_loader": tr_loader, "tr_dset": tr_dset, "batch_size_queue": tr_queue}
 
 
 def init_ts_data(data_dir, **kwargs):

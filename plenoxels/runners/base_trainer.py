@@ -118,15 +118,20 @@ class BaseTrainer():
                 self.global_step += 1
                 try:
                     data = next(batch_iter)
-                except StopIteration as e:
-                    print("Stop iteration", e)
+                except StopIteration:
                     self.pre_epoch()
                     batch_iter = iter(self.train_data_loader)
                     data = next(batch_iter)
                     logging.info("Reset data-iterator")
 
                 self.model.train()
-                step_successful = self.train_step(data)
+                try:
+                    step_successful = self.train_step(data)
+                except StopIteration:
+                    self.pre_epoch()
+                    batch_iter = iter(self.train_data_loader)
+                    logging.info("Reset data-iterator")
+                    step_successful = True
 
                 if step_successful and self.scheduler is not None:
                     self.scheduler.step()
@@ -229,7 +234,7 @@ class BaseTrainer():
         scene_metrics_agg: Dict[str, float] = {}
         for k in scene_metrics:
             ak = f"{k}_{extra_name}"
-            scene_metrics_agg[ak] = np.mean(np.asarray(scene_metrics[k]))  # noqa
+            scene_metrics_agg[ak] = np.mean(np.asarray(scene_metrics[k])).item()
             log_text += f" | {k}: {scene_metrics_agg[ak]:.4f}"
             self.writer.add_scalar(f"test/{ak}", scene_metrics_agg[ak], self.global_step)
 

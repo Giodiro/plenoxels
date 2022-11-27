@@ -54,7 +54,6 @@ class MultisceneTrainer(BaseTrainer):
         else:
             self.contraction_type = ContractionType.AABB
         self.num_dsets = len(self.train_datasets)
-        self.og_resolution = torch.tensor(kwargs.get('occupancy_grid_resolution'), dtype=torch.long)
         self.batch_size_queue = batch_size_queue
         self.num_trloader_workers = tr_loader.num_workers
 
@@ -228,11 +227,12 @@ class MultisceneTrainer(BaseTrainer):
         return model
 
     def init_occupancy_grid(self, **kwargs) -> List[OccupancyGrid]:
+        og_resolution = torch.tensor(kwargs.get('occupancy_grid_resolution'), dtype=torch.long)
         occupancy_grids = []
         for scene in range(self.num_dsets):
             og = OccupancyGrid(
                 roi_aabb=self.model.aabb(scene).view(-1),
-                resolution=self.og_resolution,
+                resolution=og_resolution,
                 contraction_type=self.contraction_type,
             )
             occupancy_grids.append(og)
