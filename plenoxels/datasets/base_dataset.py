@@ -1,4 +1,5 @@
 from abc import ABC
+import queue
 import os
 from typing import Optional
 
@@ -97,8 +98,10 @@ class BaseDataset(Dataset, ABC):
 
     def __getitem__(self, index, return_idxs: bool = False):
         if self.batch_size_queue is not None:
-            if not self.batch_size_queue.empty():
-                print("Getting from queue", self.batch_size_queue.get())
+            try:
+                self.update_num_rays(self.batch_size_queue.get(block=False))
+            except queue.Empty:
+                pass
         if self.split == 'train':
             index = self.get_rand_ids(index)
         out = {

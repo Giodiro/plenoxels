@@ -56,6 +56,7 @@ class MultisceneTrainer(BaseTrainer):
         self.num_dsets = len(self.train_datasets)
         self.og_resolution = torch.tensor(kwargs.get('occupancy_grid_resolution'), dtype=torch.long)
         self.batch_size_queue = batch_size_queue
+        self.num_trloader_workers = tr_loader.num_workers
 
         self.nerfacc_helper = NerfaccHelper(
             target_sample_batch_size=sample_batch_size,
@@ -133,8 +134,7 @@ class MultisceneTrainer(BaseTrainer):
             new_batch_size = self.nerfacc_helper.calc_batch_size(
                 old_batch_size=len(imgs), n_rendered_samples=rendered.n_rendering_samples
             )
-            for _ in range(4):
-                self.batch_size_queue.put(new_batch_size + _)
+            self.batch_size_queue.put(new_batch_size, block=False)
             self.train_datasets[dset_id].update_num_rays(new_batch_size)
             alive_ray_mask = rendered.acc.squeeze(-1) > 0
             # compute loss and add regularizers
@@ -277,7 +277,7 @@ def decide_dset_type(dd: str) -> str:
 def init_tr_data(data_downsample: float, data_dirs: Sequence[str], **kwargs):
     initial_batch_size = int(kwargs['sample_batch_size']) // int(kwargs['n_samples'])
     dsets = []
-    tr_queue = mp.SimpleQueue()
+    tr_queue = mp.Queue(maxsize=1000)
 
     for i, data_dir in enumerate(data_dirs):
         dset_type = decide_dset_type(data_dir)
@@ -301,7 +301,11 @@ def init_tr_data(data_downsample: float, data_dirs: Sequence[str], **kwargs):
         cat_tr_dset, num_workers=4, prefetch_factor=2, pin_memory=True,
         batch_size=None, sampler=tr_sampler, worker_init_fn=init_dloader_random)
 
-    return {"tr_dsets": dsets, "tr_loader": tr_loader, "batch_size_queue": tr_queue,}
+    return {
+        "tr_dsets": dsets,
+        "tr_loader": tr_loader,
+        "batch_size_queue": tr_queue,
+    }
 
 
 def init_ts_data(data_dirs: Sequence[str], **kwargs):
