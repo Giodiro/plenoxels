@@ -108,6 +108,7 @@ class VideoTrainer(BaseTrainer):
                     x, data["timestamps"], self.train_dataset
                 ),
                 occ_thre=self.nerfacc_helper.density_threshold,
+                ema_decay=0.6,
             )
             # render
             rendered = self.nerfacc_helper.render(
@@ -271,13 +272,13 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
     isg = kwargs.get('isg', False)
     ist = kwargs.get('ist', False)
     keyframes = kwargs.get('keyframes', False)
-    batch_size = kwargs['batch_size']
+    initial_batch_size = int(kwargs['sample_batch_size']) // int(kwargs['n_samples'])
     tr_queue = mp.Queue(maxsize=1000)
     if "lego" in data_dir:
         log.info(f"Loading Video360Dataset with downsample={data_downsample}")
         tr_dset = Video360Dataset(
             data_dir, split='train', downsample=data_downsample,
-            batch_size=batch_size,
+            batch_size=initial_batch_size,
             max_cameras=kwargs.get('max_train_cameras'),
             max_tsteps=kwargs.get('max_train_tsteps') if keyframes else None,
             isg=isg, keyframes=keyframes, is_contracted=False, is_ndc=False,
@@ -287,7 +288,7 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
             tr_dset.switch_isg2ist()  # this should only happen in case we're reloading
     elif "sacre" in data_dir or "trevi" in data_dir or "brandenburg" in data_dir:
         tr_dset = PhotoTourismDataset(
-            data_dir, split='train', downsample=data_downsample, batch_size=batch_size,
+            data_dir, split='train', downsample=data_downsample, batch_size=initial_batch_size,
         )
         tr_loader = torch.utils.data.DataLoader(
             tr_dset, batch_size=batch_size, num_workers=4,
@@ -296,14 +297,15 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
     else:
         log.info(f"Loading contracted Video360Dataset with downsample={data_downsample}")
         tr_dset = Video360Dataset(
-            data_dir, split='train', downsample=data_downsample, batch_size=batch_size,
-            keyframes=keyframes, isg=isg, is_contracted=True, is_ndc=False
+            data_dir, split='train', downsample=data_downsample, batch_size=initial_batch_size,
+            keyframes=keyframes, isg=isg, is_contracted=True, is_ndc=False,
+            batch_size_queue=tr_queue
         )
         if ist:
             tr_dset.switch_isg2ist()  # this should only happen in case we're reloading
     tr_loader = torch.utils.data.DataLoader(
         tr_dset, batch_size=None, num_workers=2,
-        prefetch_factor=4, pin_memory=True, worker_init_fn=init_dloader_random)
+        prefetch_factor=2, pin_memory=True, worker_init_fn=init_dloader_random)
     return {"tr_loader": tr_loader, "tr_dset": tr_dset, "batch_size_queue": tr_queue}
 
 

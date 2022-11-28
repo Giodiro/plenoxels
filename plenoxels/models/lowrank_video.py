@@ -55,12 +55,11 @@ class LowrankVideo(LowrankModel):
                 else:
                     self.feature_dim = gpdesc.grid_coefs[-1].shape[1]
                 self.grids.append(gpdesc.grid_coefs)
-                self.feature_dim = gpdesc.grid_coefs[-1].shape[1]
 
         self.decoder = self.init_decoder()
 
         log.info(f"Initialized LowrankVideo. decoder={self.decoder}, use-F: {self.use_F}, "
-                 f"concat-features: {self.concat_features}")
+                 f"concat-features: {self.concat_features}, feature-dim {self.feature_dim}")
         log.info(f"Model grids: {self.grids}")
 
     def compute_features(self,
