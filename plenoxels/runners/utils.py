@@ -18,14 +18,13 @@ from plenoxels.datasets.synthetic_nerf_dataset import SyntheticNerfDataset, get_
 
 __all__ = (
     "get_freer_gpu",
-    "init_data",
-    "init_data_single_dset",
     "plot_ts",
     "test_model",
     "render_patches",
     "user_ask_options",
     "get_step_schedule_with_warmup",
     "get_cosine_schedule_with_warmup",
+    "init_dloader_random",
 )
 
 
@@ -36,53 +35,6 @@ def get_freer_gpu():
         return np.argmax(memory_available)
     except:  # On some Giacomo GPUs this fails due to newer drivers. But I have 1 GPU anyways
         return 0
-
-
-def init_data_single_dset(cfg):
-    resolution = cfg.data.resolution
-    downsample = cfg.data.downsample
-    if cfg.data.resolution is None:
-        # None is code for automatic resolution adjustment to match the model resolution
-        # also adjusting the downsampling.
-        resolution = cfg.model.resolution
-        downsample = max(1.0, 800 / (resolution * 2))
-    if downsample is None:
-        downsample = 1.0
-    print(f"Loading dataset with resolution={resolution}, downsample={downsample}")
-    train = SyntheticNerfDataset(cfg.data.datadir, split='train', downsample=downsample,
-                                 resolution=resolution, max_frames=cfg.data.max_tr_frames)
-    train_load = torch.utils.data.DataLoader(train, batch_size=cfg.optim.batch_size, shuffle=True,
-                                             num_workers=4, prefetch_factor=2, pin_memory=True)
-    test = SyntheticNerfDataset(cfg.data.datadir, split='test', downsample=1, resolution=800,
-                                max_frames=cfg.data.max_ts_frames)
-    return train, train_load, test
-
-
-def init_data(cfg):
-    resolution = cfg.data.resolution
-    downsample = cfg.data.downsample
-    if cfg.data.resolution is None:
-        # None is code for automatic resolution adjustment to match the model resolution
-        # also adjusting the downsampling.
-        resolution = cfg.model.resolution
-        downsample = max(1.0, 800 / (resolution * 2))
-    if downsample is None:
-        downsample = 1.0
-    # Training datasets are lists of lists, where each inner list is different resolutions for the same scene
-    # Test datasets are a single list over the different scenes, all at full resolution
-    log.info(f"About to load data at reso={resolution}, downsample={downsample}")
-    tr_dsets, tr_loaders, ts_dsets = [], [], []
-    for data_dir in cfg.data.datadir:
-        tr_dsets.append(SyntheticNerfDataset(
-            data_dir, split='train', downsample=downsample, resolution=resolution,
-            max_frames=cfg.data.max_tr_frames))
-        tr_loaders.append(torch.utils.data.DataLoader(
-            tr_dsets[-1], batch_size=cfg.optim.batch_size, shuffle=True, num_workers=3,
-            prefetch_factor=4, pin_memory=True))
-        ts_dsets.append(SyntheticNerfDataset(
-            data_dir, split='test', downsample=1, resolution=800,
-            max_frames=cfg.data.max_ts_frames))
-    return tr_dsets, tr_loaders, ts_dsets
 
 
 def save_image(img_or_fig, log_dir, img_name, iteration, summary_writer):
@@ -318,3 +270,9 @@ def get_step_schedule_with_warmup(
             out *= gamma
         return out
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda, last_epoch)
+
+
+def init_dloader_random(worker_id):
+    seed = torch.utils.data.get_worker_info().seed
+    torch.manual_seed(seed)
+    np.random.seed(seed % (2 ** 32 - 1))
