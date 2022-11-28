@@ -2,7 +2,7 @@
 # the configuration must be specified in a dictionary called `config`.
 import numpy as np
 config = {
-    "expname": "ficus_nerfacc_lr2e-2_res256_4levelsx16_ogres128_ptv2_alphat1e-3_dt1e-2_smallbatch",
+    "expname": "ficus_nerfacc_lr2e-2_res512_16levelsx2_ogres128_ptv2_alphat1e-3_dt1e-2_smallbatch",
     "logdir": "./logs",
     "device": "cuda:0",
     "wandb": False,
@@ -25,7 +25,6 @@ config = {
     "cone_angle": 0.00,
     "optim_type": "adam",
 
-    "alpha_threshold": 1e-3,
 
     "plane_tv_weight": 0.0,
     "plane_tv_what": "Gcoords",
@@ -44,13 +43,15 @@ config = {
     # Raymarching settings
     "sample_batch_size": 1 << 18,
     "n_samples": 1024,
+    "early_stop_eps": 1e-4,
 
     # Model settings
     "sh": False,
     "use_F": False,
     "density_activation": "trunc_exp",
+    "alpha_threshold": 1e-3,
     "density_threshold": 1e-2,
-    "multiscale_res": [1, 2, 3, 4],
+    "multiscale_res": np.logspace(np.log10(2), np.log10(8), 16),
     "concat_features": True,
     "occupancy_grid_resolution": [128, 128, 128],
 
@@ -58,7 +59,7 @@ config = {
 [
     {
         "input_coordinate_dim": 3,
-        "output_coordinate_dim": 16,
+        "output_coordinate_dim": 2,
         "grid_dimensions": 2,
         "resolution": [64, 64, 64],
     },

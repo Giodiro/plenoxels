@@ -6,7 +6,7 @@ config = {
     "wandb": False,
 
     # Data settings
-    "data_downsample": 1.0,
+    "data_downsample": 2.0,
     "data_dirs": ["/data/DATASETS/VidNerf/flame_salmon"],
     # "data_dirs": ["/data/DATASETS/VidNerf/lego_video"],
 
@@ -18,12 +18,13 @@ config = {
     # Data settings for LLFF
     "keyframes": False,
     "isg": False,
+    "isg_step": -1,
     "ist_step": 90000,
 
     # Optimization settings
-    "num_steps": 150_000,
+    "num_steps": 50_000,
     "scheduler_type": "warmup_cosine",
-    "lr": 2e-2,
+    "lr": 1e-2,
     "cone_angle": 0.00,
     "optim_type": "adam",
 
@@ -35,21 +36,22 @@ config = {
 
     # Training settings
     "train_fp16": True,
-    "save_every": 150_000,
-    "valid_every": 30_000,
+    "save_every": 5_000,
+    "valid_every": 5_000,
     "save_outputs": True,
 
     # Raymarching settings
-    "sample_batch_size": 1 << 20,
+    "sample_batch_size": 1 << 18,
     "n_samples": 1024,
-    "alpha_threshold": 1e-3,
+    "alpha_threshold": 0.0,
     "density_threshold": 1e-2,
+    "early_stop_eps": 1e-3,
 
     # Model settings
     "sh": False,
     "use_F": False,
     "density_activation": "trunc_exp",
-    "multiscale_res": [1, 2, 3, 4],
+    "multiscale_res": [1, 2, 4],
     "concat_features": True,
     "occupancy_grid_resolution": [128, 128, 128],
     "grid_config": """
