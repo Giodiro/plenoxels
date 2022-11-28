@@ -152,25 +152,22 @@ class LowrankModel(ABC, nn.Module):
         return features
 
     @staticmethod
-    def init_grid_param(grid_config, is_video: bool, grid_level: int, use_F: bool) -> GridParamDescription:
-        out_dim: int = grid_config["output_coordinate_dim"]
-        grid_nd: int = grid_config["grid_dimensions"]
-        reso: List[int] = grid_config["resolution"]
+    def init_grid_param(grid_nd: int, resolution: List[int], out_features: int,
+                        input_features: int,  is_video: bool, use_F: bool) -> GridParamDescription:
         try:
-            in_dim = len(reso)
+            in_dim = len(resolution)
         except AttributeError:
             raise ValueError("Configuration incorrect: resolution must be a list.")
-        pt_reso = torch.tensor(reso, dtype=torch.long)
+        pt_reso = torch.tensor(resolution, dtype=torch.long)
         num_comp = math.comb(in_dim, grid_nd)
         # Configuration correctness checks
-        assert in_dim == grid_config["input_coordinate_dim"]
-        if grid_level == 0:
-            if is_video:
-                assert in_dim in {3, 4}
-            else:
-                assert in_dim == 3
+        assert in_dim == input_features
+        if is_video:
+            assert in_dim in {3, 4}
+        else:
+            assert in_dim == 3
         if use_F:
-            assert out_dim in {1, 2, 3, 4, 5, 6, 7}
+            assert out_features in {1, 2, 3, 4, 5, 6, 7}
         assert grid_nd <= in_dim
         coo_combs = list(itertools.combinations(range(in_dim), grid_nd))
         grid_coefs = nn.ParameterList()
@@ -178,12 +175,12 @@ class LowrankModel(ABC, nn.Module):
             if use_F:  # TODO: not updated
                 grid_coefs.append(
                     nn.Parameter(nn.init.uniform_(torch.empty(
-                        [1, out_dim] + [reso[cc] for cc in coo_comb[::-1]]
+                        [1, out_features] + [resolution[cc] for cc in coo_comb[::-1]]
                     ), a=-1.0, b=1.0)))
             else:
                 grid_coefs.append(
                     nn.Parameter(torch.empty(
-                        [1, out_dim] + [reso[cc] for cc in coo_comb[::-1]]
+                        [1, out_features] + [resolution[cc] for cc in coo_comb[::-1]]
                     )))
                 if is_video and 3 in coo_comb:  # is a time-plane
                     nn.init.ones_(grid_coefs[-1])

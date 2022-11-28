@@ -60,3 +60,43 @@ class NNDecoder(BaseDecoder):
 
     def __repr__(self):
         return f"NNRender(feature_dim={self.feature_dim}, sigma_net_width={self.sigma_net_width}, sigma_net_layers={self.sigma_net_layers})"
+
+
+class RgbRenderDecoder(BaseDecoder):
+    def __init__(self, feature_dim):
+        super().__init__()
+
+        self.feature_dim = feature_dim
+        # Feature decoder (modified from Instant-NGP)
+        self.direction_encoder = tcnn.Encoding(
+            n_input_dims=3,
+            encoding_config={
+                "otype": "SphericalHarmonics",
+                "degree": 4,
+            },
+        )
+        self.in_dim_color = self.direction_encoder.n_output_dims + self.feature_dim
+        self.color_net = tcnn.Network(
+            n_input_dims=self.in_dim_color,
+            n_output_dims=3,
+            network_config={
+                "otype": "FullyFusedMLP",
+                "activation": "ReLU",
+                "output_activation": "Sigmoid",
+                "n_neurons": 64,
+                "n_hidden_layers": 2,
+            },
+        )
+        self.density_rgb = None  # output of the sigma-net
+
+    def compute_density(self, features, rays_d, precompute_color: bool = True):
+        return features.sum(dim=-1)
+
+    def compute_color(self, features, rays_d):
+        enc_rays_d = self.direction_encoder((rays_d + 1) / 2)
+        color_features = torch.cat((features, enc_rays_d), dim=-1)
+        color = self.color_net(color_features)
+        return color
+
+    def __repr__(self):
+        return f"RgbRenderDecoder(feature_dim={self.feature_dim})"
