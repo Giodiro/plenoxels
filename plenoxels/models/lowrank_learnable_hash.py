@@ -1,6 +1,7 @@
 import itertools
 import logging as log
 from typing import Dict, List, Union, Optional, Sequence, Tuple
+from collections import Iterable
 
 import numpy as np
 import torch
@@ -54,6 +55,7 @@ class LowrankLearnableHash(LowrankModel):
                  multiscale_res: List[int] = [1],
                  global_translation=None,
                  global_scale=None,
+                 train_scale_steps: List[int] = [],
                  **kwargs):
         super().__init__(grid_config=grid_config,
                          is_ndc=is_ndc,
@@ -128,6 +130,12 @@ class LowrankLearnableHash(LowrankModel):
         else:
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
         self.density_mask = nn.ModuleList([None] * num_scenes)
+        self.hooks = None
+        self.train_scale_steps = train_scale_steps
+        if len(self.train_scale_steps) > 0:
+            assert len(self.train_scale_steps) == len(multiscale_res) - 1, "Specify which steps to use to increment the set of trainable scales"
+            self.trainable_scale = 1
+            self.update_trainable_scale()
         log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes, "
                  f"decoder: {self.decoder}. Raymarcher: {self.raymarcher}")
 
@@ -468,3 +476,32 @@ class LowrankLearnableHash(LowrankModel):
         #     if self.use_F:
         #         params.append({"params": self.features, "lr": lr})
         # return params
+
+    def update_trainable_scale(self):
+        num_grids_per_scale = len(list(flatten(self.scene_grids))) / len(self.multiscale_res)
+        # Remove any existing hooks
+        if self.hooks is not None:
+            for hook in self.hooks:
+                hook.remove()
+        # Create new hooks, with gradient masks that reflect the current trainable rank
+        self.hooks = []
+        boolvalcount = 0
+        for grid_num, grid in enumerate(flatten(self.scene_grids)):
+            if grid_num >= self.trainable_scale * num_grids_per_scale:
+                # zero out the gradient for these higher-resolution grids
+                hook = grid.register_hook(lambda grad: torch.zeros_like(grad))
+                self.hooks.append(hook)
+                print(f'zeroing out the gradient for grid of shape {grid.shape}')
+        print(f'set trainable scale to {self.trainable_scale}, number of untrained planes = {len(self.hooks)}')
+
+
+# https://stackoverflow.com/questions/2158395/flatten-an-irregular-arbitrarily-nested-list-of-lists
+def flatten(xs):
+    # import pdb; pdb.set_trace()
+    # TODO: debug this
+    for x in xs:
+        if type(x) is torch.nn.parameter.Parameter:
+            yield x
+        else:
+            for item in flatten(x):
+                yield item

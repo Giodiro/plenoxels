@@ -195,6 +195,10 @@ class Trainer():
             self.model.upsample_F(new_reso = self.model.config[1]["resolution"][0] * 2)  # Double the resolution in each dimension of F
             self.model.config[1]["resolution"] = [r * 2 for r in self.model.config[1]["resolution"]]  # Update the config
             opt_reset_required = True
+        if self.global_step in self.model.train_scale_steps:
+            self.model.trainable_scale = self.model.trainable_scale + 1
+            self.model.update_trainable_scale()
+            opt_reset_required = True
 
         # We reset the optimizer in case some of the parameters in model were changed.
         if opt_reset_required:

@@ -4,15 +4,16 @@ import numpy as np
 config = {
     # "expname": "lego_rank10_plenoxelsh28_meaninit-11_downsample3",
     # "expname": "legoF2_planetv0.001_lr0.1rank2",
-    "expname": "planetvsigma0.000001",
+    # "expname": "warmuploglinearlr0.01",
+    "expname": "concat_64.64at1k.64at2k.64at4k",
     # "expname": "lowrank_noupsamplelr4e-3_planetvfeats0.04",
     # "logdir": "./logs/fullresofern",
-    "logdir": "./logs/sh/ficus",
+    "logdir": "./logs/mic_debugresolution",
 
     # Data settings
     "data_resolution": None,
     "data_downsample": 1,
-    "data_dirs": ["/home/sfk/data/nerf_synthetic/ficus"],
+    "data_dirs": ["/home/sfk/data/nerf_synthetic/mic"],
     # "data_dirs": ["/home/sfk/data/nerf_llff_data/room"],
     # Data settings for 360
     "max_tr_frames": None,
@@ -24,14 +25,15 @@ config = {
     "num_steps": 10001,
     "batch_size": 4096,
     "num_batches_per_dset": 1,
-    "scheduler_type": None,
+    "scheduler_type": "warmup_cosine",
     "optim_type": "adam",
     "lr": 0.01,
     "regnerf_weight_start": 0,
     "regnerf_weight_end": 0.0,
     "regnerf_weight_max_step": 512,
     "l1density_weight": 0,
-    "plane_tv_weight_sigma": 0.000001,  # Tune this
+    "plane_tv_weight": 2e-5,
+    "plane_tv_weight_sigma": 0.0,  # Tune this
     "plane_tv_weight_sh": 0.0,  # Tune this
     "volume_tv_weight": 0.0,
     "volume_tv_npts": 1024,
@@ -39,8 +41,8 @@ config = {
 
     # Training settings
     "train_fp16": True,
-    "save_every": 2500,
-    "valid_every": 2500,
+    "save_every": 10000,
+    "valid_every": 10000,
     "save_outputs": True,
     "transfer_learning": False,
 
@@ -57,27 +59,32 @@ config = {
     "num_proposal_samples": [256, 96],
     "density_activation": "trunc_exp",  # can be 'relu' or 'trunc_exp'
     "density_model": "triplane",  # Can be triplane or hexplane
+    "density_field_rank": 1,
+    "proposal_feature_dim": 10,
+    "proposal_decoder_type": "nn",
 
     # Model settings
     "density_threshold": 1e-4,
-    "dmask_update": [100000],  # 1000
+    "dmask_update": [-1],  # 1000
     # "upsample_resolution": [3241792, 5832000, 11239424, 16777216],
     # "upsample_steps": [500, 800, 1200, 1500],
     "upsample_F_steps": [],
     "density_multiplier": 1,
-    "sh": True,
+    "sh": False,
     "use_F": False,
-    "use_trainable_rank": False,
+    "train_scale_steps": [1000, 2000, 4000],
     "add_rank_steps": [-1],
     "multiscale_res": [1, 2, 4, 8],
+    "feature_len": [64, 64, 64, 64],  # [8, 16, 32, 64] rank 2 is ~2.3 it/s, [4, 8, 16, 32] rank 2 is ~4 it/s, [4, 8, 16, 32] rank 1 is ~7 it/s, [4, 8, 16, 16] rank 1 is ~8 it/s
+    # These times might be artificially slower because of sharing a gpu
     "grid_config": """
 [
     {
         "input_coordinate_dim": 3,
-        "output_coordinate_dim": 28,
         "grid_dimensions": 2,
+        "output_coordinate_dim": 64,
         "resolution": [64, 64, 64],
-        "rank": 2,
+        "rank": 1,
     },
     {
         "input_coordinate_dim": 5,
