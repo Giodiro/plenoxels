@@ -464,18 +464,6 @@ class LowrankLearnableHash(LowrankModel):
         return [
             {"params": self.parameters(), "lr": lr},
         ]
-        # params = [
-        #     {"params": self.scene_grids.parameters(), "lr": lr},
-        # ]
-        # if self.density_field is not None:
-        #     params.append({"params": self.density_field.parameters(), "lr": lr})
-        # if self.use_F:
-        #     params.append({"params": [self.pt_min, self.pt_max], "lr": lr})
-        # if not self.transfer_learning:
-        #     params.append({"params": self.decoder.parameters(), "lr": lr})
-        #     if self.use_F:
-        #         params.append({"params": self.features, "lr": lr})
-        # return params
 
     def update_trainable_scale(self):
         num_grids_per_scale = len(list(flatten(self.scene_grids))) / len(self.multiscale_res)
@@ -495,10 +483,8 @@ class LowrankLearnableHash(LowrankModel):
         print(f'set trainable scale to {self.trainable_scale}, number of untrained planes = {len(self.hooks)}')
 
 
-# https://stackoverflow.com/questions/2158395/flatten-an-irregular-arbitrarily-nested-list-of-lists
+# based on https://stackoverflow.com/questions/2158395/flatten-an-irregular-arbitrarily-nested-list-of-lists
 def flatten(xs):
-    # import pdb; pdb.set_trace()
-    # TODO: debug this
     for x in xs:
         if type(x) is torch.nn.parameter.Parameter:
             yield x
