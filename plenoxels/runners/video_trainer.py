@@ -84,6 +84,8 @@ class VideoTrainer(BaseTrainer):
         self.criterion = torch.nn.SmoothL1Loss(reduction='mean')
         self.occupancy_grid = self.init_occupancy_grid(**self.extra_args)
         self.occupancy_grid.to(device=self.device)
+        self.step_size = 1e-2
+        #self.model.step_size(self.nerfacc_helper.render_n_samples)
 
     def eval_step(self,
                   data: Dict[str, Union[int, torch.Tensor]],
@@ -95,7 +97,7 @@ class VideoTrainer(BaseTrainer):
                 self.occupancy_grid,
                 data,
                 self.device,
-                step_size=self.model.step_size(self.nerfacc_helper.render_n_samples),
+                step_size=self.step_size,
                 aabb=self.model.aabb())
 
     def train_step(self, data: Dict[str, Union[int, torch.Tensor]], **kwargs):
@@ -118,7 +120,7 @@ class VideoTrainer(BaseTrainer):
                 self.occupancy_grid,
                 data,
                 self.device,
-                step_size=self.model.step_size(self.nerfacc_helper.render_n_samples),
+                step_size=self.step_size,
                 aabb=self.model.aabb())
             if rendered.n_rendering_samples == 0:
                 self.loss_info[f"n_rendered_samples"].update(0.0)
@@ -153,7 +155,7 @@ class VideoTrainer(BaseTrainer):
                 self.loss_info["psnr"].update(-10 * math.log10(mse))
                 self.loss_info["mse"].update(mse)
                 self.loss_info["alive_ray_mask"].update(float(alive_ray_mask.long().sum().item()))
-                self.loss_info["n_rendering_samples"].update(float(rendered.n_rendering_samples))
+                self.loss_info["n_rendered_samples"].update(float(rendered.n_rendering_samples))
                 self.loss_info["n_rays"].update(float(len(imgs)))
                 for r in self.regularizers:
                     r.report(self.loss_info)
