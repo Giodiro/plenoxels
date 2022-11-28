@@ -64,8 +64,6 @@ class Video360Dataset(BaseDataset):
             poses, imgs, timestamps, self.median_imgs = load_llffvideo_data(
                 videopaths=videopaths, cam_poses=per_cam_poses, intrinsics=intrinsics, split=split,
                 keyframes=keyframes, keyframes_take_each=10)
-            # Scale and offset poses
-            poses[:, :, 3] = poses[:, :, 3] * torch.tensor([1., 1., 1.]) + torch.tensor([0.0, 0.0, 1.5])
 
             self.poses = poses.float()
             self.per_cam_near_fars = self.per_cam_near_fars.float()
@@ -257,8 +255,8 @@ class Video360Dataset(BaseDataset):
             "rays_d": directions.reshape(-1, 3),
             "imgs": rgba.reshape(-1, rgba.shape[-1]),
             "timestamps": ts,
-            "near": near,
-            "far": far,
+            "near": near.view(-1),
+            "far": far.view(-1),
             "color_bkgd": torch.tensor([1.0, 1.0, 1.0]),
         }
 
