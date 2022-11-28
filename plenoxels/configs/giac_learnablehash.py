@@ -3,6 +3,7 @@
 config = {
     "expname": "ficus_test_wdenseweight2e-6",
     "logdir": "./logs",
+    "device": "cuda:0",
 
     # Data settings
     "data_resolution": None,
@@ -11,7 +12,7 @@ config = {
     #"data_dirs": ["/data/DATASETS/LLFF/fern"],
     # Data settings for 360
     "max_tr_frames": 100,
-    "max_ts_frames": 200,
+    "max_ts_frames": 50,
     # Data settings for LLFF
     "hold_every": 8,
 
@@ -53,7 +54,7 @@ config = {
     # proposal sampling
     "density_field_resolution": [128, 256],
     "density_field_rank": 1,
-    "num_proposal_samples": [256, 96],
+    "num_proposal_samples": [128, 96],
     "proposal_decoder_type": "nn",
     "proposal_feature_dim": 10,
 

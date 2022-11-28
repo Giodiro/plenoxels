@@ -28,18 +28,12 @@ class SyntheticNerfDataset(BaseDataset):
                  batch_size: Optional[int] = None,
                  downsample: float = 1.0,
                  resolution: Optional[int] = 512,
-                 max_frames: Optional[int] = None,
-                 patch_size: Optional[int] = 8,
-                 extra_views: bool = False):
-
+                 max_frames: Optional[int] = None):
         self.downsample = downsample
         self.resolution = (resolution, resolution)
         self.max_frames = max_frames
-        self.patch_size = patch_size
         self.dset_id = dset_id
         self.near_far = [2.0, 6.0]
-        self.extra_views = split == 'train' and extra_views
-        self.patchloader = None
 
         frames, transform = load_360_frames(datadir, split, self.max_frames)
         imgs, poses = load_360_images(frames, datadir, split, self.downsample, self.resolution)
@@ -57,25 +51,23 @@ class SyntheticNerfDataset(BaseDataset):
                          rays_d=rays_d,
                          intrinsics=intrinsics)
 
-        if self.extra_views:
-            extra_poses = generate_hemispherical_orbit(poses, n_frames=120)
-            extra_rays_o, extra_rays_d, _ = create_360_rays(
-                imgs=None, poses=extra_poses, merge_all=False, intrinsics=intrinsics,
-                is_blender_format=True)
-            extra_rays_o = extra_rays_o.view(-1, self.img_h, self.img_w, 3)
-            extra_rays_d = extra_rays_d.view(-1, self.img_h, self.img_w, 3)
-            self.patchloader = PatchLoader(extra_rays_o, extra_rays_d, len_time=None,
-                                           batch_size=self.batch_size, patch_size=self.patch_size,
-                                           generator=self.generator)
         log.info(f"SyntheticNerfDataset - Loaded {split} set from {datadir}: {len(poses)} images of size "
                  f"{self.img_h}x{self.img_w} and {imgs.shape[-1]} channels. "
                  f"Sampling without replacement={self.use_permutation}. {intrinsics}")
 
     def __getitem__(self, index):
         out = super().__getitem__(index)
+        pixels = out["imgs"]
+        if self.split == 'train':
+            bg_color = torch.rand((1, 3), dtype=pixels.dtype, device=pixels.device)
+        else:
+            bg_color = torch.ones((1, 3), dtype=pixels.dtype, device=pixels.device)
+        # Alpha compositing
+        pixels = pixels[:, :3] * pixels[:, 3:] + bg_color * (1.0 - pixels[:, 3:])
+        out["imgs"] = pixels
+        out["bg_color"] = bg_color
+
         out["dset_id"] = self.dset_id
-        if self.split == 'train' and self.extra_views:
-            out.update(self.patchloader[index])
         return out
 
 

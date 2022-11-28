@@ -14,6 +14,7 @@ from plenoxels.my_tqdm import tqdm
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_png
 from plenoxels.runners.regularization import Regularizer
+from plenoxels.runners.utils import get_cosine_schedule_with_warmup, get_step_schedule_with_warmup
 
 
 class BaseTrainer(abc.ABC):
@@ -268,7 +269,7 @@ class BaseTrainer(abc.ABC):
         lr_sched = None
         max_steps = self.num_steps
         scheduler_type = kwargs['scheduler_type']
-        logging.info(f"Initializing LR Scheduler of type {scheduler_type} with "
+        log.info(f"Initializing LR Scheduler of type {scheduler_type} with "
                      f"{max_steps} maximum steps.")
         if scheduler_type == "cosine":
             lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -296,7 +297,8 @@ class BaseTrainer(abc.ABC):
                     max_steps * 5 // 6,
                     max_steps * 9 // 10,
                 ],
-                gamma=0.33)
+                gamma=0.33,
+                num_warmup_steps=512)
         return lr_sched
 
     def init_optim(self, **kwargs) -> torch.optim.Optimizer:

@@ -118,10 +118,9 @@ class Trainer(BaseTrainer):
             for r in self.regularizers:
                 reg_loss = r.regularize(self.model, grid_id=dset_id, model_out=fwd_out)
                 loss = loss + reg_loss
-        self.gscaler.scale(loss).backward()
-
         # Update weights
         self.optimizer.zero_grad(set_to_none=True)
+        self.gscaler.scale(loss).backward()
         self.gscaler.step(self.optimizer)
         scale = self.gscaler.get_scale()
         self.gscaler.update()
