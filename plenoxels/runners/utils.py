@@ -155,6 +155,7 @@ def render_image(
     render_bkgd: Optional[torch.Tensor] = None,
     cone_angle: float = 0.0,
     alpha_thresh: float = 0.0,
+    early_stop_eps: float = 1e-4,
     device="cuda:0",
     # test options
     test_chunk_size: int = 8192,
@@ -222,6 +223,7 @@ def render_image(
             stratified=radiance_field.training,  # add random perturbations
             cone_angle=cone_angle,
             alpha_thre=alpha_thresh,
+            early_stop_eps=early_stop_eps,
         )
         rgb, opacity, depth = rendering(
             t_starts=t_starts,

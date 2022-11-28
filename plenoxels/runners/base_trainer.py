@@ -8,6 +8,7 @@ import torch
 import torch.utils.data
 import numpy as np
 import wandb
+from nerfacc import ContractionType
 from torch.utils.tensorboard import SummaryWriter
 
 from plenoxels.ema import EMA
@@ -354,12 +355,16 @@ class NerfaccHelper():
                  cone_angle: float,
                  density_threshold: float,
                  alpha_threshold: float,
+                 early_stop_eps: float,
+                 contraction_type: ContractionType,
                  ):
         self.target_sample_batch_size = target_sample_batch_size
         self.render_n_samples = render_n_samples
         self.cone_angle = cone_angle
+        self.early_stop_eps = early_stop_eps
         self._density_threshold = density_threshold
         self._alpha_threshold = alpha_threshold
+        self.contraction_type = contraction_type
 
         self.global_step = None
 
@@ -383,7 +388,11 @@ class NerfaccHelper():
             return 100_000
         return 1_000_000
 
-    def render(self, model, occupancy_grid, data, device, step_size: float, is_training: bool) -> RenderResult:
+    def render(self, model, occupancy_grid, data, device, step_size: float, aabb: Optional[torch.Tensor]) -> RenderResult:
+        if self.contraction_type != ContractionType.AABB:
+            aabb = None
+        if aabb is not None:
+            aabb = aabb.view(-1)
         rgb, acc, depth, n_rendering_samples = render_image(
                 model,
                 occupancy_grid,
@@ -398,7 +407,9 @@ class NerfaccHelper():
                 cone_angle=self.cone_angle,
                 render_step_size=step_size,
                 alpha_thresh=self.alpha_threshold,
+                early_stop_eps=self.early_stop_eps,
                 device=device,
+                aabb=aabb,
             )
         return RenderResult(
             rgb=rgb, depth=depth, acc=acc, n_rendering_samples=n_rendering_samples

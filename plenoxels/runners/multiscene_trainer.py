@@ -63,6 +63,8 @@ class MultisceneTrainer(BaseTrainer):
             cone_angle=kwargs['cone_angle'],
             density_threshold=kwargs['density_threshold'],
             alpha_threshold=kwargs['alpha_threshold'],
+            early_stop_eps=kwargs['early_stop_eps'],
+            contraction_type=self.contraction_type,
         )
 
         super().__init__(
@@ -102,7 +104,7 @@ class MultisceneTrainer(BaseTrainer):
                 data,
                 self.device,
                 step_size=self.model.step_size(self.nerfacc_helper.render_n_samples, grid_id=dset_id),
-                is_training=False)
+                aabb=self.model.aabb(dset_id))
 
     def train_step(self, data: Dict[str, Union[int, torch.Tensor]], **kwargs):
         super().train_step(data, **kwargs)
@@ -124,7 +126,7 @@ class MultisceneTrainer(BaseTrainer):
                 data,
                 self.device,
                 step_size=self.model.step_size(self.nerfacc_helper.render_n_samples, grid_id=dset_id),
-                is_training=True)
+                aabb=self.model.aabb(dset_id))
             if rendered.n_rendering_samples == 0:
                 self.loss_info[f"n_rendered_samples_{dset_id}"].update(0.0)
                 return False

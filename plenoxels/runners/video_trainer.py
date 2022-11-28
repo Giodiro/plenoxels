@@ -64,6 +64,8 @@ class VideoTrainer(BaseTrainer):
             cone_angle=kwargs['cone_angle'],
             density_threshold=kwargs['density_threshold'],
             alpha_threshold=kwargs['alpha_threshold'],
+            early_stop_eps=kwargs['early_stop_eps'],
+            contraction_type=self.contraction_type,
         )
 
         super().__init__(train_data_loader=tr_loader,
@@ -94,7 +96,7 @@ class VideoTrainer(BaseTrainer):
                 data,
                 self.device,
                 step_size=self.model.step_size(self.nerfacc_helper.render_n_samples),
-                is_training=False)
+                aabb=self.model.aabb())
 
     def train_step(self, data: Dict[str, Union[int, torch.Tensor]], **kwargs):
         super().train_step(data, **kwargs)
@@ -116,7 +118,7 @@ class VideoTrainer(BaseTrainer):
                 data,
                 self.device,
                 step_size=self.model.step_size(self.nerfacc_helper.render_n_samples),
-                is_training=True)
+                aabb=self.model.aabb())
             if rendered.n_rendering_samples == 0:
                 self.loss_info[f"n_rendered_samples"].update(0.0)
                 return False
@@ -235,8 +237,6 @@ class VideoTrainer(BaseTrainer):
             len_time=dset.len_time,
             render_n_samples=self.nerfacc_helper.render_n_samples,
             grid_config=kwargs.pop("grid_config"),
-            global_scale=None,
-            global_translation=None,
             **kwargs)
         log.info(f"Initialized LowrankVideo model with "
                  f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters.")
