@@ -131,7 +131,8 @@ class LowrankVideo(LowrankModel):
         features = self.compute_density_features(xyzt)
         density = (
             self.density_act(self.decoder.compute_density(
-                features, rays_d=None)).view((*pts_norm.shape[:-1], 1))
+                features, rays_d=None)
+            ).view((*pts_norm.shape[:-1], 1))
             * selector[..., None]
         )
         return density

@@ -5,6 +5,7 @@ from typing import Dict, List, Union, Sequence
 import torch
 import torch.nn as nn
 
+from .decoders.mlp_decoder import RgbRenderDecoder
 from .lowrank_model import LowrankModel
 
 
@@ -50,34 +51,68 @@ class LowrankLearnableHash(LowrankModel):
         if self.use_F:
             raise NotImplementedError()
 
-        self.feature_dim: int = 0
-        self.scene_grids = nn.ModuleList()
+        rgb_feature_dim = 0
+        self.rgb_grids = nn.ModuleList()
+        self.density_grids = nn.ModuleList()
         grid_config = self.config[0]
         for si in range(num_scenes):
-            grids = nn.ModuleList()
-            for res in self.multiscale_res:
+            _rgb_grids = nn.ModuleList()
+            _density_grids = nn.ModuleList()
+            for res_idx, res in enumerate(self.multiscale_res):
                 if "feature_dim" in grid_config:
                     raise ValueError(f"use_F is False but found 'feature_dim' key in grid-config.")
                 config = grid_config.copy()
                 config['resolution'] = [int(r * res) for r in config['resolution'][:3]]
 
-                gpdesc = self.init_grid_param(
-                    config, is_video=False, grid_level=0, use_F=False)
-                self.set_resolution(gpdesc.reso, grid_id=si)
+                rgb_grid_data = self.init_grid_param(
+                    grid_nd=config['grid_dimensions'],
+                    resolution=config['resolution'],
+                    out_features=config['rgb_features'][res_idx],
+                    input_features=3,
+                    is_video=False,
+                    use_F=self.use_F,
+                )
+                density_grid_data = self.init_grid_param(
+                    grid_nd=config['grid_dimensions'],
+                    resolution=config['resolution'],
+                    out_features=config['density_features'][res_idx],
+                    input_features=3,
+                    is_video=False,
+                    use_F=self.use_F,
+                )
+                self.set_resolution(rgb_grid_data.reso, grid_id=si)
                 if self.concat_features:
-                    self.feature_dim += gpdesc.grid_coefs[-1].shape[1]
+                    rgb_feature_dim += rgb_grid_data.grid_coefs[-1].shape[1]
                 else:
-                    self.feature_dim = gpdesc.grid_coefs[-1].shape[1]
-                grids.append(gpdesc.grid_coefs)
-            self.scene_grids.append(grids)
+                    rgb_feature_dim = rgb_grid_data.grid_coefs[-1].shape[1]
+                _rgb_grids.append(rgb_grid_data.grid_coefs)
+                _density_grids.append(density_grid_data.grid_coefs)
+            self.rgb_grids.append(_rgb_grids)
+            self.density_grids.append(_density_grids)
 
-        self.decoder = self.init_decoder()
+        # self.decoder = self.init_decoder()
+        self.decoder = RgbRenderDecoder(feature_dim=rgb_feature_dim)
 
         log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes, "
                  f"decoder: {self.decoder}, use-F: {self.use_F}, "
                  f"concat-features: {self.concat_features}"
-                 f"feature-dim: {self.feature_dim}")
-        log.info(f"Model grids: {self.scene_grids}")
+                 f"rgb-feature-dim: {rgb_feature_dim}")
+        log.info(f"RGB grids: {self.rgb_grids}")
+        log.info(f"Density grids: {self.density_grids}")
+
+    def compute_density_features(self, xyz: torch.Tensor, grid_id: int) -> torch.Tensor:
+        grids: nn.ModuleList = self.density_grids[grid_id]  # noqa
+        level_info = self.config[0]
+        density_interp = self.interpolate_ms_features(
+            xyz, grids, level_info, concat_features=self.concat_features)
+        return density_interp  # [N, D]
+
+    def compute_rgb_features(self, xyz: torch.Tensor, grid_id: int) -> torch.Tensor:
+        grids: nn.ModuleList = self.rgb_grids[grid_id]  # noqa
+        level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
+        rgb_interp = self.interpolate_ms_features(
+            xyz, grids, level_info, concat_features=self.concat_features)
+        return rgb_interp  # [N, D]
 
     def compute_features(self,
                          pts: torch.Tensor,
@@ -123,28 +158,37 @@ class LowrankLearnableHash(LowrankModel):
         opacity = density * step_size
         return opacity
 
-    def query_density(self, pts: torch.Tensor, grid_id: int, return_feat: bool = False):
+    def query_density(self, pts: torch.Tensor, grid_id: int):
         pts_norm = self.normalize_coords(pts, grid_id)
         selector = ((pts_norm >= -1.0) & (pts_norm <= 1.0)).all(dim=-1)
-
-        features = self.compute_features(pts_norm, grid_id)
         density = (
             self.density_act(self.decoder.compute_density(
-                features, rays_d=None, precompute_color=False)).view((*pts_norm.shape[:-1], 1))
+                self.compute_density_features(pts_norm, grid_id), rays_d=None)
+            ).view((*pts_norm.shape[:-1], 1))
             * selector[..., None]
         )
-        if return_feat:
-            return density, features
         return density
 
     def forward(
         self,
-        rays_o: torch.Tensor,
+        pts: torch.Tensor,
         rays_d: torch.Tensor,
         grid_id: int,
     ):
-        density, embedding = self.query_density(rays_o, grid_id, return_feat=True)
-        rgb = self.decoder.compute_color(embedding, rays_d=rays_d)
+        pts_norm = self.normalize_coords(pts, grid_id)
+        selector = ((pts_norm >= -1.0) & (pts_norm <= 1.0)).all(dim=-1)
+        density = (
+            self.density_act(self.decoder.compute_density(
+                self.compute_density_features(pts_norm, grid_id), rays_d=None)
+            ).view((*pts_norm.shape[:-1], 1))
+            * selector[..., None]
+        )
+        rgb = (
+            self.decoder.compute_color(
+                self.compute_rgb_features(pts_norm, grid_id), rays_d=rays_d
+            )
+            * selector[..., None]
+        )
         return rgb, density
 
     def get_params(self, lr):
