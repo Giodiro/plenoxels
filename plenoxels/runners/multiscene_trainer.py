@@ -77,7 +77,7 @@ class Trainer(BaseTrainer):
         dset_id = data["dset_id"]
         batch_size = self.eval_batch_size
         channels = {"rgb", "depth", "proposal_depth"}
-        with torch.cuda.amp.autocast(enabled=self.train_fp16):
+        with torch.cuda.amp.autocast(enabled=self.train_fp16), torch.no_grad():
             rays_o = data["rays_o"]
             rays_d = data["rays_d"]
             near_far = data["near_far"].to(self.device) if "near_far" in data else None

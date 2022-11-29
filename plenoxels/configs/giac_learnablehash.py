@@ -19,6 +19,7 @@ config = {
     # Optimization settings
     "num_steps": 30_001,
     "batch_size": 4096,
+    "eval_batch_size": 4096,
     "num_batches_per_dset": 1,
     "scheduler_type": "warmup_cosine",
     "optim_type": "adam",
@@ -28,7 +29,7 @@ config = {
     "floater_loss": 0,
     "plane_tv_weight": 2e-5,
     "plane_tv_what": "Gcoords",
-    "density_plane_tv_weight": 2e-6,
+    "density_plane_tv_weight": 0,
     #"l1density_weight": 0.000,
     #"volume_tv_weight": 0.00,
     #"volume_tv_npts": 100,
@@ -41,7 +42,7 @@ config = {
     # Training settings
     "train_fp16": True,
     "save_every": 30000,
-    "valid_every": 30000,
+    "valid_every": 10000,
     "save_outputs": False,
     "transfer_learning": False,
 
