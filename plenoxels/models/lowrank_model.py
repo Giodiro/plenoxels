@@ -153,7 +153,7 @@ class LowrankModel(ABC, nn.Module):
 
     @staticmethod
     def init_grid_param(grid_nd: int, resolution: List[int], out_features: int,
-                        input_features: int,  is_video: bool, use_F: bool) -> GridParamDescription:
+                        input_features: int,  is_video: bool, use_F: bool, is_density: bool) -> GridParamDescription:
         try:
             in_dim = len(resolution)
         except AttributeError:
@@ -182,7 +182,9 @@ class LowrankModel(ABC, nn.Module):
                     nn.Parameter(torch.empty(
                         [1, out_features] + [resolution[cc] for cc in coo_comb[::-1]]
                     )))
-                if is_video and 3 in coo_comb:  # is a time-plane
+                if is_density:
+                    nn.init.uniform_(grid_coefs[-1], a=0.0, b=0.1)
+                elif is_video and 3 in coo_comb:  # is a time-plane
                     nn.init.ones_(grid_coefs[-1])
                 else:
                     nn.init.uniform_(grid_coefs[-1], a=0.1, b=0.5)
