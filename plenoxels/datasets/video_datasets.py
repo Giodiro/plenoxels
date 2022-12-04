@@ -51,7 +51,7 @@ class Video360Dataset(BaseDataset):
         self.global_scale = torch.tensor([1, 1, 1])
         if is_contracted and is_ndc:
             raise ValueError("Options 'is_contracted' and 'is_ndc' are exclusive.")
-        if "lego" in datadir:
+        if "lego" in datadir or "dnerf" in datadir:
             dset_type = "synthetic"
         else:
             dset_type = "llff"
@@ -117,7 +117,7 @@ class Video360Dataset(BaseDataset):
 
         self.isg_weights = None
         self.ist_weights = None
-        if split == "train":
+        if split == "train" and dset_type == "llff":
             if os.path.exists(os.path.join(datadir, f"isg_weights.pt")):
                 self.isg_weights = torch.load(os.path.join(datadir, f"isg_weights.pt"))
                 log.info(f"Reloaded {self.isg_weights.shape[0]} ISG weights from file.")
