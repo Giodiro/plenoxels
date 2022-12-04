@@ -25,6 +25,11 @@ class RenderResult:
     depth: torch.Tensor
     acc: torch.Tensor
     n_rendering_samples: int
+    ray_indices: torch.Tensor
+    weights: torch.Tensor
+    t_starts: torch.Tensor
+    t_ends: torch.Tensor
+    n_rays: int
 
 
 class BaseTrainer():
@@ -123,15 +128,14 @@ class BaseTrainer():
                     self.pre_epoch()
                     batch_iter = iter(self.train_data_loader)
                     data = next(batch_iter)
-                    logging.info("Reset data-iterator")
+                    logging.info("Reset data-iterator at end of data")
 
-                self.model.train()
                 try:
                     step_successful = self.train_step(data)
                 except StopIteration:
                     self.pre_epoch()
                     batch_iter = iter(self.train_data_loader)
-                    logging.info("Reset data-iterator")
+                    logging.info("Reset data-iterator during optimization")
                     step_successful = True
 
                 if step_successful and self.scheduler is not None:
@@ -392,7 +396,7 @@ class NerfaccHelper():
             aabb = None
         if aabb is not None:
             aabb = aabb.view(-1)
-        rgb, acc, depth, n_rendering_samples = render_image(
+        rgb, acc, depth, n_rendering_samples, ray_indices, weights, t_starts, t_ends, n_rays = render_image(
                 model,
                 occupancy_grid,
                 grid_id=data["dset_id"] if 'dset_id' in data else 0,
@@ -411,7 +415,9 @@ class NerfaccHelper():
                 aabb=aabb,
             )
         return RenderResult(
-            rgb=rgb, depth=depth, acc=acc, n_rendering_samples=n_rendering_samples
+            rgb=rgb, depth=depth, acc=acc, n_rendering_samples=n_rendering_samples,
+            ray_indices=ray_indices, weights=weights, t_starts=t_starts,
+            t_ends=t_ends, n_rays=n_rays,
         )
 
     def calc_batch_size(self, old_batch_size: int, n_rendered_samples: int):

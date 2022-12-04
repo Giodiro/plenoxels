@@ -92,7 +92,7 @@ class BaseDataset(Dataset, ABC):
 
     def __len__(self):
         if self.split == 'train':
-            return (self.num_samples + self.batch_size - 1) // self.batch_size
+            return 100_000_000#(self.num_samples + self.batch_size - 1) // self.batch_size
         else:
             return self.num_samples
 

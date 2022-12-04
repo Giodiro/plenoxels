@@ -104,14 +104,18 @@ class LowrankModel(ABC, nn.Module):
     def interpolate_ms_features(pts: torch.Tensor,
                                 ms_grids: nn.ModuleList,
                                 grid_info: Dict[str, int],
-                                concat_features: bool) -> torch.Tensor:
+                                concat_features: bool,
+                                num_levels: Optional[int],
+                                ) -> torch.Tensor:
         coo_combs = list(itertools.combinations(
             range(pts.shape[-1]),
             grid_info.get("grid_dimensions", grid_info["input_coordinate_dim"]))
         )
+        if num_levels is None:
+            num_levels = len(ms_grids)
         multi_scale_interp = [] if concat_features else 0.
         grid: nn.ParameterList
-        for scale_id, grid in enumerate(ms_grids):
+        for scale_id, grid in enumerate(ms_grids[:num_levels]):
             interp_space = 1.
             for ci, coo_comb in enumerate(coo_combs):
                 # interpolate in plane
@@ -153,7 +157,7 @@ class LowrankModel(ABC, nn.Module):
 
     @staticmethod
     def init_grid_param(grid_nd: int, resolution: List[int], out_features: int,
-                        input_features: int,  is_video: bool, use_F: bool) -> GridParamDescription:
+                        input_features: int,  is_video: bool, use_F: bool, is_density: bool) -> GridParamDescription:
         try:
             in_dim = len(resolution)
         except AttributeError:
@@ -182,10 +186,13 @@ class LowrankModel(ABC, nn.Module):
                     nn.Parameter(torch.empty(
                         [1, out_features] + [resolution[cc] for cc in coo_comb[::-1]]
                     )))
-                if is_video and 3 in coo_comb:  # is a time-plane
+                if is_density:
+                    nn.init.uniform_(grid_coefs[-1], a=0.0, b=0.1)
+                elif is_video and 3 in coo_comb:  # is a time-plane
                     nn.init.ones_(grid_coefs[-1])
                 else:
-                    nn.init.uniform_(grid_coefs[-1], a=0.1, b=0.5)
+                    #nn.init.uniform_(grid_coefs[-1], a=0.1, b=0.5)
+                    nn.init.normal_(grid_coefs[-1], 0.0, 0.5)
         return GridParamDescription(
             grid_coefs=grid_coefs, reso=pt_reso)
 

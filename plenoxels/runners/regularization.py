@@ -1,8 +1,12 @@
 import abc
+import logging as log
 from typing import Optional
 
 import torch.optim.lr_scheduler
 from torch import nn
+
+from nerfacc.pack import pack_info
+from nerfacc.losses import distortion
 
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash
 from plenoxels.models.lowrank_model import LowrankModel
@@ -127,10 +131,9 @@ class PlaneTV(Regularizer):
         self.features = features
 
     def step(self, global_step):
-        #if global_step == 23000:
-        #    self.weight /= 2
-        #    log.info(f"Setting PlaneTV weight to {self.weight}")
-        pass
+        if global_step == 15000:
+            self.weight /= 5
+            log.info(f"Setting PlaneTV weight to {self.weight}")
 
     def _regularize(self, model: LowrankLearnableHash, grid_id: int = 0, **kwargs):
         multi_res_grids: nn.ModuleList = model.scene_grids[grid_id]
@@ -156,7 +159,7 @@ class VideoPlaneTV(Regularizer):
     def _regularize(self, model: LowrankVideo, **kwargs) -> torch.Tensor:
         total = 0
         # model.grids is 6 x [1, rank * F_dim, reso, reso]
-        for grids in model.grids:
+        for grids in (model.rgb_grids + model.density_grids):
             if len(grids) == 3:
                 spatial_grids = [0, 1, 2]
             else:
@@ -194,10 +197,26 @@ class TimeSmoothness(Regularizer):
         time_grids = [2, 4, 5]  # These are the spatiotemporal grids; the others are only spatial
         total = 0
         # model.grids is 6 x [1, rank * F_dim, reso, reso]
-        for grids in model.grids:
+        for grids in (model.rgb_grids + model.density_grids):
             for grid_id in time_grids:
                 total += compute_plane_smoothness(grids[grid_id])
         return total
+
+
+class DistortionLoss(Regularizer):
+    def __init__(self, initial_value):
+        super().__init__('distortion-loss', initial_value)
+
+    def _regularize(self, model: LowrankLearnableHash, grid_id, model_output, **kwargs) -> torch.Tensor:
+        packed_info = pack_info(model_output.ray_indices, n_rays=model_output.n_rays)
+        dloss = distortion(
+            packed_info,
+            weights=model_output.weights.squeeze(),
+            t_starts=model_output.t_starts,
+            t_ends=model_output.t_ends)
+        return dloss.mean()
+
+
 
 
 class VolumeTV(Regularizer):
@@ -258,7 +277,7 @@ class L1AppearancePlanes(Regularizer):
 
         total = 0
         # model.grids is 6 x [1, rank * F_dim, reso, reso]
-        multi_res_grids = model.grids
+        multi_res_grids = model.rgb_grids + model.density_grids
         for grids in multi_res_grids:
 
             if len(grids) == 3:
