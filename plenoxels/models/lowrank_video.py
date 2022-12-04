@@ -36,7 +36,7 @@ class LowrankVideo(LowrankModel):
         if self.use_F:
             raise NotImplementedError()
 
-        rgb_feature_dim = 0
+        self.feature_dim = 0
         self.grids = nn.ModuleList()
         for res_idx, res in enumerate(self.multiscale_res):
             for li, grid_config in enumerate(self.config):
@@ -57,17 +57,16 @@ class LowrankVideo(LowrankModel):
                 )
                 self.set_resolution(gpdesc.reso, 0)
                 if self.concat_features:
-                    rgb_feature_dim += gpdesc.grid_coefs[-1].shape[1]
+                    self.feature_dim += gpdesc.grid_coefs[-1].shape[1]
                 else:
-                    rgb_feature_dim = gpdesc.grid_coefs[-1].shape[1]
+                    self.feature_dim = gpdesc.grid_coefs[-1].shape[1]
                 self.grids.append(gpdesc.grid_coefs)
 
         self.decoder = self.init_decoder()
 
         log.info(f"Initialized LowrankVideo. decoder={self.decoder}, use-F: {self.use_F}, "
                  f"concat-features: {self.concat_features}")
-        log.info(f"Model grids: {self.rgb_grids}")
-        log.info(f"Model grids: {self.density_grids}")
+        log.info(f"Model grids: {self.grids}")
 
     def compute_features(self, xyz: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         grids = self.grids

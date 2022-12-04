@@ -52,11 +52,11 @@ class Video360Dataset(BaseDataset):
         if is_contracted and is_ndc:
             raise ValueError("Options 'is_contracted' and 'is_ndc' are exclusive.")
         if "lego" in datadir or "dnerf" in datadir:
-            dset_type = "synthetic"
+            self.dset_type = "synthetic"
         else:
-            dset_type = "llff"
+            self.dset_type = "llff"
 
-        if dset_type == "llff":
+        if self.dset_type == "llff":
             per_cam_poses, self.per_cam_near_fars, intrinsics, videopaths = load_llffvideo_poses(
                 datadir, downsample=self.downsample, split=split, near_scaling=1.0)
             if split == 'test':
@@ -72,13 +72,21 @@ class Video360Dataset(BaseDataset):
             self.global_scale = torch.tensor([1.0, 1.0, 0.5])
             log.info(f'per_cam_near_fars is {self.per_cam_near_fars}, with global translation '
                      f'{self.global_translation} and scale {self.global_scale}')
-        elif dset_type == "synthetic":
+        elif self.dset_type == "synthetic":
             frames, transform = load_360video_frames(datadir, split, max_cameras=self.max_cameras, max_tsteps=self.max_tsteps)
+            timestamps = torch.tensor([frame['time'] for frame in frames])
+            if split == 'train':
+                num_tstamps = len(timestamps)
+            else:
+                _frames, _transform = load_360video_frames(datadir, 'train', max_cameras=self.max_cameras, max_tsteps=self.max_tsteps)
+                num_tstamps = len(_frames)
+
+            timestamps = torch.round(timestamps * (num_tstamps - 1)).to(dtype=torch.int32)
+            print("time: ", timestamps)
             imgs, self.poses = load_360_images(frames, datadir, split, self.downsample)
             self.median_imgs = calc_360_camera_medians(frames, imgs)
-            timestamps = [parse_360_file_path(frame['file_path'])[0] for frame in frames]
-            timestamps = torch.tensor(timestamps, dtype=torch.int32)
             intrinsics = load_360_intrinsics(transform, imgs, self.downsample)
+            self.per_cam_near_fars = torch.tensor([[2.0, 6.0]]).repeat((len(self.poses), 1))
 
         else:
             raise ValueError(datadir)
@@ -96,7 +104,7 @@ class Video360Dataset(BaseDataset):
         if is_contracted:
             bbox = torch.tensor([[-2., -2., -2.], [2., 2., 2.]])
         else:
-            bbox = torch.tensor([[-2.8, -1.8, -2.], [2.8, 2., 2.]])
+            bbox = torch.tensor([[-1.5, -1.5, -1.5], [1.5, 1.5, 1.5]])
         # ISG/IST weights are computed on 4x subsampled data.
         weights_subsampled = int(4 / downsample)
         super().__init__(
@@ -117,7 +125,7 @@ class Video360Dataset(BaseDataset):
 
         self.isg_weights = None
         self.ist_weights = None
-        if split == "train" and dset_type == "llff":
+        if split == "train" and self.dset_type == "llff":
             if os.path.exists(os.path.join(datadir, f"isg_weights.pt")):
                 self.isg_weights = torch.load(os.path.join(datadir, f"isg_weights.pt"))
                 log.info(f"Reloaded {self.isg_weights.shape[0]} ISG weights from file.")
@@ -153,9 +161,9 @@ class Video360Dataset(BaseDataset):
         if self.isg:
             self.enable_isg()
 
-        if dset_type == "synthetic":
+        if self.dset_type == "synthetic":
             self.len_time = torch.amax(timestamps).item()
-        elif dset_type == "llff":
+        elif self.dset_type == "llff":
             self.len_time = 299
         if self.split == 'train':
             self.timestamps = timestamps[:, None, None].repeat(
@@ -234,7 +242,10 @@ class Video360Dataset(BaseDataset):
                 camera_id = torch.div(image_id, num_frames_per_camera, rounding_mode='floor')  # [num_rays]
                 near_fars = self.per_cam_near_fars[camera_id, :]
             else:
-                near_fars = self.per_cam_near_fars  # Only one test camera
+                if self.dset_type == "llff":
+                    near_fars = self.per_cam_near_fars  # Only one test camera
+                elif self.dset_type == "synthetic":
+                    near_fars = self.per_cam_near_fars[index].view(1, 2)
 
         rgba = self.imgs[index] / 255.0  # (num_rays, 4)   this converts to f32
         c2w = self.poses[image_id]       # (num_rays, 3, 4)
@@ -248,6 +259,18 @@ class Video360Dataset(BaseDataset):
             origins, directions = ndc_rays_blender(
                 intrinsics=self.intrinsics, near=1.0, rays_o=origins, rays_d=directions)
         near, far = torch.split(near_fars, 1, dim=1)
+
+        # Background color
+        if self.dset_type == 'synthetic':
+            if self.split == 'train':
+                bg_color = torch.rand_like(rgba[:1, :3])  # [1, 3]
+            else:
+                bg_color = torch.tensor([1.0, 1.0, 1.0])
+            rgba = rgba[..., :3] * rgba[..., 3:] + bg_color * (1.0 - rgba[..., 3:])
+        else:
+            bg_color = torch.tensor([1.0, 1.0, 1.0])
+
+
         # Scaling
         #origins = origins * self.global_scale + self.global_translation
         return {
@@ -257,7 +280,7 @@ class Video360Dataset(BaseDataset):
             "timestamps": ts,
             "near": near.view(-1),
             "far": far.view(-1),
-            "color_bkgd": torch.tensor([1.0, 1.0, 1.0]),
+            "color_bkgd": bg_color,
         }
 
 
@@ -276,24 +299,27 @@ def load_360video_frames(datadir, split, max_cameras: int, max_tsteps: Optional[
     pose_ids = set()
     fpath2poseid = defaultdict(list)
     for frame in frames:
-        timestamp, pose_id = parse_360_file_path(frame['file_path'])
-        timestamps.add(timestamp)
+        timestamps.add(float(frame['time']))
+        pose_id = int(frame['file_path'].split('_')[1])
         pose_ids.add(pose_id)
         fpath2poseid[frame['file_path']].append(pose_id)
     timestamps = sorted(timestamps)
     pose_ids = sorted(pose_ids)
 
-    num_poses = min(len(pose_ids), max_cameras or len(pose_ids))
-    subsample_poses = int(round(len(pose_ids) / num_poses))
-    pose_ids = set(pose_ids[::subsample_poses])
+    if max_cameras is not None:
+        num_poses = min(len(pose_ids), max_cameras or len(pose_ids))
+        subsample_poses = int(round(len(pose_ids) / num_poses))
+        pose_ids = set(pose_ids[::subsample_poses])
 
-    num_timestamps = min(len(timestamps), max_tsteps or len(timestamps))
-    subsample_time = int(math.floor(len(timestamps) / (num_timestamps - 1)))
-    timestamps = set(timestamps[::subsample_time])
-    log.info(f"Selected subset of timestamps: {timestamps}")
+    if max_tsteps is not None:
+        num_timestamps = min(len(timestamps), max_tsteps or len(timestamps))
+        subsample_time = int(math.floor(len(timestamps) / (num_timestamps - 1)))
+        timestamps = set(timestamps[::subsample_time])
+        log.info(f"Selected subset of timestamps: {timestamps}")
     sub_frames = []
     for frame in frames:
-        timestamp, pose_id = parse_360_file_path(frame['file_path'])
+        timestamp = frame['time']
+        pose_id = int(frame['file_path'].split('_')[1])
         if timestamp in timestamps and pose_id in pose_ids:
             sub_frames.append(frame)
     # We need frames to be sorted by pose_id
@@ -311,7 +337,8 @@ def calc_360_camera_medians(frames, imgs):
     """
     # imgs are sorted by pose_id. We need to find out how many pose_ids there are,
     # and then reshape and compute medians.
-    num_pose_ids = len(np.unique([parse_360_file_path(frame['file_path'])[1] for frame in frames]))
+    pose_ids = [frame['file_path'].split('_')[1] for frame in frames]
+    num_pose_ids = len(np.unique(pose_ids))
     imgs = imgs.view(num_pose_ids, -1, *imgs.shape[1:])
     median_images = torch.median(imgs, dim=1).values
     return median_images
