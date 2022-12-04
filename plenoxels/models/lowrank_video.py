@@ -16,7 +16,7 @@ def contract_to_unisphere(
     mask = mag.squeeze(-1) > 1
 
     x[mask] = (2 - 1 / mag[mask]) * (x[mask] / mag[mask])
-    x = x / 2 #+ 0.5  # [-inf, inf] is at [0, 1]
+    x = x / 2 # map to [-1, 1] # / 4 + 0.5  # [-inf, inf] is at [0, 1]
     return x
 
 
@@ -66,6 +66,7 @@ class LowrankVideo(LowrankModel):
                     input_features=4,
                     is_video=True,
                     use_F=False,
+                    is_density=False,
                 )
                 density_grid_data = self.init_grid_param(
                     grid_nd=config['grid_dimensions'],
@@ -74,6 +75,7 @@ class LowrankVideo(LowrankModel):
                     input_features=4,
                     is_video=True,
                     use_F=False,
+                    is_density=True,
                 )
                 self.set_resolution(rgb_grid_data.reso, 0)
                 if self.concat_features:
@@ -87,7 +89,8 @@ class LowrankVideo(LowrankModel):
 
         log.info(f"Initialized LowrankVideo. decoder={self.decoder}, use-F: {self.use_F}, "
                  f"concat-features: {self.concat_features}")
-        log.info(f"Model grids: {self.grids}")
+        log.info(f"Model grids: {self.rgb_grids}")
+        log.info(f"Model grids: {self.density_grids}")
 
     def compute_density_features(self, xyzt) -> torch.Tensor:
         grids = self.density_grids
@@ -125,6 +128,8 @@ class LowrankVideo(LowrankModel):
     def query_density(self, pts: torch.Tensor, timestamps: torch.Tensor):
         pts_norm = contract_to_unisphere(self.normalize_coords(pts, 0))
         timestamps_norm = (timestamps * 2 / self.len_time) - 1
+        #if pts.shape[0] > 0:
+            #print(f"pts: {pts.amin(0)}  {pts.amax(0)}    pts_norm {pts_norm.amin(0)}  {pts_norm.amax(0)}")
         selector = ((pts_norm >= -1.0) & (pts_norm <= 1.0)).all(dim=-1)
 
         xyzt = torch.cat([pts_norm, timestamps_norm[:, None]], dim=-1)  # [batch, 4] for xyzt

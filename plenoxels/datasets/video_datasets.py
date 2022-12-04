@@ -63,13 +63,13 @@ class Video360Dataset(BaseDataset):
                 keyframes = True
             poses, imgs, timestamps, self.median_imgs = load_llffvideo_data(
                 videopaths=videopaths, cam_poses=per_cam_poses, intrinsics=intrinsics, split=split,
-                keyframes=keyframes, keyframes_take_each=10)
+                keyframes=keyframes, keyframes_take_each=60)
 
             self.poses = poses.float()
             self.per_cam_near_fars = self.per_cam_near_fars.float()
             # These values are tuned for the salmon video
             self.global_translation = torch.tensor([0, 0, 2.])
-            self.global_scale = torch.tensor([0.5, 0.6, 1])
+            self.global_scale = torch.tensor([1.0, 1.0, 0.5])
             log.info(f'per_cam_near_fars is {self.per_cam_near_fars}, with global translation '
                      f'{self.global_translation} and scale {self.global_scale}')
         elif dset_type == "synthetic":
@@ -249,7 +249,7 @@ class Video360Dataset(BaseDataset):
                 intrinsics=self.intrinsics, near=1.0, rays_o=origins, rays_d=directions)
         near, far = torch.split(near_fars, 1, dim=1)
         # Scaling
-        origins = origins * self.global_scale + self.global_translation
+        #origins = origins * self.global_scale + self.global_translation
         return {
             "rays_o": origins.reshape(-1, 3),
             "rays_d": directions.reshape(-1, 3),

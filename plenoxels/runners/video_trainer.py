@@ -50,7 +50,7 @@ class VideoTrainer(BaseTrainer):
         self.train_dataset = tr_dset
         self.test_dataset = ts_dset
         if self.test_dataset.is_contracted:
-            self.contraction_type = ContractionType.UN_BOUNDED_SPHERE
+            self.contraction_type = ContractionType.UN_BOUNDED_CUBE
         else:
             self.contraction_type = ContractionType.AABB
         self.ist_step = ist_step
@@ -84,14 +84,13 @@ class VideoTrainer(BaseTrainer):
         self.criterion = torch.nn.SmoothL1Loss(reduction='mean')
         self.occupancy_grid = self.init_occupancy_grid(**self.extra_args)
         self.occupancy_grid.to(device=self.device)
-        self.step_size = 1e-2
-        #self.model.step_size(self.nerfacc_helper.render_n_samples)
+        self.step_size = 1e-2#self.model.step_size(self.nerfacc_helper.render_n_samples)
 
     def eval_step(self,
                   data: Dict[str, Union[int, torch.Tensor]],
                   **kwargs) -> RenderResult:
         super().eval_step(data, **kwargs)
-        with torch.cuda.amp.autocast(enabled=self.train_fp16):
+        with torch.cuda.amp.autocast(enabled=self.train_fp16), torch.no_grad():
             return self.nerfacc_helper.render(
                 self.model,
                 self.occupancy_grid,

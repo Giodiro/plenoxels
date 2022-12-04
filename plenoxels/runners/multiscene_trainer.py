@@ -17,7 +17,7 @@ from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash
 from .base_trainer import BaseTrainer, RenderResult, NerfaccHelper
 from .regularization import (
     PlaneTV, DensityPlaneTV, VolumeTV, L1PlaneColor, L1PlaneDensity,
-    L1Density,
+    L1Density, DistortionLoss,
 )
 from .utils import init_dloader_random
 from ..datasets import SyntheticNerfDataset, LLFFDataset
@@ -143,7 +143,7 @@ class MultisceneTrainer(BaseTrainer):
             # Regularization
             loss = recon_loss
             for r in self.regularizers:
-                reg_loss = r.regularize(self.model, grid_id=dset_id)
+                reg_loss = r.regularize(self.model, grid_id=dset_id, model_output=rendered)
                 loss = loss + reg_loss
 
         self.optimizer.zero_grad(set_to_none=True)
@@ -258,6 +258,7 @@ class MultisceneTrainer(BaseTrainer):
             L1PlaneColor(kwargs.get('l1_plane_color_weight', 0.0)),
             L1PlaneDensity(kwargs.get('l1_plane_density_weight', 0.0)),
             L1Density(kwargs.get('l1density_weight', 0.0), max_voxels=100_000),
+            DistortionLoss(kwargs.get('distortion_loss_weight', 0.0)),
         ]
 
     @property
@@ -294,7 +295,7 @@ def init_tr_data(data_downsample: float, data_dirs: Sequence[str], **kwargs):
             log.info(f"About to load LLFF data downsampled by {data_downsample} times.")
             dsets.append(LLFFDataset(
                 data_dir, split='train', downsample=int(data_downsample), hold_every=hold_every,
-                batch_size=initial_batch_size, dset_id=i))
+                batch_size=initial_batch_size, dset_id=i, batch_size_queue=tr_queue))
         dsets[-1].reset_iter()
 
     tr_sampler = MultiSceneSampler(dsets, num_samples_per_dataset=1)

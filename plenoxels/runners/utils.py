@@ -177,6 +177,7 @@ def render_image(
         t_origins = chunk_rays_o[ray_indices]
         t_dirs = chunk_rays_d[ray_indices]
         positions = t_origins + t_dirs * (t_starts + t_ends) / 2.0
+        #print(f"sigma-fn with {len(ray_indices)} points")
         if timestamps is not None:
             t = (
                 timestamps[ray_indices]
@@ -190,6 +191,7 @@ def render_image(
         ray_indices = ray_indices.long()
         t_origins = chunk_rays_o[ray_indices]
         t_dirs = chunk_rays_d[ray_indices]
+        #print(f"rgb-sigma-fn with {len(ray_indices)} points")
         positions = t_origins + t_dirs * (t_starts + t_ends) / 2.0
         if timestamps is not None:
             t = (
@@ -225,7 +227,7 @@ def render_image(
             alpha_thre=alpha_thresh,
             early_stop_eps=early_stop_eps,
         )
-        rgb, opacity, depth = rendering(
+        rgb, opacity, depth, weights = rendering(
             t_starts=t_starts,
             t_ends=t_ends,
             ray_indices=ray_indices,
@@ -233,9 +235,9 @@ def render_image(
             rgb_sigma_fn=rgb_sigma_fn,
             render_bkgd=render_bkgd.to(device=device) if render_bkgd is not None else None,
         )
-        chunk_results = [rgb, opacity, depth, len(t_starts)]
+        chunk_results = [rgb, opacity, depth, len(t_starts), ray_indices, weights, t_starts, t_ends, chunk_rays_o.shape[0]]
         results.append(chunk_results)
-    colors, opacities, depths, n_rendering_samples = [
+    colors, opacities, depths, n_rendering_samples, ray_indices, weights, t_starts, t_ends, n_rays = [
         torch.cat(r, dim=0) if isinstance(r[0], torch.Tensor) else r
         for r in zip(*results)
     ]
@@ -244,6 +246,11 @@ def render_image(
         opacities.view((*rays_shape[:-1], -1)),
         depths.view((*rays_shape[:-1], -1)),
         sum(n_rendering_samples),
+        ray_indices,
+        weights,
+        t_starts,
+        t_ends,
+        sum(n_rays),
     )
 
 

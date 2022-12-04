@@ -1,6 +1,6 @@
 # configuration file to be used with `main.py` for video training
 config = {
-    "expname": "test_nerfacc",
+    "expname": "test_nerfacc_wreg_fixbounds",
     "logdir": "./logs/flame_salmon",
     "device": "cuda:0",
     "wandb": False,
@@ -33,17 +33,20 @@ config = {
     "l1density_weight": 0,
     "volume_tv_weight": 0,
     "volume_tv_npts": 0,
+    'plane_tv_weight': 0.02,
+    'l1_appearance_planes_reg': 0.001,
+    'time_smoothness_weight': 0.05,
 
     # Training settings
     "train_fp16": True,
-    "save_every": 5_000,
-    "valid_every": 5_000,
+    "save_every": 10_000,
+    "valid_every": 10_000,
     "save_outputs": True,
 
     # Raymarching settings
-    "sample_batch_size": 1 << 18,
-    "n_samples": 1024,
-    "alpha_threshold": 0.0,
+    "sample_batch_size": 1 << 18,  # total number of samples per batch
+    "n_samples": 128,  # number of samples in a ray
+    "alpha_threshold": 1e-3,
     "density_threshold": 1e-2,
     "early_stop_eps": 1e-3,
 
@@ -58,8 +61,9 @@ config = {
 [
     {
         "input_coordinate_dim": 4,
-        "output_coordinate_dim": 16,
         "grid_dimensions": 2,
+        "rgb_features": [16, 16, 16],
+        "density_features": [6, 6, 6],
         "resolution": [64, 64, 64, 150],
     }
 ]
