@@ -159,7 +159,7 @@ class VideoPlaneTV(Regularizer):
     def _regularize(self, model: LowrankVideo, **kwargs) -> torch.Tensor:
         total = 0
         # model.grids is 6 x [1, rank * F_dim, reso, reso]
-        for grids in (model.rgb_grids + model.density_grids):
+        for grids in model.grids:
             if len(grids) == 3:
                 spatial_grids = [0, 1, 2]
             else:
@@ -197,7 +197,7 @@ class TimeSmoothness(Regularizer):
         time_grids = [2, 4, 5]  # These are the spatiotemporal grids; the others are only spatial
         total = 0
         # model.grids is 6 x [1, rank * F_dim, reso, reso]
-        for grids in (model.rgb_grids + model.density_grids):
+        for grids in model.grids:
             for grid_id in time_grids:
                 total += compute_plane_smoothness(grids[grid_id])
         return total
@@ -215,8 +215,6 @@ class DistortionLoss(Regularizer):
             t_starts=model_output.t_starts,
             t_ends=model_output.t_ends)
         return dloss.mean()
-
-
 
 
 class VolumeTV(Regularizer):
@@ -274,14 +272,12 @@ class L1AppearancePlanes(Regularizer):
         super().__init__('l1-appearance', initial_value)
 
     def _regularize(self, model: LowrankVideo, **kwargs) -> torch.Tensor:
-
         total = 0
         # model.grids is 6 x [1, rank * F_dim, reso, reso]
-        multi_res_grids = model.rgb_grids + model.density_grids
+        multi_res_grids = model.grids
         for grids in multi_res_grids:
-
             if len(grids) == 3:
-                return 0
+                continue
             else:
                 # These are the spatiotemporal grids
                 spatiotemporal_grids = [2, 4, 5]

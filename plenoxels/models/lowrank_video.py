@@ -1,23 +1,11 @@
 import logging as log
 import math
-from typing import Dict, List, Union, Sequence
+from typing import Dict, List, Union, Sequence, Tuple
 
 import torch
 import torch.nn as nn
 
-from .decoders.mlp_decoder import RgbRenderDecoder
 from .lowrank_model import LowrankModel
-
-
-def contract_to_unisphere(
-    x: torch.Tensor,
-):
-    mag = x.norm(dim=-1, keepdim=True)
-    mask = mag.squeeze(-1) > 1
-
-    x[mask] = (2 - 1 / mag[mask]) * (x[mask] / mag[mask])
-    x = x / 2 # map to [-1, 1] # / 4 + 0.5  # [-inf, inf] is at [0, 1]
-    return x
 
 
 class LowrankVideo(LowrankModel):
@@ -49,8 +37,7 @@ class LowrankVideo(LowrankModel):
             raise NotImplementedError()
 
         rgb_feature_dim = 0
-        self.rgb_grids = nn.ModuleList()
-        self.density_grids = nn.ModuleList()
+        self.grids = nn.ModuleList()
         for res_idx, res in enumerate(self.multiscale_res):
             for li, grid_config in enumerate(self.config):
                 if "feature_dim" in grid_config:
@@ -59,53 +46,35 @@ class LowrankVideo(LowrankModel):
                 config['resolution'] = [r * res for r in config['resolution'][:3]]
                 if len(grid_config['resolution']) == 4:
                     config['resolution'].append(grid_config['resolution'][3])
-                rgb_grid_data = self.init_grid_param(
+                gpdesc = self.init_grid_param(
                     grid_nd=config['grid_dimensions'],
                     resolution=config['resolution'],
-                    out_features=config['rgb_features'][res_idx],
+                    out_features=config['output_coordinate_dim'],
                     input_features=4,
                     is_video=True,
                     use_F=False,
                     is_density=False,
                 )
-                density_grid_data = self.init_grid_param(
-                    grid_nd=config['grid_dimensions'],
-                    resolution=config['resolution'],
-                    out_features=config['density_features'][res_idx],
-                    input_features=4,
-                    is_video=True,
-                    use_F=False,
-                    is_density=True,
-                )
-                self.set_resolution(rgb_grid_data.reso, 0)
+                self.set_resolution(gpdesc.reso, 0)
                 if self.concat_features:
-                    rgb_feature_dim += rgb_grid_data.grid_coefs[-1].shape[1]
+                    rgb_feature_dim += gpdesc.grid_coefs[-1].shape[1]
                 else:
-                    rgb_feature_dim = rgb_grid_data.grid_coefs[-1].shape[1]
-                self.rgb_grids.append(rgb_grid_data.grid_coefs)
-                self.density_grids.append(density_grid_data.grid_coefs)
+                    rgb_feature_dim = gpdesc.grid_coefs[-1].shape[1]
+                self.grids.append(gpdesc.grid_coefs)
 
-        self.decoder = RgbRenderDecoder(feature_dim=rgb_feature_dim)
+        self.decoder = self.init_decoder()
 
         log.info(f"Initialized LowrankVideo. decoder={self.decoder}, use-F: {self.use_F}, "
                  f"concat-features: {self.concat_features}")
         log.info(f"Model grids: {self.rgb_grids}")
         log.info(f"Model grids: {self.density_grids}")
 
-    def compute_density_features(self, xyzt) -> torch.Tensor:
-        grids = self.density_grids
+    def compute_features(self, xyz: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        grids = self.grids
         level_info = self.config[0]
-        density_interp = self.interpolate_ms_features(
-            xyzt, grids, level_info, concat_features=self.concat_features)
-        return density_interp  # [N, D]
-
-    def compute_rgb_features(self, xyzt) -> torch.Tensor:
-        # space: 6 x [1, rank * F_dim, reso, reso] where the reso can be different in different grids and dimensions
-        grids = self.rgb_grids
-        level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
-        rgb_interp = self.interpolate_ms_features(
-            xyzt, grids, level_info, concat_features=self.concat_features)
-        return rgb_interp  # [N, D]
+        xyzt = torch.cat([xyz, t[:, None]], dim=-1)  # [batch, 4] for xyzt
+        return self.interpolate_ms_features(
+            xyzt, grids, level_info, concat_features=self.concat_features, num_levels=None)
 
     def step_size(self, n_samples: int):
         aabb = self.aabb(0)
@@ -125,21 +94,24 @@ class LowrankVideo(LowrankModel):
         opacity = density * step_size
         return opacity
 
-    def query_density(self, pts: torch.Tensor, timestamps: torch.Tensor):
-        pts_norm = contract_to_unisphere(self.normalize_coords(pts, 0))
+    def query_density(self,
+                      pts: torch.Tensor,
+                      timestamps: torch.Tensor,
+                      return_feat: bool = False
+                      ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        pts_norm = self.normalize_coords(pts, 0)
         timestamps_norm = (timestamps * 2 / self.len_time) - 1
-        #if pts.shape[0] > 0:
-            #print(f"pts: {pts.amin(0)}  {pts.amax(0)}    pts_norm {pts_norm.amin(0)}  {pts_norm.amax(0)}")
         selector = ((pts_norm >= -1.0) & (pts_norm <= 1.0)).all(dim=-1)
 
-        xyzt = torch.cat([pts_norm, timestamps_norm[:, None]], dim=-1)  # [batch, 4] for xyzt
-        features = self.compute_density_features(xyzt)
+        features = self.compute_features(pts_norm, timestamps_norm)
         density = (
             self.density_act(self.decoder.compute_density(
                 features, rays_d=None)
             ).view((*pts_norm.shape[:-1], 1))
             * selector[..., None]
         )
+        if return_feat:
+            return density, features
         return density
 
     def forward(
@@ -148,23 +120,9 @@ class LowrankVideo(LowrankModel):
         rays_d: torch.Tensor,
         timestamps: torch.Tensor,
     ):
-        pts_norm = contract_to_unisphere(self.normalize_coords(pts, 0))
-        timestamps_norm = (timestamps * 2 / self.len_time) - 1
-        selector = ((pts_norm >= -1.0) & (pts_norm <= 1.0)).all(dim=-1)
-
-        xyzt = torch.cat([pts_norm, timestamps_norm[:, None]], dim=-1)  # [batch, 4] for xyzt
-        density = (
-            self.density_act(self.decoder.compute_density(
-                self.compute_density_features(xyzt), rays_d=None)
-            ).view((*pts_norm.shape[:-1], 1))
-            * selector[..., None]
-        )
-        rgb = (
-            self.decoder.compute_color(
-                self.compute_rgb_features(xyzt), rays_d=rays_d
-            )
-            * selector[..., None]
-        )
+        density, embedding = self.query_density(
+                pts, timestamps, return_feat=True)
+        rgb = self.decoder.compute_color(embedding, rays_d=rays_d)
         return rgb, density
 
     def get_params(self, lr):
