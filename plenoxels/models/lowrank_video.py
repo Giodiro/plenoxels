@@ -12,7 +12,6 @@ class LowrankVideo(LowrankModel):
     def __init__(self,
                  grid_config: Union[str, List[Dict]],
                  aabb: torch.Tensor,  # [[x_min, y_min, z_min], [x_max, y_max, z_max]]
-                 len_time: int,
                  sh: bool,
                  use_F: bool,
                  density_activation: str,
@@ -20,7 +19,6 @@ class LowrankVideo(LowrankModel):
                  multiscale_res: Sequence[int] = (1, ),
                  concat_features: bool = False,
                  **kwargs):
-        self.len_time = len_time  # maximum timestep - used for normalization
         super().__init__(
             grid_config=grid_config,
             sh=sh,
@@ -83,8 +81,7 @@ class LowrankVideo(LowrankModel):
         )
 
     def query_opacity(self, x, timestamps, dset):
-        idxs = torch.randint(0, len(timestamps), (x.shape[0],), device=x.device)
-        t = timestamps[idxs]
+        t = torch.rand((x.shape[0], ), device=x.device) * 2 - 1
         density = self.query_density(x, t)
         # if the density is small enough those two are the same.
         # opacity = 1.0 - torch.exp(-density * step_size)
@@ -99,10 +96,8 @@ class LowrankVideo(LowrankModel):
                       return_feat: bool = False
                       ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         pts_norm = self.normalize_coords(pts, 0)
-        timestamps_norm = (timestamps * 2 / self.len_time) - 1
         selector = ((pts_norm >= -1.0) & (pts_norm <= 1.0)).all(dim=-1)
-
-        features = self.compute_features(pts_norm, timestamps_norm)
+        features = self.compute_features(pts_norm, timestamps)
         density = (
             self.density_act(self.decoder.compute_density(
                 features, rays_d=None)

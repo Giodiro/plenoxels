@@ -236,7 +236,6 @@ class VideoTrainer(BaseTrainer):
         dset = self.test_dataset
         model = LowrankVideo(
             aabb=dset.scene_bbox,
-            len_time=dset.len_time,
             render_n_samples=self.nerfacc_helper.render_n_samples,
             grid_config=kwargs.pop("grid_config"),
             **kwargs)

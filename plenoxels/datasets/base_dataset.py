@@ -68,6 +68,13 @@ class BaseDataset(Dataset, ABC):
     def update_num_rays(self, new_batch_size):
         self.batch_size = new_batch_size
 
+    def update_num_rays_from_queue(self):
+        if self.batch_size_queue is not None:
+            try:
+                self.update_num_rays(self.batch_size_queue.get(block=False))
+            except queue.Empty:
+                pass
+
     def get_rand_ids(self, index):
         assert self.batch_size is not None, "Can't get rand_ids for test split"
         if self.sampling_weights is not None:
@@ -97,11 +104,7 @@ class BaseDataset(Dataset, ABC):
             return self.num_samples
 
     def __getitem__(self, index, return_idxs: bool = False):
-        if self.batch_size_queue is not None:
-            try:
-                self.update_num_rays(self.batch_size_queue.get(block=False))
-            except queue.Empty:
-                pass
+        self.update_num_rays_from_queue()
         if self.split == 'train':
             index = self.get_rand_ids(index)
         out = {
