@@ -31,7 +31,6 @@ class MultisceneTrainer(BaseTrainer):
     def __init__(self,
                  tr_loader: torch.utils.data.DataLoader,
                  ts_dsets: List[BaseDataset],
-                 tr_dsets: List[BaseDataset],
                  num_steps: int,
                  scheduler_type: Optional[str],
                  optim_type: str,
@@ -44,7 +43,8 @@ class MultisceneTrainer(BaseTrainer):
                  device,
                  sample_batch_size: int,
                  n_samples: int,
-                 batch_size_queue,
+                 batch_size_queue = None,
+                 tr_dsets: List[BaseDataset] = None,
                  **kwargs
                  ):
         self.test_datasets = ts_dsets
@@ -53,9 +53,8 @@ class MultisceneTrainer(BaseTrainer):
             self.contraction_type = ContractionType.UN_BOUNDED_SPHERE
         else:
             self.contraction_type = ContractionType.AABB
-        self.num_dsets = len(self.train_datasets)
+        self.num_dsets = len(self.test_datasets)
         self.batch_size_queue = batch_size_queue
-        self.num_trloader_workers = tr_loader.num_workers
 
         self.nerfacc_helper = NerfaccHelper(
             target_sample_batch_size=sample_batch_size,
@@ -217,7 +216,7 @@ class MultisceneTrainer(BaseTrainer):
         return loss_info
 
     def init_model(self, **kwargs) -> LowrankLearnableHash:
-        aabbs = [d.scene_bbox for d in self.train_datasets]
+        aabbs = [d.scene_bbox for d in self.test_datasets]
         model = LowrankLearnableHash(
             num_scenes=self.num_dsets,
             grid_config=kwargs.pop("grid_config"),

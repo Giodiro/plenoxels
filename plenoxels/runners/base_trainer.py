@@ -274,6 +274,7 @@ class BaseTrainer():
             logging.info("=> Loaded scheduler state from checkpoint")
 
         self.global_step = checkpoint_data["global_step"]
+        self.nerfacc_helper.step_cb(self.global_step)
         logging.info(f"=> Loaded step {self.global_step} from checkpoints")
 
     @abc.abstractmethod
@@ -319,6 +320,8 @@ class BaseTrainer():
     def init_optim(self, **kwargs) -> torch.optim.Optimizer:
         if self.optim_type == 'adam':
             optim = torch.optim.Adam(params=self.model.get_params(kwargs['lr']), eps=1e-15)
+        elif self.optim_type == 'rmsprop':
+            optim = torch.optim.RMSprop(params=self.model.get_params(kwargs['lr']))
         else:
             raise NotImplementedError()
         return optim
@@ -374,17 +377,11 @@ class NerfaccHelper():
 
     @property
     def density_threshold(self):
-        return min(self._density_threshold, self._density_threshold * self.global_step / 1000)
-        #if self.global_step < 512:
-        #    return self._density_threshold# / 10
-        return self._density_threshold
+        return min(self._density_threshold, self._density_threshold * self.global_step / 512)
 
     @property
     def alpha_threshold(self):
-        return min(self._alpha_threshold, self._alpha_threshold * self.global_step / 1000)
-        if self.global_step < 512:
-            return self._alpha_threshold
-        return self._alpha_threshold
+        return min(self._alpha_threshold, self._alpha_threshold * self.global_step / 512)
 
     @property
     def max_rays(self):

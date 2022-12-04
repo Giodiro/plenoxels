@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from .decoders.mlp_decoder import RgbRenderDecoder
 from .lowrank_model import LowrankModel
 
 
@@ -54,12 +55,14 @@ class LowrankLearnableHash(LowrankModel):
         if self.use_F:
             raise NotImplementedError()
 
-        self.feature_dim: int = 0
-        self.scene_grids = nn.ModuleList()
+        rgb_feature_dim = 0
+        self.rgb_grids = nn.ModuleList()
+        self.density_grids = nn.ModuleList()
         grid_config = self.config[0]
         for si in range(num_scenes):
-            grids = nn.ModuleList()
-            for res in self.multiscale_res:
+            _rgb_grids = nn.ModuleList()
+            _density_grids = nn.ModuleList()
+            for res_idx, res in enumerate(self.multiscale_res):
                 if "feature_dim" in grid_config:
                     raise ValueError(f"use_F is False but found 'feature_dim' key in grid-config.")
                 config = grid_config.copy()
@@ -73,13 +76,16 @@ class LowrankLearnableHash(LowrankModel):
                     is_video=False, use_F=False, is_density=False)
                 self.set_resolution(gpdesc.reso, grid_id=si)
                 if self.concat_features:
-                    self.feature_dim += gpdesc.grid_coefs[-1].shape[1]
+                    rgb_feature_dim += rgb_grid_data.grid_coefs[-1].shape[1]
                 else:
-                    self.feature_dim = gpdesc.grid_coefs[-1].shape[1]
-                grids.append(gpdesc.grid_coefs)
-            self.scene_grids.append(grids)
+                    rgb_feature_dim = rgb_grid_data.grid_coefs[-1].shape[1]
+                _rgb_grids.append(rgb_grid_data.grid_coefs)
+                _density_grids.append(density_grid_data.grid_coefs)
+            self.rgb_grids.append(_rgb_grids)
+            self.density_grids.append(_density_grids)
 
-        self.decoder = self.init_decoder()
+        # self.decoder = self.init_decoder()
+        self.decoder = RgbRenderDecoder(feature_dim=rgb_feature_dim)
 
         log.info(f"Initialized LearnableHashGrid with {num_scenes} scenes, "
                  f"decoder: {self.decoder}, use-F: {self.use_F}, "
@@ -145,16 +151,15 @@ class LowrankLearnableHash(LowrankModel):
         features = self.compute_features(pts_norm, grid_id, num_levels=num_levels)
         density = (
             self.density_act(self.decoder.compute_density(
-                features, rays_d=None, precompute_color=False)).view((*pts_norm.shape[:-1], 1))
+                features, rays_d=None)
+            ).view((*pts_norm.shape[:-1], 1))
             * selector[..., None]
         )
-        if return_feat:
-            return density, features
         return density
 
     def forward(
         self,
-        rays_o: torch.Tensor,
+        pts: torch.Tensor,
         rays_d: torch.Tensor,
         grid_id: int,
     ):
