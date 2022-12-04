@@ -197,71 +197,56 @@ def init_features_param(grid_config, sh: bool) -> torch.nn.Parameter:
     return features
 
 
-def init_grid_param(grid_config, feature_len: int, is_video: bool, is_appearance: bool, grid_level: int, use_F: bool = True) -> GridParamDescription:
-    out_dim: int = feature_len
-    grid_nd: int = grid_config["grid_dimensions"]
-
-    reso: List[int] = grid_config["resolution"]
-    try:
-        in_dim = len(reso)
-    except AttributeError:
-        raise ValueError("Configuration incorrect: resolution must be a list.")
+def init_grid_param(
+        grid_nd: int,
+        in_dim: int,
+        out_dim: int,
+        reso: Sequence[int],
+        is_video: bool,
+        is_appearance: bool,
+        use_F: bool = True) -> GridParamDescription:
+    assert in_dim == len(reso), "Resolution must have same number of elements as input-dimension"
     pt_reso = torch.tensor(reso, dtype=torch.long)
-    num_comp = math.comb(in_dim, grid_nd)
-    rank: Sequence[int] = to_list(grid_config["rank"], num_comp, "rank")
-    grid_config["rank"] = rank
     # Configuration correctness checks
-    assert in_dim == grid_config["input_coordinate_dim"]
-    if grid_level == 0:
-        if is_video:
-            assert in_dim == 4
-        else:
-            assert in_dim == 3 or in_dim == 4
+    if is_video:
+        assert in_dim == 4
+    else:
+        assert in_dim == 3 or in_dim == 4
     if use_F:
         assert out_dim in {1, 2, 3, 4, 5, 6, 7}
     assert grid_nd <= in_dim
-    if grid_nd == in_dim:
-        assert all(r == 1 for r in rank)
     coo_combs = list(itertools.combinations(range(in_dim), grid_nd))
     grid_coefs = nn.ParameterList()
     for ci, coo_comb in enumerate(coo_combs):
+        new_grid_coef = nn.Parameter(torch.empty(
+            [1, out_dim] + [reso[cc] for cc in coo_comb[::-1]]
+        ))
         if use_F:
             # if appearance and time plane, then init as ones (static).
             if is_appearance and 3 in coo_comb:
-                grid_coefs.append(
-                    nn.Parameter(nn.init.ones_(torch.empty(
-                        [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb[::-1]]
-                    ))))
+                nn.init.ones_(new_grid_coef)
             else:
-                grid_coefs.append(
-                    nn.Parameter(nn.init.uniform_(torch.empty(
-                        [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb[::-1]]
-                    ), a=-1.0, b=1.0)))
+                nn.init.uniform_(new_grid_coef, a=-1.0, b=1.0)
         else:
             if (is_appearance or is_video) and 3 in coo_comb:  # Initialize time planes to 1
-                grid_coefs.append(
-                    nn.Parameter(nn.init.ones_(torch.empty(
-                        [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb[::-1]]
-                    ))))
+                nn.init.ones_(new_grid_coef)
             else:
-                grid_coefs.append(
-                    nn.Parameter(nn.init.uniform_(torch.empty(
-                        [1, out_dim * rank[ci]] + [reso[cc] for cc in coo_comb[::-1]]
-                    ), a=0.1, b=0.5)))
-    
-    if is_appearance:
-        time_reso = int(grid_config["time_reso"])
+                nn.init.uniform_(new_grid_coef, a=0.1, b=0.5)
+        grid_coefs.append(new_grid_coef)
 
+    if is_appearance:
+        time_reso = reso[-1]
         if use_F:
             appearance_coef = nn.Parameter(nn.init.uniform_(
-                torch.empty([out_dim * rank[0], time_reso]),
+                torch.empty([out_dim, time_reso]),
                 a=-1.0, b=1.0))  # if time init is fixed at 1, then it learns a static video
         else:
             # if sh + density in grid, then we do not want appearance code to influence density
-            appearance_coef = nn.Parameter(nn.init.uniform_(torch.empty([16, time_reso]), a=-1.0, b=1.0))  # no time dependence
+            appearance_coef = nn.Parameter(nn.init.uniform_(
+                torch.empty([16, time_reso]),
+                a=-1.0, b=1.0))  # no time dependence
         return GridParamDescription(
             grid_coefs=grid_coefs, reso=pt_reso, time_reso=time_reso, appearance_coef=appearance_coef)
-    
     return GridParamDescription(
         grid_coefs=grid_coefs, reso=pt_reso)
 
