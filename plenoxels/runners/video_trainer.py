@@ -68,7 +68,7 @@ class VideoTrainer(BaseTrainer):
             rays_o = data["rays_o"]
             rays_d = data["rays_d"]
             timestamp = data["timestamps"]
-            near_far = data["near_far"].to(self.device) if data["near_far"] is not None else None
+            near_far = data["near_far"].to(self.device)
             bg_color = data["bg_color"]
             if isinstance(bg_color, torch.Tensor):
                 bg_color = bg_color.to(self.device)
@@ -89,18 +89,11 @@ class VideoTrainer(BaseTrainer):
         rays_o = data["rays_o"].to(self.device)
         rays_d = data["rays_d"].to(self.device)
         imgs = data["imgs"].to(self.device)
-        near_far = data["near_far"].to(self.device) if data["near_far"] is not None else None
+        near_far = data["near_far"].to(self.device)
         timestamps = data["timestamps"].to(self.device)
         bg_color = data["bg_color"]
         if isinstance(bg_color, torch.Tensor):
             bg_color = bg_color.to(self.device)
-
-        if rays_o.ndim == 3:  # Why??
-            rays_o = rays_o.squeeze(0)
-            rays_d = rays_d.squeeze(0)
-            near_far = near_far.squeeze(0) if near_far is not None else None
-            timestamps = timestamps.squeeze(0)
-            imgs = imgs.squeeze(0)
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             fwd_out = self.model(
@@ -111,9 +104,8 @@ class VideoTrainer(BaseTrainer):
             # Regularization
             loss = recon_loss
             for r in self.regularizers:
-                reg_loss = r.regularize(self.model, grid_id=0, model_out=fwd_out)
+                reg_loss = r.regularize(self.model, model_out=fwd_out)
                 loss = loss + reg_loss
-
         # Update weights
         self.optimizer.zero_grad(set_to_none=True)
         self.gscaler.scale(loss).backward()
@@ -132,9 +124,6 @@ class VideoTrainer(BaseTrainer):
             raise StopIteration  # Whenever we change the dataset
         if self.global_step == self.ist_step:
             self.train_dataset.switch_isg2ist()
-            #for g in self.optimizer.param_groups:
-            #    g['lr'] = g['lr'] * 10
-            #logging.info("Multiplied lr by 10 after switching to IST")
             raise StopIteration  # Whenever we change the dataset
 
         return scale <= self.gscaler.get_scale()

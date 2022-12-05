@@ -14,8 +14,7 @@ from matplotlib.colors import LogNorm
 from plenoxels.ema import EMA
 from .base_trainer import BaseTrainer
 from .regularization import (
-    PlaneTV, L1PlaneColor, L1PlaneDensity, VolumeTV, L1Density, FloaterLoss,
-    HistogramLoss
+    PlaneTV, HistogramLoss
 )
 from .utils import (
     init_dloader_random
@@ -192,16 +191,6 @@ class Trainer(BaseTrainer):
             PlaneTV(kwargs.get('plane_tv_weight', 0.0), features='all'),
             PlaneTV(kwargs.get('plane_tv_weight_sigma', 0.0), features='sigma'),
             PlaneTV(kwargs.get('plane_tv_weight_sh', 0.0), features='sh'),
-            VolumeTV(
-                kwargs.get('volume_tv_weight', 0.0),
-                what=kwargs.get('volume_tv_what'),
-                patch_size=kwargs.get('volume_tv_patch_size', 3),
-                batch_size=kwargs.get('volume_tv_npts', 100),
-            ),
-            L1PlaneColor(kwargs.get('l1_plane_color_weight', 0.0)),
-            L1PlaneDensity(kwargs.get('l1_plane_density_weight', 0.0)),
-            L1Density(kwargs.get('l1density_weight', 0.0), max_voxels=100_000),
-            FloaterLoss(kwargs.get('floater_loss_weight', 0.0)),
             HistogramLoss(kwargs.get('histogram_loss_weight', 0.0)),
         ]
 

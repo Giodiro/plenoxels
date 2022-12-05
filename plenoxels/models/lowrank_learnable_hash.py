@@ -128,47 +128,9 @@ class LowrankLearnableHash(LowrankModel):
                          pts: torch.Tensor,
                          grid_id: int,
                          ) -> torch.Tensor:
-        mulitres_grids: nn.ModuleList = self.scene_grids[grid_id]  # noqa
-        grids_info = self.config
-
-        multi_scale_interp = [] if self.concat_features else 0
-        for scale_id, (res, featlen) in enumerate(zip(self.multiscale_res, self.feature_len)):  # noqa
-            grids: nn.ParameterList = mulitres_grids[scale_id]
-            for level_info, grid in zip(grids_info, grids):
-                if "feature_dim" in level_info:
-                    continue
-
-                # create plane combinations
-                coo_combs = list(itertools.combinations(
-                    range(pts.shape[-1]),
-                    level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
-
-                interp_out = 1
-                for ci, coo_comb in enumerate(coo_combs):
-                    # interpolate in plane
-                    interp_out_plane = grid_sample_wrapper(grid[ci], pts[..., coo_comb]).view(
-                                -1, featlen, level_info["rank"])
-                    # compute product
-                    interp_out = interp_out_plane if interp_out is None else interp_out * interp_out_plane
-                    # interp_out = interp_out_plane if interp_out is None else interp_out + interp_out_plane # Addition ablation study
-            # average over rank
-            interp = interp_out.mean(dim=-1)
-
-            if self.use_F:
-                if interp.numel() > 0:
-                    interp = (interp - self.pt_min[scale_id]) / (self.pt_max[scale_id] - self.pt_min[scale_id])
-                    interp = interp * 2 - 1
-                interp = grid_sample_wrapper(
-                    self.features[scale_id].to(dtype=interp.dtype), interp
-                ).view(-1, self.feature_dim)
-
-            if self.concat_features:  # Concatenate over scale
-                multi_scale_interp.append(interp)
-            else:  # Sum over scales
-                multi_scale_interp += interp
-        if self.concat_features:
-            multi_scale_interp = torch.cat(multi_scale_interp, dim=-1)
-        return multi_scale_interp  # noqa
+        return self.interpolate_ms_features(
+            pts=pts, ms_grids=self.scene_grids[grid_id], grid_info=self.config[0],
+            concat_features=self.concat_features, num_levels=None)
 
     def query_density(self, pts: torch.Tensor, grid_id: int, return_feat: bool = False):
         pts_norm = self.normalize_coords(pts, grid_id)

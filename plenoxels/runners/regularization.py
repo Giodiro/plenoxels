@@ -1,20 +1,15 @@
 import abc
-from typing import Optional
-import logging as log
-
-import torch.optim.lr_scheduler
-from torch import nn
-
-from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash
-from plenoxels.models.lowrank_model import LowrankModel
-from plenoxels.models.lowrank_video import LowrankVideo
-from plenoxels.models.utils import compute_plane_tv, compute_plane_smoothness
-from plenoxels.ops.losses.distortion_loss import distortion_loss
-from plenoxels.ops.losses.histogram_loss import interlevel_loss
+import os
 
 import matplotlib.pyplot as plt
 import numpy as np
-import os
+import torch.optim.lr_scheduler
+from torch import nn
+
+from plenoxels.models.lowrank_model import LowrankModel
+from plenoxels.models.lowrank_video import LowrankVideo
+from plenoxels.models.utils import compute_plane_tv, compute_plane_smoothness
+from plenoxels.ops.losses.histogram_loss import interlevel_loss
 
 
 class Regularizer():
@@ -42,86 +37,6 @@ class Regularizer():
 
     def __str__(self):
         return f"Regularizer({self.reg_type}, weight={self.weight})"
-
-
-class L1Density(Regularizer):
-    def __init__(self, initial_value, max_voxels: int = 100_000):
-        super().__init__('l1-density', initial_value)
-        self.max_voxels = max_voxels
-
-    def get_points_on_grid(self, aabb, grid_size, max_voxels: Optional[int] = None):
-        """
-        Returns points from a regularly spaced grids of size grid_size.
-        Coordinates normalized between [aabb0, aabb1]
-        """
-        dev = aabb.device
-        pts = torch.stack(torch.meshgrid(
-            torch.linspace(0, 1, grid_size[0], device=dev),
-            torch.linspace(0, 1, grid_size[1], device=dev),
-            torch.linspace(0, 1, grid_size[2], device=dev), indexing='ij'
-        ), dim=-1)  # [gs0, gs1, gs2, 3]
-        pts = pts.view(-1, 3)  # [gs0*gs1*gs2, 3]
-        if max_voxels is not None:
-            # with replacement as it's faster?
-            pts = pts[torch.randint(pts.shape[0], (max_voxels, )), :]
-        # Normalize between [aabb0, aabb1]
-        pts = aabb[0] * (1 - pts) + aabb[1] * pts
-        return pts
-
-    def _regularize(self, model: LowrankLearnableHash, grid_id: int = 0, **kwargs):
-        aabb = model.aabb(grid_id)
-        reso = model.resolution(grid_id)
-        pts = self.get_points_on_grid(aabb, reso, self.max_voxels)
-        density = model.query_density(pts, grid_id)
-        return torch.abs(density).mean()
-
-
-class L1PlaneDensityVideo(Regularizer):
-    def __init__(self, initial_value):
-        super().__init__('l1-plane-density', initial_value)
-
-    # TODO: make this also work for lowrankappearance
-    def _regularize(self, model: LowrankVideo, grid_id: int = 0, **kwargs):
-        grids: nn.ModuleList = model.grids[grid_id]
-        total = 0
-        for grid in grids:
-            grid = grid.view(model.feature_dim, -1, grid.shape[-2], grid.shape[-1])
-            # density is on last feature. Apply activation before computing loss.
-            total += model.density_act(grid[-1, ...]).mean()
-        return total
-
-
-class L1PlaneDensity(Regularizer):
-    def __init__(self, initial_value):
-        super().__init__('l1-plane-density', initial_value)
-
-    def _regularize(self, model: LowrankLearnableHash, grid_id: int = 0, **kwargs):
-        multi_res_grids: nn.ModuleList = model.scene_grids[grid_id]
-        total = 0
-        
-        for grids in multi_res_grids:
-            for grid_ls in grids:
-                for grid in grid_ls:
-                    grid = grid.view(model.feature_dim, -1, grid.shape[-2], grid.shape[-1])
-                    # density is on last feature. Apply activation before computing loss.
-                    total += torch.abs(grid[-1, ...]).mean()
-        return total
-
-
-class L1PlaneColor(Regularizer):
-    def __init__(self, initial_value):
-        super().__init__('l1-plane-color', initial_value)
-
-    def _regularize(self, model: LowrankLearnableHash, grid_id: int = 0, **kwargs):
-        multi_res_grids: nn.ModuleList = model.scene_grids[grid_id]
-        total = 0
-        for grids in multi_res_grids:
-            for grid_ls in grids:
-                for grid in grid_ls:
-                    grid = grid.view(model.feature_dim, -1, grid.shape[-2], grid.shape[-1])
-                    # color is on all features apart the last
-                    total += torch.abs(grid[:-1, ...]).mean()
-        return total
 
 
 class PlaneTV(Regularizer):
@@ -189,72 +104,6 @@ class TimeSmoothness(Regularizer):
         return total
 
 
-class VolumeTV(Regularizer):
-    def __init__(self, initial_value, what: str = 'Gcoords', patch_size: int = 3, batch_size: int = 100):
-        self.what = what
-        self.patch_size = patch_size
-        self.batch_size = batch_size
-        super().__init__('volume-TV', initial_value)
-
-    def _regularize(self,
-                    model: LowrankLearnableHash,
-                    grid_id: int = 0,
-                    **kwargs) -> torch.Tensor:
-        aabb = model.aabb(grid_id)
-        reso = model.resolution(grid_id)
-        dev = aabb.device
-        pts = torch.stack(torch.meshgrid(
-            torch.linspace(0, 1, self.patch_size, device=dev),
-            torch.linspace(0, 1, self.patch_size, device=dev),
-            torch.linspace(0, 1, self.patch_size, device=dev), indexing='ij'
-        ), dim=-1)  # [gs0, gs1, gs2, 3]
-        pts = pts.view(-1, 3)
-
-        start = torch.rand(self.batch_size, 3, device=dev) * (1 - self.patch_size / reso[None, :])
-        end = start + (self.patch_size / reso[None, :])
-
-        # pts: [1, gs0, gs1, gs2, 3] * (bs, 1, 1, 1, 3) + (bs, 1, 1, 1, 3)
-        pts = pts[None, ...] * (end - start)[:, None, None, None, :] + start[:, None, None, None, :]
-        pts = pts.view(-1, 3)  # [bs*gs0*gs1*gs2, 3]
-
-        # Normalize between [aabb0, aabb1]
-        pts = aabb[0] * (1 - pts) + aabb[1] * pts
-
-        if self.what == 'density':
-            # Compute density on the grid
-            density = model.query_density(pts, grid_id)
-            patches = density.view(-1, self.patch_size, self.patch_size, self.patch_size)
-        elif self.what == 'Gcoords':
-            pts = model.normalize_coords(pts, grid_id)
-            _, coords = model.compute_features(pts, grid_id, return_coords=True)
-            patches = coords.view(-1, self.patch_size, self.patch_size, self.patch_size, coords.shape[-1])
-        else:
-            raise ValueError(self.what)
-
-        d0 = patches[:, 1:, :, :, :] - patches[:, :-1, :, :, :]
-        d1 = patches[:, :, 1:, :, :] - patches[:, :, :-1, :, :]
-        d2 = patches[:, :, :, 1:, :] - patches[:, :, :, :-1, :]
-
-        return (d0.square().mean() + d1.square().mean() + d2.square().mean())  # l2
-        # return (d0.abs().mean() + d1.abs().mean() + d2.abs().mean())  # l1
-
-
-class FloaterLoss(Regularizer):
-    def __init__(self, initial_value):
-        super().__init__('floater-loss', initial_value)
-
-    def _regularize(self, model: LowrankLearnableHash, model_out, grid_id: int, **kwargs) -> torch.Tensor:
-        from plenoxels.ops.losses.distortion_loss_warp import distortion_loss
-        midpoint = torch.cat(
-            [model_out["midpoint"],
-             (2*model_out["midpoint"][:, -1] - model_out["midpoint"][:, -2])[:, None]], dim=1)
-        dt = torch.cat([model_out["deltas"], model_out["deltas"][:, -2:-1]], dim=1)
-        weight = torch.cat([
-            model_out["weight"],
-            1 - model_out["weight"].sum(dim=1, keepdim=True)], dim=1)
-        return distortion_loss(midpoint, weight, dt) * 1e-2
-
-
 class HistogramLoss(Regularizer):
     def __init__(self, initial_value):
         super().__init__('histogram-loss', initial_value)
@@ -262,7 +111,7 @@ class HistogramLoss(Regularizer):
         self.visualize = False
         self.count = 0
 
-    def _regularize(self, model: LowrankLearnableHash, model_out, grid_id: int, **kwargs) -> torch.Tensor:
+    def _regularize(self, model: LowrankModel, model_out, grid_id: int, **kwargs) -> torch.Tensor:
 
         if self.visualize:
             if self.count % 100 == 0:
@@ -296,14 +145,6 @@ class HistogramLoss(Regularizer):
                     plt.clf()
             self.count += 1
         return interlevel_loss(model_out['weights_list'], model_out['ray_samples_list'])
-
-
-class DistortionLoss(Regularizer):
-    def __init__(self, initial_value):
-        super().__init__('distortion-loss', initial_value)
-
-    def _regularize(self, model: LowrankLearnableHash, model_out, grid_id: int, **kwargs) -> torch.Tensor:
-        return distortion_loss(model_out['weights_list'], model_out['ray_samples_list'])
 
 
 class L1AppearancePlanes(Regularizer):
