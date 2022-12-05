@@ -111,7 +111,8 @@ class VideoTrainer(BaseTrainer):
                     x, data["timestamps"], self.train_dataset
                 ),
                 occ_thre=self.nerfacc_helper.density_threshold,
-                ema_decay=0.6,
+                ema_decay=0.95,
+                warmup_steps=1024,
             )
             # render
             rendered = self.nerfacc_helper.render(

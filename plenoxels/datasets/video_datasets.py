@@ -96,7 +96,7 @@ class Video360Dataset(BaseDataset):
         if is_contracted:
             bbox = torch.tensor([[-2., -2., -2.], [2., 2., 2.]])
         else:
-            bbox = torch.tensor([[-1.5, -1.5, -1.5], [1.5, 1.5, 1.5]])
+            bbox = torch.tensor([[-1.1, -1.5, -1.0], [1.1, 1.5, 1.0]])
         # ISG/IST weights are computed on 4x subsampled data.
         weights_subsampled = int(4 / downsample)
         super().__init__(
@@ -132,7 +132,7 @@ class Video360Dataset(BaseDataset):
         log.info(f"VideoDataset contracted={self.is_contracted}, ndc={self.is_ndc} - Loaded {self.split} set from {self.datadir}: "
                  f"{self.poses.shape[0]} images of size {self.img_h}x{self.img_w} and "
                  f"{imgs.shape[-1]} channels. "
-                 f"{len(torch.unique(timestamps))} timestamps up to time={self.len_time}. "
+                 f"{len(torch.unique(timestamps))} timestamps. "
                  f"ISG={self.isg} - IST={self.ist} - weights_subsampled={self.weights_subsampled} - "
                  f"{intrinsics}")
 
