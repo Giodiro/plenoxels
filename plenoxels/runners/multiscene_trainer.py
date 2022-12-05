@@ -2,7 +2,7 @@ import logging
 import math
 import os
 from collections import defaultdict
-from typing import Dict, List, MutableMapping, Union, Sequence, Any
+from typing import Dict, MutableMapping, Union, Sequence, Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -10,20 +10,18 @@ import pandas as pd
 import torch
 import torch.utils.data
 from matplotlib.colors import LogNorm
-from torch.utils.tensorboard import SummaryWriter
 
 from plenoxels.ema import EMA
-from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash
 from .base_trainer import BaseTrainer
 from .regularization import (
     PlaneTV, L1PlaneColor, L1PlaneDensity, VolumeTV, L1Density, FloaterLoss,
-    HistogramLoss, DensityPlaneTV
+    HistogramLoss
 )
 from .utils import (
     init_dloader_random
 )
 from ..datasets import SyntheticNerfDataset, LLFFDataset
-from ..datasets.multi_dataset_sampler import MultiSceneSampler
+from ..models.lowrank_model import LowrankModel
 from ..my_tqdm import tqdm
 from ..utils import parse_optint
 
@@ -31,8 +29,8 @@ from ..utils import parse_optint
 class Trainer(BaseTrainer):
     def __init__(self,
                  tr_loader: torch.utils.data.DataLoader,
-                 ts_dsets: List[torch.utils.data.TensorDataset],
-                 tr_dsets: List[torch.utils.data.TensorDataset],
+                 ts_dset: torch.utils.data.TensorDataset,
+                 tr_dset: torch.utils.data.TensorDataset,
                  num_steps: int,
                  logdir: str,
                  expname: str,
@@ -43,11 +41,10 @@ class Trainer(BaseTrainer):
                  device: Union[str, torch.device],
                  **kwargs
                  ):
-        self.test_datasets = ts_dsets
-        self.train_datasets = tr_dsets
-        self.is_ndc = self.test_datasets[0].is_ndc
-        self.is_contracted = self.test_datasets[0].is_contracted
-        self.num_dsets = len(self.train_datasets)
+        self.test_dataset = ts_dset
+        self.train_dataset = tr_dset
+        self.is_ndc = self.test_dataset.is_ndc
+        self.is_contracted = self.test_dataset.is_contracted
 
         super().__init__(
             train_data_loader=tr_loader,
@@ -62,25 +59,19 @@ class Trainer(BaseTrainer):
             **kwargs
         )
 
-        self.transfer_learning = kwargs.get('transfer_learning')
-
-        self.log_dir = os.path.join(logdir, expname)
-        os.makedirs(self.log_dir, exist_ok=True)
-        self.writer = SummaryWriter(log_dir=self.log_dir)
-
     def eval_step(self, data, **kwargs) -> MutableMapping[str, torch.Tensor]:
         """
         Note that here `data` contains a whole image. we need to split it up before tracing
         for memory constraints.
         """
         super().eval_step(data, **kwargs)
-        dset_id = data["dset_id"]
         batch_size = self.eval_batch_size
         channels = {"rgb", "depth", "proposal_depth"}
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             rays_o = data["rays_o"]
             rays_d = data["rays_d"]
-            near_far = data["near_far"].to(self.device) if "near_far" in data else None
+            # near_far and bg_color are constant over mini-batches
+            near_far = data["near_far"].to(self.device)
             bg_color = data["bg_color"]
             if isinstance(bg_color, torch.Tensor):
                 bg_color = bg_color.to(self.device)
@@ -88,35 +79,33 @@ class Trainer(BaseTrainer):
             for b in range(math.ceil(rays_o.shape[0] / batch_size)):
                 rays_o_b = rays_o[b * batch_size: (b + 1) * batch_size].to(self.device)
                 rays_d_b = rays_d[b * batch_size: (b + 1) * batch_size].to(self.device)
-                outputs = self.model(rays_o_b, rays_d_b, grid_id=dset_id, near_far=near_far,
+                outputs = self.model(rays_o_b, rays_d_b, near_far=near_far,
                                      bg_color=bg_color, channels=channels)
                 for k, v in outputs.items():
-                    preds[k].append(v)
-        return {k: torch.cat(v, 0) for k, v in preds.items() if (
-                    k in channels or k.startswith("proposal_depth"))}
+                    if k in channels or k.startswith("proposal_depth"):
+                        preds[k].append(v.cpu())
+        return {k: torch.cat(v, 0) for k, v in preds.items()}
 
     def train_step(self, data: Dict[str, Union[int, torch.Tensor]], **kwargs):
         super().train_step(data, **kwargs)
-        dset_id = data["dset_id"]
         rays_o = data["rays_o"].to(self.device)
         rays_d = data["rays_d"].to(self.device)
-        near_far = data["near_far"].to(self.device) if "near_far" in data else None
         imgs = data["imgs"].to(self.device)
+        near_far = data["near_far"].to(self.device)
         bg_color = data["bg_color"]
         if isinstance(bg_color, torch.Tensor):
             bg_color = bg_color.to(self.device)
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            fwd_out = self.model(rays_o, rays_d, grid_id=dset_id, bg_color=bg_color,
-                                 channels={"rgb"}, near_far=near_far)
+            fwd_out = self.model(
+                rays_o, rays_d, bg_color=bg_color, channels={"rgb"}, near_far=near_far)
             rgb_preds = fwd_out["rgb"]
             # Reconstruction loss
             recon_loss = self.criterion(rgb_preds, imgs)
-
             # Regularization
             loss = recon_loss
             for r in self.regularizers:
-                reg_loss = r.regularize(self.model, grid_id=dset_id, model_out=fwd_out)
+                reg_loss = r.regularize(self.model, model_out=fwd_out)
                 loss = loss + reg_loss
         # Update weights
         self.optimizer.zero_grad(set_to_none=True)
@@ -129,8 +118,8 @@ class Trainer(BaseTrainer):
         if self.global_step % self.calc_metrics_every == 0:
             with torch.no_grad():
                 recon_loss_val = recon_loss.item()
-                self.loss_info[f"mse_{dset_id}"].update(recon_loss_val)
-                self.loss_info[f"psnr_{dset_id}"].update(-10 * math.log10(recon_loss_val))
+                self.loss_info[f"mse"].update(recon_loss_val)
+                self.loss_info[f"psnr"].update(-10 * math.log10(recon_loss_val))
                 for r in self.regularizers:
                     r.report(self.loss_info)
 
@@ -141,27 +130,25 @@ class Trainer(BaseTrainer):
 
     def pre_epoch(self):
         super().pre_epoch()
-        # Reset randomness in every train-dataset
-        for d in self.train_datasets:
-            d.reset_iter()
+        self.train_dataset.reset_iter()
 
     def validate(self):
         val_metrics = []
-        for dset_id, dataset in enumerate(self.test_datasets):
-            pb = tqdm(total=len(dataset), desc=f"Test scene {dset_id} ({dataset.name})")
-            per_scene_metrics = defaultdict(list)
-            for img_idx, data in enumerate(dataset):
-                ts_render = self.eval_step(data, dset_id=dset_id)
-                out_metrics, _, _ = self.evaluate_metrics(
-                    data["imgs"], ts_render, dset=dataset, img_idx=img_idx,
-                    name=f"D{dset_id}", save_outputs=self.save_outputs)
-                for k, v in out_metrics.items():
-                    per_scene_metrics[k].append(v)
-                pb.set_postfix_str(f"PSNR={out_metrics['psnr']:.2f}", refresh=False)
-                pb.update(1)
-            pb.close()
-            val_metrics.append(
-                self.report_test_metrics(per_scene_metrics, extra_name=f"scene_{dset_id}"))
+        dataset = self.test_dataset
+        pb = tqdm(total=len(dataset), desc=f"Test scene{dataset.name}")
+        per_scene_metrics = defaultdict(list)
+        for img_idx, data in enumerate(dataset):
+            ts_render = self.eval_step(data)
+            out_metrics, _, _ = self.evaluate_metrics(
+                data["imgs"], ts_render, dset=dataset, img_idx=img_idx,
+                name="", save_outputs=self.save_outputs)
+            for k, v in out_metrics.items():
+                per_scene_metrics[k].append(v)
+            pb.set_postfix_str(f"PSNR={out_metrics['psnr']:.2f}", refresh=False)
+            pb.update(1)
+        pb.close()
+        val_metrics.append(
+            self.report_test_metrics(per_scene_metrics, extra_name=""))
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
 
@@ -178,23 +165,21 @@ class Trainer(BaseTrainer):
         return loss_info
 
     def init_model(self, **kwargs) -> torch.nn.Module:
-        aabbs = [d.scene_bbox for d in self.test_datasets]
+        aabb = self.test_dataset.scene_bbox
         try:
-            global_translation = self.test_datasets[0].global_translation
+            global_translation = self.test_dataset.global_translation
         except AttributeError:
             global_translation = None
         try:
-            global_scale = self.test_datasets[0].global_scale
+            global_scale = self.test_dataset.global_scale
         except AttributeError:
             global_scale = None
 
-        model = LowrankLearnableHash(
-            num_scenes=self.num_dsets,
+        model = LowrankModel(
             grid_config=kwargs.pop("grid_config"),
-            aabb=aabbs,
+            aabb=aabb,
             is_ndc=self.is_ndc,
             is_contracted=self.is_contracted,
-            proposal_sampling=self.extra_args.get('histogram_loss_weight', 0.0) > 0.0,
             global_translation=global_translation,
             global_scale=global_scale,
             **kwargs)
@@ -207,7 +192,6 @@ class Trainer(BaseTrainer):
             PlaneTV(kwargs.get('plane_tv_weight', 0.0), features='all'),
             PlaneTV(kwargs.get('plane_tv_weight_sigma', 0.0), features='sigma'),
             PlaneTV(kwargs.get('plane_tv_weight_sh', 0.0), features='sh'),
-            DensityPlaneTV(kwargs.get('density_plane_tv_weight', 0.0)),
             VolumeTV(
                 kwargs.get('volume_tv_weight', 0.0),
                 what=kwargs.get('volume_tv_what'),
@@ -223,7 +207,7 @@ class Trainer(BaseTrainer):
 
     @property
     def calc_metrics_every(self):
-        return self.num_dsets * 2 + 1
+        return 5
 
 
 def decide_dset_type(dd) -> str:
@@ -241,47 +225,45 @@ def decide_dset_type(dd) -> str:
 
 def init_tr_data(data_downsample: float, data_dirs: Sequence[str], **kwargs):
     batch_size = int(kwargs['batch_size'])
-    dsets = []
+    assert len(data_dirs) == 0
+    data_dir = data_dirs[0]
 
-    for i, data_dir in enumerate(data_dirs):
-        dset_type = decide_dset_type(data_dir)
-        if dset_type == "synthetic":
-            max_tr_frames = parse_optint(kwargs.get('max_tr_frames'))
-            dsets.append(SyntheticNerfDataset(
-                data_dir, split='train', downsample=data_downsample,
-                max_frames=max_tr_frames, batch_size=batch_size, dset_id=i))
-        elif dset_type == "llff":
-            hold_every = parse_optint(kwargs.get('hold_every'))
-            dsets.append(LLFFDataset(
-                data_dir, split='train', downsample=int(data_downsample), hold_every=hold_every,
-                batch_size=batch_size, dset_id=i))
-        dsets[-1].reset_iter()
+    dset_type = decide_dset_type(data_dir)
+    if dset_type == "synthetic":
+        max_tr_frames = parse_optint(kwargs.get('max_tr_frames'))
+        dset = SyntheticNerfDataset(
+            data_dir, split='train', downsample=data_downsample,
+            max_frames=max_tr_frames, batch_size=batch_size)
+    elif dset_type == "llff":
+        hold_every = parse_optint(kwargs.get('hold_every'))
+        dset = LLFFDataset(
+            data_dir, split='train', downsample=int(data_downsample), hold_every=hold_every,
+            batch_size=batch_size)
+    dset.reset_iter()
 
-    tr_sampler = MultiSceneSampler(dsets, num_samples_per_dataset=1)
-    cat_tr_dset = torch.utils.data.ConcatDataset(dsets)
     tr_loader = torch.utils.data.DataLoader(
-        cat_tr_dset, num_workers=4, prefetch_factor=2, pin_memory=True,
-        batch_size=None, sampler=tr_sampler, worker_init_fn=init_dloader_random)
+        dset, num_workers=4, prefetch_factor=2, pin_memory=True,
+        batch_size=None, worker_init_fn=init_dloader_random)
 
     return {
-        "tr_dsets": dsets,
+        "tr_dset": dset,
         "tr_loader": tr_loader,
     }
 
 
 def init_ts_data(data_dirs: Sequence[str], **kwargs):
-    dsets = []
-    for i, data_dir in enumerate(data_dirs):
-        dset_type = decide_dset_type(data_dir)
-        if dset_type == "synthetic":
-            max_ts_frames = parse_optint(kwargs.get('max_ts_frames'))
-            dsets.append(SyntheticNerfDataset(
-                data_dir, split='test', downsample=1, max_frames=max_ts_frames, dset_id=i))
-        elif dset_type == "llff":
-            hold_every = parse_optint(kwargs.get('hold_every'))
-            dsets.append(LLFFDataset(
-                data_dir, split='test', downsample=4, hold_every=hold_every, dset_id=i))
-    return {"ts_dsets": dsets}
+    assert len(data_dirs) == 0
+    data_dir = data_dirs[0]
+    dset_type = decide_dset_type(data_dir)
+    if dset_type == "synthetic":
+        max_ts_frames = parse_optint(kwargs.get('max_ts_frames'))
+        dset = SyntheticNerfDataset(
+            data_dir, split='test', downsample=1, max_frames=max_ts_frames)
+    elif dset_type == "llff":
+        hold_every = parse_optint(kwargs.get('hold_every'))
+        dset = LLFFDataset(
+            data_dir, split='test', downsample=4, hold_every=hold_every)
+    return {"ts_dset": dset}
 
 
 def load_data(data_downsample, data_dirs, validate_only, **kwargs):

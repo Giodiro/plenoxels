@@ -24,7 +24,6 @@ class SyntheticNerfDataset(BaseDataset):
     def __init__(self,
                  datadir,
                  split: str,
-                 dset_id: int,
                  batch_size: Optional[int] = None,
                  downsample: float = 1.0,
                  resolution: Optional[int] = 512,
@@ -32,7 +31,6 @@ class SyntheticNerfDataset(BaseDataset):
         self.downsample = downsample
         self.resolution = (resolution, resolution)
         self.max_frames = max_frames
-        self.dset_id = dset_id
         self.near_far = [2.0, 6.0]
 
         frames, transform = load_360_frames(datadir, split, self.max_frames)
@@ -66,8 +64,7 @@ class SyntheticNerfDataset(BaseDataset):
         pixels = pixels[:, :3] * pixels[:, 3:] + bg_color * (1.0 - pixels[:, 3:])
         out["imgs"] = pixels
         out["bg_color"] = bg_color
-
-        out["dset_id"] = self.dset_id
+        out["near_far"] = torch.tensor([[2.0, 6.0]])
         return out
 
 

@@ -141,21 +141,20 @@ class PlaneTV(Regularizer):
         #    log.info(f"Setting PlaneTV weight to {self.weight}")
         pass
 
-    def _regularize(self, model: LowrankLearnableHash, grid_id: int = 0, **kwargs):
-        multi_res_grids: nn.ModuleList = model.scene_grids[grid_id]
+    def _regularize(self, model: LowrankModel, grid_id: int = 0, **kwargs):
+        multi_res_grids: nn.ModuleList = model.field.grids
         total = 0
         # Note: input to compute_plane_tv should be of shape [batch_size, c, h, w]
         for grids in multi_res_grids:
-            for grid_ls in grids:
-                for grid in grid_ls:
-                    if self.features == 'all':
-                        total += compute_plane_tv(grid)
+            for grid in grids:
+                # grid: [1, c, h, w]
+                if self.features == 'all':
+                    total += compute_plane_tv(grid)
+                else:
+                    if self.features == 'sigma':
+                        total += compute_plane_tv(grid[:, -1:, ...])
                     else:
-                        grid = grid.view(1, model.feature_dim, -1, grid.shape[-2], grid.shape[-1])
-                        if self.features == 'sigma':
-                            total += compute_plane_tv(grid[:, -1, ...])
-                        else:
-                            total += compute_plane_tv(grid[:, :-1, ...].view(1, -1, grid.shape[-2], grid.shape[-1]))
+                        total += compute_plane_tv(grid[:, :-1, ...])
         return total
 
 
@@ -163,36 +162,16 @@ class VideoPlaneTV(Regularizer):
     def __init__(self, initial_value):
         super().__init__('plane-TV', initial_value)
 
-    def _regularize(self, model: LowrankVideo, **kwargs) -> torch.Tensor:
+    def _regularize(self, model: LowrankModel, **kwargs) -> torch.Tensor:
         total = 0
         # model.grids is 6 x [1, rank * F_dim, reso, reso]
-        for grids in model.grids:
+        for grids in model.field.grids:
             if len(grids) == 3:
                 spatial_grids = [0, 1, 2]
             else:
                 spatial_grids = [0, 1, 3]  # These are the spatial grids; the others are spatiotemporal
-
             for grid_id in spatial_grids:
                 total += compute_plane_tv(grids[grid_id])
-        return total
-
-
-class DensityPlaneTV(VideoPlaneTV):
-    def __init__(self, initial_value):
-        super().__init__(initial_value)
-        self.reg_type = 'density-plane-TV'
-
-    def _regularize(self, model: LowrankModel, **kwargs) -> torch.Tensor:
-        total = 0
-        for field in model.density_fields:
-            grids = field.grids
-            if len(grids) == 3:
-                spatial_grids = [0, 1, 2]
-            else:
-                spatial_grids = [0, 1, 3]
-            for grid_id in spatial_grids:
-                total += compute_plane_tv(grids[grid_id])
-        total /= len(model.density_fields)
         return total
 
 
@@ -204,7 +183,7 @@ class TimeSmoothness(Regularizer):
         time_grids = [2, 4, 5]  # These are the spatiotemporal grids; the others are only spatial
         total = 0
         # model.grids is 6 x [1, rank * F_dim, reso, reso]
-        for grids in model.grids:
+        for grids in model.field.grids:
             for grid_id in time_grids:
                 total += compute_plane_smoothness(grids[grid_id])
         return total
@@ -332,18 +311,15 @@ class L1AppearancePlanes(Regularizer):
         super().__init__('l1-appearance', initial_value)
 
     def _regularize(self, model: LowrankVideo, **kwargs) -> torch.Tensor:
-
         total = 0
         # model.grids is 6 x [1, rank * F_dim, reso, reso]
-        multi_res_grids = model.grids
+        multi_res_grids = model.field.grids
         for grids in multi_res_grids:
-
             if len(grids) == 3:
                 return 0
             else:
                 # These are the spatiotemporal grids
                 spatiotemporal_grids = [2, 4, 5]  
-
             for grid_id in spatiotemporal_grids:
                 total += torch.abs(1 - grids[grid_id]).mean()
         return total

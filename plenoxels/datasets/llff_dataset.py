@@ -19,13 +19,11 @@ class LLFFDataset(BaseDataset):
     def __init__(self,
                  datadir,
                  split: str,
-                 dset_id: int,
                  batch_size: Optional[int] = None,
                  downsample: int = 4,
                  hold_every: int = 8):
         self.downsample = downsample
         self.hold_every = hold_every
-        self.dset_id = dset_id
         use_contraction = True
 
         image_paths, self.poses, self.per_cam_near_fars, intrinsics = load_llff_poses(
@@ -92,7 +90,6 @@ class LLFFDataset(BaseDataset):
             "rays_o": origins.reshape(-1, 3),
             "rays_d": directions.reshape(-1, 3),
             "imgs": rgba.reshape(-1, rgba.shape[-1]),
-            "dset_id": self.dset_id,
             "near_far": near_fars,
         }
 

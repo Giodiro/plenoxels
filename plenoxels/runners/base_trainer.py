@@ -66,6 +66,7 @@ class BaseTrainer(abc.ABC):
         return False
 
     def post_step(self, progress_bar):
+        self.model.step_after_iter(self.global_step)
         if self.global_step % self.calc_metrics_every == 0:
             progress_bar.set_postfix_str(
                 losses_to_postfix(self.loss_info, lr=self.lr), refresh=False)
@@ -97,6 +98,7 @@ class BaseTrainer(abc.ABC):
             self.pre_epoch()
             batch_iter = iter(self.train_data_loader)
             while self.global_step < self.num_steps:
+                self.model.step_before_iter(self.global_step)
                 self.global_step += 1
                 try:
                     data = next(batch_iter)
@@ -106,7 +108,6 @@ class BaseTrainer(abc.ABC):
                     data = next(batch_iter)
                     log.info("Reset data-iterator")
 
-                self.model.train()
                 try:
                     step_successful = self.train_step(data)
                 except StopIteration:

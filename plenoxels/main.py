@@ -21,9 +21,7 @@ print(f'gpu is {gpu}')
 import torch
 import torch.utils.data
 
-from plenoxels.runners import video_trainer, multiscene_trainer
-from plenoxels.runners.utils import get_freer_gpu
-from plenoxels.utils import parse_optfloat, parse_optint
+from plenoxels.utils import parse_optfloat
 
 
 def setup_logging(log_level=logging.INFO):
@@ -38,15 +36,19 @@ def load_data(is_video: bool, data_downsample, data_dirs, validate_only: bool, *
     data_downsample = parse_optfloat(data_downsample, default_val=1.0)
 
     if is_video:
+        from plenoxels.runners import video_trainer
         return video_trainer.load_data(data_downsample, data_dirs, validate_only=validate_only, **kwargs)
     else:
+        from plenoxels.runners import multiscene_trainer
         return multiscene_trainer.load_data(data_downsample, data_dirs, validate_only=validate_only, **kwargs)
 
 
 def init_trainer(is_video: bool, **kwargs):
     if is_video:
+        from plenoxels.runners import video_trainer
         return video_trainer.VideoTrainer(**kwargs)
     else:
+        from plenoxels.runners import multiscene_trainer
         return multiscene_trainer.Trainer(**kwargs)
 
 
@@ -103,7 +105,7 @@ def main():
     else:
         data = load_data(is_video, validate_only=validate_only, **config)
         config.update(data)
-        trainer: multiscene_trainer.Trainer = init_trainer(is_video, **config)
+        trainer = init_trainer(is_video, **config)
         if trainer.transfer_learning:
             # We have reloaded the model learned from args.log_dir
             assert args.log_dir is not None and os.path.isdir(args.log_dir)
