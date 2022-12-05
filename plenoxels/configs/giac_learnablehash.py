@@ -46,17 +46,16 @@ config = {
     "transfer_learning": False,
 
     # Raymarching settings
-    "raymarch_type": "fixed",
-    #"num_sample_multiplier": 2,  # Used when raymarch_type is 'voxel_size'
-    "n_intersections": 64,  # Used when raymarch_type is 'fixed'
-    #"spacing_fn": "linear",
+    "num_samples": 48,
     "single_jitter": False,
     # proposal sampling
-    "density_field_resolution": [128, 256],
-    "density_field_rank": 1,
     "num_proposal_samples": [128, 96],
-    "proposal_decoder_type": "nn",
-    "proposal_feature_dim": 10,
+    "num_proposal_iterations": 2,
+    "use_same_proposal_network": False,
+    "proposal_net_args_list": [
+        {"resolution": [96, 96, 96], "num_input_coords": 3, "num_output_coords": 10},
+        {"resolution": [256, 256, 256], "num_input_coords": 3, "num_output_coords": 10},
+    ],
 
     # Model settings
     "sh": False,
@@ -82,36 +81,4 @@ config = {
 ]
 """
 }
-
-
-def create_360_rays(
-        imgs,
-        poses,
-        merge_all: bool,
-        intrinsics: Intrinsics,
-        is_blender_format: bool = True) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    directions = get_ray_directions(intrinsics)  # [H, W, 3]
-    directions = directions / torch.norm(directions, dim=-1, keepdim=True)
-    num_frames = poses.shape[0]
-
-    all_rays_o, all_rays_d = [], []
-    for i in range(num_frames):
-        pose_opencv = poses[i]
-        if is_blender_format:
-            pose_opencv = pose_opencv @ blender2opencv
-        rays_o, rays_d = get_rays(directions, pose_opencv)  # h*w, 3
-        all_rays_o.append(rays_o)
-        all_rays_d.append(rays_d)
-
-    all_rays_o = torch.cat(all_rays_o, 0).to(dtype=torch.float32)  # [n_frames * h * w, 3]
-    all_rays_d = torch.cat(all_rays_d, 0).to(dtype=torch.float32)  # [n_frames * h * w, 3]
-    if imgs is not None:
-        imgs = imgs.view(-1, imgs.shape[-1]).to(dtype=torch.float32)  # [N*H*W, 3/4]
-    if not merge_all:
-        num_pixels = intrinsics.height * intrinsics.width
-        if imgs is not None:
-            imgs = imgs.view(num_frames, num_pixels, -1)  # [N, H*W, 3/4]
-        all_rays_o = all_rays_o.view(num_frames, num_pixels, 3)  # [N, H*W, 3]
-        all_rays_d = all_rays_d.view(num_frames, num_pixels, 3)  # [N, H*W, 3]
-    return all_rays_o, all_rays_d, imgs
 

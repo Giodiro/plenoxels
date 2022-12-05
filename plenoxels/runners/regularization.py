@@ -55,7 +55,7 @@ class PlaneTV(Regularizer):
         #    log.info(f"Setting PlaneTV weight to {self.weight}")
         pass
 
-    def _regularize(self, model: LowrankModel, grid_id: int = 0, **kwargs):
+    def _regularize(self, model: LowrankModel, **kwargs):
         multi_res_grids: nn.ModuleList = model.field.grids
         total = 0
         # Note: input to compute_plane_tv should be of shape [batch_size, c, h, w]
@@ -93,7 +93,7 @@ class TimeSmoothness(Regularizer):
     def __init__(self, initial_value):
         super().__init__('time-smoothness', initial_value)
 
-    def _regularize(self, model: LowrankVideo, **kwargs) -> torch.Tensor:
+    def _regularize(self, model: LowrankModel, **kwargs) -> torch.Tensor:
         time_grids = [2, 4, 5]  # These are the spatiotemporal grids; the others are only spatial
         total = 0
         # model.grids is 6 x [1, rank * F_dim, reso, reso]
@@ -110,7 +110,7 @@ class HistogramLoss(Regularizer):
         self.visualize = False
         self.count = 0
 
-    def _regularize(self, model: LowrankModel, model_out, grid_id: int, **kwargs) -> torch.Tensor:
+    def _regularize(self, model: LowrankModel, model_out, **kwargs) -> torch.Tensor:
 
         if self.visualize:
             if self.count % 100 == 0:
@@ -159,7 +159,7 @@ class L1AppearancePlanes(Regularizer):
                 return 0
             else:
                 # These are the spatiotemporal grids
-                spatiotemporal_grids = [2, 4, 5]  
+                spatiotemporal_grids = [2, 4, 5]
             for grid_id in spatiotemporal_grids:
                 total += torch.abs(1 - grids[grid_id]).mean()
         return total

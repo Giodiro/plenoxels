@@ -79,7 +79,7 @@ class Trainer(BaseTrainer):
                 rays_o_b = rays_o[b * batch_size: (b + 1) * batch_size].to(self.device)
                 rays_d_b = rays_d[b * batch_size: (b + 1) * batch_size].to(self.device)
                 outputs = self.model(rays_o_b, rays_d_b, near_far=near_far,
-                                     bg_color=bg_color, channels=channels)
+                                     bg_color=bg_color)
                 for k, v in outputs.items():
                     if k in channels or k.startswith("proposal_depth"):
                         preds[k].append(v.cpu())
@@ -97,7 +97,7 @@ class Trainer(BaseTrainer):
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             fwd_out = self.model(
-                rays_o, rays_d, bg_color=bg_color, channels={"rgb"}, near_far=near_far)
+                rays_o, rays_d, bg_color=bg_color, near_far=near_far)
             rgb_preds = fwd_out["rgb"]
             # Reconstruction loss
             recon_loss = self.criterion(rgb_preds, imgs)
@@ -214,7 +214,7 @@ def decide_dset_type(dd) -> str:
 
 def init_tr_data(data_downsample: float, data_dirs: Sequence[str], **kwargs):
     batch_size = int(kwargs['batch_size'])
-    assert len(data_dirs) == 0
+    assert len(data_dirs) == 1
     data_dir = data_dirs[0]
 
     dset_type = decide_dset_type(data_dir)
@@ -241,7 +241,7 @@ def init_tr_data(data_downsample: float, data_dirs: Sequence[str], **kwargs):
 
 
 def init_ts_data(data_dirs: Sequence[str], **kwargs):
-    assert len(data_dirs) == 0
+    assert len(data_dirs) == 1
     data_dir = data_dirs[0]
     dset_type = decide_dset_type(data_dir)
     if dset_type == "synthetic":

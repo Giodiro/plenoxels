@@ -44,6 +44,7 @@ class LowrankModel(nn.Module):
                  # appearance embedding (phototourism)
                  use_appearance_embedding: bool = False,
                  appearance_embedding_dim: int = 0,
+                 **kwargs,
                  ):
         super().__init__()
         if isinstance(grid_config, str):
@@ -91,16 +92,16 @@ class LowrankModel(nn.Module):
                 aabb, spatial_distortion=self.spatial_distortion,
                 density_activation=self.density_act, **prop_net_args)
             self.proposal_networks.append(network)
-            self.density_fns.extend([network.density_fn for _ in range(self.num_proposal_iterations)])
+            self.density_fns.extend([network.get_density for _ in range(self.num_proposal_iterations)])
         else:
             for i in range(self.num_proposal_iterations):
                 prop_net_args = self.proposal_net_args_list[min(i, len(self.proposal_net_args_list) - 1)]
                 network = KPlaneDensityField(
-                    self.scene_box.aabb, spatial_distortion=self.spatial_distortion,
+                    aabb, spatial_distortion=self.spatial_distortion,
                     density_activation=self.density_act, **prop_net_args,
                 )
                 self.proposal_networks.append(network)
-            self.density_fns.extend([network.density_fn for network in self.proposal_networks])
+            self.density_fns.extend([network.get_density for network in self.proposal_networks])
 
         update_schedule = lambda step: np.clip(
             np.interp(step, [0, self.proposal_warmup], [0, self.proposal_update_every]),
@@ -157,7 +158,7 @@ class LowrankModel(nn.Module):
         accumulation = torch.sum(weights, dim=-2)
         return accumulation
 
-    def forward(self, rays_o, rays_d, timestamps, bg_color, near_far: torch.Tensor):
+    def forward(self, rays_o, rays_d, bg_color, near_far: torch.Tensor, timestamps=None):
         """
         rays_o : [batch, 3]
         rays_d : [batch, 3]
@@ -184,9 +185,9 @@ class LowrankModel(nn.Module):
         weights_list.append(weights)
         ray_samples_list.append(ray_samples)
 
-        rgb = self.renderer_rgb(rgb=rgb, weights=weights)
-        depth = self.renderer_depth(weights=weights, ray_samples=ray_samples)
-        accumulation = self.renderer_accumulation(weights=weights)
+        rgb = self.render_rgb(rgb=rgb, weights=weights, bg_color=bg_color)
+        depth = self.render_depth(weights=weights, ray_samples=ray_samples)
+        accumulation = self.render_accumulation(weights=weights)
         outputs = {
             "rgb": rgb,
             "accumulation": accumulation,
@@ -198,6 +199,11 @@ class LowrankModel(nn.Module):
             outputs["weights_list"] = weights_list
             outputs["ray_samples_list"] = ray_samples_list
         for i in range(self.num_proposal_iterations):
-            outputs[f"prop_depth_{i}"] = self.renderer_depth(
+            outputs[f"prop_depth_{i}"] = self.render_depth(
                 weights=weights_list[i], ray_samples=ray_samples_list[i])
         return outputs
+
+    def get_params(self, lr: float):
+        return [
+            {"params": self.parameters(), "lr": lr},
+        ]

@@ -206,14 +206,15 @@ class KPlaneField(nn.Module):
         ).view(n_rays, n_samples, 1)
         return density, rgb_features
 
-    def get_outputs(self,
-                    pts: torch.Tensor,
-                    directions: torch.Tensor,
-                    timestamps: Optional[torch.Tensor] = None):
+    def forward(self,
+                pts: torch.Tensor,
+                directions: torch.Tensor,
+                timestamps: Optional[torch.Tensor] = None):
         density, rgb_features = self.get_density(pts, timestamps)
+        n_rays, n_samples = pts.shape[:2]
 
         directions = get_normalized_directions(directions)
-        directions = directions.view(-1, 1, 3).expand(pts.shape)
+        directions = directions.view(-1, 1, 3).expand(pts.shape).reshape(-1, 3)
         encoded_directions = self.direction_encoder(directions)
 
         color_features = [encoded_directions, rgb_features.view(-1, self.geo_feat_dim)]
@@ -236,6 +237,6 @@ class KPlaneField(nn.Module):
             color_features.append(embedded_appearance.view(-1, self.appearance_embedding_dim))
 
         color_features = torch.cat(color_features, dim=-1)
-        rgb = self.color_net(color_features).to(directions)
+        rgb = self.color_net(color_features).to(directions).view(n_rays, n_samples, 3)
 
         return {"rgb": rgb, "density": density}

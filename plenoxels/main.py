@@ -106,9 +106,6 @@ def main():
         data = load_data(is_video, validate_only=validate_only, **config)
         config.update(data)
         trainer = init_trainer(is_video, **config)
-        if trainer.transfer_learning:
-            # We have reloaded the model learned from args.log_dir
-            assert args.log_dir is not None and os.path.isdir(args.log_dir)
         if args.log_dir is not None:
             checkpoint_path = os.path.join(args.log_dir, "model.pth")
             trainer.load_model(torch.load(checkpoint_path))
