@@ -20,7 +20,7 @@ class TruncatedExponential(Function):  # pylint: disable=abstract-method
     @custom_bwd
     def backward(ctx, g):  # pylint: disable=arguments-differ
         x = ctx.saved_tensors[0]
-        return g * torch.exp(torch.clamp(x, max=15))
+        return g * torch.exp(torch.clamp(x, min=-15, max=15))
 
 
 trunc_exp = TruncatedExponential.apply
