@@ -7,7 +7,6 @@ import torch.optim.lr_scheduler
 from torch import nn
 
 from plenoxels.models.lowrank_model import LowrankModel
-from plenoxels.models.lowrank_video import LowrankVideo
 from plenoxels.models.utils import compute_plane_tv, compute_plane_smoothness
 from plenoxels.ops.losses.histogram_loss import interlevel_loss
 
@@ -151,7 +150,7 @@ class L1AppearancePlanes(Regularizer):
     def __init__(self, initial_value):
         super().__init__('l1-appearance', initial_value)
 
-    def _regularize(self, model: LowrankVideo, **kwargs) -> torch.Tensor:
+    def _regularize(self, model: LowrankModel, **kwargs) -> torch.Tensor:
         total = 0
         # model.grids is 6 x [1, rank * F_dim, reso, reso]
         multi_res_grids = model.field.grids
