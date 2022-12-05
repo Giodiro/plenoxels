@@ -34,8 +34,8 @@ config = {
     'l1_plane_color_reg': 0,
     'l1_plane_density_reg': 0,
     'l1density_weight': 0,
-    'time_smoothness_weight': 1.0,
-    'plane_tv_weight': 0.05,
+    'time_smoothness_weight': 0.01,
+    'plane_tv_weight': 0.01,
 
     # Raymarching
     'cone_angle': 0.0,
@@ -51,14 +51,14 @@ config = {
     'concat_features': True,
     'train_every_scale': False,
     'density_activation': 'trunc_exp',
-    'multiscale_res': [1, 2, 4],
+    'multiscale_res': [1, 2, 3, 4],
     'occupancy_grid_resolution': [256, 256, 256],
     'grid_config': [
         {
             "input_coordinate_dim": 4,
-            "output_coordinate_dim": 64,
+            "output_coordinate_dim": 16,
             "grid_dimensions": 2,
-            "resolution": [64, 64, 64, 75],
+            "resolution": [64, 64, 64, 25],
         }
     ],
 }
