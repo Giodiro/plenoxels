@@ -33,6 +33,23 @@ class RaySamples:
         """
         return self.origins + self.directions * (self.starts + self.ends) / 2  # world space
 
+    def get_weights2(self, densities: torch.Tensor) -> torch.Tensor:
+        delta_mask = self.deltas > 0
+        deltas = self.deltas[delta_mask]
+
+        delta_density = torch.zeros_like(densities)
+        delta_density[delta_mask] = deltas * densities[delta_mask]
+        alphas = 1 - torch.exp(-delta_density)
+
+        transmittance = torch.cat(
+            (
+                torch.ones(alphas.shape[0], 1, device=alphas.device),
+                torch.cumprod(1.0 - alphas, dim=-1)
+            ), dim=-1
+        )
+        weights = alphas * transmittance[:, :-1]
+        return weights
+
     def get_weights(self, densities: torch.Tensor) -> torch.Tensor:
         """Return weights based on predicted densities
         Args:
