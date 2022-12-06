@@ -22,14 +22,16 @@ def get_normalized_directions(directions):
 
 
 def normalize_aabb(pts, aabb):
-    return (pts - aabb[0]) / (aabb[1] - aabb[0])
+    return (pts - aabb[0]) * (2.0 / (aabb[1] - aabb[0])) - 1.0
 
 
 def init_grid_param(
         grid_nd: int,
         in_dim: int,
         out_dim: int,
-        reso: Sequence[int]):
+        reso: Sequence[int],
+        a: float = 0.1,
+        b: float = 0.5):
     assert in_dim == len(reso), "Resolution must have same number of elements as input-dimension"
     has_time_planes = in_dim == 4
     assert grid_nd <= in_dim
@@ -42,7 +44,7 @@ def init_grid_param(
         if has_time_planes and 3 in coo_comb:  # Initialize time planes to 1
             nn.init.ones_(new_grid_coef)
         else:
-            nn.init.uniform_(new_grid_coef, a=0.1, b=0.5)
+            nn.init.uniform_(new_grid_coef, a=a, b=b)
         grid_coefs.append(new_grid_coef)
 
     return grid_coefs
