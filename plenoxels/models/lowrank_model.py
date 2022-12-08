@@ -23,6 +23,7 @@ class LowrankModel(ABC, nn.Module):
                  is_ndc: bool,
                  is_contracted: bool,
                  sh: bool,
+                 learnedbasis: bool,
                  use_F: bool,
                  use_proposal_sampling: bool,
                  aabb: Union[List[torch.Tensor], torch.Tensor],
@@ -64,6 +65,7 @@ class LowrankModel(ABC, nn.Module):
                         f'Using triplane as default; other choice is hexplane.')
             self.density_model = 'triplane'
         self.sh = sh
+        self.learnedbasis = learnedbasis
         self.use_F = use_F
         self.use_proposal_sampling = use_proposal_sampling
         self.density_act = init_density_activation(density_activation)

@@ -445,7 +445,7 @@ class Trainer():
             logging.info("=> Loaded model state from checkpoint")
             self.optimizer.load_state_dict(checkpoint_data["optimizer"])
             logging.info("=> Loaded optimizer state from checkpoint")
-            if self.scheduler is not None:
+            if self.scheduler is not None and 'scheduler' in checkpoint_data.keys():
                 self.scheduler.load_state_dict(checkpoint_data['scheduler'])
                 logging.info("=> Loaded scheduler state from checkpoint")
             self.global_step = checkpoint_data["global_step"]
