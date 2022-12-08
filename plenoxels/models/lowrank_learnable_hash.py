@@ -79,7 +79,8 @@ class LowrankLearnableHash(LowrankModel):
                          num_sample_multiplier=kwargs.get('num_sample_multiplier', None),
                          aabb=aabb,
                          multiscale_res=multiscale_res,
-                         feature_len=kwargs.get('feature_len', None))
+                         feature_len=kwargs.get('feature_len', None),
+                         intrinsics=kwargs.get('intrinsics', None))
         self.extra_args = kwargs
         self.density_multiplier = self.extra_args.get("density_multiplier")
         self.transfer_learning = self.extra_args["transfer_learning"]
@@ -145,12 +146,24 @@ class LowrankLearnableHash(LowrankModel):
     def compute_features(self,
                          pts: torch.Tensor,
                          grid_id: int,
+                         sizes: Optional[torch.Tensor] = None,
                          ) -> torch.Tensor:
         mulitres_grids: nn.ModuleList = self.scene_grids[grid_id]  # noqa
         grids_info = self.config
 
+        # Note: these implicitly assume similar resolution and radius in each dimension
+        diameter = torch.mean(self.aabb(0)[1] - self.aabb(0)[0])
+        base_resolution = torch.mean(self.resolution(0) / self.multiscale_res[-1])
+
         multi_scale_interp = [] if self.concat_features else 0
         for scale_id, (res, featlen) in enumerate(zip(self.multiscale_res, self.feature_len)):  # noqa
+            # use multiscale sampling
+            voxel_size = diameter / (base_resolution * res)
+            mask = (sizes > voxel_size).squeeze()  # mask not to keep, where the sample size is too large for the voxel
+            # May need to adjust this masking strategy, eg use voxel size / 2
+            # print(f'res is {res}, voxel size is {voxel_size}, sizes range from {torch.min(sizes)} to {torch.max(sizes)}')
+            # print(f'mask shape is {mask.shape}, sizes shape is {sizes.shape}, pts shape is {pts.shape}')
+
             grids: nn.ParameterList = mulitres_grids[scale_id]
             for level_info, grid in zip(grids_info, grids):
                 if "feature_dim" in level_info:
@@ -164,8 +177,11 @@ class LowrankLearnableHash(LowrankModel):
                 interp_out = 1
                 for ci, coo_comb in enumerate(coo_combs):
                     # interpolate in plane
-                    interp_out_plane = grid_sample_wrapper(grid[ci], pts[..., coo_comb]).view(
-                                -1, featlen, level_info["rank"])
+                    interp_out_plane = grid_sample_wrapper(grid[ci], pts[..., coo_comb])
+                    # apply the mask
+                    # interp_out_plane[mask, :] = 1.0  # Use the multiplicative identity for the masked values # comment this in to use mip
+                    interp_out_plane = interp_out_plane.view(-1, featlen, level_info["rank"])
+                    
                     # compute product
                     interp_out = interp_out_plane if interp_out is None else interp_out * interp_out_plane
                     # interp_out = interp_out_plane if interp_out is None else interp_out + interp_out_plane # Addition ablation study
@@ -319,11 +335,11 @@ class LowrankLearnableHash(LowrankModel):
         pts = aabb[0] * (1 - pts) + aabb[1] * pts
         return pts
 
-    def query_density(self, pts: torch.Tensor, grid_id: int, return_feat: bool = False):
+    def query_density(self, pts: torch.Tensor, grid_id: int, return_feat: bool = False, sizes: Optional[torch.Tensor] = None):
         pts_norm = self.normalize_coords(pts, grid_id)
         selector = ((pts_norm >= -1.0) & (pts_norm <= 1.0)).all(dim=-1)
 
-        features = self.compute_features(pts_norm, grid_id)
+        features = self.compute_features(pts_norm, grid_id, sizes)
         density = (
             self.density_act(self.decoder.compute_density(
                 features, rays_d=None, precompute_color=False)).view((*pts_norm.shape[:-1], 1))
@@ -360,7 +376,7 @@ class LowrankLearnableHash(LowrankModel):
                     nears = ones * nears
                     fars = ones * fars
 
-            ray_bundle = RayBundle(origins=rays_o, directions=rays_d, nears=nears, fars=fars)
+            ray_bundle = RayBundle(origins=rays_o, directions=rays_d, nears=nears, fars=fars, pixel_size=self.pixel_size)
             ray_samples, weights_list, ray_samples_list, density_list = self.raymarcher.generate_ray_samples(
                 ray_bundle, density_fns=self.density_fns, return_density=True)
             outputs['weights_list'] = weights_list
@@ -368,6 +384,7 @@ class LowrankLearnableHash(LowrankModel):
             outputs['ray_samples_list'].append(ray_samples)
             rays_d = ray_bundle.directions
             pts = ray_samples.get_positions()
+            sizes = ray_samples.sizes  # [n_rays, n_samples, 1]
             if self.spatial_distortion is not None:
                 pts = self.spatial_distortion(pts)  # cube of side 2
             aabb = self.aabb(grid_id)
@@ -428,7 +445,7 @@ class LowrankLearnableHash(LowrankModel):
         # compute features and render
         rays_d_rep = rays_d.view(-1, 1, 3).expand(pts.shape)
         masked_rays_d_rep = rays_d_rep[mask]
-        density_masked, features = self.query_density(pts=pts[mask], grid_id=grid_id, return_feat=True)
+        density_masked, features = self.query_density(pts=pts[mask], grid_id=grid_id, return_feat=True, sizes=sizes[mask])
         density = torch.zeros(n_rays, n_intrs, device=dev, dtype=density_masked.dtype)
         density[mask] = density_masked.view(-1)
 

@@ -57,7 +57,8 @@ class LowrankAppearance(LowrankModel):
                          density_model=kwargs.get('density_model', None),
                          aabb=aabb,
                          multiscale_res=multiscale_res,
-                         feature_len=kwargs.get('feature_len', None))
+                         feature_len=kwargs.get('feature_len', None),
+                         intrinsics=kwargs.get('intrinsics', None))
         self.extra_args = kwargs
         self.lookup_time = lookup_time
         self.trainable_rank = None

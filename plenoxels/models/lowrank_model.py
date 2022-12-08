@@ -44,6 +44,7 @@ class LowrankModel(ABC, nn.Module):
                  proposal_feature_dim: Optional[int] = None,
                  proposal_decoder_type: Optional[str] = None,
                  feature_len: Optional[List[int]] = None,
+                 intrinsics = None,
                  ):
         super().__init__()
         if isinstance(grid_config, str):
@@ -70,6 +71,9 @@ class LowrankModel(ABC, nn.Module):
         self.timer = CudaTimer(enabled=False)
         self.proposal_feature_dim = proposal_feature_dim
         self.proposal_decoder_type = proposal_decoder_type
+        self.pixel_size = None
+        if intrinsics is not None:
+            self.pixel_size = 0.5 * (1.0 / intrinsics.focal_x + 1.0 / intrinsics.focal_y)  # This is the size of the cone at distance 1 by assumption
 
         self.pt_min, self.pt_max = None, None
         if self.use_F:

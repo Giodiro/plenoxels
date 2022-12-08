@@ -25,6 +25,8 @@ class RaySamples:
     spacing_ends: Optional[torch.Tensor] = None  # [bs, ...?, num_samples, 1]
     """Function to convert bins to euclidean distance."""
     spacing_to_euclidean_fn: Optional[Callable] = None
+    """Diameter of each sample in the cone."""
+    sizes: Optional[torch.Tensor] = None  # [bs, ...?, num_samples, 1]
 
     def get_positions(self) -> torch.Tensor:
         """Calulates "center" position of frustum. Not weighted by mass.
@@ -68,6 +70,8 @@ class RayBundle:
     nears: Optional[torch.Tensor] = None  # [..., 1]
     """Rays Distance along ray to stop sampling"""
     fars: Optional[torch.Tensor] = None  # [..., 1]
+    """Pixel size at a distance of 1 from the ray origin"""
+    pixel_size: Optional[float] = None  # [..., 1]
 
     def __len__(self):
         num_rays = torch.numel(self.origins) // self.origins.shape[-1]
@@ -90,6 +94,15 @@ class RayBundle:
             Samples projected along ray.
         """
         deltas = bin_ends - bin_starts
+
+        # Compute the radius of the cone at each sample point
+        dir_norm = torch.linalg.norm(self.directions, dim=1)
+        ray_distances = bin_starts * dir_norm[:, None, None]  # [n_rays, n_samples, 1] ray distance in world space
+        sizes = None
+        if self.pixel_size is not None:
+            sizes = ray_distances * self.pixel_size
+            # print(f'sample sizes range from {torch.min(sizes)} to {torch.max(sizes)}')
+
         return RaySamples(
             origins=self.origins[..., None, :],  # [..., 1, 3]
             directions=self.directions[..., None, :],  # [..., 1, 3]
@@ -99,6 +112,7 @@ class RayBundle:
             spacing_starts=spacing_starts,  # [..., num_samples, 1]
             spacing_ends=spacing_ends,  # [..., num_samples, 1]
             spacing_to_euclidean_fn=spacing_to_euclidean_fn,
+            sizes=sizes,  # [..., num_samples, 1]
         )
 
 

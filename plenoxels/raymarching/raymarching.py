@@ -15,6 +15,7 @@ class RayMarcher():
                  spacing_fn: str = "linear",
                  single_jitter: bool = False,
                  spatial_distortion: Optional[SpatialDistortion] = None,
+                 intrinsics = None,
                  **kwargs):
         if raymarch_type == "fixed":
             assert n_intersections is not None
@@ -29,6 +30,7 @@ class RayMarcher():
         self.num_sample_multiplier = num_sample_multiplier
         self.single_jitter = single_jitter
         self.spatial_distortion = spatial_distortion
+        self.intrinsics = intrinsics
 
         if spacing_fn is None or spacing_fn == "linear":
             self.spacing_fn = lambda x: x
@@ -133,6 +135,17 @@ class RayMarcher():
         intersections = intersections[:, :-1]  # [n_rays, n_samples]
         intrs_pts = rays_o[..., None, :] + rays_d[..., None, :] * intersections[..., None]  # [n_rays, n_samples, 3]
 
+        # Compute the radius of the cone at each sample point
+        dir_norm = torch.linalg.norm(rays_d, dim=1, keepdim=True)
+        ray_distances = intersections * dir_norm[..., 0]  # [n_rays, n_samples] ray distance in world space
+        sizes = None
+        if self.intrinsics is not None:
+            pixel_size = 0.5 * (1.0 / self.intrinsics.focal_x + 1.0 / self.intrinsics.focal_y)  # This is the size of the cone at distance 1 by assumption
+            # print(f'ray distances range from {torch.min(ray_distances)} to {torch.max(ray_distances)}')
+            sizes = ray_distances * pixel_size
+            # print(f'sample sizes range from {torch.min(sizes)} to {torch.max(sizes)}')
+
+
         # Apply global scale and translation, maybe contract.
         if self.spatial_distortion is not None:
             intrs_pts = self.spatial_distortion(intrs_pts)
@@ -150,7 +163,6 @@ class RayMarcher():
 
         # Normalize rays_d and deltas
         if not is_contracted:  # Contraction pre-normalizes rays_d so we don't need to do it again
-            dir_norm = torch.linalg.norm(rays_d, dim=1, keepdim=True)
             rays_d = rays_d / dir_norm
             deltas = deltas * dir_norm
         if is_ndc:
@@ -169,6 +181,7 @@ class RayMarcher():
             "deltas": deltas,
             "rays_d": rays_d,
             "mask": mask,
+            "sizes": sizes,
         }
 
 

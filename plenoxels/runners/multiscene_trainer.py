@@ -545,6 +545,7 @@ class Trainer():
             proposal_sampling=self.extra_args.get('histogram_loss_weight', 0.0) > 0.0,
             global_translation=global_translation,
             global_scale=global_scale,
+            intrinsics=self.test_datasets[0].intrinsics,
             **kwargs)
         logging.info(f"Initialized LowrankLearnableHash model with "
                      f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters.")
