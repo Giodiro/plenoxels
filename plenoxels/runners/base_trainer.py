@@ -396,7 +396,7 @@ class NerfaccHelper():
             aabb = None
         if aabb is not None:
             aabb = aabb.view(-1)
-        rgb, acc, depth, n_rendering_samples, ray_indices, weights, t_starts, t_ends, n_rays = render_image(
+        rgb, acc, depth, n_rendering_samples, ray_indices, t_starts, t_ends, n_rays = render_image(
                 model,
                 occupancy_grid,
                 grid_id=data["dset_id"] if 'dset_id' in data else 0,
@@ -416,7 +416,7 @@ class NerfaccHelper():
             )
         return RenderResult(
             rgb=rgb, depth=depth, acc=acc, n_rendering_samples=n_rendering_samples,
-            ray_indices=ray_indices, weights=weights, t_starts=t_starts,
+            ray_indices=ray_indices, weights=None, t_starts=t_starts,
             t_ends=t_ends, n_rays=n_rays,
         )
 

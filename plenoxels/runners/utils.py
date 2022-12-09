@@ -227,7 +227,7 @@ def render_image(
             alpha_thre=alpha_thresh,
             early_stop_eps=early_stop_eps,
         )
-        rgb, opacity, depth, weights = rendering(
+        rgb, opacity, depth = rendering(
             t_starts=t_starts,
             t_ends=t_ends,
             ray_indices=ray_indices,
@@ -235,9 +235,9 @@ def render_image(
             rgb_sigma_fn=rgb_sigma_fn,
             render_bkgd=render_bkgd.to(device=device) if render_bkgd is not None else None,
         )
-        chunk_results = [rgb, opacity, depth, len(t_starts), ray_indices, weights, t_starts, t_ends, chunk_rays_o.shape[0]]
+        chunk_results = [rgb, opacity, depth, len(t_starts), ray_indices, t_starts, t_ends, chunk_rays_o.shape[0]]
         results.append(chunk_results)
-    colors, opacities, depths, n_rendering_samples, ray_indices, weights, t_starts, t_ends, n_rays = [
+    colors, opacities, depths, n_rendering_samples, ray_indices, t_starts, t_ends, n_rays = [
         torch.cat(r, dim=0) if isinstance(r[0], torch.Tensor) else r
         for r in zip(*results)
     ]
@@ -247,7 +247,6 @@ def render_image(
         depths.view((*rays_shape[:-1], -1)),
         sum(n_rendering_samples),
         ray_indices,
-        weights,
         t_starts,
         t_ends,
         sum(n_rays),

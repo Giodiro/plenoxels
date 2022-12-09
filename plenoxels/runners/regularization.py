@@ -5,8 +5,8 @@ from typing import Optional
 import torch.optim.lr_scheduler
 from torch import nn
 
-from nerfacc.pack import pack_info
-from nerfacc.losses import distortion
+#from nerfacc.pack import pack_info
+#from nerfacc.losses import distortion
 
 from plenoxels.models.lowrank_learnable_hash import LowrankLearnableHash
 from plenoxels.models.lowrank_model import LowrankModel
