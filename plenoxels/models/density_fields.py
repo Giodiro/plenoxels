@@ -31,7 +31,8 @@ class KPlaneDensityField(nn.Module):
         self.density_activation = density_activation
 
         self.grids = init_grid_param(
-            grid_nd=2, in_dim=num_input_coords, out_dim=num_output_coords, reso=resolution)
+            grid_nd=2, in_dim=num_input_coords, out_dim=num_output_coords, reso=resolution,
+            a=0.1, b=0.15)
         self.sigma_net = tcnn.Network(
             n_input_dims=self.feature_dim,
             n_output_dims=1,
@@ -63,6 +64,7 @@ class KPlaneDensityField(nn.Module):
             pts, ms_grids=[self.grids], grid_dimensions=2, concat_features=False, num_levels=None)
         density = self.density_activation(
             self.sigma_net(features).to(pts)
+            #features.to(pts)
         ).view(n_rays, n_samples, 1)
         return density
 

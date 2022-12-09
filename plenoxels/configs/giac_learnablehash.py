@@ -1,15 +1,15 @@
 # configuration file to be used with `main.py` for normal (or multiscene) training
 # the configuration must be specified in a dictionary called `config`.
 config = {
-    "expname": "ficus_test_wdenseweight2e-6",
+    "expname": "orchids_ndc_far2.5_ptv2e-4_propnetptv2e-4_cosine_lr2e-2_nearscale0.9_dl0.01",
     "logdir": "./logs",
     "device": "cuda:0",
 
     # Data settings
     "data_resolution": None,
-    "data_downsample": 1,
-    "data_dirs": ["/data/DATASETS/SyntheticNerf/ficus"],
-    #"data_dirs": ["/data/DATASETS/LLFF/fern"],
+    "data_downsample": 4,
+    #"data_dirs": ["/data/DATASETS/SyntheticNerf/ficus"],
+    "data_dirs": ["/data/DATASETS/LLFF/orchids"],
     # Data settings for 360
     "max_tr_frames": 100,
     "max_ts_frames": 50,
@@ -22,63 +22,42 @@ config = {
     "num_batches_per_dset": 1,
     "scheduler_type": "warmup_cosine",
     "optim_type": "adam",
-    "lr": 1e-2,
+    "lr": 2e-2,
 
     # Regularization
-    "floater_loss": 0,
-    "plane_tv_weight": 2e-5,
-    "plane_tv_what": "Gcoords",
-    "density_plane_tv_weight": 2e-6,
-    #"l1density_weight": 0.000,
-    #"volume_tv_weight": 0.00,
-    #"volume_tv_npts": 100,
-    "volume_tv_patch_size": 8,
-    "volume_tv_what": "Gcoords",
-    "l1_plane_color_weight": 0.0,
-    "l1_plane_density_weight": 0.000,
+    "plane_tv_weight": 2e-4,
+    "plane_tv_weight_proposal_net": 2e-4,
+    "l1_proposal_net_weight": 0,
     "histogram_loss_weight": 1.0,  # this should be set > 0 when using proposal sampling
+    "depth_tv_weight": 0,
+    "distortion_loss_weight": 0.01,
 
     # Training settings
     "train_fp16": True,
-    "save_every": 30000,
-    "valid_every": 30000,
-    "save_outputs": False,
-    "transfer_learning": False,
+    "save_every": 10000,
+    "valid_every": 10000,
+    "save_outputs": True,
 
     # Raymarching settings
     "num_samples": 48,
     "single_jitter": False,
     # proposal sampling
-    "num_proposal_samples": [128, 96],
+    "num_proposal_samples": [256, 128],
     "num_proposal_iterations": 2,
     "use_same_proposal_network": False,
     "proposal_net_args_list": [
-        {"resolution": [96, 96, 96], "num_input_coords": 3, "num_output_coords": 10},
-        {"resolution": [256, 256, 256], "num_input_coords": 3, "num_output_coords": 10},
+        {"resolution": [128, 128, 128], "num_input_coords": 3, "num_output_coords": 8},
+        {"resolution": [256, 256, 256], "num_input_coords": 3, "num_output_coords": 8},
     ],
 
     # Model settings
-    "sh": False,
-    #"sh_decoder_type": "manual",  # can be 'tcnn' or 'manual'
-    "density_threshold": 4e-4,
-    "dmask_update": [],
-    "upsample_steps": [],
-    "upsample_resolution": [],
-    "density_multiplier": 1,
-    "use_F": False,
-    "density_activation": "trunc_exp",  # can be 'relu' or 'trunc_exp'
-    "multiscale_res": [1, 2, 4],
-
-    "grid_config": """
-[
-    {
+    "multiscale_res": [1, 2, 4, 8],
+    "density_activation": "trunc_exp",
+    "grid_config": [{
         "input_coordinate_dim": 3,
-        "output_coordinate_dim": 64,
+        "output_coordinate_dim": 16,
         "grid_dimensions": 2,
         "resolution": [64, 64, 64],
-        "rank": 1,
-    },
-]
-"""
+    }],
 }
 
