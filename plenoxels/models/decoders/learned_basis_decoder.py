@@ -79,5 +79,5 @@ class LearnedBasisDecoder(BaseDecoder):
 
 
     def __repr__(self):
-        return (f"NNRender(feature_dim={self.feature_dim}, net_width={self.net_width}, "
+        return (f"LearnedBasisDecoder(feature_dim={self.feature_dim}, net_width={self.net_width}, "
                 f"net_layers={self.net_layers})")

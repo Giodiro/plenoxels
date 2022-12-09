@@ -7,7 +7,7 @@ import torch
 from plenoxels.models.utils import (
     grid_sample_wrapper, raw2alpha, init_features_param, init_grid_param
 )
-from .decoders import NNDecoder, SHDecoder
+from .decoders import NNDecoder, SHDecoder, LearnedBasisDecoder
 from .lowrank_model import LowrankModel
 from ..ops.bbox_colliders import intersect_with_aabb
 from ..raymarching.ray_samplers import RayBundle
@@ -21,6 +21,7 @@ class LowrankVideo(LowrankModel):
                  is_ndc: bool,
                  is_contracted: bool,
                  sh: bool,
+                 learnedbasis: bool,
                  use_F: bool,
                  density_activation: str,
                  proposal_sampling: bool,
@@ -38,6 +39,7 @@ class LowrankVideo(LowrankModel):
                          is_ndc=is_ndc,
                          is_contracted=is_contracted,
                          sh=sh,
+                         learnedbasis=learnedbasis,
                          use_F=use_F,
                          global_scale=global_scale,
                          global_translation=global_translation,
@@ -98,6 +100,10 @@ class LowrankVideo(LowrankModel):
             self.decoder = SHDecoder(
                 feature_dim=self.feature_dim,
                 decoder_type=self.extra_args.get('sh_decoder_type', 'manual'))
+        elif self.learnedbasis:
+            self.decoder = LearnedBasisDecoder(
+                feature_dim=self.feature_dim, net_width=64, net_layers=1
+            )
         else:
             self.decoder = NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
 

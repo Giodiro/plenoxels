@@ -1,12 +1,12 @@
 config = {'add_rank_steps': [-1],
  'batch_size': 4096,
- 'data_dirs': ['/home/sfk/data/dnerf/data/standup'],
+ 'data_dirs': ['/home/sfk/data/dnerf/data/lego'],
  'data_downsample': 1.0,
  'density_activation': 'trunc_exp',
  'density_field_rank': 1,
  'density_field_resolution': [128, 256],
  'density_model': 'hexplane',
- 'expname': 'standup_hexsampler_fullres_halftime_planetv0.05_smooth1',
+ 'expname': 'lego_512_hexsampler_120ksteps_lr0.005',
 #  'expname': 'standup_wandb',
  'floater_loss': 0.0,
  'grid_config': '\n'
@@ -15,7 +15,7 @@ config = {'add_rank_steps': [-1],
                 '        "input_coordinate_dim": 4,\n'
                 '        "output_coordinate_dim": 64,\n'
                 '        "grid_dimensions": 2,\n'
-                '        "resolution": [64, 64, 64, 75],\n'
+                '        "resolution": [64, 64, 64, 25],\n'
                 '        "rank": 1,\n'
                 '    },\n'
                 ']\n',
@@ -24,22 +24,23 @@ config = {'add_rank_steps': [-1],
  'isg_step': -1,
  'ist_step': -1,
  'keyframes': False,
+ "learnedbasis": True,
  'l1_appearance_planes_reg': 0.001,
  'l1_plane_color_reg': 0,
  'l1_plane_density_reg': 0,
  'l1density_weight': 0,
- 'logdir': './logs/dnerf',
+ 'logdir': './logs/dnerf_learnedbasis',
  'lr': 0.005,
  'max_test_cameras': None,
  'max_test_tsteps': None,
  'max_train_cameras': None,
  'max_train_tsteps': None,
- 'multiscale_res': [1, 2, 4],
+ 'multiscale_res': [1, 2, 4, 8],
 #  "feature_len": [16, 32, 64],  # Commenting this in will concat features along scale instead of averaging
  'concat_planes': False,
  'n_intersections': 48,
  'num_proposal_samples': [256, 96],
- 'num_steps': 30001,
+ 'num_steps': 120001,
  'optim_type': 'adam',
  'plane_tv_weight': 0.05,
  'proposal_decoder_type': 'nn',
