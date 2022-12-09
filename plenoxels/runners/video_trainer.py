@@ -17,7 +17,7 @@ from plenoxels.ops.image.io import write_video_to_file
 from plenoxels.runners.base_trainer import BaseTrainer
 from plenoxels.runners.regularization import (
     VideoPlaneTV, TimeSmoothness, HistogramLoss,
-    L1PlaneDensityVideo, L1AppearancePlanes, DistortionLoss
+    L1AppearancePlanes, DistortionLoss
 )
 from plenoxels.runners.utils import init_dloader_random
 
@@ -63,8 +63,7 @@ class VideoTrainer(BaseTrainer):
         """
         super().eval_step(data, **kwargs)
         batch_size = self.eval_batch_size
-        channels = {"rgb", "depth", "proposal_depth"}
-        with torch.cuda.amp.autocast(enabled=self.train_fp16):
+        with torch.cuda.amp.autocast(enabled=self.train_fp16), torch.no_grad():
             rays_o = data["rays_o"]
             rays_d = data["rays_d"]
             timestamp = data["timestamps"]
@@ -78,29 +77,22 @@ class VideoTrainer(BaseTrainer):
                 rays_d_b = rays_d[b * batch_size: (b + 1) * batch_size].to(self.device)
                 timestamps_d_b = timestamp.expand(rays_o_b.shape[0]).to(self.device)
                 outputs = self.model(rays_o_b, rays_d_b, timestamps_d_b, bg_color=bg_color,
-                                     channels=channels, near_far=near_far)
+                                     near_far=near_far)
                 for k, v in outputs.items():
-                    if k in channels or k.startswith("proposal_depth"):
+                    if "rgb" in k or "depth" in k:
                         preds[k].append(v.cpu())
         return {k: torch.cat(v, 0) for k, v in preds.items()}
 
     def train_step(self, data: Dict[str, Union[int, torch.Tensor]], **kwargs):
         super().train_step(data, **kwargs)
-        rays_o = data["rays_o"].to(self.device)
-        rays_d = data["rays_d"].to(self.device)
-        imgs = data["imgs"].to(self.device)
-        near_far = data["near_far"].to(self.device)
-        timestamps = data["timestamps"].to(self.device)
-        bg_color = data["bg_color"]
-        if isinstance(bg_color, torch.Tensor):
-            bg_color = bg_color.to(self.device)
+        data = self._move_data_to_device(data)
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             fwd_out = self.model(
-                rays_o, rays_d, timestamps, bg_color=bg_color, channels={"rgb"}, near_far=near_far)
-            rgb_preds = fwd_out["rgb"]
+                data['rays_o'], data['rays_d'], data['timestamps'], bg_color=data['bg_color'],
+                near_far=data['near_far'])
             # Reconstruction loss
-            recon_loss = self.criterion(rgb_preds, imgs)
+            recon_loss = self.criterion(fwd_out['rgb'], data['imgs'])
             # Regularization
             loss = recon_loss
             for r in self.regularizers:
@@ -113,11 +105,14 @@ class VideoTrainer(BaseTrainer):
         scale = self.gscaler.get_scale()
         self.gscaler.update()
 
-        recon_loss_val = recon_loss.item()
-        self.loss_info["mse"].update(recon_loss_val)
-        self.loss_info["psnr"].update(-10 * math.log10(recon_loss_val))
-        for r in self.regularizers:
-            r.report(self.loss_info)
+        # Report on losses
+        if self.global_step % self.calc_metrics_every == 0:
+            with torch.no_grad():
+                recon_loss_val = recon_loss.item()
+                self.loss_info[f"mse"].update(recon_loss_val)
+                self.loss_info[f"psnr"].update(-10 * math.log10(recon_loss_val))
+                for r in self.regularizers:
+                    r.report(self.loss_info)
 
         if self.global_step == self.isg_step:
             self.train_dataset.enable_isg()
@@ -143,7 +138,7 @@ class VideoTrainer(BaseTrainer):
         pred_frames, out_depths = [], []
         pb = tqdm(total=len(dataset), desc=f"Test scene ({dataset.name})")
         for img_idx, data in enumerate(dataset):
-            preds = self.eval_step(data, dset_id=0)
+            preds = self.eval_step(data)
             out_metrics, out_img, out_depth = self.evaluate_metrics(
                 data["imgs"], preds, dset=dataset, img_idx=img_idx, name=None,
                 save_outputs=self.save_outputs)
@@ -218,7 +213,6 @@ class VideoTrainer(BaseTrainer):
             VideoPlaneTV(kwargs.get('plane_tv_weight', 0.0)),
             TimeSmoothness(kwargs.get('time_smoothness_weight', 0.0)),
             HistogramLoss(kwargs.get('histogram_loss_weight', 0.0)),
-            L1PlaneDensityVideo(kwargs.get('l1_plane_density_reg', 0.0)),
             L1AppearancePlanes(kwargs.get('l1_appearance_planes_reg', 0.0)),
             DistortionLoss(kwargs.get('distortion_reg', 0.0))
         ]

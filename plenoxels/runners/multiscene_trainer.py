@@ -1,4 +1,4 @@
-import logging
+import logging as log
 import math
 import os
 from collections import defaultdict
@@ -87,20 +87,14 @@ class Trainer(BaseTrainer):
 
     def train_step(self, data: Dict[str, Union[int, torch.Tensor]], **kwargs):
         super().train_step(data, **kwargs)
-        rays_o = data["rays_o"].to(self.device)
-        rays_d = data["rays_d"].to(self.device)
-        imgs = data["imgs"].to(self.device)
-        near_far = data["near_far"].to(self.device)
-        bg_color = data["bg_color"]
-        if isinstance(bg_color, torch.Tensor):
-            bg_color = bg_color.to(self.device)
+        data = self._move_data_to_device(data)
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             fwd_out = self.model(
-                rays_o, rays_d, bg_color=bg_color, near_far=near_far)
-            rgb_preds = fwd_out["rgb"]
+                data['rays_o'], data['rays_d'], bg_color=data['bg_color'],
+                near_far=data['near_far'])
             # Reconstruction loss
-            recon_loss = self.criterion(rgb_preds, imgs)
+            recon_loss = self.criterion(fwd_out['rgb'], data['imgs'])
             # Regularization
             loss = recon_loss
             for r in self.regularizers:
@@ -131,23 +125,24 @@ class Trainer(BaseTrainer):
         super().pre_epoch()
         self.train_dataset.reset_iter()
 
+    @torch.no_grad()
     def validate(self):
-        val_metrics = []
         dataset = self.test_dataset
-        pb = tqdm(total=len(dataset), desc=f"Test scene{dataset.name}")
         per_scene_metrics = defaultdict(list)
+        pb = tqdm(total=len(dataset), desc=f"Test scene{dataset.name}")
         for img_idx, data in enumerate(dataset):
             ts_render = self.eval_step(data)
             out_metrics, _, _ = self.evaluate_metrics(
                 data["imgs"], ts_render, dset=dataset, img_idx=img_idx,
-                name="", save_outputs=self.save_outputs)
+                name=None, save_outputs=self.save_outputs)
             for k, v in out_metrics.items():
                 per_scene_metrics[k].append(v)
             pb.set_postfix_str(f"PSNR={out_metrics['psnr']:.2f}", refresh=False)
             pb.update(1)
         pb.close()
-        val_metrics.append(
-            self.report_test_metrics(per_scene_metrics, extra_name=""))
+        val_metrics = [
+            self.report_test_metrics(per_scene_metrics, extra_name="")
+        ]
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
 
@@ -164,26 +159,26 @@ class Trainer(BaseTrainer):
         return loss_info
 
     def init_model(self, **kwargs) -> torch.nn.Module:
-        aabb = self.test_dataset.scene_bbox
+        dset = self.test_dataset
         try:
-            global_translation = self.test_dataset.global_translation
+            global_translation = dset.global_translation
         except AttributeError:
             global_translation = None
         try:
-            global_scale = self.test_dataset.global_scale
+            global_scale = dset.global_scale
         except AttributeError:
             global_scale = None
-
         model = LowrankModel(
             grid_config=kwargs.pop("grid_config"),
-            aabb=aabb,
+            aabb=dset.scene_bbox,
             is_ndc=self.is_ndc,
             is_contracted=self.is_contracted,
             global_translation=global_translation,
             global_scale=global_scale,
             **kwargs)
-        logging.info(f"Initialized LowrankLearnableHash model with "
-                     f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters.")
+        log.info(f"Initialized {model.__class__} model with "
+                 f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, "
+                 f"using ndc {model.is_ndc} and contraction {model.is_contracted}.")
         return model
 
     def get_regularizers(self, **kwargs):
@@ -229,7 +224,9 @@ def init_tr_data(data_downsample: float, data_dirs: Sequence[str], **kwargs):
         hold_every = parse_optint(kwargs.get('hold_every'))
         dset = LLFFDataset(
             data_dir, split='train', downsample=int(data_downsample), hold_every=hold_every,
-            batch_size=batch_size)
+            batch_size=batch_size, contraction=kwargs['contract'], ndc=kwargs['ndc'])
+    else:
+        raise ValueError(f"Dataset type {dset_type} invalid.")
     dset.reset_iter()
 
     tr_loader = torch.utils.data.DataLoader(
@@ -253,7 +250,10 @@ def init_ts_data(data_dirs: Sequence[str], **kwargs):
     elif dset_type == "llff":
         hold_every = parse_optint(kwargs.get('hold_every'))
         dset = LLFFDataset(
-            data_dir, split='test', downsample=4, hold_every=hold_every)
+            data_dir, split='test', downsample=4, hold_every=hold_every,
+            contraction=kwargs['contraction'], ndc=kwargs['ndc'])
+    else:
+        raise ValueError(f"Dataset type {dset_type} invalid.")
     return {"ts_dset": dset}
 
 

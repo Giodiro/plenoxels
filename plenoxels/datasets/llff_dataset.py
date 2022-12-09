@@ -21,40 +21,48 @@ class LLFFDataset(BaseDataset):
                  split: str,
                  batch_size: Optional[int] = None,
                  downsample: int = 4,
-                 hold_every: int = 8):
+                 hold_every: int = 8,
+                 contraction: bool = False,
+                 ndc: bool = True,):
+        if (not contraction) and (not ndc):
+            raise ValueError("LLFF dataset expects either contraction or NDC to be enabled.")
         self.downsample = downsample
         self.hold_every = hold_every
-        use_contraction = False
 
-        image_paths, self.poses, self.per_cam_near_fars, intrinsics = load_llff_poses(
+        image_paths, self.poses, near_fars, intrinsics = load_llff_poses(
             datadir, downsample=downsample, split=split, hold_every=hold_every, near_scaling=0.9)
+        num_images = len(self.poses)
         imgs = load_llff_images(image_paths, intrinsics, split)
         imgs = (imgs * 255).to(torch.uint8)
         if split == 'train':
             imgs = imgs.view(-1, imgs.shape[-1])
         else:
             imgs = imgs.view(-1, intrinsics.height * intrinsics.width, imgs.shape[-1])
-            #self.per_cam_near_fars[:, 0] += 0.05
-        if use_contraction:
+        if contraction:
             bbox = torch.tensor([[-2., -2., -2.], [2., 2., 2.]])
+            self.near_fars = near_fars
         else:
             bbox = torch.tensor([[-1.5, -1.67, -1.], [1.5, 1.67, 1.]])
+            self.near_fars = torch.tensor([[0.0, 2.5]]).repeat(num_images, 1)
+
         self.global_translation = torch.tensor([0, 0, 1.5])
         self.global_scale = torch.tensor([0.9, 0.9, 1])
 
         super().__init__(datadir=datadir,
                          split=split,
                          scene_bbox=bbox,
-                         is_ndc=not use_contraction,
                          batch_size=batch_size,
                          imgs=imgs,
                          rays_o=None,
                          rays_d=None,
                          intrinsics=intrinsics,
-                         is_contracted=use_contraction)
-        log.info(f"LLFFDataset contracted {self.is_contracted} - Loaded {split} set from {datadir}: {len(self.poses)} images of "
+                         is_ndc=ndc,
+                         is_contracted=contraction,
+                         )
+        log.info(f"LLFFDataset contracted {self.is_contracted} - Loaded {split} set "
+                 f"from {datadir}: {num_images} images of "
                  f"shape {self.img_h}x{self.img_w} with {imgs.shape[-1]} channels. "
-                 f"near-fars: {self.per_cam_near_fars}. {intrinsics}")
+                 f"near-fars: {self.near_fars}. {intrinsics}")
 
     def __getitem__(self, index):
         h = self.intrinsics.height
@@ -74,11 +82,7 @@ class LLFFDataset(BaseDataset):
             )
             x = x.flatten()
             y = y.flatten()
-        if self.is_ndc:
-            near_fars = torch.tensor([[0.0, 2.5]])
-        else:
-            near_fars = self.per_cam_near_fars[image_id, :]
-
+        near_fars = self.near_fars[image_id, :].view(1, 2)
         rgba = self.imgs[index] / 255.0  # (num_rays, 3)   this converts to f32
         c2w = self.poses[image_id]       # (num_rays, 3, 4)
         camera_dirs = gen_camera_dirs(

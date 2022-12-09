@@ -15,6 +15,8 @@ config = {
     "max_ts_frames": 50,
     # Data settings for LLFF
     "hold_every": 8,
+    "contract": False,
+    "ndc": True,
 
     # Optimization settings
     "num_steps": 30_001,
@@ -60,4 +62,3 @@ config = {
         "resolution": [64, 64, 64],
     }],
 }
-
