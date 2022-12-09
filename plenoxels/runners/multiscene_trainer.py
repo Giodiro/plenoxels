@@ -14,7 +14,7 @@ from matplotlib.colors import LogNorm
 from plenoxels.ema import EMA
 from .base_trainer import BaseTrainer
 from .regularization import (
-    PlaneTV, HistogramLoss, L1ProposalNetwork, DepthTV,
+    PlaneTV, HistogramLoss, L1ProposalNetwork, DepthTV, DistortionLoss,
 )
 from .utils import (
     init_dloader_random
@@ -193,6 +193,7 @@ class Trainer(BaseTrainer):
             HistogramLoss(kwargs.get('histogram_loss_weight', 0.0)),
             L1ProposalNetwork(kwargs.get('l1_proposal_net_weight', 0.0)),
             DepthTV(kwargs.get('depth_tv_weight', 0.0)),
+            DistortionLoss(kwargs.get('distortion_loss_weight', 0.0)),
         ]
 
     @property

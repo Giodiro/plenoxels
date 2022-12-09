@@ -9,6 +9,7 @@ from torch import nn
 from plenoxels.models.lowrank_model import LowrankModel
 from plenoxels.models.utils import compute_plane_tv, compute_plane_smoothness
 from plenoxels.ops.losses.histogram_loss import interlevel_loss
+from plenoxels.raymarching.ray_samplers import RaySamples
 
 
 class Regularizer():
@@ -41,8 +42,8 @@ class Regularizer():
 class PlaneTV(Regularizer):
     def __init__(self, initial_value, what: str = 'field'):
         if what not in {'field', 'proposal_network'}:
-            raise ValueError(f'features must be one of "all", "sigma" or "sh" '
-                             f'but {features} was passed.')
+            raise ValueError(f'what must be one of "field" or "proposal_network" '
+                             f'but {what} was passed.')
         name = f'plane-TV-{what}'
         super().__init__(name, initial_value)
         self.what = what
@@ -108,7 +109,6 @@ class HistogramLoss(Regularizer):
         self.count = 0
 
     def _regularize(self, model: LowrankModel, model_out, **kwargs) -> torch.Tensor:
-
         if self.visualize:
             if self.count % 500 == 0:
                 prop_idx = 0
@@ -193,3 +193,28 @@ class L1AppearancePlanes(Regularizer):
             for grid_id in spatiotemporal_grids:
                 total += torch.abs(1 - grids[grid_id]).mean()
         return total
+
+
+class DistortionLoss(Regularizer):
+    def __init__(self, initial_value):
+        super().__init__('distortion-loss', initial_value)
+
+    def _regularize(self, model: LowrankModel, model_out, **kwargs) -> torch.Tensor:
+        '''
+        Efficient O(N) realization of distortion loss.
+        from https://github.com/sunset1995/torch_efficient_distloss/blob/main/torch_efficient_distloss/eff_distloss.py
+        There are B rays each with N sampled points.
+        '''
+        w = model_out['weights_list'][-1]
+        rs: RaySamples = model_out['ray_samples_list'][-1]
+        m = (rs.starts + rs.ends) / 2
+        interval = rs.deltas
+
+        loss_uni = (1/3) * (interval * w.pow(2)).sum(dim=-1).mean()
+        wm = (w * m)
+        w_cumsum = w.cumsum(dim=-1)
+        wm_cumsum = wm.cumsum(dim=-1)
+        loss_bi_0 = wm[..., 1:] * w_cumsum[..., :-1]
+        loss_bi_1 = w[..., 1:] * wm_cumsum[..., :-1]
+        loss_bi = 2 * (loss_bi_0 - loss_bi_1).sum(dim=-1).mean()
+        return loss_bi + loss_uni
