@@ -457,11 +457,12 @@ class VideoTrainer(Trainer):
 
         self.model.load_state_dict(checkpoint_data["model"], strict=False)
         logging.info("=> Loaded model state from checkpoint")
-        self.optimizer.load_state_dict(checkpoint_data["optimizer"])
-        logging.info("=> Loaded optimizer state from checkpoint")
-        if self.scheduler is not None:
-            self.scheduler.load_state_dict(checkpoint_data['lr_scheduler'])
-            logging.info("=> Loaded scheduler state from checkpoint")
+        if False:  # This assumes we are validating only! change to True if you want to continue training
+            self.optimizer.load_state_dict(checkpoint_data["optimizer"])
+            logging.info("=> Loaded optimizer state from checkpoint")
+            if self.scheduler is not None:
+                self.scheduler.load_state_dict(checkpoint_data['lr_scheduler'])
+                logging.info("=> Loaded scheduler state from checkpoint")
         self.global_step = checkpoint_data["global_step"]
         logging.info(f"=> Loaded step {self.global_step} from checkpoints")
 
@@ -518,7 +519,7 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
 
 
 def init_ts_data(data_dir, **kwargs):
-    if "lego" in data_dir:
+    if "lego" in data_dir or "dnerf" in data_dir:
         ts_dset = Video360Dataset(
             data_dir, split='test', downsample=1,
             max_cameras=kwargs.get('max_test_cameras'),
