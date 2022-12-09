@@ -142,7 +142,7 @@ def raw2alpha(sigma, dist):
 
 def init_density_activation(activation_type: str):
     if activation_type == 'trunc_exp':
-        return lambda x: trunc_exp(x)
+        return lambda x: trunc_exp(x - 1)
     elif activation_type == 'relu':
         return F.relu
     else:

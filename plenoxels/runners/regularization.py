@@ -39,15 +39,13 @@ class Regularizer():
 
 
 class PlaneTV(Regularizer):
-    def __init__(self, initial_value, features: str = 'all'):
-        if features not in {'all', 'sigma', 'sh'}:
+    def __init__(self, initial_value, what: str = 'field'):
+        if what not in {'field', 'proposal_network'}:
             raise ValueError(f'features must be one of "all", "sigma" or "sh" '
                              f'but {features} was passed.')
-        name = 'plane-TV'
-        if features != 'all':
-            name += f"-{features}"
+        name = f'plane-TV-{what}'
         super().__init__(name, initial_value)
-        self.features = features
+        self.what = what
 
     def step(self, global_step):
         #if global_step == 23000:
@@ -56,19 +54,18 @@ class PlaneTV(Regularizer):
         pass
 
     def _regularize(self, model: LowrankModel, **kwargs):
-        multi_res_grids: nn.ModuleList = model.field.grids
+        if self.what == 'field':
+            multi_res_grids: nn.ModuleList = model.field.grids
+        elif self.what == 'proposal_network':
+            multi_res_grids = [p.grids for p in model.proposal_networks]
+        else:
+            raise NotImplementedError(self.what)
         total = 0
         # Note: input to compute_plane_tv should be of shape [batch_size, c, h, w]
         for grids in multi_res_grids:
             for grid in grids:
                 # grid: [1, c, h, w]
-                if self.features == 'all':
-                    total += compute_plane_tv(grid)
-                else:
-                    if self.features == 'sigma':
-                        total += compute_plane_tv(grid[:, -1:, ...])
-                    else:
-                        total += compute_plane_tv(grid[:, :-1, ...])
+                total += compute_plane_tv(grid)
         return total
 
 
@@ -113,20 +110,28 @@ class HistogramLoss(Regularizer):
     def _regularize(self, model: LowrankModel, model_out, **kwargs) -> torch.Tensor:
 
         if self.visualize:
-            if self.count % 100 == 0:
+            if self.count % 500 == 0:
+                prop_idx = 0
+                fine_idx = 1
                 # proposal info
-                weights_proposal = model_out["weights_list"][0].detach().cpu().numpy()
-                spacing_starts_proposal = model_out["ray_samples_list"][0].spacing_starts
-                spacing_ends_proposal = model_out["ray_samples_list"][0].spacing_ends
-                sdist_proposal = torch.cat([spacing_starts_proposal[..., 0], spacing_ends_proposal[..., -1:, 0]], dim=-1).detach().cpu().numpy()
+                weights_proposal = model_out["weights_list"][prop_idx].detach().cpu().numpy()
+                spacing_starts_proposal = model_out["ray_samples_list"][prop_idx].spacing_starts
+                spacing_ends_proposal = model_out["ray_samples_list"][prop_idx].spacing_ends
+                sdist_proposal = torch.cat([
+                    spacing_starts_proposal[..., 0],
+                    spacing_ends_proposal[..., -1:, 0]
+                ], dim=-1).detach().cpu().numpy()
 
                 # fine info
-                weights_fine = model_out["weights_list"][1].detach().cpu().numpy()
-                spacing_starts_fine = model_out["ray_samples_list"][1].spacing_starts
-                spacing_ends_fine = model_out["ray_samples_list"][1].spacing_ends
-                sdist_fine = torch.cat([spacing_starts_fine[..., 0], spacing_ends_fine[..., -1:, 0]], dim=-1).detach().cpu().numpy()
+                weights_fine = model_out["weights_list"][fine_idx].detach().cpu().numpy()
+                spacing_starts_fine = model_out["ray_samples_list"][fine_idx].spacing_starts
+                spacing_ends_fine = model_out["ray_samples_list"][fine_idx].spacing_ends
+                sdist_fine = torch.cat([
+                    spacing_starts_fine[..., 0],
+                    spacing_ends_fine[..., -1:, 0]
+                ], dim=-1).detach().cpu().numpy()
 
-                for i in range(10):
+                for i in range(10):  # plot 10 rays
                     fix, ax1 = plt.subplots()
 
                     delta = np.diff(sdist_proposal[i], axis=-1)
@@ -144,6 +149,31 @@ class HistogramLoss(Regularizer):
                     plt.clf()
             self.count += 1
         return interlevel_loss(model_out['weights_list'], model_out['ray_samples_list'])
+
+
+class L1ProposalNetwork(Regularizer):
+    def __init__(self, initial_value):
+        super().__init__('l1-proposal-network', initial_value)
+
+    def _regularize(self, model: LowrankModel, **kwargs) -> torch.Tensor:
+        grids = [p.grids for p in model.proposal_networks]
+        total = 0.0
+        for pn_grids in grids:
+            for grid in pn_grids:
+                total += torch.abs(grid).mean()
+        return total
+
+
+class DepthTV(Regularizer):
+    def __init__(self, initial_value):
+        super().__init__('tv-depth', initial_value)
+
+    def _regularize(self, model: LowrankModel, model_out, **kwargs) -> torch.Tensor:
+        depth = model_out['depth']
+        tv = compute_plane_tv(
+            depth.reshape(64, 64)[None, None, :, :]
+        )
+        return tv
 
 
 class L1AppearancePlanes(Regularizer):

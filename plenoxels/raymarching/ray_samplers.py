@@ -33,9 +33,11 @@ class RaySamples:
         """
         return self.origins + self.directions * (self.starts + self.ends) / 2  # world space
 
-    def get_weights2(self, densities: torch.Tensor) -> torch.Tensor:
-        delta_mask = self.deltas > 0
-        deltas = self.deltas[delta_mask]
+    def get_weights(self, densities: torch.Tensor) -> torch.Tensor:
+        densities = densities.squeeze(2)
+        deltas = self.deltas.squeeze(2)
+        delta_mask = deltas > 0
+        deltas = deltas[delta_mask]
 
         delta_density = torch.zeros_like(densities)
         delta_density[delta_mask] = deltas * densities[delta_mask]
@@ -48,9 +50,9 @@ class RaySamples:
             ), dim=-1
         )
         weights = alphas * transmittance[:, :-1]
-        return weights
+        return weights[..., None]
 
-    def get_weights(self, densities: torch.Tensor) -> torch.Tensor:
+    def get_weights2(self, densities: torch.Tensor) -> torch.Tensor:
         """Return weights based on predicted densities
         Args:
             densities: Predicted densities for samples along ray (..., num_samples, 1)
@@ -198,7 +200,7 @@ class SpacedSampler(Sampler):
             bins = bins.repeat(num_rays, 1)
 
         # s_near, s_far in [0, 1]
-        s_near, s_far = (self.spacing_fn(x) for x in (ray_bundle.nears, ray_bundle.fars))  # sara says sus
+        s_near, s_far = (self.spacing_fn(x) for x in (ray_bundle.nears, ray_bundle.fars))
         spacing_to_euclidean_fn = lambda x: self.spacing_fn_inv(x * s_far + (1 - x) * s_near)
         # euclidean = world
         euclidean_bins = spacing_to_euclidean_fn(bins)  # [num_rays, num_samples+1]
@@ -428,7 +430,7 @@ class ProposalNetworkSampler(Sampler):
         self._anneal = 1.0
         self._steps_since_update = 0
         self._step = 0
-        
+
     def set_anneal(self, anneal: float) -> None:
         """Set the anneal value for the proposal network."""
         self._anneal = anneal

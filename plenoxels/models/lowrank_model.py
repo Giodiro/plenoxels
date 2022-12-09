@@ -108,7 +108,7 @@ class LowrankModel(nn.Module):
             1,
             self.proposal_update_every,
         )
-        if self.is_contracted:
+        if self.is_contracted or self.is_ndc:
             initial_sampler = UniformLinDispPiecewiseSampler(single_jitter=single_jitter)
         else:
             initial_sampler = UniformSampler(single_jitter=single_jitter)
@@ -146,11 +146,13 @@ class LowrankModel(nn.Module):
         return comp_rgb
 
     @staticmethod
-    def render_depth(weights: torch.Tensor, ray_samples: RaySamples):
+    def render_depth(weights: torch.Tensor, ray_samples: RaySamples, rays_d: torch.Tensor):
         eps = 1e-10
         steps = (ray_samples.starts + ray_samples.ends) / 2
-        depth = torch.sum(weights * steps, dim=-2) / (torch.sum(weights, -2) + eps)
-        depth = torch.clip(depth, steps.min(), steps.max())
+        one_minus_transmittance = torch.sum(weights, dim=-2)
+        depth = torch.sum(weights * steps, dim=-2) + one_minus_transmittance * rays_d[..., -1:]
+        #depth = torch.sum(weights * steps, dim=-2) / (torch.sum(weights, -2) + eps)
+        #depth = torch.clip(depth, steps.min(), steps.max())
         return depth
 
     @staticmethod
@@ -186,7 +188,7 @@ class LowrankModel(nn.Module):
         ray_samples_list.append(ray_samples)
 
         rgb = self.render_rgb(rgb=rgb, weights=weights, bg_color=bg_color)
-        depth = self.render_depth(weights=weights, ray_samples=ray_samples)
+        depth = self.render_depth(weights=weights, ray_samples=ray_samples, rays_d=ray_bundle.directions)
         accumulation = self.render_accumulation(weights=weights)
         outputs = {
             "rgb": rgb,
@@ -200,7 +202,7 @@ class LowrankModel(nn.Module):
             outputs["ray_samples_list"] = ray_samples_list
         for i in range(self.num_proposal_iterations):
             outputs[f"prop_depth_{i}"] = self.render_depth(
-                weights=weights_list[i], ray_samples=ray_samples_list[i])
+                weights=weights_list[i], ray_samples=ray_samples_list[i], rays_d=ray_bundle.directions)
         return outputs
 
     def get_params(self, lr: float):

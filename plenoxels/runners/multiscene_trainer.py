@@ -14,7 +14,7 @@ from matplotlib.colors import LogNorm
 from plenoxels.ema import EMA
 from .base_trainer import BaseTrainer
 from .regularization import (
-    PlaneTV, HistogramLoss
+    PlaneTV, HistogramLoss, L1ProposalNetwork, DepthTV,
 )
 from .utils import (
     init_dloader_random
@@ -66,7 +66,7 @@ class Trainer(BaseTrainer):
         super().eval_step(data, **kwargs)
         batch_size = self.eval_batch_size
         channels = {"rgb", "depth", "proposal_depth"}
-        with torch.cuda.amp.autocast(enabled=self.train_fp16):
+        with torch.cuda.amp.autocast(enabled=self.train_fp16), torch.no_grad():
             rays_o = data["rays_o"]
             rays_d = data["rays_d"]
             # near_far and bg_color are constant over mini-batches
@@ -81,7 +81,7 @@ class Trainer(BaseTrainer):
                 outputs = self.model(rays_o_b, rays_d_b, near_far=near_far,
                                      bg_color=bg_color)
                 for k, v in outputs.items():
-                    if k in channels or k.startswith("proposal_depth"):
+                    if k in channels or "depth" in k:
                         preds[k].append(v.cpu())
         return {k: torch.cat(v, 0) for k, v in preds.items()}
 
@@ -188,10 +188,11 @@ class Trainer(BaseTrainer):
 
     def get_regularizers(self, **kwargs):
         return [
-            PlaneTV(kwargs.get('plane_tv_weight', 0.0), features='all'),
-            PlaneTV(kwargs.get('plane_tv_weight_sigma', 0.0), features='sigma'),
-            PlaneTV(kwargs.get('plane_tv_weight_sh', 0.0), features='sh'),
+            PlaneTV(kwargs.get('plane_tv_weight', 0.0), what='field'),
+            PlaneTV(kwargs.get('plane_tv_weight_proposal_net', 0.0), what='proposal_network'),
             HistogramLoss(kwargs.get('histogram_loss_weight', 0.0)),
+            L1ProposalNetwork(kwargs.get('l1_proposal_net_weight', 0.0)),
+            DepthTV(kwargs.get('depth_tv_weight', 0.0)),
         ]
 
     @property
