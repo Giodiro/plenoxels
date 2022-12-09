@@ -9,7 +9,7 @@ defined by an MLP that takes in view direction and predicts a vector of
 values that are then combined by weighted average with the features as weights
 to produce color.
 
-Like the SH decoder, density is modeled directly rather than through a decoder.
+Density is modeled with a linear decoder.
 """
 import torch
 import tinycudann as tcnn
@@ -36,9 +36,9 @@ class LearnedBasisDecoder(BaseDecoder):
         # Input is an encoded view direction, output is weights for 
         # combining the color features into RGB
         # This architecture is based on instant-NGP
-        self.net_basis = tcnn.Network(
+        self.color_basis = tcnn.Network(
             n_input_dims=self.direction_encoder.n_output_dims,
-            n_output_dims=3 * (self.feature_dim - 1),  # The last feature is sigma (density)
+            n_output_dims=3 * self.feature_dim,  # * (self.feature_dim - 1),  # The last feature is sigma (density)
             network_config={
                 "otype": "FullyFusedMLP",
                 "activation": "ReLU",
@@ -47,58 +47,36 @@ class LearnedBasisDecoder(BaseDecoder):
                 "n_hidden_layers": self.net_layers,
             },
         )
-        # self.red_basis = tcnn.Network(
-        #     n_input_dims=self.direction_encoder.n_output_dims,
-        #     n_output_dims=self.feature_dim - 1,  # The last feature is sigma (density)
-        #     network_config={
-        #         "otype": "FullyFusedMLP",
-        #         "activation": "ReLU",
-        #         "output_activation": "None",
-        #         "n_neurons": self.net_width,
-        #         "n_hidden_layers": self.net_layers,
-        #     },
-        # )
-        # self.green_basis = tcnn.Network(
-        #     n_input_dims=self.direction_encoder.n_output_dims,
-        #     n_output_dims=self.feature_dim - 1,  # The last feature is sigma (density)
-        #     network_config={
-        #         "otype": "FullyFusedMLP",
-        #         "activation": "ReLU",
-        #         "output_activation": "None",
-        #         "n_neurons": self.net_width,
-        #         "n_hidden_layers": self.net_layers,
-        #     },
-        # )
-        # self.blue_basis = tcnn.Network(
-        #     n_input_dims=self.direction_encoder.n_output_dims,
-        #     n_output_dims=self.feature_dim - 1,  # The last feature is sigma (density)
-        #     network_config={
-        #         "otype": "FullyFusedMLP",
-        #         "activation": "ReLU",
-        #         "output_activation": "None",
-        #         "n_neurons": self.net_width,
-        #         "n_hidden_layers": self.net_layers,
-        #     },
-        # )
+        # sigma_net just does a linear transformation on the features to get density
+        self.sigma_net = tcnn.Network(
+            n_input_dims=self.feature_dim,
+            n_output_dims=1,
+            network_config={
+                "otype": "CutlassMLP",
+                "activation": "None",
+                "output_activation": "None",
+                "n_neurons": self.net_width,
+                "n_hidden_layers": 0,
+            },
+        )
+
 
     def compute_color(self, features, rays_d):
         if len(rays_d) < 1:
             return torch.zeros((0, 3)).to(rays_d.device)
-        color_features = features[..., :-1]  # [batch, color_feature_len]
+        # color_features = features[..., :-1]  # [batch, color_feature_len]
+        color_features = features
         enc_rays_d = self.direction_encoder((rays_d + 1) / 2)
-        basis_values = self.net_basis(enc_rays_d)  # [batch, color_feature_len * 3]
+        basis_values = self.color_basis(enc_rays_d)  # [batch, color_feature_len * 3]
         basis_values = basis_values.view(color_features.shape[0], 3, -1)  # [batch, 3, color_feature_len]
         return torch.sum(color_features[:, None, :] * basis_values, dim=-1)  # [batch, 3]
-        # red_values = self.red_basis(enc_rays_d)  # [batch, color_feature_len]
-        # green_values = self.green_basis(enc_rays_d)
-        # blue_values = self.blue_basis(enc_rays_d)
-        # red = torch.sum(color_features * red_values, dim=-1, keepdim=True)  # [batch, 1]
-        # green = torch.sum(color_features * green_values, dim=-1, keepdim=True)
-        # blue = torch.sum(color_features * blue_values, dim=-1, keepdim=True)
-        # return torch.cat([red, green, blue], dim=-1)  # [batch, 3]
+
 
     def compute_density(self, features, rays_d, **kwargs):
-        return features[..., -1].view(-1, 1)
+        if len(features) < 1:
+            return torch.zeros((0, 1)).to(features.device)
+        return self.sigma_net(features)  # [batch, 1]
+
 
     def __repr__(self):
         return (f"NNRender(feature_dim={self.feature_dim}, net_width={self.net_width}, "

@@ -50,7 +50,7 @@ class NNDecoder(BaseDecoder):
             n_output_dims=16,
             network_config={
                 "otype": "FullyFusedMLP",
-                "activation": "ReLU",
+                "activation": "None", #  "ReLU",
                 "output_activation": "None",
                 "n_neurons": sigma_net_width,
                 "n_hidden_layers": sigma_net_layers,

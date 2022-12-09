@@ -2,18 +2,17 @@
 # the configuration must be specified in a dictionary called `config`.
 import numpy as np
 config = {
-    # "expname": "lego_rank10_plenoxelsh28_meaninit-11_downsample3",
-    # "expname": "legoF2_planetv0.001_lr0.1rank2",
-    # "expname": "warmuploglinearlr0.01",
-    "expname": "concat_64.64at1k.64at2k.64at4k",
-    # "expname": "lowrank_noupsamplelr4e-3_planetvfeats0.04",
+    # "expname": "average_64.64at1k.64at2k.64at4k_nolrdecay",
+    # "expname": "average_64.64.64.64_nolrdecay",
+    "expname": "ship60k_linearsigmadecoderbothmainandsampler",
     # "logdir": "./logs/fullresofern",
-    "logdir": "./logs/mic_debugresolution",
+    # "logdir": "./logs/mic_debugresolution",
+    "logdir": "./logs/learnedbasis",
 
     # Data settings
     "data_resolution": None,
     "data_downsample": 1,
-    "data_dirs": ["/home/sfk/data/nerf_synthetic/mic"],
+    "data_dirs": ["/home/sfk/data/nerf_synthetic/ship"],
     # "data_dirs": ["/home/sfk/data/nerf_llff_data/room"],
     # Data settings for 360
     "max_tr_frames": None,
@@ -22,7 +21,7 @@ config = {
     "hold_every": 8,
 
     # Optimization settings
-    "num_steps": 10001,
+    "num_steps": 60001,
     "batch_size": 4096,
     "num_batches_per_dset": 1,
     "scheduler_type": "warmup_cosine",
@@ -71,11 +70,12 @@ config = {
     "upsample_F_steps": [],
     "density_multiplier": 1,
     "sh": False,
+    "learnedbasis": True,
     "use_F": False,
-    "train_scale_steps": [1000, 2000, 4000],
+    # "train_scale_steps": [1000, 2000, 4000],
     "add_rank_steps": [-1],
-    "multiscale_res": [1, 2, 4, 8],
-    "feature_len": [64, 64, 64, 64],  # [8, 16, 32, 64] rank 2 is ~2.3 it/s, [4, 8, 16, 32] rank 2 is ~4 it/s, [4, 8, 16, 32] rank 1 is ~7 it/s, [4, 8, 16, 16] rank 1 is ~8 it/s
+    "multiscale_res": [1, 2, 4],
+    # "feature_len": [64, 64, 64, 64],  # [8, 16, 32, 64] rank 2 is ~2.3 it/s, [4, 8, 16, 32] rank 2 is ~4 it/s, [4, 8, 16, 32] rank 1 is ~7 it/s, [4, 8, 16, 16] rank 1 is ~8 it/s
     # These times might be artificially slower because of sharing a gpu
     "grid_config": """
 [
