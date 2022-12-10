@@ -43,7 +43,7 @@ class LLFFDataset(BaseDataset):
             self.near_fars = near_fars
         else:
             bbox = torch.tensor([[-1.5, -1.67, -1.], [1.5, 1.67, 1.]])
-            self.near_fars = torch.tensor([[0.0, 2.5]]).repeat(num_images, 1)
+            self.near_fars = torch.tensor([[0.0, 2.6]]).repeat(num_images, 1)
 
         self.global_translation = torch.tensor([0, 0, 1.5])
         self.global_scale = torch.tensor([0.9, 0.9, 1])
@@ -82,7 +82,7 @@ class LLFFDataset(BaseDataset):
             )
             x = x.flatten()
             y = y.flatten()
-        near_fars = self.near_fars[image_id, :].view(1, 2)
+        near_fars = self.near_fars[image_id, :].view(-1, 2)
         rgba = self.imgs[index] / 255.0  # (num_rays, 3)   this converts to f32
         c2w = self.poses[image_id]       # (num_rays, 3, 4)
         camera_dirs = gen_camera_dirs(
