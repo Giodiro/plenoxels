@@ -1,86 +1,71 @@
-# configuration file to be used with `main.py` for video training
+# configuration file to be used with `main.py` for normal (or multiscene) training
+# the configuration must be specified in a dictionary called `config`.
 config = {
-    "expname": "mlp_downsample2_istonly",
-    "logdir": "./logs/salmonvideo",
+    "expname": "flame_salmon_ndc",
+    "logdir": "./logs/flame_salmon",
+    "device": "cuda:0",
 
     # Data settings
-    "data_downsample": 2.0,
-    #"data_dirs": ["/data/DATASETS/VidNerf/lego_video"],
-    # "data_dirs": ["/home/sfk/data/3DVideo/coffee_martini"],
+    "data_downsample": 2,
     "data_dirs": ["/data/DATASETS/VidNerf/flame_salmon"],
-
     # Data settings for 360
     "max_train_cameras": 25,
     "max_test_cameras": 1,
     "max_train_tsteps": None,
     "max_test_tsteps": None,
+    "max_tr_frames": 100,
+    "max_ts_frames": 50,
     # Data settings for LLFF
     "keyframes": False,
     "isg_step": -1,
     "isg": False,
     "ist_step": 80000,
+    "contract": False,
+    "ndc": True,
 
     # Optimization settings
-    "num_steps": 120001,
-    "floater_loss": 0.0000,
-    "regnerf_weight_start": 0,
-    "regnerf_weight_end": 0.0,
-    "regnerf_weight_max_step": 512,
-    "plane_tv_weight": 0.1,
-    "time_smoothness_weight": 0.1,
-    "l1_plane_color_reg": 0,
-    "l1_plane_density_reg": 0,
-    "l1density_weight": 0,     # Not used for video yet
-    "volume_tv_weight": 0.0,   # Not used for video yet
-    "volume_tv_npts": 1024,    # Not used for video yet
-    "volume_tv_what": "Gcoords",  # Not used for video yet
-    "scheduler_type": "warmup_cosine", # "step"
+    "num_steps": 30_001,
     "batch_size": 4096,
+    "num_batches_per_dset": 1,
+    "scheduler_type": "warmup_cosine",
     "optim_type": "adam",
-    "lr": 0.01,
+    "lr": 2e-2,
+
+    # Regularization
+    "plane_tv_weight": 2e-4,
+    "plane_tv_weight_proposal_net": 2e-4,
+    "l1_appearance_planes": 1e-2,
+    "l1_appearance_planes_proposal_net": 1e-2,
+    "time_smoothness_weight": 0.1,
+    "histogram_loss_weight": 1.0,  # this should be set > 0 when using proposal sampling
+    "depth_tv_weight": 0,
+    "distortion_loss_weight": 0.01,
 
     # Training settings
     "train_fp16": True,
-    "save_every": 120000,
-    "valid_every": 30000,
-    "save_video": True,
+    "save_every": 10000,
+    "valid_every": 10000,
     "save_outputs": True,
 
     # Raymarching settings
-    "raymarch_type": "fixed",
-    #"num_sample_multiplier": 2,
-    "n_intersections": 48,
-    #"spacing_fn": "linear",  # reciprocal. Seems to not be used if proposal sampling is used
+    "num_samples": 48,
     "single_jitter": False,
-    # Proposal sampling settings
-    "histogram_loss_weight": 1.0,  # this should be set > 0 when using proposal sampling
-    "density_model": "triplane",
-    "density_field_resolution": [128, 256],
-    "density_field_rank": 1,
-    "num_proposal_samples": [256, 96],
-    "proposal_feature_dim": 10,
-    "proposal_decoder_type": "nn",  # can be 'sh' or 'nn'
+    # proposal sampling
+    "num_proposal_samples": [256, 128],
+    "num_proposal_iterations": 2,
+    "use_same_proposal_network": False,
+    "proposal_net_args_list": [
+        {"resolution": [128, 128, 128, 50], "num_input_coords": 4, "num_output_coords": 8},
+        {"resolution": [256, 256, 256, 50], "num_input_coords": 4, "num_output_coords": 8},
+    ],
 
     # Model settings
-    "sh": False,
-    "sh_decoder_type": "manual",
+    "multiscale_res": [1, 2, 4, 8],
     "density_activation": "trunc_exp",
-    "upsample_time_resolution": [150],
-    # "upsample_time_steps": [6000],  # DyNerf does 300K iterations with keyframes, with lr 5e-4
-    "upsample_time_steps": [-1],
-    "use_trainable_rank": False,
-    "add_rank_steps": [-1],
-    "use_F": False,
-    "multiscale_res": [1, 2, 4],
-    "grid_config": """
-[
-    {
+    "grid_config": [{
         "input_coordinate_dim": 4,
-        "output_coordinate_dim": 32,
+        "output_coordinate_dim": 16,
         "grid_dimensions": 2,
-        "resolution": [80, 64, 64, 150],
-        "rank": 2,
-    },
-]
-"""
+        "resolution": [64, 64, 64, 150],
+    }],
 }

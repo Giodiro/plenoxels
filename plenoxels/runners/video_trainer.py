@@ -11,12 +11,12 @@ import torch.utils.data
 
 from plenoxels.datasets.video_datasets import Video360Dataset
 from plenoxels.ema import EMA
-from plenoxels.models.lowrank_video import LowrankVideo
 from plenoxels.my_tqdm import tqdm
 from plenoxels.ops.image.io import write_video_to_file
+from plenoxels.models.lowrank_model import LowrankModel
 from plenoxels.runners.base_trainer import BaseTrainer
 from plenoxels.runners.regularization import (
-    VideoPlaneTV, TimeSmoothness, HistogramLoss,
+    PlaneTV, TimeSmoothness, HistogramLoss,
     L1AppearancePlanes, DistortionLoss
 )
 from plenoxels.runners.utils import init_dloader_random
@@ -76,8 +76,9 @@ class VideoTrainer(BaseTrainer):
                 rays_o_b = rays_o[b * batch_size: (b + 1) * batch_size].to(self.device)
                 rays_d_b = rays_d[b * batch_size: (b + 1) * batch_size].to(self.device)
                 timestamps_d_b = timestamp.expand(rays_o_b.shape[0]).to(self.device)
-                outputs = self.model(rays_o_b, rays_d_b, timestamps_d_b, bg_color=bg_color,
-                                     near_far=near_far)
+                outputs = self.model(
+                    rays_o_b, rays_d_b, timestamps=timestamps_d_b, bg_color=bg_color,
+                    near_far=near_far)
                 for k, v in outputs.items():
                     if "rgb" in k or "depth" in k:
                         preds[k].append(v.cpu())
@@ -89,8 +90,8 @@ class VideoTrainer(BaseTrainer):
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             fwd_out = self.model(
-                data['rays_o'], data['rays_d'], data['timestamps'], bg_color=data['bg_color'],
-                near_far=data['near_fars'])
+                data['rays_o'], data['rays_d'], timestamps=data['timestamps'],
+                bg_color=data['bg_color'], near_far=data['near_fars'])
             # Reconstruction loss
             recon_loss = self.criterion(fwd_out['rgb'], data['imgs'])
             # Regularization
@@ -183,7 +184,7 @@ class VideoTrainer(BaseTrainer):
         loss_info = defaultdict(lambda: EMA(ema_weight))
         return loss_info
 
-    def init_model(self, **kwargs) -> LowrankVideo:
+    def init_model(self, **kwargs) -> LowrankModel:
         dset = self.test_dataset
         try:
             global_translation = dset.global_translation
@@ -193,13 +194,11 @@ class VideoTrainer(BaseTrainer):
             global_scale = dset.global_scale
         except AttributeError:
             global_scale = None
-        model = LowrankVideo(
+        model = LowrankModel(
+            grid_config=kwargs.pop("grid_config"),
             aabb=dset.scene_bbox,
-            len_time=dset.len_time,
             is_ndc=dset.is_ndc,
             is_contracted=dset.is_contracted,
-            lookup_time=dset.lookup_time,
-            proposal_sampling=self.extra_args.get('histogram_loss_weight', 0.0) > 0.0,
             global_scale=global_scale,
             global_translation=global_translation,
             **kwargs)
@@ -210,11 +209,13 @@ class VideoTrainer(BaseTrainer):
 
     def get_regularizers(self, **kwargs):
         return [
-            VideoPlaneTV(kwargs.get('plane_tv_weight', 0.0)),
+            PlaneTV(kwargs.get('plane_tv_weight', 0.0), what='field'),
+            PlaneTV(kwargs.get('plane_tv_proposal_net', 0.0), what='proposal_network'),
+            L1AppearancePlanes(kwargs.get('l1_appearance_planes', 0.0), what='field'),
+            L1AppearancePlanes(kwargs.get('l1_appearance_planes_proposal_net', 0.0), what='proposal_network'),
             TimeSmoothness(kwargs.get('time_smoothness_weight', 0.0)),
             HistogramLoss(kwargs.get('histogram_loss_weight', 0.0)),
-            L1AppearancePlanes(kwargs.get('l1_appearance_planes_reg', 0.0)),
-            DistortionLoss(kwargs.get('distortion_reg', 0.0))
+            DistortionLoss(kwargs.get('distortion_loss_weight', 0.0)),
         ]
 
     @property
@@ -233,7 +234,7 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
         batch_size=batch_size,
         max_cameras=kwargs.get('max_train_cameras'),
         max_tsteps=kwargs.get('max_train_tsteps') if keyframes else None,
-        isg=isg, keyframes=keyframes, is_contracted=False, is_ndc=False
+        isg=isg, keyframes=keyframes, contraction=kwargs['contract'], ndc=kwargs['ndc'],
     )
     if ist:
         tr_dset.switch_isg2ist()  # this should only happen in case we're reloading
@@ -245,11 +246,15 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
 
 
 def init_ts_data(data_dir, **kwargs):
+    if 'dnerf' in data_dir:
+        downsample = 1.0
+    else:
+        downsample = 2.0
     ts_dset = Video360Dataset(
-        data_dir, split='test', downsample=1,
+        data_dir, split='test', downsample=downsample,
         max_cameras=kwargs.get('max_test_cameras'),
         max_tsteps=kwargs.get('max_test_tsteps'),
-        is_contracted=False, is_ndc=False,
+        contraction=kwargs['contract'], ndc=kwargs['ndc'],
     )
     return {"ts_dset": ts_dset}
 

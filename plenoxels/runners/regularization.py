@@ -64,26 +64,15 @@ class PlaneTV(Regularizer):
         total = 0
         # Note: input to compute_plane_tv should be of shape [batch_size, c, h, w]
         for grids in multi_res_grids:
-            for grid in grids:
-                # grid: [1, c, h, w]
-                total += compute_plane_tv(grid)
-        return total
-
-
-class VideoPlaneTV(Regularizer):
-    def __init__(self, initial_value):
-        super().__init__('plane-TV', initial_value)
-
-    def _regularize(self, model: LowrankModel, **kwargs) -> torch.Tensor:
-        total = 0
-        # model.grids is 6 x [1, rank * F_dim, reso, reso]
-        for grids in model.field.grids:
             if len(grids) == 3:
                 spatial_grids = [0, 1, 2]
             else:
                 spatial_grids = [0, 1, 3]  # These are the spatial grids; the others are spatiotemporal
             for grid_id in spatial_grids:
                 total += compute_plane_tv(grids[grid_id])
+            for grid in grids:
+                # grid: [1, c, h, w]
+                total += compute_plane_tv(grid)
         return total
 
 
@@ -177,16 +166,26 @@ class DepthTV(Regularizer):
 
 
 class L1AppearancePlanes(Regularizer):
-    def __init__(self, initial_value):
-        super().__init__('l1-appearance', initial_value)
+    def __init__(self, initial_value, what='field'):
+        if what not in {'field', 'proposal_network'}:
+            raise ValueError(f'what must be one of "field" or "proposal_network" '
+                             f'but {what} was passed.')
+        super().__init__(f'l1-appearance-{what}', initial_value)
+        self.what = what
 
     def _regularize(self, model: LowrankModel, **kwargs) -> torch.Tensor:
-        total = 0
         # model.grids is 6 x [1, rank * F_dim, reso, reso]
-        multi_res_grids = model.field.grids
+        if self.what == 'field':
+            multi_res_grids: nn.ModuleList = model.field.grids
+        elif self.what == 'proposal_network':
+            multi_res_grids = [p.grids for p in model.proposal_networks]
+        else:
+            raise NotImplementedError(self.what)
+
+        total = 0
         for grids in multi_res_grids:
             if len(grids) == 3:
-                return 0
+                pass
             else:
                 # These are the spatiotemporal grids
                 spatiotemporal_grids = [2, 4, 5]

@@ -101,7 +101,7 @@ class Video360Dataset(BaseDataset):
             raise ValueError(datadir)
 
         self.timestamps = timestamps
-        if self.split == 'train':
+        if split == 'train':
             self.timestamps = self.timestamps[:, None, None].repeat(
                 1, intrinsics.height, intrinsics.width).reshape(-1)  # [n_frames * h * w]
         assert self.timestamps.min() >= -1.0 and self.timestamps.max() <= 1.0, "timestamps out of range."

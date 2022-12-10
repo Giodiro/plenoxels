@@ -96,19 +96,12 @@ def main():
             for key in config.keys():
                 f.write("%s\t%s\n"%(key,config[key]))
 
-    if is_video:
-        state = None
-        if args.log_dir is not None:
-            checkpoint_path = os.path.join(args.log_dir, "model.pth")
-            state = torch.load(checkpoint_path)
-        trainer, config = video_trainer.load_video_model(config, state, validate_only)
-    else:
-        data = load_data(is_video, validate_only=validate_only, **config)
-        config.update(data)
-        trainer = init_trainer(is_video, **config)
-        if args.log_dir is not None:
-            checkpoint_path = os.path.join(args.log_dir, "model.pth")
-            trainer.load_model(torch.load(checkpoint_path))
+    data = load_data(is_video, validate_only=validate_only, **config)
+    config.update(data)
+    trainer = init_trainer(is_video, **config)
+    if args.log_dir is not None:
+        checkpoint_path = os.path.join(args.log_dir, "model.pth")
+        trainer.load_model(torch.load(checkpoint_path))
 
     if validate_only:
         assert args.log_dir is not None and os.path.isdir(args.log_dir)
