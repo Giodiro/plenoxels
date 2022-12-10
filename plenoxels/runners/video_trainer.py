@@ -67,7 +67,7 @@ class VideoTrainer(BaseTrainer):
             rays_o = data["rays_o"]
             rays_d = data["rays_d"]
             timestamp = data["timestamps"]
-            near_far = data["near_far"].to(self.device)
+            near_far = data["near_fars"].to(self.device)
             bg_color = data["bg_color"]
             if isinstance(bg_color, torch.Tensor):
                 bg_color = bg_color.to(self.device)
@@ -90,7 +90,7 @@ class VideoTrainer(BaseTrainer):
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             fwd_out = self.model(
                 data['rays_o'], data['rays_d'], data['timestamps'], bg_color=data['bg_color'],
-                near_far=data['near_far'])
+                near_far=data['near_fars'])
             # Reconstruction loss
             recon_loss = self.criterion(fwd_out['rgb'], data['imgs'])
             # Regularization

@@ -128,7 +128,7 @@ class BaseTrainer(abc.ABC):
         data["rays_o"] = data["rays_o"].to(self.device)
         data["rays_d"] = data["rays_d"].to(self.device)
         data["imgs"] = data["imgs"].to(self.device)
-        data["near_far"] = data["near_far"].to(self.device)
+        data["near_fars"] = data["near_fars"].to(self.device)
         if "timestamps" in data:
             data["timestamps"] = data["timestamps"].to(self.device)
         bg_color = data["bg_color"]

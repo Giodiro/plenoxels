@@ -70,7 +70,7 @@ class Trainer(BaseTrainer):
             rays_o = data["rays_o"]
             rays_d = data["rays_d"]
             # near_far and bg_color are constant over mini-batches
-            near_far = data["near_far"].to(self.device)
+            near_far = data["near_fars"].to(self.device)
             bg_color = data["bg_color"]
             if isinstance(bg_color, torch.Tensor):
                 bg_color = bg_color.to(self.device)
@@ -92,7 +92,7 @@ class Trainer(BaseTrainer):
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             fwd_out = self.model(
                 data['rays_o'], data['rays_d'], bg_color=data['bg_color'],
-                near_far=data['near_far'])
+                near_far=data['near_fars'])
             # Reconstruction loss
             recon_loss = self.criterion(fwd_out['rgb'], data['imgs'])
             # Regularization
@@ -224,13 +224,14 @@ def init_tr_data(data_downsample: float, data_dirs: Sequence[str], **kwargs):
         hold_every = parse_optint(kwargs.get('hold_every'))
         dset = LLFFDataset(
             data_dir, split='train', downsample=int(data_downsample), hold_every=hold_every,
-            batch_size=batch_size, contraction=kwargs['contract'], ndc=kwargs['ndc'])
+            batch_size=batch_size, contraction=kwargs['contract'], ndc=kwargs['ndc'],
+            ndc_far=float(kwargs['ndc_far']), near_scaling=float(kwargs['near_scaling']))
     else:
         raise ValueError(f"Dataset type {dset_type} invalid.")
     dset.reset_iter()
 
     tr_loader = torch.utils.data.DataLoader(
-        dset, num_workers=4, prefetch_factor=2, pin_memory=True,
+        dset, num_workers=4, prefetch_factor=4, pin_memory=True,
         batch_size=None, worker_init_fn=init_dloader_random)
 
     return {
@@ -251,7 +252,8 @@ def init_ts_data(data_dirs: Sequence[str], **kwargs):
         hold_every = parse_optint(kwargs.get('hold_every'))
         dset = LLFFDataset(
             data_dir, split='test', downsample=4, hold_every=hold_every,
-            contraction=kwargs['contraction'], ndc=kwargs['ndc'])
+            contraction=kwargs['contract'], ndc=kwargs['ndc'],
+            ndc_far=float(kwargs['ndc_far']), near_scaling=float(kwargs['near_scaling']))
     else:
         raise ValueError(f"Dataset type {dset_type} invalid.")
     return {"ts_dset": dset}

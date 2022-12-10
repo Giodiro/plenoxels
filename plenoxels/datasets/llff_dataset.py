@@ -22,13 +22,16 @@ class LLFFDataset(BaseDataset):
                  downsample: int = 4,
                  hold_every: int = 8,
                  contraction: bool = False,
-                 ndc: bool = True,):
+                 ndc: bool = True,
+                 near_scaling: float = 0.9,
+                 ndc_far: float = 1.0,
+                 ):
         if (not contraction) and (not ndc):
             raise ValueError("LLFF dataset expects either contraction or NDC to be enabled.")
         self.downsample = downsample
         self.hold_every = hold_every
-        self.near_scaling = 0.9
-        self.ndc_far = 2.6
+        self.near_scaling = near_scaling
+        self.ndc_far = ndc_far
 
         if split == 'render':
             # For rendering path we load all poses, use them to generate spiral poses.
