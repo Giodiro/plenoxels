@@ -34,6 +34,25 @@ class RaySamples:
         return self.origins + self.directions * (self.starts + self.ends) / 2  # world space
 
     def get_weights(self, densities: torch.Tensor) -> torch.Tensor:
+        densities = densities.squeeze(2)
+        deltas = self.deltas.squeeze(2)
+        delta_mask = deltas > 0
+        deltas = deltas[delta_mask]
+
+        delta_density = torch.zeros_like(densities)
+        delta_density[delta_mask] = deltas * densities[delta_mask]
+        alphas = 1 - torch.exp(-delta_density)
+
+        transmittance = torch.cat(
+            (
+                torch.ones(alphas.shape[0], 1, device=alphas.device),
+                torch.cumprod(1.0 - alphas, dim=-1)
+            ), dim=-1
+        )
+        weights = alphas * transmittance[:, :-1]
+        return weights[..., None]
+
+    def get_weights2(self, densities: torch.Tensor) -> torch.Tensor:
         """Return weights based on predicted densities
         Args:
             densities: Predicted densities for samples along ray (..., num_samples, 1)
@@ -181,7 +200,7 @@ class SpacedSampler(Sampler):
             bins = bins.repeat(num_rays, 1)
 
         # s_near, s_far in [0, 1]
-        s_near, s_far = (self.spacing_fn(x) for x in (ray_bundle.nears, ray_bundle.fars))  # sara says sus
+        s_near, s_far = (self.spacing_fn(x) for x in (ray_bundle.nears, ray_bundle.fars))
         spacing_to_euclidean_fn = lambda x: self.spacing_fn_inv(x * s_far + (1 - x) * s_near)
         # euclidean = world
         euclidean_bins = spacing_to_euclidean_fn(bins)  # [num_rays, num_samples+1]
@@ -411,28 +430,21 @@ class ProposalNetworkSampler(Sampler):
         self._anneal = 1.0
         self._steps_since_update = 0
         self._step = 0
-        
+
     def set_anneal(self, anneal: float) -> None:
         """Set the anneal value for the proposal network."""
         self._anneal = anneal
 
-    def step_cb(self):
+    def step_cb(self, step):
         """Callback to register a training step has passed. This is used to keep track of the sampling schedule"""
-        self._step = self._step + 1
+        self._step = step
         self._steps_since_update += 1
-        N = 1000
-        b = 10
-        train_frac = np.clip(self._step / N, 0, 1)
-        bias = lambda x, b: (b * x) / ((b - 1) * x + 1)
-        anneal = bias(train_frac, b)
-        self.set_anneal(anneal)
 
     def generate_ray_samples(
         self,
         ray_bundle: Optional[RayBundle] = None,
         timestamps: Optional[float] = None,
         density_fns: Optional[List[Callable]] = None,
-        return_density: bool = False,
     ) -> Tuple[RaySamples, List, List]:
         assert ray_bundle is not None
         assert density_fns is not None
@@ -440,13 +452,11 @@ class ProposalNetworkSampler(Sampler):
 
         weights_list = []
         ray_samples_list = []
-        density_list = []
+
         n = self.num_proposal_network_iterations
         weights = None
         ray_samples = None
-        # TODO: Fix this (need to call step_cb!)
-        self.step_cb()  # Comment this in to enable weight annealing
-        updated = True #self._steps_since_update > self.update_sched(self._step) or self._step < 10
+        updated = self._steps_since_update > self.update_sched(self._step) or self._step < 10
         for i_level in range(n + 1):
             is_prop = i_level < n
             num_samples = self.num_proposal_samples_per_ray[i_level] if is_prop else self.num_nerf_samples_per_ray
@@ -469,15 +479,10 @@ class ProposalNetworkSampler(Sampler):
                 weights = ray_samples.get_weights(density)
                 weights_list.append(weights)  # (num_rays, num_samples)
                 ray_samples_list.append(ray_samples)
-                if return_density:
-                    density_list.append(density)
         if updated:
             self._steps_since_update = 0
 
         assert ray_samples is not None
-        if return_density:
-            return ray_samples, weights_list, ray_samples_list, density_list
-        
         return ray_samples, weights_list, ray_samples_list
 
     def __str__(self):

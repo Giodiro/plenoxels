@@ -36,7 +36,12 @@ class BaseDataset(Dataset, ABC):
         self.rays_o = rays_o
         self.rays_d = rays_d
         self.imgs = imgs
-        self.num_samples = self.imgs.shape[0]
+        if self.imgs is not None:
+            self.num_samples = self.imgs.shape[0]
+        elif self.rays_o is not None:
+            self.num_samples = self.rays_o.shape[0]
+        else:
+            raise RuntimeError("Can't figure out num_samples.")
         self.intrinsics = intrinsics
         self.sampling_weights = sampling_weights
         if self.sampling_weights is not None:
@@ -99,6 +104,8 @@ class BaseDataset(Dataset, ABC):
         }
         if self.imgs is not None:
             out["imgs"] = self.imgs[index]
+        else:
+            out["imgs"] = None
         if return_idxs:
             return out, index
         return out

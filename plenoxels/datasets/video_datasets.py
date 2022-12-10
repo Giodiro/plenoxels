@@ -17,7 +17,6 @@ from .llff_dataset import load_llff_poses_helper
 from .ray_utils import gen_camera_dirs, ndc_rays_blender
 from .synthetic_nerf_dataset import (
     load_360_images, load_360_intrinsics,
-    get_360_bbox
 )
 
 
@@ -36,56 +35,80 @@ class Video360Dataset(BaseDataset):
                  max_cameras: Optional[int] = None,
                  max_tsteps: Optional[int] = None,
                  isg: bool = False,
-                 is_contracted: bool = False,
-                 is_ndc: bool = False):
+                 contraction: bool = False,
+                 ndc: bool = False):
         self.keyframes = keyframes
         self.max_cameras = max_cameras
         self.max_tsteps = max_tsteps
         self.downsample = downsample
         self.isg = isg
         self.ist = False
-        self.lookup_time = False
+        # self.lookup_time = False
         self.per_cam_near_fars = None
         self.global_translation = torch.tensor([0, 0, 0])
         self.global_scale = torch.tensor([1, 1, 1])
-        if is_contracted and is_ndc:
-            raise ValueError("Options 'is_contracted' and 'is_ndc' are exclusive.")
+        self.near_scaling = 0.9
+        self.ndc_far = 2.6
+        self.median_imgs = None
+        if contraction and ndc:
+            raise ValueError("Options 'contraction' and 'ndc' are exclusive.")
         if "lego" in datadir or "dnerf" in datadir:
             dset_type = "synthetic"
         else:
             dset_type = "llff"
 
         if dset_type == "llff":
-            per_cam_poses, self.per_cam_near_fars, intrinsics, videopaths = load_llffvideo_poses(
-                datadir, downsample=self.downsample, split=split, near_scaling=1.0)
+            per_cam_poses, per_cam_near_fars, intrinsics, videopaths = load_llffvideo_poses(
+                datadir, downsample=self.downsample, split=split, near_scaling=self.near_scaling)
             poses, imgs, timestamps, self.median_imgs = load_llffvideo_data(
                 videopaths=videopaths, cam_poses=per_cam_poses, intrinsics=intrinsics, split=split,
                 keyframes=keyframes, keyframes_take_each=30)
             self.poses = poses.float()
-            self.per_cam_near_fars = self.per_cam_near_fars.float()
+            if contraction:
+                self.per_cam_near_fars = per_cam_near_fars.float()
+            else:
+                self.per_cam_near_fars = torch.tensor(
+                    [[0.0, self.ndc_far]]).repeat(per_cam_near_fars.shape[0], 1)
             # These values are tuned for the salmon video
             self.global_translation = torch.tensor([0, 0, 2.])
             self.global_scale = torch.tensor([0.5, 0.6, 1])
-            log.info(f'per_cam_near_fars is {self.per_cam_near_fars}, with global translation '
-                     f'{self.global_translation} and scale {self.global_scale}')
+            # Normalize timestamps between -1, 1
+            timestamps = (timestamps.float() / 299) * 2 - 1
         elif dset_type == "synthetic":
-            frames, transform = load_360video_frames(datadir, split, max_cameras=self.max_cameras, max_tsteps=self.max_tsteps)
+            assert not contraction, "Synthetic video dataset does not work with contraction."
+            assert not ndc, "Synthetic video dataset does not work with NDC."
+            frames, transform = load_360video_frames(
+                datadir, split, max_cameras=self.max_cameras, max_tsteps=self.max_tsteps)
             imgs, self.poses = load_360_images(frames, datadir, split, self.downsample)
-            self.median_imgs = calc_360_camera_medians(frames, imgs)
-            timestamps = [parse_360_file_path(frame['file_path'])[0] or float(frame['time']) for frame in frames]
-            timestamps = torch.tensor(timestamps, dtype=torch.float32)
-            intrinsics = load_360_intrinsics(transform, imgs, self.downsample)
-
-            # The problem is that dnerf has fewer timesteps for the test video than the train
-
+            if ndc:
+                self.per_cam_near_fars = torch.tensor([[0.0, self.ndc_far]])
+            else:
+                self.per_cam_near_fars = torch.tensor([[2.0, 6.0]])
+            timestamps = torch.tensor([
+                parse_360_file_path(frame['file_path'])[0] or float(frame['time'])
+                for frame in frames
+            ], dtype=torch.float32)
+            if "dnerf" in datadir:
+                # dnerf time is between 0, 1. Normalize to -1, 1
+                timestamps = timestamps * 2 - 1
+            else:
+                # lego (our vid) time is like dynerf: between 0, 30.
+                timestamps = (timestamps.float() / torch.amax(timestamps)) * 2 - 1
+            intrinsics = load_360_intrinsics(
+                transform, img_h=imgs[0].shape[0], img_w=imgs[0].shape[1],
+                downsample=self.downsample)
         else:
             raise ValueError(datadir)
 
-        if imgs.dtype != torch.uint8:
+        self.timestamps = timestamps
+        if split == 'train':
+            self.timestamps = self.timestamps[:, None, None].repeat(
+                1, intrinsics.height, intrinsics.width).reshape(-1)  # [n_frames * h * w]
+        assert self.timestamps.min() >= -1.0 and self.timestamps.max() <= 1.0, "timestamps out of range."
+        if imgs is not None and imgs.dtype != torch.uint8:
             imgs = (imgs * 255).to(torch.uint8)
-        if self.median_imgs.dtype != torch.uint8:
+        if self.median_imgs is not None and self.median_imgs.dtype != torch.uint8:
             self.median_imgs = (self.median_imgs * 255).to(torch.uint8)
-
         if split == 'train':
             imgs = imgs.view(-1, imgs.shape[-1])
         else:
@@ -97,9 +120,9 @@ class Video360Dataset(BaseDataset):
             datadir=datadir,
             split=split,
             batch_size=batch_size,
-            is_ndc=is_ndc,
-            is_contracted=is_contracted,
-            scene_bbox=get_360_bbox(datadir, is_contracted=is_contracted),
+            is_ndc=ndc,
+            is_contracted=contraction,
+            scene_bbox=get_bbox(datadir, is_contracted=contraction, dset_type=dset_type),
             rays_o=None,
             rays_d=None,
             intrinsics=intrinsics,
@@ -110,7 +133,7 @@ class Video360Dataset(BaseDataset):
 
         self.isg_weights = None
         self.ist_weights = None
-        if split == "train" and '3DVideo' in datadir:  # Only use importance sampling with DyNeRF videos
+        if split == "train" and dset_type == 'llff':  # Only use importance sampling with DyNeRF videos
             if os.path.exists(os.path.join(datadir, f"isg_weights.pt")):
                 self.isg_weights = torch.load(os.path.join(datadir, f"isg_weights.pt"))
                 log.info(f"Reloaded {self.isg_weights.shape[0]} ISG weights from file.")
@@ -120,8 +143,7 @@ class Video360Dataset(BaseDataset):
                 gamma = 1e-3 if self.keyframes else 2e-2
                 self.isg_weights = dynerf_isg_weight(
                     imgs.view(-1, intrinsics.height, intrinsics.width, imgs.shape[-1]),
-                    self.median_imgs,
-                    gamma)
+                    median_imgs=self.median_imgs, gamma=gamma)
                 # Normalize into a probability distribution, to speed up sampling
                 self.isg_weights = (self.isg_weights.reshape(-1) / torch.sum(self.isg_weights))
                 torch.save(self.isg_weights, os.path.join(datadir, f"isg_weights.pt"))
@@ -146,24 +168,13 @@ class Video360Dataset(BaseDataset):
         if self.isg:
             self.enable_isg()
 
-        if dset_type == "synthetic":
-            self.len_time = torch.amax(timestamps).item()
-        elif dset_type == "llff":
-            self.len_time = 299
-        if self.split == 'train':
-            self.timestamps = timestamps[:, None, None].repeat(
-                1, intrinsics.height, intrinsics.width).reshape(-1)  # [n_frames * h * w]
-        else:
-            self.timestamps = timestamps
-        print(f'timestamps are {timestamps}')
-
-        log.info(f"VideoDataset contracted={self.is_contracted}, ndc={self.is_ndc} - Loaded {self.split} set from {self.datadir}: "
-                 f"{self.poses.shape[0]} images of size {self.img_h}x{self.img_w} and "
-                 f"{imgs.shape[-1]} channels. "
-                 f"{len(torch.unique(timestamps))} timestamps up to time={self.len_time}. "
-                 f"ISG={self.isg} - IST={self.ist} - weights_subsampled={self.weights_subsampled} - "
-                 f"Sampling without replacement={self.use_permutation} - "
-                 f"{intrinsics}")
+        log.info(f"VideoDataset contracted={self.is_contracted}, ndc={self.is_ndc}. "
+                 f"Loaded {self.split} set from {self.datadir}: "
+                 f"{len(self.poses)} images of size {self.img_h}x{self.img_w}. "
+                 f"Images loaded: {self.imgs is not None}. "
+                 f"{len(torch.unique(timestamps))} timestamps. Near-far: {self.per_cam_near_fars}. "
+                 f"ISG={self.isg}, IST={self.ist}, weights_subsampled={self.weights_subsampled}. "
+                 f"Sampling without replacement={self.use_permutation}. {intrinsics}")
 
     def enable_isg(self):
         self.isg = True
@@ -214,37 +225,57 @@ class Video360Dataset(BaseDataset):
                 torch.arange(h, device=dev),
                 indexing="xy",
             )
-            x = x.flatten()
-            y = y.flatten()
-        near_fars = None
-        if self.per_cam_near_fars is not None:
-            if self.split == 'train':
-                num_frames_per_camera = len(self.imgs) // (len(self.per_cam_near_fars) * h * w)
-                camera_id = torch.div(image_id, num_frames_per_camera, rounding_mode='floor')  # [num_rays]
-                near_fars = self.per_cam_near_fars[camera_id, :]
-            else:
-                near_fars = self.per_cam_near_fars  # Only one test camera  # TODO: might need to change this for dnerf
-        try:
-            rgba = self.imgs[index] / 255.0  # (num_rays, 4)   this converts to f32
-        except:
-            raise StopIteration  # Somehow after a pass through the data it needs to be told to reset # TODO: find a cleaner fix for this
-        c2w = self.poses[image_id]       # (num_rays, 3, 4)
-        ts = self.timestamps[index]      # (num_rays or 1, )
-        camera_dirs = gen_camera_dirs(
-            x, y, self.intrinsics, True)  # [num_rays, 3]
+            x, y = x.flatten(), y.flatten()
+        out = {
+            "timestamps": self.timestamps[index],      # (num_rays or 1, )
+            "imgs": None,
+        }
+        if self.split == 'train':
+            num_frames_per_camera = len(self.imgs) // (len(self.per_cam_near_fars) * h * w)
+            camera_id = torch.div(image_id, num_frames_per_camera, rounding_mode='floor')  # (num_rays)
+            out['near_fars'] = self.per_cam_near_fars[camera_id, :]
+        else:
+            out['near_fars'] = self.per_cam_near_fars  # Only one test camera
 
+        if self.imgs is not None:
+            out['imgs'] = (self.imgs[index] / 255.0).view(-1, self.imgs.shape[-1])
+
+        c2w = self.poses[image_id]                      # (num_rays, 3, 4)
+        camera_dirs = gen_camera_dirs(x, y, self.intrinsics, True)  # (num_rays, 3)
         directions = (camera_dirs[:, None, :] * c2w[:, :3, :3]).sum(dim=-1)
         origins = torch.broadcast_to(c2w[:, :3, -1], directions.shape)
         if self.is_ndc:
             origins, directions = ndc_rays_blender(
                 intrinsics=self.intrinsics, near=1.0, rays_o=origins, rays_d=directions)
-        return {
-            "rays_o": origins.reshape(-1, 3),
-            "rays_d": directions.reshape(-1, 3),
-            "imgs": rgba.reshape(-1, rgba.shape[-1]),
-            "timestamps": ts,
-            "near_far": near_fars,
-        }
+        directions /= torch.linalg.norm(directions, dim=-1, keepdim=True)
+        out['rays_o'] = origins
+        out['rays_d'] = directions
+
+        if self.split != 'train':
+            out['bg_color'] = torch.ones((1, 3), dtype=torch.float32, device=origins.device)
+        else:
+            imgs = out['imgs']
+            if imgs.shape[-1] == 4:
+                bg_color = torch.rand((1, 3), dtype=torch.float32, device=origins.device)
+                imgs = imgs[:, :3] * imgs[:, 3:] + bg_color * (1.0 - imgs[:, 3:])
+            else:
+                bg_color = torch.ones((1, 3), dtype=torch.float32, device=origins.device)
+            out['imgs'] = imgs
+            out['bg_color'] = bg_color
+
+        return out
+
+
+def get_bbox(datadir, dset_type: str, is_contracted=False):
+    if is_contracted:
+        radius = 2
+    elif dset_type == 'dnerf':
+        radius = 1.5
+    elif dset_type == 'dynerf':
+        return torch.tensor([[-3.0, -1.67, -1.2], [3.0, 1.67, 1.2]])
+    else:
+        radius = 1.3
+    return torch.tensor([[-radius, -radius, -radius], [radius, radius, radius]])
 
 
 def parse_360_file_path(fp):
@@ -268,7 +299,7 @@ def load_360video_frames(datadir, split, max_cameras: int, max_tsteps: Optional[
     fpath2poseid = defaultdict(list)
     for frame in frames:
         timestamp, pose_id = parse_360_file_path(frame['file_path'])
-        if timestamp is None:
+        if timestamp is None:  # will be None for dnerf
             timestamp = float(frame['time'])
         timestamps.add(timestamp)
         pose_ids.add(pose_id)
@@ -276,14 +307,17 @@ def load_360video_frames(datadir, split, max_cameras: int, max_tsteps: Optional[
     timestamps = sorted(timestamps)
     pose_ids = sorted(pose_ids)
 
-    num_poses = min(len(pose_ids), max_cameras or len(pose_ids))
-    subsample_poses = int(round(len(pose_ids) / num_poses))
-    pose_ids = set(pose_ids[::subsample_poses])
+    if max_cameras is not None:
+        num_poses = min(len(pose_ids), max_cameras or len(pose_ids))
+        subsample_poses = int(round(len(pose_ids) / num_poses))
+        pose_ids = set(pose_ids[::subsample_poses])
 
-    num_timestamps = min(len(timestamps), max_tsteps or len(timestamps))
-    subsample_time = int(math.floor(len(timestamps) / (num_timestamps - 1)))
-    timestamps = set(timestamps[::subsample_time])
-    log.info(f"Selected subset of timestamps: {sorted(timestamps)} of length {len(timestamps)}")
+    if max_tsteps is not None:
+        num_timestamps = min(len(timestamps), max_tsteps or len(timestamps))
+        subsample_time = int(math.floor(len(timestamps) / (num_timestamps - 1)))
+        timestamps = set(timestamps[::subsample_time])
+        log.info(f"Selected subset of timestamps: {sorted(timestamps)} of length {len(timestamps)}")
+
     sub_frames = []
     for frame in frames:
         timestamp, pose_id = parse_360_file_path(frame['file_path'])
@@ -293,7 +327,6 @@ def load_360video_frames(datadir, split, max_cameras: int, max_tsteps: Optional[
             sub_frames.append(frame)
     # We need frames to be sorted by pose_id
     sub_frames = sorted(sub_frames, key=lambda f: fpath2poseid[f['file_path']])
-
     return sub_frames, meta
 
 
@@ -315,9 +348,9 @@ def calc_360_camera_medians(frames, imgs):
 def load_llffvideo_poses(datadir: str,
                          downsample: float,
                          split: str,
-                         near_scaling: float) -> Tuple[torch.Tensor, torch.Tensor, Intrinsics, List[str]]:
+                         near_scaling: float) -> Tuple[
+                            torch.Tensor, torch.Tensor, Intrinsics, List[str]]:
     """
-
     :return:
      - poses: a list with one item per each timestamp, pose combination (note that the poses
         are the same across timestamps).

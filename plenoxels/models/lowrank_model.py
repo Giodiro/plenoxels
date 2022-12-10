@@ -1,49 +1,50 @@
-import logging as log
-from abc import ABC
-from typing import List, Sequence, Optional, Union, Dict, Tuple, Callable, Any
+from typing import List, Sequence, Optional, Union, Dict, Tuple
 
+import numpy as np
 import torch
 import torch.nn as nn
 
-from plenoxels.models.density_fields import TriplaneDensityField
+from plenoxels.models.density_fields import KPlaneDensityField
+from plenoxels.models.kplane_field import KPlaneField
 from plenoxels.models.utils import init_density_activation
 from plenoxels.raymarching.ray_samplers import (
     UniformLinDispPiecewiseSampler, UniformSampler,
-    ProposalNetworkSampler
+    ProposalNetworkSampler, RayBundle, RaySamples
 )
-from plenoxels.raymarching.raymarching import RayMarcher
-from plenoxels.raymarching.spatial_distortions import SceneContraction
+from plenoxels.raymarching.spatial_distortions import SceneContraction, SpatialDistortion
 from plenoxels.runners.timer import CudaTimer
 
 
-class LowrankModel(ABC, nn.Module):
+class LowrankModel(nn.Module):
     def __init__(self,
                  grid_config: Union[str, List[Dict]],
                  # boolean flags
                  is_ndc: bool,
                  is_contracted: bool,
-                 sh: bool,
-                 use_F: bool,
-                 use_proposal_sampling: bool,
-                 aabb: Union[List[torch.Tensor], torch.Tensor],
+                 aabb: torch.Tensor,
+                 # Model arguments
                  multiscale_res: Sequence[int],
-                 num_scenes: int = 1,
+                 density_activation: Optional[str] = 'trunc_exp',
+                 concat_features_across_scales: bool = True,
+                 # Spatial distortion
                  global_translation: Optional[torch.Tensor] = None,
                  global_scale: Optional[torch.Tensor] = None,
-                 density_activation: Optional[str] = 'trunc_exp',
-                 density_model: Optional[str] = None,
-                 # ray-sampling arguments
-                 density_field_resolution: Optional[Sequence[int]] = None,
-                 density_field_rank: Optional[int] = None,
+                 # proposal-sampling arguments
+                 num_proposal_iterations: int = 1,
+                 use_same_proposal_network: bool = False,
+                 proposal_net_args_list: List[Dict] = None,
                  num_proposal_samples: Optional[Tuple[int]] = None,
-                 n_intersections: Optional[int] = None,
+                 num_samples: Optional[int] = None,
                  single_jitter: bool = False,
-                 raymarch_type: str = 'fixed',
-                 spacing_fn: Optional[str] = None,
-                 num_sample_multiplier: Optional[int] = None,
-                 proposal_feature_dim: Optional[int] = None,
-                 proposal_decoder_type: Optional[str] = None,
-                 feature_len: Optional[List[int]] = None,
+                 proposal_warmup: int = 5000,
+                 proposal_update_every: int = 5,
+                 use_proposal_weight_anneal: bool = True,
+                 proposal_weights_anneal_max_num_iters: int = 1000,
+                 proposal_weights_anneal_slope: float = 10.0,
+                 # appearance embedding (phototourism)
+                 use_appearance_embedding: bool = False,
+                 appearance_embedding_dim: int = 0,
+                 **kwargs,
                  ):
         super().__init__()
         if isinstance(grid_config, str):
@@ -51,168 +52,160 @@ class LowrankModel(ABC, nn.Module):
         else:
             self.config: List[Dict] = grid_config
         self.multiscale_res = multiscale_res
-        self.feature_len = feature_len
-        if self.feature_len is not None:
-            assert len(self.multiscale_res) == len(self.feature_len), 'must provide one feature_len per multiscale_res'
-        self.set_aabb(aabb)  # set_aabb handles both single tensor and a list.
         self.is_ndc = is_ndc
         self.is_contracted = is_contracted
-        self.density_model = density_model if density_model is not None else 'triplane'
-        if self.density_model not in {'hexplane', 'triplane'}:
-            log.warning(f'density model {self.density_model} is not recognized. '
-                        f'Using triplane as default; other choice is hexplane.')
-            self.density_model = 'triplane'
-        self.sh = sh
-        self.use_F = use_F
-        self.use_proposal_sampling = use_proposal_sampling
+        self.concat_features_across_scales = concat_features_across_scales
         self.density_act = init_density_activation(density_activation)
-        self.num_scenes = num_scenes
         self.timer = CudaTimer(enabled=False)
-        self.proposal_feature_dim = proposal_feature_dim
-        self.proposal_decoder_type = proposal_decoder_type
 
-        self.pt_min, self.pt_max = None, None
-        if self.use_F:
-            self.pt_min = nn.ParameterList([
-                torch.nn.Parameter(torch.tensor(-1.0)) for _ in range(len(self.multiscale_res))])
-            self.pt_max = nn.ParameterList([
-                torch.nn.Parameter(torch.tensor(+1.0)) for _ in range(len(self.multiscale_res))])
-
-        self.spatial_distortion = None
+        self.spatial_distortion: Optional[SpatialDistortion] = None
         if self.is_contracted:
             self.spatial_distortion = SceneContraction(
-                order=float('inf'),
-                global_scale=global_scale,
+                order=float('inf'), global_scale=global_scale,
                 global_translation=global_translation)
 
-        self.raymarcher, self.density_fields, self.density_fns = self.init_raymarcher(
-            prop_sampling=self.use_proposal_sampling,
-            density_field_resolution=density_field_resolution,
-            density_field_rank=density_field_rank,
-            num_proposal_samples=num_proposal_samples,
-            n_intersections=n_intersections,
-            single_jitter=single_jitter,
-            raymarch_type=raymarch_type,
-            spacing_fn=spacing_fn,
-            num_sample_multiplier=num_sample_multiplier,
+        self.field = KPlaneField(
+            aabb,
+            grid_config=self.config,
+            concat_features_across_scales=self.concat_features_across_scales,
+            multiscale_res=self.multiscale_res,
+            use_appearance_embedding=use_appearance_embedding,
+            appearance_embedding_dim=appearance_embedding_dim,
+            spatial_distortion=self.spatial_distortion,
+            density_activation=self.density_act,
         )
 
-    def step_cb(self, step, max_step):
-        pass
-
-    def set_aabb(self, aabb: Union[torch.Tensor, List[torch.Tensor]], grid_id: Optional[int] = None):
-        if grid_id is None:
-            if isinstance(aabb, list):
-                # aabb needs to be BufferList (but BufferList doesn't exist so we emulate it)
-                for i, p in enumerate(aabb):
-                    assert p.shape == (2, 3)
-                    if hasattr(self, f'aabb{i}'):
-                        setattr(self, f'aabb{i}', p)
-                    else:
-                        self.register_buffer(f'aabb{i}', p)
-            else:
-                assert isinstance(aabb, torch.Tensor)
-                assert aabb.shape == (2, 3)
-                self.register_buffer('aabb0', aabb)
+        # Initialize proposal-sampling nets
+        self.density_fns = []
+        self.num_proposal_iterations = num_proposal_iterations
+        self.proposal_net_args_list = proposal_net_args_list
+        self.proposal_warmup = proposal_warmup
+        self.proposal_update_every = proposal_update_every
+        self.use_proposal_weight_anneal = use_proposal_weight_anneal
+        self.proposal_weights_anneal_max_num_iters = proposal_weights_anneal_max_num_iters
+        self.proposal_weights_anneal_slope = proposal_weights_anneal_slope
+        self.proposal_networks = torch.nn.ModuleList()
+        if use_same_proposal_network:
+            assert len(self.proposal_net_args_list) == 1, "Only one proposal network is allowed."
+            prop_net_args = self.proposal_net_args_list[0]
+            network = KPlaneDensityField(
+                aabb, spatial_distortion=self.spatial_distortion,
+                density_activation=self.density_act, **prop_net_args)
+            self.proposal_networks.append(network)
+            self.density_fns.extend([network.get_density for _ in range(self.num_proposal_iterations)])
         else:
-            assert isinstance(aabb, torch.Tensor)
-            assert aabb.shape == (2, 3)
-            if hasattr(self, f'aabb{grid_id}'):
-                setattr(self, f'aabb{grid_id}', aabb)
-            else:
-                self.register_buffer(f'aabb{grid_id}', aabb)
-
-    def aabb(self, i: int = 0) -> torch.Tensor:
-        return getattr(self, f'aabb{i}')
-
-    def set_resolution(self, resolution: Union[torch.Tensor, List[torch.Tensor]], grid_id: Optional[int] = None):
-        if grid_id is None:
-            # resolution needs to be BufferList (but BufferList doesn't exist so we emulate it)
-            for i, p in enumerate(resolution):
-                if hasattr(self, f'resolution{i}'):
-                    setattr(self, f'resolution{i}', p)
-                else:
-                    self.register_buffer(f'resolution{i}', p)
-        else:
-            assert isinstance(resolution, torch.Tensor)
-            if hasattr(self, f'resolution{grid_id}'):
-                setattr(self, f'resolution{grid_id}', resolution)
-            else:
-                self.register_buffer(f'resolution{grid_id}', resolution)
-
-    def resolution(self, i: int) -> torch.Tensor:
-        return getattr(self, f'resolution{i}')
-
-    @torch.autograd.no_grad()
-    def normalize_coords(self, pts: torch.Tensor, grid_id: int = 0) -> torch.Tensor:
-        """
-        break-down of the normalization steps. pts starts from [a0, a1]
-        1. pts - a0 => [0, a1-a0]
-        2. / (a1 - a0) => [0, 1]
-        3. * 2 => [0, 2]
-        4. - 1 => [-1, 1]
-        """
-        aabb = self.aabb(grid_id)
-        return (pts - aabb[0]) * (2.0 / (aabb[1] - aabb[0])) - 1
-
-    def init_raymarcher(self,
-                        prop_sampling: bool,
-                        density_field_resolution: Optional[Sequence[int]],
-                        density_field_rank: Optional[int],
-                        single_jitter: bool,
-                        num_proposal_samples: Optional[Tuple[int]],
-                        n_intersections: int,
-                        num_sample_multiplier: Optional[int],
-                        raymarch_type: str,
-                        spacing_fn: Optional[str],
-                        ) -> Tuple[Any, torch.nn.ModuleList, List[Callable]]:
-        density_fields, density_fns = torch.nn.ModuleList(), []
-        if prop_sampling:
-            if self.num_scenes != 1:
-                raise NotImplementedError("Proposal sampling with multiple scenes not implemented.")
-            assert num_proposal_samples is not None
-            assert density_field_rank is not None
-            assert density_field_resolution is not None
-            assert self.proposal_feature_dim is not None
-            assert self.proposal_decoder_type is not None
-            for reso in density_field_resolution:
-                real_resolution = [reso] * 3
-                if self.density_model == 'hexplane':
-                    real_resolution.append(self.config[0]['resolution'][-1])
-                field = TriplaneDensityField(
-                    aabb=self.aabb(0),
-                    resolution=real_resolution,
-                    num_input_coords=4 if self.density_model == 'hexplane' else 3,
-                    rank=density_field_rank,
-                    spatial_distortion=self.spatial_distortion,
-                    density_act=self.density_act,
-                    len_time=self.len_time if self.density_model == 'hexplane' else None,
-                    num_output_coords=self.proposal_feature_dim,
-                    decoder_type=self.proposal_decoder_type,
+            for i in range(self.num_proposal_iterations):
+                prop_net_args = self.proposal_net_args_list[min(i, len(self.proposal_net_args_list) - 1)]
+                network = KPlaneDensityField(
+                    aabb, spatial_distortion=self.spatial_distortion,
+                    density_activation=self.density_act, **prop_net_args,
                 )
-                density_fields.append(field)
-                density_fns.append(field.get_density)
-            if raymarch_type != 'fixed':
-                log.warning("raymarch_type is not 'fixed' but we will use 'n_intersections' anyways.")
-            if self.is_contracted:
-                initial_sampler = UniformLinDispPiecewiseSampler(single_jitter=single_jitter)
-            else:
-                initial_sampler = UniformSampler(single_jitter=single_jitter)
-            raymarcher = ProposalNetworkSampler(
-                num_proposal_samples_per_ray=num_proposal_samples,
-                num_nerf_samples_per_ray=n_intersections,
-                num_proposal_network_iterations=len(num_proposal_samples),
-                single_jitter=single_jitter,
-                initial_sampler=initial_sampler,
-            )
+                self.proposal_networks.append(network)
+            self.density_fns.extend([network.get_density for network in self.proposal_networks])
+
+        update_schedule = lambda step: np.clip(
+            np.interp(step, [0, self.proposal_warmup], [0, self.proposal_update_every]),
+            1,
+            self.proposal_update_every,
+        )
+        if self.is_contracted or self.is_ndc:
+            initial_sampler = UniformLinDispPiecewiseSampler(single_jitter=single_jitter)
         else:
-            assert spacing_fn is not None
-            assert num_sample_multiplier is not None
-            raymarcher = RayMarcher(
-                n_intersections=n_intersections,
-                num_sample_multiplier=num_sample_multiplier,
-                raymarch_type=raymarch_type,
-                spacing_fn=spacing_fn,
-                single_jitter=single_jitter,
-                spatial_distortion=self.spatial_distortion)
-        return raymarcher, density_fields, density_fns
+            initial_sampler = UniformSampler(single_jitter=single_jitter)
+        self.proposal_sampler = ProposalNetworkSampler(
+            num_nerf_samples_per_ray=num_samples,
+            num_proposal_samples_per_ray=num_proposal_samples,
+            num_proposal_network_iterations=self.num_proposal_iterations,
+            single_jitter=single_jitter,
+            update_sched=update_schedule,
+            initial_sampler=initial_sampler
+        )
+
+    def step_before_iter(self, step):
+        if self.use_proposal_weight_anneal:
+            # anneal the weights of the proposal network before doing PDF sampling
+            N = self.proposal_weights_anneal_max_num_iters
+            # https://arxiv.org/pdf/2111.12077.pdf eq. 18
+            train_frac = np.clip(step / N, 0, 1)
+            bias = lambda x, b: (b * x) / ((b - 1) * x + 1)
+            anneal = bias(train_frac, self.proposal_weights_anneal_slope)
+            self.proposal_sampler.set_anneal(anneal)
+
+    def step_after_iter(self, step):
+        if self.use_proposal_weight_anneal:
+            self.proposal_sampler.step_cb(step)
+
+    @staticmethod
+    def render_rgb(rgb: torch.Tensor, weights: torch.Tensor, bg_color: Optional[torch.Tensor]):
+        comp_rgb = torch.sum(weights * rgb, dim=-2)
+        accumulated_weight = torch.sum(weights, dim=-2)
+        if bg_color is None:
+            pass
+        else:
+            comp_rgb = comp_rgb + (1.0 - accumulated_weight) * bg_color
+        return comp_rgb
+
+    @staticmethod
+    def render_depth(weights: torch.Tensor, ray_samples: RaySamples, rays_d: torch.Tensor):
+        eps = 1e-10
+        steps = (ray_samples.starts + ray_samples.ends) / 2
+        one_minus_transmittance = torch.sum(weights, dim=-2)
+        depth = torch.sum(weights * steps, dim=-2) + one_minus_transmittance * rays_d[..., -1:]
+        #depth = torch.sum(weights * steps, dim=-2) / (torch.sum(weights, -2) + eps)
+        #depth = torch.clip(depth, steps.min(), steps.max())
+        return depth
+
+    @staticmethod
+    def render_accumulation(weights: torch.Tensor):
+        accumulation = torch.sum(weights, dim=-2)
+        return accumulation
+
+    def forward(self, rays_o, rays_d, bg_color, near_far: torch.Tensor, timestamps=None):
+        """
+        rays_o : [batch, 3]
+        rays_d : [batch, 3]
+        timestamps : [batch]
+        near_far : [batch, 2]
+        """
+        # Normalize rays_d
+        rays_d = rays_d / torch.linalg.norm(rays_d, dim=-1, keepdim=True)
+        # Fix shape for near-far
+        nears, fars = torch.split(near_far, [1, 1], dim=-1)
+        if nears.shape[0] != rays_o.shape[0]:
+            ones = torch.ones_like(rays_o[..., 0:1])
+            nears = ones * nears
+            fars = ones * fars
+
+        ray_bundle = RayBundle(origins=rays_o, directions=rays_d, nears=nears, fars=fars)
+        ray_samples, weights_list, ray_samples_list = self.proposal_sampler.generate_ray_samples(
+            ray_bundle, timestamps=timestamps, density_fns=self.density_fns)
+
+        field_out = self.field(ray_samples.get_positions(), ray_bundle.directions, timestamps)
+        rgb, density = field_out["rgb"], field_out["density"]
+
+        weights = ray_samples.get_weights(density)
+        weights_list.append(weights)
+        ray_samples_list.append(ray_samples)
+
+        rgb = self.render_rgb(rgb=rgb, weights=weights, bg_color=bg_color)
+        depth = self.render_depth(weights=weights, ray_samples=ray_samples, rays_d=ray_bundle.directions)
+        accumulation = self.render_accumulation(weights=weights)
+        outputs = {
+            "rgb": rgb,
+            "accumulation": accumulation,
+            "depth": depth,
+        }
+
+        # These use a lot of GPU memory, so we avoid storing them for eval.
+        if self.training:
+            outputs["weights_list"] = weights_list
+            outputs["ray_samples_list"] = ray_samples_list
+        for i in range(self.num_proposal_iterations):
+            outputs[f"prop_depth_{i}"] = self.render_depth(
+                weights=weights_list[i], ray_samples=ray_samples_list[i], rays_d=ray_bundle.directions)
+        return outputs
+
+    def get_params(self, lr: float):
+        return [
+            {"params": self.parameters(), "lr": lr},
+        ]

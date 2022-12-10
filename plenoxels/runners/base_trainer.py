@@ -1,7 +1,6 @@
 import abc
 import logging as log
 import os
-from dataclasses import dataclass
 from typing import Iterable, Optional, Union, Dict, Tuple, Sequence, MutableMapping
 
 import numpy as np
@@ -66,6 +65,7 @@ class BaseTrainer(abc.ABC):
         return False
 
     def post_step(self, progress_bar):
+        self.model.step_after_iter(self.global_step)
         if self.global_step % self.calc_metrics_every == 0:
             progress_bar.set_postfix_str(
                 losses_to_postfix(self.loss_info, lr=self.lr), refresh=False)
@@ -97,6 +97,7 @@ class BaseTrainer(abc.ABC):
             self.pre_epoch()
             batch_iter = iter(self.train_data_loader)
             while self.global_step < self.num_steps:
+                self.model.step_before_iter(self.global_step)
                 self.global_step += 1
                 try:
                     data = next(batch_iter)
@@ -106,7 +107,6 @@ class BaseTrainer(abc.ABC):
                     data = next(batch_iter)
                     log.info("Reset data-iterator")
 
-                self.model.train()
                 try:
                     step_successful = self.train_step(data)
                 except StopIteration:
@@ -123,6 +123,19 @@ class BaseTrainer(abc.ABC):
         finally:
             pb.close()
             self.writer.close()
+
+    def _move_data_to_device(self, data):
+        data["rays_o"] = data["rays_o"].to(self.device)
+        data["rays_d"] = data["rays_d"].to(self.device)
+        data["imgs"] = data["imgs"].to(self.device)
+        data["near_fars"] = data["near_fars"].to(self.device)
+        if "timestamps" in data:
+            data["timestamps"] = data["timestamps"].to(self.device)
+        bg_color = data["bg_color"]
+        if isinstance(bg_color, torch.Tensor):
+            bg_color = bg_color.to(self.device)
+        data["bg_color"] = bg_color
+        return data
 
     def _normalize_err(self, preds: torch.Tensor, gt: torch.Tensor) -> torch.Tensor:
         err = torch.abs(preds - gt)

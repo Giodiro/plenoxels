@@ -189,20 +189,25 @@ def viewmatrix(z, up, pos):
     return np.stack([-vec0, vec1, vec2, pos], axis=1)
 
 
-def generate_spiral_path(poses: np.ndarray, near_fars: np.ndarray, n_frames=120, n_rots=2, zrate=.5) -> torch.Tensor:
+def generate_spiral_path(poses: np.ndarray,
+                         near_fars: np.ndarray,
+                         n_frames=120,
+                         n_rots=2,
+                         zrate=.5,
+                         dt=0.75) -> np.ndarray:
     """Calculates a forward facing spiral path for rendering.
-    
+
     From https://github.com/google-research/google-research/blob/342bfc150ef1155c5254c1e6bd0c912893273e8d/regnerf/internal/datasets.py
     and https://github.com/apchenstu/TensoRF/blob/main/dataLoader/llff.py
 
     :param poses: [N, 3, 4]
-    :param near_fars: 
-    :param n_frames: 
-    :param n_rots: 
-    :param zrate: 
-    :return: 
+    :param near_fars:
+    :param n_frames:
+    :param n_rots:
+    :param zrate:
+    :param dt:
+    :return:
     """
-
     # center pose
     c2w = average_poses(poses)  # [3, 4]
 
@@ -211,8 +216,7 @@ def generate_spiral_path(poses: np.ndarray, near_fars: np.ndarray, n_frames=120,
 
     # Find a reasonable "focus depth" for this dataset as a weighted average
     # of near and far bounds in disparity space.
-    dt = 0.75
-    close_depth, inf_depth = near_fars.min() * 0.9, near_fars.max() * 5.0
+    close_depth, inf_depth = np.min(near_fars) * 0.9, np.max(near_fars) * 5.0
     focal = 1.0 / (((1.0 - dt) / close_depth + dt / inf_depth))
 
     # Get radii for spiral path using 90th percentile of camera positions.
@@ -228,10 +232,10 @@ def generate_spiral_path(poses: np.ndarray, near_fars: np.ndarray, n_frames=120,
         lookat = c2w @ np.array([0, 0, -focal, 1.0])
         z_axis = normalize(position - lookat)
         render_poses.append(viewmatrix(z_axis, up, position))
-    return torch.from_numpy(np.stack(render_poses, axis=0)).float()
+    return np.stack(render_poses, axis=0)
 
 
-def generate_hemispherical_orbit(poses: torch.Tensor, n_frames=120):  # TODO: Check this (mixed np, torch)
+def generate_hemispherical_orbit(poses: torch.Tensor, n_frames=120):
     """Calculates a render path which orbits around the z-axis.
     Based on https://github.com/google-research/google-research/blob/342bfc150ef1155c5254c1e6bd0c912893273e8d/regnerf/internal/datasets.py
     """

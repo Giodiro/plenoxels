@@ -20,24 +20,6 @@ from ..raymarching.ray_samplers import (
 )
 
 
-class DensityMask(nn.Module):
-    def __init__(self, density_volume: torch.Tensor, aabb: torch.Tensor):
-        super().__init__()
-        self.register_buffer('density_volume', density_volume)
-        self.register_buffer('aabb', aabb)
-
-    def sample_density(self, pts: torch.Tensor) -> torch.Tensor:
-        # Normalize pts
-        pts = (pts - self.aabb[0]) * (2.0 / (self.aabb[1] - self.aabb[0])) - 1
-        pts = pts.to(dtype=self.density_volume.dtype)
-        density_vals = grid_sample_wrapper(self.density_volume[None, ...], pts, align_corners=True).view(-1)
-        return density_vals
-
-    @property
-    def grid_size(self) -> torch.Tensor:
-        return torch.tensor((self.density_volume.shape[-1], self.density_volume.shape[-2], self.density_volume.shape[-3]), dtype=torch.long)
-
-
 class LowrankLearnableHash(LowrankModel):
     def __init__(self,
                  grid_config: Union[str, List[Dict]],
@@ -104,23 +86,23 @@ class LowrankLearnableHash(LowrankModel):
                             self.feature_dim = self.features[-1].shape[0]
                     # initialize coordinate grid
                     else:
-                        config = grid_config.copy()
-                        config["resolution"] = [r * res for r in config["resolution"]]
-
-                        gpdesc = init_grid_param(config, feature_len=featlen, is_video=False,
-                                grid_level=li, use_F=self.use_F, is_appearance=False)
+                        gpdesc = init_grid_param(
+                            grid_nd=grid_config["grid_dimensions"],
+                            in_dim=grid_config["input_coordinate_dim"],
+                            out_dim=featlen, reso=[r * res for r in grid_config["resolution"]],
+                            is_video=False, is_appearance=False, use_F=self.use_F
+                        )
                         if li == 0:
                             self.set_resolution(gpdesc.reso, grid_id=si)
                         grids.append(gpdesc.grid_coefs)
                         for gc in gpdesc.grid_coefs:
                             log.info(f"Initialized grid with shape {gc.shape}")
                         if not self.use_F:
-                            # shape[1] is out-dim * rank
-                            # Concatenate over feature len for each scale
+                            # shape[1] is out-dim * rank - Concatenate over feature len for each scale
                             if self.concat_features:
                                 self.feature_dim = sum(self.feature_len)
                             else:
-                                self.feature_dim = gpdesc.grid_coefs[-1].shape[1] // config["rank"][0]
+                                self.feature_dim = gpdesc.grid_coefs[-1].shape[1]
                 multi_scale_grids.append(grids)
             self.scene_grids.append(multi_scale_grids)
         if self.sh:
@@ -146,178 +128,9 @@ class LowrankLearnableHash(LowrankModel):
                          pts: torch.Tensor,
                          grid_id: int,
                          ) -> torch.Tensor:
-        mulitres_grids: nn.ModuleList = self.scene_grids[grid_id]  # noqa
-        grids_info = self.config
-
-        multi_scale_interp = [] if self.concat_features else 0
-        for scale_id, (res, featlen) in enumerate(zip(self.multiscale_res, self.feature_len)):  # noqa
-            grids: nn.ParameterList = mulitres_grids[scale_id]
-            for level_info, grid in zip(grids_info, grids):
-                if "feature_dim" in level_info:
-                    continue
-
-                # create plane combinations
-                coo_combs = list(itertools.combinations(
-                    range(pts.shape[-1]),
-                    level_info.get("grid_dimensions", level_info["input_coordinate_dim"])))
-
-                interp_out = 1
-                for ci, coo_comb in enumerate(coo_combs):
-                    # interpolate in plane
-                    interp_out_plane = grid_sample_wrapper(grid[ci], pts[..., coo_comb]).view(
-                                -1, featlen, level_info["rank"])
-                    # compute product
-                    interp_out = interp_out_plane if interp_out is None else interp_out * interp_out_plane
-                    # interp_out = interp_out_plane if interp_out is None else interp_out + interp_out_plane # Addition ablation study
-            # average over rank
-            interp = interp_out.mean(dim=-1)
-
-            if self.use_F:
-                if interp.numel() > 0:
-                    interp = (interp - self.pt_min[scale_id]) / (self.pt_max[scale_id] - self.pt_min[scale_id])
-                    interp = interp * 2 - 1
-                interp = grid_sample_wrapper(
-                    self.features[scale_id].to(dtype=interp.dtype), interp
-                ).view(-1, self.feature_dim)
-
-            if self.concat_features:  # Concatenate over scale
-                multi_scale_interp.append(interp)
-            else:  # Sum over scales
-                multi_scale_interp += interp
-        if self.concat_features:
-            multi_scale_interp = torch.cat(multi_scale_interp, dim=-1)
-        return multi_scale_interp  # noqa
-
-    @torch.no_grad()
-    def update_alpha_mask(self, grid_id: int = 0):
-        assert len(self.config) <= 2, "Alpha-masking not supported for multiple layers of indirection."
-        aabb = self.aabb(grid_id)
-        grid_size = self.resolution(grid_id)
-        grid_size_l = grid_size.cpu().tolist()
-        step_size = self.raymarcher.get_step_size(aabb, grid_size)
-
-        # Compute density on a regular grid (of shape grid_size)
-        pts = self.get_points_on_grid(aabb, grid_size, max_voxels=None)
-        density = self.query_density(pts, grid_id).view(-1)
-
-        alpha = 1.0 - torch.exp(-density * step_size * self.density_multiplier).view(grid_size_l)  # [gs0, gs1, gs2]
-        pts = pts.view(grid_size_l + [3])  # [gs0, gs1, gs2, 3]
-
-        # Transpose to get correct Depth, Height, Width format
-        pts = pts.transpose(0, 2).contiguous()
-        alpha = alpha.clamp(0, 1).transpose(0, 2).contiguous()
-
-        # Compute the mask (max-pooling) and the new aabb.
-        alpha = F.max_pool3d(alpha[None, None, ...], kernel_size=3, padding=1, stride=1)
-        alpha = alpha.view(grid_size_l[::-1])
-        alpha = F.threshold(alpha, self.alpha_mask_threshold, 0.0)  # set to 0 if <= threshold
-
-        alpha_mask = alpha > 0
-        valid_pts = pts[alpha_mask]
-        pts_min = valid_pts.amin(0)
-        pts_max = valid_pts.amax(0)
-
-        new_aabb = torch.stack((pts_min, pts_max), 0)
-        log.info(f"Updated alpha mask for scene {grid_id}. "
-                 f"New bounding box={new_aabb.view(-1)}. "
-                 f"Remaining {alpha_mask.sum() / grid_size_l[0] / grid_size_l[1] / grid_size_l[2] * 100:.2f}% voxels.")
-        self.density_mask[grid_id] = DensityMask(alpha, aabb=aabb)
-        return new_aabb
-
-    @torch.no_grad()
-    def shrink(self, new_aabb, grid_id: int):
-        log.info(f"Shrinking grid {grid_id}...")
-
-        cur_aabb = self.aabb(grid_id)
-        cur_grid_size = self.resolution(grid_id)
-        dev = cur_aabb.device
-
-        cur_units = (cur_aabb[1] - cur_aabb[0]) / (cur_grid_size - 1)
-        t_l, b_r = (new_aabb[0] - cur_aabb[0]) / cur_units, (new_aabb[1] - cur_aabb[0]) / cur_units
-        t_l = torch.round(t_l).long()
-        b_r = torch.round(b_r).long() + 1
-        b_r = torch.minimum(b_r, cur_grid_size)  # don't exceed current grid dimensions
-
-        # Truncate the parameter grid to the new grid-size
-        # IMPORTANT: This will only work if input-dim is 3!
-        grid_info = self.config[0]
-        coo_combs = list(itertools.combinations(
-            range(grid_info["input_coordinate_dim"]),
-            grid_info.get("grid_dimensions", grid_info["input_coordinate_dim"])))
-        for ci, coo_comb in enumerate(coo_combs):
-            slices = [slice(None), slice(None)] + [slice(t_l[cc].item(), b_r[cc].item()) for cc in coo_comb[::-1]]
-            self.scene_grids[grid_id][0][ci] = torch.nn.Parameter(
-                self.scene_grids[grid_id][0][ci].data[slices]
-            )
-
-        # TODO: Why the correction? Check if this ever occurs
-        if not torch.all(self.density_mask[grid_id].grid_size.to(device=dev) == cur_grid_size):
-            t_l_r, b_r_r = t_l / (cur_grid_size - 1), (b_r - 1) / (cur_grid_size - 1)
-            correct_aabb = torch.zeros_like(new_aabb)
-            correct_aabb[0] = (1 - t_l_r) * cur_aabb[0] + t_l_r * cur_aabb[1]
-            correct_aabb[1] = (1 - b_r_r) * cur_aabb[0] + b_r_r * cur_aabb[1]
-            log.info(f"Corrected new AABB from {new_aabb.view(-1)} to {correct_aabb.view(-1)}")
-            new_aabb = correct_aabb
-
-        new_size = b_r - t_l
-        self.set_aabb(new_aabb, grid_id)
-        self.set_resolution(new_size, grid_id)
-        log.info(f"Shrunk scene {grid_id}. New AABB={new_aabb.view(-1)} New resolution={new_size.view(-1)}")
-
-    @torch.no_grad()
-    def upsample(self, new_reso, grid_id: int):
-
-        grid_info = self.config[0]
-        coo_combs = list(itertools.combinations(
-            range(grid_info["input_coordinate_dim"]),
-            grid_info.get("grid_dimensions", grid_info["input_coordinate_dim"])))
-
-        for scale in range(len(self.scene_grids[grid_id])):
-            scale_multiplier = 2**scale
-
-            for ci, coo_comb in enumerate(coo_combs):
-
-                new_reso_scale = [reso*scale_multiplier for reso in new_reso]
-                new_size = [new_reso_scale[cc] for cc in coo_comb]
-
-                if len(coo_comb) == 3:
-                    mode = 'trilinear'
-                elif len(coo_comb) == 2:
-                    mode = 'bilinear'
-                elif len(coo_comb) == 1:
-                    mode = 'linear'
-                else:
-                    raise RuntimeError()
-
-                grid_data = self.scene_grids[grid_id][scale][0][ci].data
-                self.scene_grids[grid_id][scale][0][ci] = torch.nn.Parameter(F.interpolate(grid_data, size=new_size[::-1], mode=mode, align_corners=True))
-            #self.set_resolution(
-            #    torch.tensor(new_reso, dtype=torch.long, device=grid_data.device), grid_id)
-            log.info(f"Upsampled scene {grid_id} to resolution={new_size}")
-
-    def get_points_on_grid(self, aabb, grid_size, max_voxels: Optional[int] = None):
-        """
-        Returns points from a regularly spaced grids of size grid_size.
-        Coordinates normalized between [aabb0, aabb1]
-
-        :param aabb:
-        :param grid_size:
-        :param max_voxels:
-        :return:
-        """
-        dev = aabb.device
-        pts = torch.stack(torch.meshgrid(
-            torch.linspace(0, 1, grid_size[0], device=dev),
-            torch.linspace(0, 1, grid_size[1], device=dev),
-            torch.linspace(0, 1, grid_size[2], device=dev), indexing='ij'
-        ), dim=-1)  # [gs0, gs1, gs2, 3]
-        pts = pts.view(-1, 3)  # [gs0*gs1*gs2, 3]
-        if max_voxels is not None:
-            # with replacement as it's faster?
-            pts = pts[torch.randint(pts.shape[0], (max_voxels, )), :]
-        # Normalize between [aabb0, aabb1]
-        pts = aabb[0] * (1 - pts) + aabb[1] * pts
-        return pts
+        return self.interpolate_ms_features(
+            pts=pts, ms_grids=self.scene_grids[grid_id], grid_info=self.config[0],
+            concat_features=self.concat_features, num_levels=None)
 
     def query_density(self, pts: torch.Tensor, grid_id: int, return_feat: bool = False):
         pts_norm = self.normalize_coords(pts, grid_id)
@@ -332,6 +145,18 @@ class LowrankLearnableHash(LowrankModel):
         if return_feat:
             return density, features
         return density
+
+    def do_proposal_sampling(self, raybundle: RayBundle):
+        ray_samples, weights_list, ray_samples_list, density_list = self.raymarcher.generate_ray_samples(
+            raybundle, density_fns=self.density_fns, return_density=True)
+        outputs['weights_list'] = weights_list
+        outputs['ray_samples_list'] = ray_samples_list
+        outputs['ray_samples_list'].append(ray_samples)
+        rays_d = raybundle.directions
+
+    def do_volumetric_sampling(self, raybundle: RayBundle):
+        pass
+
 
     def forward(self, rays_o, rays_d, bg_color, grid_id=0, channels: Sequence[str] = ("rgb", "depth"), near_far=None):
         """
@@ -432,7 +257,7 @@ class LowrankLearnableHash(LowrankModel):
         density = torch.zeros(n_rays, n_intrs, device=dev, dtype=density_masked.dtype)
         density[mask] = density_masked.view(-1)
 
-        alpha, weight, transmission = raw2alpha(density, deltas * self.density_multiplier)  # Each is shape [batch_size, n_samples]
+        alpha, weight, transmission = raw2alpha(density, deltas)  # Each is shape [batch_size, n_samples]
         if self.use_proposal_sampling:
             outputs['weights_list'].append(weight[..., None])
         self.timer.check("density")
@@ -464,30 +289,3 @@ class LowrankLearnableHash(LowrankModel):
         return [
             {"params": self.parameters(), "lr": lr},
         ]
-
-    def update_trainable_scale(self):
-        num_grids_per_scale = len(list(flatten(self.scene_grids))) / len(self.multiscale_res)
-        # Remove any existing hooks
-        if self.hooks is not None:
-            for hook in self.hooks:
-                hook.remove()
-        # Create new hooks, with gradient masks that reflect the current trainable rank
-        self.hooks = []
-        boolvalcount = 0
-        for grid_num, grid in enumerate(flatten(self.scene_grids)):
-            if grid_num >= self.trainable_scale * num_grids_per_scale:
-                # zero out the gradient for these higher-resolution grids
-                hook = grid.register_hook(lambda grad: torch.zeros_like(grad))
-                self.hooks.append(hook)
-                print(f'zeroing out the gradient for grid of shape {grid.shape}')
-        print(f'set trainable scale to {self.trainable_scale}, number of untrained planes = {len(self.hooks)}')
-
-
-# based on https://stackoverflow.com/questions/2158395/flatten-an-irregular-arbitrarily-nested-list-of-lists
-def flatten(xs):
-    for x in xs:
-        if type(x) is torch.nn.parameter.Parameter:
-            yield x
-        else:
-            for item in flatten(x):
-                yield item
