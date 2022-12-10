@@ -13,6 +13,7 @@ class LowrankVideo(LowrankModel):
                  grid_config: Union[str, List[Dict]],
                  aabb: torch.Tensor,  # [[x_min, y_min, z_min], [x_max, y_max, z_max]]
                  sh: bool,
+                 learnedbasis: bool,
                  use_F: bool,
                  density_activation: str,
                  render_n_samples: int,
@@ -22,6 +23,7 @@ class LowrankVideo(LowrankModel):
         super().__init__(
             grid_config=grid_config,
             sh=sh,
+            learnedbasis=learnedbasis,
             use_F=use_F,
             density_activation=density_activation,
             aabb=aabb,

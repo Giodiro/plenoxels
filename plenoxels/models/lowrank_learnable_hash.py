@@ -14,6 +14,7 @@ class LowrankLearnableHash(LowrankModel):
                  grid_config: Union[str, List[Dict]],
                  aabb: List[torch.Tensor],
                  sh: bool,
+                 learnedbasis: bool,
                  use_F: bool,
                  density_activation: str,
                  render_n_samples: int,
@@ -25,6 +26,7 @@ class LowrankLearnableHash(LowrankModel):
         :param grid_config:
         :param aabb:
         :param sh:
+        :param learnedbasis:
         :param use_F:
         :param density_activation:
         :param render_n_samples:
@@ -38,6 +40,7 @@ class LowrankLearnableHash(LowrankModel):
         super().__init__(
             grid_config=grid_config,
             sh=sh,
+            learnedbasis=learnedbasis,
             use_F=use_F,
             density_activation=density_activation,
             aabb=aabb,

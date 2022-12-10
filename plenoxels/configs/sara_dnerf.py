@@ -1,5 +1,5 @@
 config = {
-    'expname': 'lego_baselinemlp',
+    'expname': 'lego_linear',
     'logdir': './logs/dnerf',
     'device': 'cuda:0',
     'wandb': False,
@@ -47,6 +47,7 @@ config = {
 
     # Model
     'sh': False,
+    'learnedbasis': True,
     'use_F': False,
     'concat_features': True,
     'train_every_scale': False,

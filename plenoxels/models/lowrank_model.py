@@ -8,7 +8,7 @@ from typing import List, Sequence, Optional, Union, Dict
 import torch
 import torch.nn as nn
 
-from plenoxels.models.decoders import SHDecoder, NNDecoder, BaseDecoder
+from plenoxels.models.decoders import SHDecoder, NNDecoder, BaseDecoder, LearnedBasisDecoder
 from plenoxels.models.utils import init_density_activation, grid_sample_wrapper
 
 
@@ -24,6 +24,7 @@ class LowrankModel(ABC, nn.Module):
     def __init__(self,
                  grid_config: Union[str, List[Dict]],
                  sh: bool,
+                 learnedbasis: bool,
                  use_F: bool,
                  density_activation: str,
                  concat_features: bool,
@@ -34,6 +35,7 @@ class LowrankModel(ABC, nn.Module):
         else:
             self.config: List[Dict] = grid_config
         self.sh = sh
+        self.learnedbasis = learnedbasis
         self.use_F = use_F
         self.density_act = init_density_activation(density_activation)
         self.concat_features = concat_features
@@ -85,6 +87,8 @@ class LowrankModel(ABC, nn.Module):
     def init_decoder(self) -> BaseDecoder:
         if self.sh:
             return SHDecoder(feature_dim=self.feature_dim)
+        elif self.learnedbasis:
+            return LearnedBasisDecoder(feature_dim=self.feature_dim, net_width=64, net_layers=1)
         else:
             return NNDecoder(feature_dim=self.feature_dim, sigma_net_width=64, sigma_net_layers=1)
 
