@@ -1,11 +1,11 @@
 config = {
-    'expname': 'jumpingjacks_linear_d64noconcat_occ128_flatlr10k',
+    'expname': 'lego_linear_d64noconcat_occ128',
     'logdir': './logs/dnerf',
     'device': 'cuda:0',
     'wandb': False,
 
     # Data settings
-    'data_dirs': ['/home/sfk/data/dnerf/data/jumpingjacks'],
+    'data_dirs': ['/home/sfk/data/dnerf/data/lego'],
     'data_downsample': 1.0,
     'max_test_cameras': None,
     'max_test_tsteps': None,
@@ -23,14 +23,14 @@ config = {
             "input_coordinate_dim": 4,
             "output_coordinate_dim": 64,
             "grid_dimensions": 2,
-            "resolution": [64, 64, 64, 100],
+            "resolution": [64, 64, 64, 25],
         }
     ],
 
     # Optimization settings
-    'num_steps': 10001,
+    'num_steps': 30001,
     'optim_type': 'adam',
-    'scheduler_type': 'None',
+    'scheduler_type': 'warmup_cosine',
     'lr': 0.005,
 
     # Training settings
