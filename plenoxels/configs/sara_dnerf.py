@@ -1,11 +1,11 @@
 config = {
-    'expname': 'lego_linear',
+    'expname': 'jumpingjacks_linear_d64noconcat_occ128_flatlr10k',
     'logdir': './logs/dnerf',
     'device': 'cuda:0',
     'wandb': False,
 
     # Data settings
-    'data_dirs': ['/home/sfk/data/dnerf/data/lego'],
+    'data_dirs': ['/home/sfk/data/dnerf/data/jumpingjacks'],
     'data_downsample': 1.0,
     'max_test_cameras': None,
     'max_test_tsteps': None,
@@ -17,10 +17,20 @@ config = {
     'ist_step': -1,
     'keyframes': False,
 
+    # Grid config
+    'grid_config': [
+        {
+            "input_coordinate_dim": 4,
+            "output_coordinate_dim": 64,
+            "grid_dimensions": 2,
+            "resolution": [64, 64, 64, 100],
+        }
+    ],
+
     # Optimization settings
-    'num_steps': 30001,
+    'num_steps': 10001,
     'optim_type': 'adam',
-    'scheduler_type': 'warmup_cosine',
+    'scheduler_type': 'None',
     'lr': 0.005,
 
     # Training settings
@@ -49,17 +59,9 @@ config = {
     'sh': False,
     'learnedbasis': True,
     'use_F': False,
-    'concat_features': True,
+    'concat_features': False,
     'train_every_scale': False,
     'density_activation': 'trunc_exp',
     'multiscale_res': [1, 2, 3, 4],
-    'occupancy_grid_resolution': [256, 256, 256],
-    'grid_config': [
-        {
-            "input_coordinate_dim": 4,
-            "output_coordinate_dim": 16,
-            "grid_dimensions": 2,
-            "resolution": [64, 64, 64, 25],
-        }
-    ],
+    'occupancy_grid_resolution': [128, 128, 128],
 }

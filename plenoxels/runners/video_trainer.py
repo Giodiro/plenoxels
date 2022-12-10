@@ -275,7 +275,7 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
     keyframes = kwargs.get('keyframes', False)
     initial_batch_size = int(kwargs['sample_batch_size']) // int(kwargs['n_samples'])
     tr_queue = mp.Queue(maxsize=1000)
-    if "lego" in data_dir:
+    if "lego" in data_dir or "dnerf" in data_dir:
         log.info(f"Loading Video360Dataset with downsample={data_downsample}")
         tr_dset = Video360Dataset(
             data_dir, split='train', downsample=data_downsample,
@@ -311,7 +311,7 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
 
 
 def init_ts_data(data_dir, **kwargs):
-    if "lego" in data_dir:
+    if "lego" in data_dir or "dnerf" in data_dir:
         ts_dset = Video360Dataset(
             data_dir, split='test', downsample=1,
             max_cameras=kwargs.get('max_test_cameras'),
