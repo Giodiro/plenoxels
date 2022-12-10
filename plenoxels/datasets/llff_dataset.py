@@ -8,8 +8,7 @@ import torch
 
 from .data_loading import parallel_load_images
 from .ray_utils import (
-    get_ray_directions_blender, get_rays, ndc_rays_blender, center_poses,
-    gen_camera_dirs
+    ndc_rays_blender, center_poses, gen_camera_dirs, generate_spiral_path
 )
 from .intrinsics import Intrinsics
 from .base_dataset import BaseDataset
@@ -28,41 +27,59 @@ class LLFFDataset(BaseDataset):
             raise ValueError("LLFF dataset expects either contraction or NDC to be enabled.")
         self.downsample = downsample
         self.hold_every = hold_every
+        self.near_scaling = 0.9
+        self.ndc_far = 2.6
 
-        image_paths, self.poses, near_fars, intrinsics = load_llff_poses(
-            datadir, downsample=downsample, split=split, hold_every=hold_every, near_scaling=0.9)
-        num_images = len(self.poses)
-        imgs = load_llff_images(image_paths, intrinsics, split)
-        imgs = (imgs * 255).to(torch.uint8)
-        if split == 'train':
-            imgs = imgs.view(-1, imgs.shape[-1])
+        if split == 'render':
+            # For rendering path we load all poses, use them to generate spiral poses.
+            # No gt images exist!
+            assert ndc, "Unable to generate render poses without ndc: don't know near-far."
+            image_paths, poses, near_fars, intrinsics = load_llff_poses(
+                datadir, downsample=downsample, split='test', hold_every=1,
+                near_scaling=self.near_scaling)
+            render_poses = generate_spiral_path(
+                poses.numpy(), near_fars.numpy(), n_frames=120, n_rots=2, zrate=0.5,
+                dt=self.near_scaling)
+            self.poses = render_poses
+            imgs = None
         else:
-            imgs = imgs.view(-1, intrinsics.height * intrinsics.width, imgs.shape[-1])
+            image_paths, self.poses, near_fars, intrinsics = load_llff_poses(
+                datadir, downsample=downsample, split=split, hold_every=hold_every,
+                near_scaling=self.near_scaling)
+            imgs = load_llff_images(image_paths, intrinsics, split)
+            imgs = (imgs * 255).to(torch.uint8)
+            if split == 'train':
+                imgs = imgs.view(-1, imgs.shape[-1])
+            else:
+                imgs = imgs.view(-1, intrinsics.height * intrinsics.width, imgs.shape[-1])
+        num_images = len(self.poses)
         if contraction:
             bbox = torch.tensor([[-2., -2., -2.], [2., 2., 2.]])
             self.near_fars = near_fars
         else:
             bbox = torch.tensor([[-1.5, -1.67, -1.], [1.5, 1.67, 1.]])
-            self.near_fars = torch.tensor([[0.0, 2.6]]).repeat(num_images, 1)
+            self.near_fars = torch.tensor([[0.0, self.ndc_far]]).repeat(num_images, 1)
 
+        # These are used when contraction=True
         self.global_translation = torch.tensor([0, 0, 1.5])
         self.global_scale = torch.tensor([0.9, 0.9, 1])
 
-        super().__init__(datadir=datadir,
-                         split=split,
-                         scene_bbox=bbox,
-                         batch_size=batch_size,
-                         imgs=imgs,
-                         rays_o=None,
-                         rays_d=None,
-                         intrinsics=intrinsics,
-                         is_ndc=ndc,
-                         is_contracted=contraction,
-                         )
-        log.info(f"LLFFDataset contracted {self.is_contracted} - Loaded {split} set "
-                 f"from {datadir}: {num_images} images of "
-                 f"shape {self.img_h}x{self.img_w} with {imgs.shape[-1]} channels. "
-                 f"near-fars: {self.near_fars}. {intrinsics}")
+        super().__init__(
+            datadir=datadir,
+            split=split,
+            scene_bbox=bbox,
+            batch_size=batch_size,
+            imgs=imgs,
+            rays_o=None,
+            rays_d=None,
+            intrinsics=intrinsics,
+            is_ndc=ndc,
+            is_contracted=contraction,
+        )
+        log.info(f"LLFFDataset. {contraction=} {ndc=}. Loaded {split} set from {datadir}. "
+                 f"{num_images} poses of shape {self.img_h}x{self.img_w}. "
+                 f"Images loaded: {imgs is not None}. Near-far: {self.near_fars}. "
+                 f"Sampling without replacement={self.use_permutation}. {intrinsics}")
 
     def __getitem__(self, index):
         h = self.intrinsics.height
@@ -82,27 +99,25 @@ class LLFFDataset(BaseDataset):
             )
             x = x.flatten()
             y = y.flatten()
-        near_fars = self.near_fars[image_id, :].view(-1, 2)
-        rgba = self.imgs[index] / 255.0  # (num_rays, 3)   this converts to f32
+        out = {"near_fars": self.near_fars[image_id, :].view(-1, 2)}
+        if self.imgs is not None:
+            out["imgs"] = self.imgs[index] / 255.0  # (num_rays, 3)   this converts to f32
+        else:
+            out["imgs"] = None
+
         c2w = self.poses[image_id]       # (num_rays, 3, 4)
         camera_dirs = gen_camera_dirs(
             x, y, self.intrinsics, True)  # [num_rays, 3]
-
         directions = (camera_dirs[:, None, :] * c2w[:, :3, :3]).sum(dim=-1)
         origins = torch.broadcast_to(c2w[:, :3, -1], directions.shape)
         if self.is_ndc:
             origins, directions = ndc_rays_blender(
                 intrinsics=self.intrinsics, near=1.0, rays_o=origins, rays_d=directions)
-            directions /= torch.linalg.norm(directions, dim=-1, keepdim=True)
-        else:
-            directions /= torch.linalg.norm(directions, dim=-1, keepdim=True)
-        return {
-            "rays_o": origins.reshape(-1, 3),
-            "rays_d": directions.reshape(-1, 3),
-            "imgs": rgba.reshape(-1, rgba.shape[-1]),
-            "near_far": near_fars,
-            "bg_color": torch.tensor([[1.0, 1.0, 1.0]]),
-        }
+        directions /= torch.linalg.norm(directions, dim=-1, keepdim=True)
+        out["rays_o"] = origins.reshape(-1, 3)
+        out["rays_d"] = directions.reshape(-1, 3)
+        out["bg_color"] = torch.tensor([[1.0, 1.0, 1.0]])
+        return out
 
 
 def _split_poses_bounds(poses_bounds: np.ndarray) -> Tuple[np.ndarray, np.ndarray, Intrinsics]:
@@ -139,7 +154,12 @@ def load_llff_poses_helper(datadir: str, downsample: float, near_scaling: float)
     return poses, near_fars, intrinsics
 
 
-def load_llff_poses(datadir: str, downsample: float, split: str, hold_every: int, near_scaling: float = 0.75):
+def load_llff_poses(datadir: str,
+                    downsample: float,
+                    split: str,
+                    hold_every: int,
+                    near_scaling: float = 0.75) -> Tuple[
+                        List[str], torch.Tensor, torch.Tensor, Intrinsics]:
     int_dsample = int(downsample)
     if int_dsample != downsample or int_dsample not in {4, 8}:
         raise ValueError(f"Cannot downsample LLFF dataset by {downsample}.")
@@ -178,32 +198,3 @@ def load_llff_images(image_paths: List[str], intrinsics: Intrinsics, split: str)
         resolution=(None, None),
     )
     return torch.stack(all_rgbs, 0)
-
-
-def create_llff_rays(imgs: Optional[torch.Tensor],
-                     poses: torch.Tensor,
-                     intrinsics: Intrinsics,
-                     merge_all: bool) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    # ray directions for all pixels, same for all images (same H, W, focal)
-    directions = get_ray_directions_blender(intrinsics)  # H, W, 3
-
-    all_rays_o, all_rays_d = [], []
-    for i in range(poses.shape[0]):
-        rays_o, rays_d = get_rays(directions, poses[i])  # both (h*w, 3)
-        rays_o, rays_d = ndc_rays_blender(
-            intrinsics=intrinsics, near=1.0, rays_o=rays_o, rays_d=rays_d)
-        all_rays_o.append(rays_o)
-        all_rays_d.append(rays_d)
-
-    all_rays_o = torch.cat(all_rays_o, 0).to(dtype=torch.float32)  # [n_frames * h * w, 3]
-    all_rays_d = torch.cat(all_rays_d, 0).to(dtype=torch.float32)  # [n_frames * h * w, 3]
-    if imgs is not None:
-        imgs = imgs.view(-1, imgs.shape[-1]).to(dtype=torch.float32)  # [n_frames * h * w, C]
-    if not merge_all:
-        num_pixels = intrinsics.height * intrinsics.width
-        all_rays_o = all_rays_o.view(-1, num_pixels, 3)  # [n_frames, h * w, 3]
-        all_rays_d = all_rays_d.view(-1, num_pixels, 3)  # [n_frames, h * w, 3]
-        if imgs is not None:
-            imgs = imgs.view(-1, num_pixels, imgs.shape[-1])
-
-    return all_rays_o, all_rays_d, imgs

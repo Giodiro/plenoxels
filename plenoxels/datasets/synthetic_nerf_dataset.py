@@ -33,24 +33,38 @@ class SyntheticNerfDataset(BaseDataset):
         self.max_frames = max_frames
         self.near_far = [2.0, 6.0]
 
-        frames, transform = load_360_frames(datadir, split, self.max_frames)
-        imgs, poses = load_360_images(frames, datadir, split, self.downsample, self.resolution)
-        intrinsics = load_360_intrinsics(transform, imgs, self.downsample)
+        if split == 'render':
+            frames, transform = load_360_frames(datadir, 'test', self.max_frames)
+            imgs, poses = load_360_images(frames, datadir, 'test', self.downsample, self.resolution)
+            render_poses = generate_hemispherical_orbit(poses, n_frames=120)
+            self.poses = render_poses
+            intrinsics = load_360_intrinsics(
+                transform, img_h=imgs[0].shape[0], img_w=imgs[0].shape[1],
+                downsample=self.downsample)
+            imgs = None
+        else:
+            frames, transform = load_360_frames(datadir, 'test', self.max_frames)
+            imgs, poses = load_360_images(frames, datadir, 'test', self.downsample, self.resolution)
+            intrinsics = load_360_intrinsics(
+                transform, img_h=imgs[0].shape[0], img_w=imgs[0].shape[1],
+                downsample=self.downsample)
         rays_o, rays_d, imgs = create_360_rays(
             imgs, poses, merge_all=split == 'train', intrinsics=intrinsics, is_blender_format=True)
-        super().__init__(datadir=datadir,
-                         split=split,
-                         scene_bbox=get_360_bbox(datadir, is_contracted=False),   # Can set to True to test contraction
-                         is_ndc=False,
-                         is_contracted=False,  # Can set to True to test contraction
-                         batch_size=batch_size,
-                         imgs=imgs,
-                         rays_o=rays_o,
-                         rays_d=rays_d,
-                         intrinsics=intrinsics)
-
-        log.info(f"SyntheticNerfDataset - Loaded {split} set from {datadir}: {len(poses)} images of size "
-                 f"{self.img_h}x{self.img_w} and {imgs.shape[-1]} channels. "
+        super().__init__(
+            datadir=datadir,
+            split=split,
+            scene_bbox=get_360_bbox(datadir, is_contracted=False),
+            is_ndc=False,
+            is_contracted=False,
+            batch_size=batch_size,
+            imgs=imgs,
+            rays_o=rays_o,
+            rays_d=rays_d,
+            intrinsics=intrinsics,
+        )
+        log.info(f"SyntheticNerfDataset. Loaded {split} set from {datadir}."
+                 f"{len(poses)} images of shape {self.img_h}x{self.img_w}. "
+                 f"Images loaded: {imgs is not None}. "
                  f"Sampling without replacement={self.use_permutation}. {intrinsics}")
 
     def __getitem__(self, index):
@@ -64,7 +78,7 @@ class SyntheticNerfDataset(BaseDataset):
         pixels = pixels[:, :3] * pixels[:, 3:] + bg_color * (1.0 - pixels[:, 3:])
         out["imgs"] = pixels
         out["bg_color"] = bg_color
-        out["near_far"] = torch.tensor([[2.0, 6.0]])
+        out["near_fars"] = torch.tensor([[2.0, 6.0]])
         return out
 
 
@@ -79,8 +93,8 @@ def get_360_bbox(datadir, is_contracted=False):
 
 
 def create_360_rays(
-              imgs,
-              poses,
+              imgs: Optional[torch.Tensor],
+              poses: torch.Tensor,
               merge_all: bool,
               intrinsics: Intrinsics,
               is_blender_format: bool = True) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -147,9 +161,9 @@ def load_360_images(frames, datadir, split, downsample, resolution=(None, None))
     return imgs, poses
 
 
-def load_360_intrinsics(transform, imgs, downsample) -> Intrinsics:
-    height = imgs[0].shape[0]
-    width = imgs[0].shape[1]
+def load_360_intrinsics(transform, img_h, img_w, downsample) -> Intrinsics:
+    height = img_h
+    width = img_w
     # load intrinsics
     if 'fl_x' in transform or 'fl_y' in transform:
         fl_x = (transform['fl_x'] if 'fl_x' in transform else transform['fl_y']) / downsample
