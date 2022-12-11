@@ -14,7 +14,7 @@ from .base_dataset import BaseDataset
 from .data_loading import parallel_load_images
 from .intrinsics import Intrinsics
 from .llff_dataset import load_llff_poses_helper
-from .ray_utils import gen_camera_dirs, ndc_rays_blender
+from .ray_utils import gen_camera_dirs, ndc_rays_blender, generate_spherical_poses
 from .synthetic_nerf_dataset import (
     load_360_images, load_360_intrinsics,
 )
@@ -77,17 +77,30 @@ class Video360Dataset(BaseDataset):
         elif dset_type == "synthetic":
             assert not contraction, "Synthetic video dataset does not work with contraction."
             assert not ndc, "Synthetic video dataset does not work with NDC."
-            frames, transform = load_360video_frames(
-                datadir, split, max_cameras=self.max_cameras, max_tsteps=self.max_tsteps)
-            imgs, self.poses = load_360_images(frames, datadir, split, self.downsample)
+            if split == 'render':
+                render_poses = torch.stack([
+                    generate_spherical_poses(angle, -30.0, 4.0)
+                    for angle in np.linspace(-180, 180, 40 + 1)[:-1]
+                ], 0)
+                imgs = None
+                self.poses = render_poses
+                timestamps = torch.linspace(0.0, 1.0, render_poses.shape[0])
+                _, transform = load_360video_frames(
+                    datadir, 'train', max_cameras=self.max_cameras, max_tsteps=self.max_tsteps)
+                img_h, img_w = 800, 800
+            else:
+                frames, transform = load_360video_frames(
+                    datadir, split, max_cameras=self.max_cameras, max_tsteps=self.max_tsteps)
+                imgs, self.poses = load_360_images(frames, datadir, split, self.downsample)
+                timestamps = torch.tensor([
+                    parse_360_file_path(frame['file_path'])[0] or float(frame['time'])
+                    for frame in frames
+                ], dtype=torch.float32)
+                img_h, img_w = imgs[0].shape[:2]
             if ndc:
                 self.per_cam_near_fars = torch.tensor([[0.0, self.ndc_far]])
             else:
                 self.per_cam_near_fars = torch.tensor([[2.0, 6.0]])
-            timestamps = torch.tensor([
-                parse_360_file_path(frame['file_path'])[0] or float(frame['time'])
-                for frame in frames
-            ], dtype=torch.float32)
             if "dnerf" in datadir:
                 # dnerf time is between 0, 1. Normalize to -1, 1
                 timestamps = timestamps * 2 - 1
@@ -95,8 +108,7 @@ class Video360Dataset(BaseDataset):
                 # lego (our vid) time is like dynerf: between 0, 30.
                 timestamps = (timestamps.float() / torch.amax(timestamps)) * 2 - 1
             intrinsics = load_360_intrinsics(
-                transform, img_h=imgs[0].shape[0], img_w=imgs[0].shape[1],
-                downsample=self.downsample)
+                transform, img_h=img_h, img_w=img_w, downsample=self.downsample)
         else:
             raise ValueError(datadir)
 
