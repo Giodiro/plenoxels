@@ -43,7 +43,7 @@ class LLFFDataset(BaseDataset):
             render_poses = generate_spiral_path(
                 poses.numpy(), near_fars.numpy(), n_frames=120, n_rots=2, zrate=0.5,
                 dt=self.near_scaling)
-            self.poses = render_poses
+            self.poses = torch.from_numpy(render_poses).float()
             imgs = None
         else:
             image_paths, self.poses, near_fars, intrinsics = load_llff_poses(

@@ -14,7 +14,7 @@ from plenoxels.runners.video_trainer import VideoTrainer
 def render_to_path(trainer: Union[VideoTrainer, Trainer], extra_name: str = ""):
     dataset = trainer.test_dataset
 
-    pb = tqdm(total=len(dataset), desc=f"Rendering scene")
+    pb = tqdm(total=100, desc=f"Rendering scene")
     frames = []
     for img_idx, data in enumerate(dataset):
         ts_render = trainer.eval_step(data)
@@ -28,9 +28,11 @@ def render_to_path(trainer: Union[VideoTrainer, Trainer], extra_name: str = ""):
             .reshape(img_h, img_w, 3)
             .cpu()
             .clamp(0, 1)
+            .mul(255.0)
+            .byte()
+            .numpy()
         )
         frames.append(preds_rgb)
-
         pb.update(1)
     pb.close()
 

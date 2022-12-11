@@ -41,7 +41,8 @@ class BaseDataset(Dataset, ABC):
         elif self.rays_o is not None:
             self.num_samples = self.rays_o.shape[0]
         else:
-            raise RuntimeError("Can't figure out num_samples.")
+            self.num_samples = None
+            #raise RuntimeError("Can't figure out num_samples.")
         self.intrinsics = intrinsics
         self.sampling_weights = sampling_weights
         if self.sampling_weights is not None:
@@ -49,7 +50,10 @@ class BaseDataset(Dataset, ABC):
                 f"Expected {self.num_samples} sampling weights but given {len(self.sampling_weights)}."
             )
         self.sampling_batch_size = 2_000_000  # Increase this?
-        self.use_permutation = self.num_samples < 100_000_000  # 64M is static
+        if self.num_samples is not None:
+            self.use_permutation = self.num_samples < 100_000_000  # 64M is static
+        else:
+            self.use_permutation = True
         self.perm = None
 
     @property
