@@ -21,6 +21,7 @@ config = {
     # Optimization settings
     "num_steps": 30_001,
     "batch_size": 4096,
+    "eval_batch_size": 4096,
     "num_batches_per_dset": 1,
     "scheduler_type": "warmup_cosine",
     "optim_type": "adam",

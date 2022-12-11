@@ -96,7 +96,8 @@ def get_rays(directions: torch.Tensor, c2w: torch.Tensor) -> Tuple[torch.Tensor,
     return rays_o, rays_d
 
 
-def ndc_rays_blender(intrinsics: Intrinsics, near: float, rays_o: torch.Tensor, rays_d: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+def ndc_rays_blender(intrinsics: Intrinsics, near: float, rays_o: torch.Tensor,
+                     rays_d: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     # Shift ray origins to near plane
     t = -(near + rays_o[..., 2]) / rays_d[..., 2]
     rays_o = rays_o + t[..., None] * rays_d
@@ -240,11 +241,11 @@ def generate_hemispherical_orbit(poses: torch.Tensor, n_frames=120):
     Based on https://github.com/google-research/google-research/blob/342bfc150ef1155c5254c1e6bd0c912893273e8d/regnerf/internal/datasets.py
     """
     origins = poses[:, :3, 3]
-    radius = torch.sqrt(torch.mean(torch.sum(origins**2, dim=-1)))
+    radius = torch.sqrt(torch.mean(torch.sum(origins ** 2, dim=-1)))
 
     # Assume that z-axis points up towards approximate camera hemisphere
     sin_phi = torch.mean(origins[:, 2], dim=0) / radius
-    cos_phi = torch.sqrt(1 - sin_phi**2)
+    cos_phi = torch.sqrt(1 - sin_phi ** 2)
     render_poses = []
 
     up = torch.tensor([0., 0., 1.])
@@ -270,3 +271,30 @@ def gen_camera_dirs(x: torch.Tensor, y: torch.Tensor, intrinsics: Intrinsics, op
         (0, 1),
         value=(-1.0 if opengl_camera else 1.0),
     )  # [num_rays, 3]
+
+
+trans_t = lambda t: torch.Tensor([
+    [1, 0, 0, 0],
+    [0, 1, 0, 0],
+    [0, 0, 1, t],
+    [0, 0, 0, 1]]).float()
+
+rot_phi = lambda phi: torch.Tensor([
+    [1, 0, 0, 0],
+    [0, np.cos(phi), -np.sin(phi), 0],
+    [0, np.sin(phi), np.cos(phi), 0],
+    [0, 0, 0, 1]]).float()
+
+rot_theta = lambda th: torch.Tensor([
+    [np.cos(th), 0, -np.sin(th), 0],
+    [0, 1, 0, 0],
+    [np.sin(th), 0, np.cos(th), 0],
+    [0, 0, 0, 1]]).float()
+
+
+def generate_spherical_poses(theta, phi, radius):
+    c2w = trans_t(radius)
+    c2w = rot_phi(phi / 180. * np.pi) @ c2w
+    c2w = rot_theta(theta / 180. * np.pi) @ c2w
+    c2w = torch.Tensor(np.array([[-1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [0, 0, 0, 1]])) @ c2w
+    return c2w
