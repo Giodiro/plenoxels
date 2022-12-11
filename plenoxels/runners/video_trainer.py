@@ -246,13 +246,13 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
     return {"tr_loader": tr_loader, "tr_dset": tr_dset}
 
 
-def init_ts_data(data_dir, **kwargs):
+def init_ts_data(data_dir, split, **kwargs):
     if 'dnerf' in data_dir:
         downsample = 1.0
     else:
         downsample = 2.0
     ts_dset = Video360Dataset(
-        data_dir, split='test', downsample=downsample,
+        data_dir, split=split, downsample=downsample,
         max_cameras=kwargs.get('max_test_cameras'),
         max_tsteps=kwargs.get('max_test_tsteps'),
         contraction=kwargs['contract'], ndc=kwargs['ndc'],
@@ -260,12 +260,13 @@ def init_ts_data(data_dir, **kwargs):
     return {"ts_dset": ts_dset}
 
 
-def load_data(data_downsample, data_dirs, validate_only, **kwargs):
+def load_data(data_downsample, data_dirs, validate_only, render_only, **kwargs):
     assert len(data_dirs) == 1
     od: Dict[str, Any] = {}
-    if not validate_only:
+    if not validate_only and not render_only:
         od.update(init_tr_data(data_downsample, data_dirs[0], **kwargs))
     else:
         od.update(tr_loader=None, tr_dset=None)
-    od.update(init_ts_data(data_dirs[0], **kwargs))
+    test_split = 'render' if render_only else 'test'
+    od.update(init_ts_data(data_dirs[0], split=test_split, **kwargs))
     return od

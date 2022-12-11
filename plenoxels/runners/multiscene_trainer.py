@@ -129,7 +129,7 @@ class Trainer(BaseTrainer):
     def validate(self):
         dataset = self.test_dataset
         per_scene_metrics = defaultdict(list)
-        pb = tqdm(total=len(dataset), desc=f"Test scene{dataset.name}")
+        pb = tqdm(total=len(dataset), desc=f"Test scene {dataset.name}")
         for img_idx, data in enumerate(dataset):
             ts_render = self.eval_step(data)
             out_metrics, _, _ = self.evaluate_metrics(
@@ -240,18 +240,18 @@ def init_tr_data(data_downsample: float, data_dirs: Sequence[str], **kwargs):
     }
 
 
-def init_ts_data(data_dirs: Sequence[str], **kwargs):
+def init_ts_data(data_dirs: Sequence[str], split: str, **kwargs):
     assert len(data_dirs) == 1
     data_dir = data_dirs[0]
     dset_type = decide_dset_type(data_dir)
     if dset_type == "synthetic":
         max_ts_frames = parse_optint(kwargs.get('max_ts_frames'))
         dset = SyntheticNerfDataset(
-            data_dir, split='test', downsample=1, max_frames=max_ts_frames)
+            data_dir, split=split, downsample=1, max_frames=max_ts_frames)
     elif dset_type == "llff":
         hold_every = parse_optint(kwargs.get('hold_every'))
         dset = LLFFDataset(
-            data_dir, split='test', downsample=4, hold_every=hold_every,
+            data_dir, split=split, downsample=4, hold_every=hold_every,
             contraction=kwargs['contract'], ndc=kwargs['ndc'],
             ndc_far=float(kwargs['ndc_far']), near_scaling=float(kwargs['near_scaling']))
     else:
@@ -259,13 +259,14 @@ def init_ts_data(data_dirs: Sequence[str], **kwargs):
     return {"ts_dset": dset}
 
 
-def load_data(data_downsample, data_dirs, validate_only, **kwargs):
+def load_data(data_downsample, data_dirs, validate_only, render_only, **kwargs):
     od: Dict[str, Any] = {}
     if not validate_only:
         od.update(init_tr_data(data_downsample, data_dirs, **kwargs))
     else:
         od.update(tr_loader=None, tr_dset=None)
-    od.update(init_ts_data(data_dirs, **kwargs))
+    test_split = 'render' if render_only else 'test'
+    od.update(init_ts_data(data_dirs, split=test_split, **kwargs))
     return od
 
 

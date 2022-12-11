@@ -20,9 +20,8 @@ print(f'gpu is {gpu}')
 
 import torch
 import torch.utils.data
-
+from plenoxels.create_rendering import render_to_path
 from plenoxels.utils import parse_optfloat
-
 
 def setup_logging(log_level=logging.INFO):
     handlers = [logging.StreamHandler(sys.stdout)]
@@ -32,15 +31,19 @@ def setup_logging(log_level=logging.INFO):
                         force=True)
 
 
-def load_data(is_video: bool, data_downsample, data_dirs, validate_only: bool, **kwargs):
+def load_data(is_video: bool, data_downsample, data_dirs, validate_only: bool, render_only: bool, **kwargs):
     data_downsample = parse_optfloat(data_downsample, default_val=1.0)
 
     if is_video:
         from plenoxels.runners import video_trainer
-        return video_trainer.load_data(data_downsample, data_dirs, validate_only=validate_only, **kwargs)
+        return video_trainer.load_data(
+            data_downsample, data_dirs, validate_only=validate_only,
+            render_only=render_only, **kwargs)
     else:
         from plenoxels.runners import multiscene_trainer
-        return multiscene_trainer.load_data(data_downsample, data_dirs, validate_only=validate_only, **kwargs)
+        return multiscene_trainer.load_data(
+            data_downsample, data_dirs, validate_only=validate_only,
+            render_only=render_only, **kwargs)
 
 
 def init_trainer(is_video: bool, **kwargs):
@@ -57,6 +60,7 @@ def main():
 
     p = argparse.ArgumentParser(description="")
 
+    p.add_argument('--render-only', action='store_true')
     p.add_argument('--validate-only', action='store_true')
     p.add_argument('--config-path', type=str, required=True)
     p.add_argument('--log-dir', type=str, default=None)
@@ -84,6 +88,9 @@ def main():
     config.update(overrides_dict)
     is_video = "keyframes" in config
     validate_only = args.validate_only
+    render_only = args.render_only
+    if validate_only and render_only:
+        raise ValueError("render_only and validate_only are mutually exclusive.")
 
     pprint.pprint(config)
     if not validate_only:
@@ -96,7 +103,7 @@ def main():
             for key in config.keys():
                 f.write("%s\t%s\n"%(key,config[key]))
 
-    data = load_data(is_video, validate_only=validate_only, **config)
+    data = load_data(is_video, validate_only=validate_only, render_only=render_only, **config)
     config.update(data)
     trainer = init_trainer(is_video, **config)
     if args.log_dir is not None:
@@ -106,6 +113,8 @@ def main():
     if validate_only:
         assert args.log_dir is not None and os.path.isdir(args.log_dir)
         trainer.validate()
+    elif render_only:
+        render_to_path(trainer, extra_name="")
     else:
         trainer.train()
 
