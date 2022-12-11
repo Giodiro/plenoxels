@@ -140,7 +140,8 @@ class LowrankVideo(LowrankModel):
             # print(f'sizes is {sizes}')
             voxel_size = diameter / (base_resolution * self.multiscale_res[scale_id])
             # print(f'voxel size {voxel_size}, base reso {base_resolution}, current reso {base_resolution * self.multiscale_res[scale_id]}, diameter {diameter}')
-            mask = (sizes > voxel_size / 1.0).squeeze()  # mask not to keep, where the sample size is too large for the voxel
+            if sizes is not None:
+                mask = (sizes > voxel_size / 1.0).squeeze()  # mask not to keep, where the sample size is too large for the voxel
             # May need to adjust this masking strategy, eg use voxel size / 2
             # print(f'res is {res}, voxel size is {voxel_size}, sizes range from {torch.min(sizes)} to {torch.max(sizes)}')
             # print(f'mask shape is {mask.shape}, sizes shape is {sizes.shape}, pts shape is {pts.shape}')
@@ -265,7 +266,10 @@ class LowrankVideo(LowrankModel):
         # compute features and render
         rays_d_rep = rays_d.view(-1, 1, 3).expand(pts.shape)
         masked_rays_d_rep = rays_d_rep[mask]
-        features = self.compute_features(pts[mask], times, sizes[mask])
+        if sizes is not None:
+            features = self.compute_features(pts[mask], times, sizes[mask])
+        else:
+            features = self.compute_features(pts[mask], times)
         density_masked = self.density_act(self.decoder.compute_density(features, rays_d=masked_rays_d_rep))
         density = torch.zeros(n_rays, n_intrs, device=pts.device, dtype=density_masked.dtype)
         density[mask] = density_masked.view(-1)
