@@ -77,14 +77,28 @@ class PlaneTV(Regularizer):
 
 
 class TimeSmoothness(Regularizer):
-    def __init__(self, initial_value):
-        super().__init__('time-smoothness', initial_value)
+    def __init__(self, initial_value, what: str = 'field'):
+        if what not in {'field', 'proposal_network'}:
+            raise ValueError(f'what must be one of "field" or "proposal_network" '
+                             f'but {what} was passed.')
+        name = f'time-smoothness-{what}'
+        super().__init__(name, initial_value)
+        self.what = what
 
     def _regularize(self, model: LowrankModel, **kwargs) -> torch.Tensor:
-        time_grids = [2, 4, 5]  # These are the spatiotemporal grids; the others are only spatial
+        if self.what == 'field':
+            multi_res_grids: nn.ModuleList = model.field.grids
+        elif self.what == 'proposal_network':
+            multi_res_grids = [p.grids for p in model.proposal_networks]
+        else:
+            raise NotImplementedError(self.what)
         total = 0
         # model.grids is 6 x [1, rank * F_dim, reso, reso]
-        for grids in model.field.grids:
+        for grids in multi_res_grids:
+            if len(grids) == 3:
+                time_grids = []
+            else:
+                time_grids = [2, 4, 5]
             for grid_id in time_grids:
                 total += compute_plane_smoothness(grids[grid_id])
         return total

@@ -213,7 +213,8 @@ class VideoTrainer(BaseTrainer):
             PlaneTV(kwargs.get('plane_tv_proposal_net', 0.0), what='proposal_network'),
             L1AppearancePlanes(kwargs.get('l1_appearance_planes', 0.0), what='field'),
             L1AppearancePlanes(kwargs.get('l1_appearance_planes_proposal_net', 0.0), what='proposal_network'),
-            TimeSmoothness(kwargs.get('time_smoothness_weight', 0.0)),
+            TimeSmoothness(kwargs.get('time_smoothness_weight', 0.0), what='field'),
+            TimeSmoothness(kwargs.get('time_smoothness_weight_proposal_net', 0.0), what='proposal_network'),
             HistogramLoss(kwargs.get('histogram_loss_weight', 0.0)),
             DistortionLoss(kwargs.get('distortion_loss_weight', 0.0)),
         ]
