@@ -1,6 +1,6 @@
 import itertools
 import logging as log
-from typing import Dict, List, Union, Sequence, Tuple
+from typing import Dict, List, Union, Sequence, Tuple, Optional
 
 import torch
 
@@ -117,9 +117,15 @@ class LowrankVideo(LowrankModel):
     def compute_features(self,
                          pts,  # [batch, 3]
                          timestamps,  # [batch]
+                         sizes: Optional[torch.Tensor] = None,
                          ) -> torch.Tensor:
         multiscale_space: torch.nn.ModuleList = self.grids  # space: 6 x [1, rank * F_dim, reso, reso] where the reso can be different in different grids and dimensions
         level_info = self.config[0]  # Assume the first grid is the index grid, and the second is the feature grid
+
+        # Note: these implicitly assume similar resolution and radius in each dimension
+        diameter = torch.mean(self.aabb(0)[1] - self.aabb(0)[0])
+        # print(f'self.resolution(0) is {self.resolution(0)[0:3]}')
+        base_resolution = torch.mean(self.resolution(0)[0:3] / self.multiscale_res[-1])
 
         # Interpolate in space and time
         pts = torch.cat([pts, timestamps[:, None]], dim=-1)  # [batch, 4] for xyzt
@@ -130,15 +136,25 @@ class LowrankVideo(LowrankModel):
 
         multi_scale_interp = [] if self.concat_features else 0
         for scale_id, (grid_space, featlen) in enumerate(zip(multiscale_space, self.feature_len)):
+            # use multiscale sampling
+            # print(f'sizes is {sizes}')
+            voxel_size = diameter / (base_resolution * self.multiscale_res[scale_id])
+            # print(f'voxel size {voxel_size}, base reso {base_resolution}, current reso {base_resolution * self.multiscale_res[scale_id]}, diameter {diameter}')
+            mask = (sizes > voxel_size / 1.0).squeeze()  # mask not to keep, where the sample size is too large for the voxel
+            # May need to adjust this masking strategy, eg use voxel size / 2
+            # print(f'res is {res}, voxel size is {voxel_size}, sizes range from {torch.min(sizes)} to {torch.max(sizes)}')
+            # print(f'mask shape is {mask.shape}, sizes shape is {sizes.shape}, pts shape is {pts.shape}')
             if self.concat_planes:
                 interp_space = []
             else:
                 interp_space = 1  # [n, F_dim, rank]
             for ci, coo_comb in enumerate(coo_combs):
                 # interpolate in plane
-                interp_out_plane = grid_sample_wrapper(
-                    grid_space[ci], pts[..., coo_comb]
-                ).view(-1, featlen, level_info["rank"])
+                interp_out_plane = grid_sample_wrapper(grid_space[ci], pts[..., coo_comb])
+                # apply the mask
+                # print(f'interp_out_plane shape is {interp_out_plane.shape}, mask shape is {mask.shape}')
+                # interp_out_plane[mask, :] = 1.0  # Use the multiplicative identity for the masked values # comment this in to use mip
+                interp_out_plane = interp_out_plane.view(-1, featlen, level_info["rank"])
                 if self.concat_planes:
                     interp_space.append(interp_out_plane)
                 else:
@@ -198,7 +214,7 @@ class LowrankVideo(LowrankModel):
                     fars = ones * fars
 
             aabb=self.aabb(0)
-            ray_bundle = RayBundle(origins=rays_o, directions=rays_d, nears=nears, fars=fars)
+            ray_bundle = RayBundle(origins=rays_o, directions=rays_d, nears=nears, fars=fars, pixel_size=self.pixel_size)
             ray_samples, weights_list, ray_samples_list = self.raymarcher.generate_ray_samples(
                 ray_bundle, timestamps=timestamps, density_fns=self.density_fns)  # expects unnormalized times
             outputs['weights_list'] = weights_list
@@ -206,6 +222,7 @@ class LowrankVideo(LowrankModel):
             outputs['ray_samples_list'].append(ray_samples)
             rays_d = ray_bundle.directions
             pts = ray_samples.get_positions()
+            sizes = ray_samples.sizes
             if self.spatial_distortion is not None:
                 pts = self.spatial_distortion(pts)  # cube of side 2
             mask = ((aabb[0] <= pts) & (pts <= aabb[1])).all(dim=-1)  # noqa
@@ -220,6 +237,7 @@ class LowrankVideo(LowrankModel):
             mask = rm_out["mask"]                       # [n_rays, n_intrs]
             z_vals = rm_out["z_vals"]                   # [n_rays, n_intrs]
             deltas = rm_out["deltas"]                   # [n_rays, n_intrs]
+            sizes = rm_out["sizes"]
 
         n_rays, n_intrs = pts.shape[:2]
         dev = rays_o.device
@@ -247,7 +265,7 @@ class LowrankVideo(LowrankModel):
         # compute features and render
         rays_d_rep = rays_d.view(-1, 1, 3).expand(pts.shape)
         masked_rays_d_rep = rays_d_rep[mask]
-        features = self.compute_features(pts[mask], times)
+        features = self.compute_features(pts[mask], times, sizes[mask])
         density_masked = self.density_act(self.decoder.compute_density(features, rays_d=masked_rays_d_rep))
         density = torch.zeros(n_rays, n_intrs, device=pts.device, dtype=density_masked.dtype)
         density[mask] = density_masked.view(-1)

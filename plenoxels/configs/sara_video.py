@@ -6,7 +6,7 @@ config = {'add_rank_steps': [-1],
  'density_field_rank': 1,
  'density_field_resolution': [128, 256],
  'density_model': 'hexplane',
- 'expname': 'lego_512_hexsampler_120ksteps_lr0.005',
+ 'expname': 'lego_mip1x512_hexsampler_120ksteps_lr0.005',
 #  'expname': 'standup_wandb',
  'floater_loss': 0.0,
  'grid_config': '\n'

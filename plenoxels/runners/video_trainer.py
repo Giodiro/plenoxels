@@ -223,6 +223,7 @@ class VideoTrainer(Trainer):
                 proposal_sampling=self.extra_args.get('histogram_loss_weight', 0.0) > 0.0,
                 global_scale=global_scale,
                 global_translation=global_translation,
+                intrinsics=self.test_datasets[0].intrinsics,
                 **kwargs)
         else:
             model = LowrankVideo(
@@ -234,6 +235,7 @@ class VideoTrainer(Trainer):
                 proposal_sampling=self.extra_args.get('histogram_loss_weight', 0.0) > 0.0,
                 global_scale=global_scale,
                 global_translation=global_translation,
+                intrinsics=self.test_datasets[0].intrinsics,
                 **kwargs)
         logging.info(f"Initialized {model.__class__} model with "
                      f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, "
