@@ -60,6 +60,8 @@ class Video360Dataset(BaseDataset):
         if dset_type == "llff":
             per_cam_poses, per_cam_near_fars, intrinsics, videopaths = load_llffvideo_poses(
                 datadir, downsample=self.downsample, split=split, near_scaling=self.near_scaling)
+            if split == 'test':
+                keyframes = True
             poses, imgs, timestamps, self.median_imgs = load_llffvideo_data(
                 videopaths=videopaths, cam_poses=per_cam_poses, intrinsics=intrinsics, split=split,
                 keyframes=keyframes, keyframes_take_each=30)
@@ -269,9 +271,9 @@ class Video360Dataset(BaseDataset):
 def get_bbox(datadir, dset_type: str, is_contracted=False):
     if is_contracted:
         radius = 2
-    elif dset_type == 'dnerf':
+    elif dset_type == 'synthetic':
         radius = 1.5
-    elif dset_type == 'dynerf':
+    elif dset_type == 'llff':
         return torch.tensor([[-3.0, -1.67, -1.2], [3.0, 1.67, 1.2]])
     else:
         radius = 1.3
