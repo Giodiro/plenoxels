@@ -210,7 +210,7 @@ class VideoTrainer(BaseTrainer):
     def get_regularizers(self, **kwargs):
         return [
             PlaneTV(kwargs.get('plane_tv_weight', 0.0), what='field'),
-            PlaneTV(kwargs.get('plane_tv_proposal_net', 0.0), what='proposal_network'),
+            PlaneTV(kwargs.get('plane_tv_weight_proposal_net', 0.0), what='proposal_network'),
             L1AppearancePlanes(kwargs.get('l1_appearance_planes', 0.0), what='field'),
             L1AppearancePlanes(kwargs.get('l1_appearance_planes_proposal_net', 0.0), what='proposal_network'),
             TimeSmoothness(kwargs.get('time_smoothness_weight', 0.0), what='field'),
