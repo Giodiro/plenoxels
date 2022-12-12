@@ -114,6 +114,7 @@ def main():
         assert args.log_dir is not None and os.path.isdir(args.log_dir)
         trainer.validate()
     elif render_only:
+        assert args.log_dir is not None and os.path.isdir(args.log_dir)
         render_to_path(trainer, extra_name="")
     else:
         trainer.train()

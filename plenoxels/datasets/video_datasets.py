@@ -36,7 +36,10 @@ class Video360Dataset(BaseDataset):
                  max_tsteps: Optional[int] = None,
                  isg: bool = False,
                  contraction: bool = False,
-                 ndc: bool = False):
+                 ndc: bool = False,
+                 scene_bbox: Optional[List] = None,
+                 near_scaling: float = 0.9,
+                 ndc_far: float = 2.6):
         self.keyframes = keyframes
         self.max_cameras = max_cameras
         self.max_tsteps = max_tsteps
@@ -47,8 +50,8 @@ class Video360Dataset(BaseDataset):
         self.per_cam_near_fars = None
         self.global_translation = torch.tensor([0, 0, 0])
         self.global_scale = torch.tensor([1, 1, 1])
-        self.near_scaling = 0.9
-        self.ndc_far = 2.6
+        self.near_scaling = near_scaling
+        self.ndc_far = ndc_far
         self.median_imgs = None
         if contraction and ndc:
             raise ValueError("Options 'contraction' and 'ndc' are exclusive.")
@@ -57,6 +60,7 @@ class Video360Dataset(BaseDataset):
         else:
             dset_type = "llff"
 
+        # Note: timestamps are stored normalized between -1, 1.
         if dset_type == "llff":
             per_cam_poses, per_cam_near_fars, intrinsics, videopaths = load_llffvideo_poses(
                 datadir, downsample=self.downsample, split=split, near_scaling=self.near_scaling)
@@ -130,13 +134,15 @@ class Video360Dataset(BaseDataset):
 
         # ISG/IST weights are computed on 4x subsampled data.
         weights_subsampled = int(4 / downsample)
+        scene_bbox = (torch.tensor(scene_bbox) or
+                      get_bbox(datadir, is_contracted=contraction, dset_type=dset_type))
         super().__init__(
             datadir=datadir,
             split=split,
             batch_size=batch_size,
             is_ndc=ndc,
             is_contracted=contraction,
-            scene_bbox=get_bbox(datadir, is_contracted=contraction, dset_type=dset_type),
+            scene_bbox=scene_bbox,
             rays_o=None,
             rays_d=None,
             intrinsics=intrinsics,

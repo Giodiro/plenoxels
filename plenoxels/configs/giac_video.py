@@ -20,6 +20,9 @@ config = {
     "ist_step": 80000,
     "contract": False,
     "ndc": True,
+    "scene_bbox": [[-3.0, -1.67, -1.2], [3.0, 1.67, 1.2]],
+    "near_scaling": 0.9,
+    "ndc_far": 2.6,
 
     # Optimization settings
     "num_steps": 120_001,
