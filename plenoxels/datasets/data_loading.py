@@ -18,8 +18,25 @@ rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
 resource.setrlimit(resource.RLIMIT_NOFILE, (16192, rlimit[1]))
 
 
+def _load_phototourism_image(idx: int,
+                             paths: List[str],
+                             out_h: List[int],
+                             out_w: List[int]) -> torch.Tensor:
+    f_path = paths[idx]
+    img = Image.open(f_path).convert('RGB')
+    img.resize((out_w[idx], out_h[idx]), Image.LANCZOS)
+    img = pil2tensor(img)  # [C, H, W]
+    img = img.permute(1, 2, 0)  # [H, W, C]
+    return img
+
+
+def _parallel_loader_phototourism_image(args):
+    torch.set_num_threads(1)
+    return _load_phototourism_image(**args)
+
+
 def _load_llff_image(idx: int,
-                     paths: str,
+                     paths: List[str],
                      data_dir: str,
                      out_h: int,
                      out_w: int,
@@ -132,6 +149,8 @@ def parallel_load_images(tqdm_title,
         fn = _parallel_loader_llff_image
     elif dset_type == 'synthetic':
         fn = _parallel_loader_nerf_image_pose
+    elif dset_type == 'phototourism':
+        fn = _parallel_loader_phototourism_image
     elif dset_type == 'video':
         fn = _parallel_loader_video
         # giac: Can increase to e.g. 10 if loading 4x subsampled images. Otherwise OOM.
