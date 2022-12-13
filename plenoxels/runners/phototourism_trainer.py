@@ -9,11 +9,11 @@ import pandas as pd
 import torch
 import torch.utils.data
 
-from plenoxels.datasets.video_datasets import Video360Dataset
+from plenoxels.datasets.phototourism_dataset import PhotoTourismDataset
 from plenoxels.ema import EMA
-from plenoxels.my_tqdm import tqdm
-from plenoxels.ops.image.io import write_video_to_file
 from plenoxels.models.lowrank_model import LowrankModel
+from plenoxels.my_tqdm import tqdm
+from plenoxels.ops.image import metrics
 from plenoxels.runners.base_trainer import BaseTrainer
 from plenoxels.runners.regularization import (
     PlaneTV, TimeSmoothness, HistogramLoss,
@@ -22,7 +22,7 @@ from plenoxels.runners.regularization import (
 from plenoxels.runners.utils import init_dloader_random
 
 
-class VideoTrainer(BaseTrainer):
+class PhototourismTrainer(BaseTrainer):
     def __init__(self,
                  tr_loader: torch.utils.data.DataLoader,
                  tr_dset: torch.utils.data.TensorDataset,
@@ -34,16 +34,11 @@ class VideoTrainer(BaseTrainer):
                  save_every: int,
                  valid_every: int,
                  save_outputs: bool,
-                 isg_step: int,
-                 ist_step: int,
                  device: Union[str, torch.device],
                  **kwargs
                  ):
         self.train_dataset = tr_dset
         self.test_dataset = ts_dset
-        self.ist_step = ist_step
-        self.isg_step = isg_step
-        self.save_video = save_outputs
         super().__init__(
             train_data_loader=tr_loader,
             num_steps=num_steps,
@@ -52,7 +47,7 @@ class VideoTrainer(BaseTrainer):
             train_fp16=train_fp16,
             save_every=save_every,
             valid_every=valid_every,
-            save_outputs=False,  # False since we're saving video
+            save_outputs=save_outputs,
             device=device,
             **kwargs)
 
@@ -75,7 +70,7 @@ class VideoTrainer(BaseTrainer):
             for b in range(math.ceil(rays_o.shape[0] / batch_size)):
                 rays_o_b = rays_o[b * batch_size: (b + 1) * batch_size].to(self.device)
                 rays_d_b = rays_d[b * batch_size: (b + 1) * batch_size].to(self.device)
-                timestamps_d_b = timestamp.expand(rays_o_b.shape[0]).to(self.device)
+                timestamps_d_b = timestamp[b * batch_size: (b + 1) * batch_size].to(self.device)
                 outputs = self.model(
                     rays_o_b, rays_d_b, timestamps=timestamps_d_b, bg_color=bg_color,
                     near_far=near_far)
@@ -115,13 +110,6 @@ class VideoTrainer(BaseTrainer):
                 for r in self.regularizers:
                     r.report(self.loss_info)
 
-        if self.global_step == self.isg_step:
-            self.train_dataset.enable_isg()
-            raise StopIteration  # Whenever we change the dataset
-        if self.global_step == self.ist_step:
-            self.train_dataset.switch_isg2ist()
-            raise StopIteration  # Whenever we change the dataset
-
         return scale <= self.gscaler.get_scale()
 
     def post_step(self, progress_bar):
@@ -134,6 +122,8 @@ class VideoTrainer(BaseTrainer):
 
     @torch.no_grad()
     def validate(self):
+        self.optimize_appearance_codes()
+
         dataset = self.test_dataset
         per_scene_metrics = defaultdict(list)
         pred_frames, out_depths = [], []
@@ -151,33 +141,31 @@ class VideoTrainer(BaseTrainer):
             pb.set_postfix_str(f"PSNR={out_metrics['psnr']:.2f}", refresh=False)
             pb.update(1)
         pb.close()
-        if self.save_video:
-            write_video_to_file(
-                os.path.join(self.log_dir, f"step{self.global_step}.mp4"),
-                pred_frames
-            )
-            if len(out_depths) > 0:
-                write_video_to_file(
-                    os.path.join(self.log_dir, f"step{self.global_step}-depth.mp4"),
-                    out_depths
-                )
         val_metrics = [
             self.report_test_metrics(per_scene_metrics, extra_name=None),
         ]
         df = pd.DataFrame.from_records(val_metrics)
         df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
 
-    def get_save_dict(self):
-        base_save_dict = super().get_save_dict()
-        return base_save_dict
+    def calc_metrics(self, preds: torch.Tensor, gt: torch.Tensor):
+        """
+        Compute error metrics. This function gets called by `evaluate_metrics` in the base
+        trainer class.
+        :param preds:
+        :param gt:
+        :return:
+        """
+        mid = gt.shape[1] // 2
+        gt_right = gt[:, mid:]
+        preds_rgb_right = preds[:, mid:]
 
-    def load_model(self, checkpoint_data):
-        super().load_model(checkpoint_data)
-        if self.train_dataset is not None:
-            if -1 < self.isg_step < self.global_step < self.ist_step:
-                self.train_dataset.enable_isg()
-            elif -1 < self.ist_step < self.global_step:
-                self.train_dataset.switch_isg2ist()
+        err = (gt_right - preds_rgb_right) ** 2
+        return {
+            "mse": torch.mean(err),
+            "psnr": metrics.psnr(preds_rgb_right, gt_right),
+            "ssim": metrics.ssim(preds_rgb_right, gt_right),
+            "ms-ssim": metrics.msssim(preds_rgb_right, gt_right),
+        }
 
     def init_epoch_info(self):
         ema_weight = 0.9
@@ -201,6 +189,7 @@ class VideoTrainer(BaseTrainer):
             is_contracted=dset.is_contracted,
             global_scale=global_scale,
             global_translation=global_translation,
+            use_appearance_embedding=True,
             **kwargs)
         log.info(f"Initialized {model.__class__} model with "
                  f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, "
@@ -223,25 +212,90 @@ class VideoTrainer(BaseTrainer):
     def calc_metrics_every(self):
         return 5
 
+    def optimize_appearance_step(self, data, im_id):
+        rays_o = data["rays_o_left"]
+        rays_d = data["rays_d_left"]
+        imgs = data["imgs_left"]
+        near_far = data["near_fars"]
+        bg_color = data["bg_color"]
+        if isinstance(bg_color, torch.Tensor):
+            bg_color = bg_color.to(self.device)
+
+        epochs = self.extra_args['app_optim_n_epochs']
+        batch_size = self.eval_batch_size
+        n_steps = math.ceil(rays_o.shape[0] / batch_size)
+
+        camera_id = torch.full((batch_size, ), fill_value=im_id, dtype=torch.int32, device=self.device)
+
+        app_optim = torch.optim.Adam(params=[self.model.appearance_coef], lr=self.extra_args['app_optim_lr'])
+        lr_sched = torch.optim.lr_scheduler.StepLR(app_optim, step_size=2 * n_steps, gamma=0.1)
+        for n in range(epochs):
+            idx = torch.randperm(rays_o.shape[0])
+            for b in range(n_steps):
+                batch_ids = idx[b * batch_size: (b + 1) * batch_size]
+                rays_o_b = rays_o[batch_ids].to(self.device)
+                rays_d_b = rays_d[batch_ids].to(self.device)
+                imgs_b = imgs[batch_ids].to(self.device)
+                near_far_b = near_far[batch_ids].to(self.device)
+                camera_id_b = camera_id[:len(batch_ids)]
+
+                fwd_out = self.model(
+                    rays_o_b, rays_d_b, timestamps=camera_id_b, bg_color=bg_color,
+                    near_far=near_far_b)
+                recon_loss = self.criterion(fwd_out['rgb'], imgs_b)
+                recon_loss.backward()
+                app_optim.step()
+                app_optim.zero_grad(set_to_none=True)
+
+                self.writer.add_scalar(
+                    f"appearance_loss_{self.global_step}/recon_loss_{im_id}", recon_loss.item(),
+                    b + n * n_steps)
+                lr_sched.step()
+
+    def optimize_appearance_codes(self):
+        dset = self.test_dataset
+        num_test_imgs = len(dset)
+
+        # 1. Initialize test appearance code to average code.
+        if not hasattr(self.model.field, "test_appearance_embedding"):
+            tst_embedding = torch.nn.Embedding(
+                num_test_imgs, self.model.field.appearance_embedding_dim)
+            tst_embedding.weight.copy_(
+                self.model.field.weight.mean(dim=0, keepdim=True).expand(num_test_imgs, -1)
+            )
+            self.model.field.test_appearance_embedding = tst_embedding
+
+        # 2. Setup parameter trainability
+        self.model.train()
+        param_trainable = {}
+        for pn, p in self.model.named_parameters():
+            param_trainable[pn] = p.requires_grad
+            p.requires_grad_(False)
+        self.model.field.test_appearance_embedding.requires_grad_(True)
+
+        # 3. Optimize
+        pb = tqdm(total=len(dset), desc=f"Test-time appearance-code optimization")
+        for img_idx, data in enumerate(dset):
+            self.optimize_appearance_step(data, img_idx)
+            pb.update(1)
+        pb.close()
+
+        # 4. Reset parameter trainability
+        for pn, p in self.model.named_parameters():
+            p.requires_grad_(param_trainable[pn])
+        self.model.field.test_appearance_embedding.requires_grad_(False)
+
 
 def init_tr_data(data_downsample, data_dir, **kwargs):
-    isg = kwargs.get('isg', False)
-    ist = kwargs.get('ist', False)
-    keyframes = kwargs.get('keyframes', False)
     batch_size = kwargs['batch_size']
-    log.info(f"Loading Video360Dataset with downsample={data_downsample}")
-    tr_dset = Video360Dataset(
-        data_dir, split='train', downsample=data_downsample,
-        batch_size=batch_size,
-        max_cameras=kwargs['max_train_cameras'],
-        max_tsteps=kwargs['max_train_tsteps'] if keyframes else None,
-        isg=isg, keyframes=keyframes, contraction=kwargs['contract'], ndc=kwargs['ndc'],
-        near_scaling=float(kwargs['near_scaling']), ndc_far=float(kwargs['ndc_far']),
-        scene_bbox=kwargs['scene_bbox'],
+    log.info(f"Loading PhotoTourismDataset with downsample={data_downsample}")
+    tr_dset = PhotoTourismDataset(
+        data_dir, split='train', downsample=1, batch_size=batch_size,
+        contraction=kwargs['contract'], ndc=kwargs['ndc'], scale_factor=kwargs['scale_factor'],
+        scene_bbox=kwargs['scene_bbox'], near_scaling=kwargs['near_scaling'],
+        ndc_far=kwargs['ndc_far'], orientation_method=kwargs['orientation_method'],
+        center_poses=kwargs['center_poses'], auto_scale_poses=kwargs['auto_scale_poses'],
     )
-    if ist:
-        tr_dset.switch_isg2ist()  # this should only happen in case we're reloading
-
     tr_loader = torch.utils.data.DataLoader(
         tr_dset, batch_size=None, num_workers=4,  prefetch_factor=4, pin_memory=True,
         worker_init_fn=init_dloader_random)
@@ -249,17 +303,12 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
 
 
 def init_ts_data(data_dir, split, **kwargs):
-    if 'dnerf' in data_dir:
-        downsample = 1.0
-    else:
-        downsample = 2.0
-    ts_dset = Video360Dataset(
-        data_dir, split=split, downsample=downsample,
-        max_cameras=kwargs['max_test_cameras'],
-        max_tsteps=kwargs['max_test_tsteps'],
-        contraction=kwargs['contract'], ndc=kwargs['ndc'],
-        near_scaling=float(kwargs['near_scaling']), ndc_far=float(kwargs['ndc_far']),
-        scene_bbox=kwargs['scene_bbox'],
+    ts_dset = PhotoTourismDataset(
+        data_dir, split=split, downsample=1, batch_size=None,
+        contraction=kwargs['contract'], ndc=kwargs['ndc'], scale_factor=kwargs['scale_factor'],
+        scene_bbox=kwargs['scene_bbox'], near_scaling=kwargs['near_scaling'],
+        ndc_far=kwargs['ndc_far'], orientation_method=kwargs['orientation_method'],
+        center_poses=kwargs['center_poses'], auto_scale_poses=kwargs['auto_scale_poses'],
     )
     return {"ts_dset": ts_dset}
 

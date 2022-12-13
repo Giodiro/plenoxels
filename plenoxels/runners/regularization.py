@@ -44,7 +44,7 @@ class PlaneTV(Regularizer):
         if what not in {'field', 'proposal_network'}:
             raise ValueError(f'what must be one of "field" or "proposal_network" '
                              f'but {what} was passed.')
-        name = f'plane-TV-{what}'
+        name = f'planeTV-{what[:2]}'
         super().__init__(name, initial_value)
         self.what = what
 
@@ -81,7 +81,7 @@ class TimeSmoothness(Regularizer):
         if what not in {'field', 'proposal_network'}:
             raise ValueError(f'what must be one of "field" or "proposal_network" '
                              f'but {what} was passed.')
-        name = f'time-smoothness-{what}'
+        name = f'time-smooth-{what[:2]}'
         super().__init__(name, initial_value)
         self.what = what
 
@@ -184,7 +184,7 @@ class L1AppearancePlanes(Regularizer):
         if what not in {'field', 'proposal_network'}:
             raise ValueError(f'what must be one of "field" or "proposal_network" '
                              f'but {what} was passed.')
-        super().__init__(f'l1-appearance-{what}', initial_value)
+        super().__init__(f'l1-time-{what[:2]}', initial_value)
         self.what = what
 
     def _regularize(self, model: LowrankModel, **kwargs) -> torch.Tensor:

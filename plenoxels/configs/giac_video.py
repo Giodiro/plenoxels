@@ -1,7 +1,7 @@
 # configuration file to be used with `main.py` for normal (or multiscene) training
 # the configuration must be specified in a dictionary called `config`.
 config = {
-    "expname": "flame_salmon_ndc",
+    "expname": "flame_salmon_ndc_ts1e-3_tspn1e-5_ptv2e-4_ptvpn2e-4_l1ap1e-4_l1appn1e-4_dl1e-3_largebb",
     "logdir": "./logs/flame_salmon",
     "device": "cuda:0",
 
@@ -9,12 +9,10 @@ config = {
     "data_downsample": 2,
     "data_dirs": ["/data/DATASETS/VidNerf/flame_salmon"],
     # Data settings for 360
-    "max_train_cameras": 25,
-    "max_test_cameras": 1,
+    "max_train_cameras": None,
+    "max_test_cameras": None,
     "max_train_tsteps": None,
     "max_test_tsteps": None,
-    "max_tr_frames": 100,
-    "max_ts_frames": 50,
     # Data settings for LLFF
     "keyframes": False,
     "isg_step": -1,
@@ -22,29 +20,33 @@ config = {
     "ist_step": 80000,
     "contract": False,
     "ndc": True,
+    "scene_bbox": [[-3.0, -1.67, -1.2], [3.0, 1.67, 1.2]],
+    "near_scaling": 0.9,
+    "ndc_far": 2.6,
 
     # Optimization settings
-    "num_steps": 30_001,
+    "num_steps": 120_001,
     "batch_size": 4096,
     "num_batches_per_dset": 1,
     "scheduler_type": "warmup_cosine",
     "optim_type": "adam",
-    "lr": 2e-2,
+    "lr": 1e-2,
 
     # Regularization
     "plane_tv_weight": 2e-4,
     "plane_tv_weight_proposal_net": 2e-4,
-    "l1_appearance_planes": 1e-2,
-    "l1_appearance_planes_proposal_net": 1e-2,
-    "time_smoothness_weight": 0.1,
+    "l1_appearance_planes": 1e-4,
+    "l1_appearance_planes_proposal_net": 1e-4,
+    "time_smoothness_weight": 1e-3,
+    "time_smoothness_weight_proposal_net": 1e-5,
     "histogram_loss_weight": 1.0,  # this should be set > 0 when using proposal sampling
     "depth_tv_weight": 0,
-    "distortion_loss_weight": 0.01,
+    "distortion_loss_weight": 0.001,
 
     # Training settings
     "train_fp16": True,
-    "save_every": 10000,
-    "valid_every": 10000,
+    "save_every": 30000,
+    "valid_every": 30000,
     "save_outputs": True,
 
     # Raymarching settings

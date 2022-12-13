@@ -140,7 +140,7 @@ class KPlaneField(nn.Module):
         if use_appearance_embedding:
             self.appearance_embedding_dim = appearance_embedding_dim
             # this will initialize as normal_(0.0, 1.0)
-            self.appearance_embedding = nn.Embedding(self.num_images, appearance_embedding_dim)
+            self.appearance_embedding = nn.Embedding(self.num_images, self.appearance_embedding_dim)
         else:
             self.appearance_embedding_dim = 0
 
@@ -223,12 +223,14 @@ class KPlaneField(nn.Module):
 
         if self.use_appearance_embedding:
             if timestamps is None:
-                raise AttributeError("timestamps are not provided.")
+                raise AttributeError("timestamps (appearance-ids) are not provided.")
             camera_indices = timestamps.squeeze()
             if self.training:
                 embedded_appearance = self.embedding_appearance(camera_indices)
             else:
-                if self.use_average_appearance_embedding:
+                if hasattr(self, "test_appearance_embedding"):
+                    embedded_appearance = self.test_embedding_appearance(camera_indices)
+                elif self.use_average_appearance_embedding:
                     embedded_appearance = torch.ones(
                         (*directions.shape[:-1], self.appearance_embedding_dim), device=directions.device
                     ) * self.embedding_appearance.mean(dim=0)

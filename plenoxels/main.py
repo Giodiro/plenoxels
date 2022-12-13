@@ -31,14 +31,20 @@ def setup_logging(log_level=logging.INFO):
                         force=True)
 
 
-def load_data(is_video: bool, data_downsample, data_dirs, validate_only: bool, render_only: bool, **kwargs):
+def load_data(model_type: str, data_downsample, data_dirs, validate_only: bool, render_only: bool, **kwargs):
     data_downsample = parse_optfloat(data_downsample, default_val=1.0)
 
-    if is_video:
+    if model_type == "video":
         from plenoxels.runners import video_trainer
         return video_trainer.load_data(
             data_downsample, data_dirs, validate_only=validate_only,
             render_only=render_only, **kwargs)
+    elif model_type == "phototourism":
+        from plenoxels.runners import phototourism_trainer
+        return phototourism_trainer.load_data(
+            data_downsample, data_dirs, validate_only=validate_only,
+            render_only=render_only, **kwargs
+        )
     else:
         from plenoxels.runners import multiscene_trainer
         return multiscene_trainer.load_data(
@@ -46,10 +52,13 @@ def load_data(is_video: bool, data_downsample, data_dirs, validate_only: bool, r
             render_only=render_only, **kwargs)
 
 
-def init_trainer(is_video: bool, **kwargs):
-    if is_video:
+def init_trainer(model_type: str, **kwargs):
+    if model_type == "video":
         from plenoxels.runners import video_trainer
         return video_trainer.VideoTrainer(**kwargs)
+    elif model_type == "phototourism":
+        from plenoxels.runners import phototourism_trainer
+        return phototourism_trainer.PhototourismTrainer(**kwargs)
     else:
         from plenoxels.runners import multiscene_trainer
         return multiscene_trainer.Trainer(**kwargs)
@@ -86,7 +95,12 @@ def main():
     overrides: List[str] = args.override
     overrides_dict = {ovr.split("=")[0]: ovr.split("=")[1] for ovr in overrides}
     config.update(overrides_dict)
-    is_video = "keyframes" in config
+    if "keyframes" in config:
+        model_type = "video"
+    elif "appearance_embedding_dim" in config:
+        model_type = "phototourism"
+    else:
+        model_type = "static"
     validate_only = args.validate_only
     render_only = args.render_only
     if validate_only and render_only:
@@ -103,9 +117,9 @@ def main():
             for key in config.keys():
                 f.write("%s\t%s\n"%(key,config[key]))
 
-    data = load_data(is_video, validate_only=validate_only, render_only=render_only, **config)
+    data = load_data(model_type, validate_only=validate_only, render_only=render_only, **config)
     config.update(data)
-    trainer = init_trainer(is_video, **config)
+    trainer = init_trainer(model_type, **config)
     if args.log_dir is not None:
         checkpoint_path = os.path.join(args.log_dir, "model.pth")
         trainer.load_model(torch.load(checkpoint_path))
@@ -114,6 +128,7 @@ def main():
         assert args.log_dir is not None and os.path.isdir(args.log_dir)
         trainer.validate()
     elif render_only:
+        assert args.log_dir is not None and os.path.isdir(args.log_dir)
         render_to_path(trainer, extra_name="")
     else:
         trainer.train()

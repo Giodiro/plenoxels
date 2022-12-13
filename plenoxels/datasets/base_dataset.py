@@ -1,6 +1,6 @@
 from abc import ABC
 import os
-from typing import Optional
+from typing import Optional, List, Union
 
 import torch
 from torch.utils.data import Dataset
@@ -17,9 +17,9 @@ class BaseDataset(Dataset, ABC):
                  is_contracted: bool,
                  rays_o: Optional[torch.Tensor],
                  rays_d: Optional[torch.Tensor],
-                 intrinsics: Intrinsics,
+                 intrinsics: Union[Intrinsics, List[Intrinsics]],
                  batch_size: Optional[int] = None,
-                 imgs: Optional[torch.Tensor] = None,
+                 imgs: Optional[Union[torch.Tensor, List[torch.Tensor]]] = None,
                  sampling_weights: Optional[torch.Tensor] = None,
                  weights_subsampled: int = 1,
                  ):
@@ -37,9 +37,9 @@ class BaseDataset(Dataset, ABC):
         self.rays_d = rays_d
         self.imgs = imgs
         if self.imgs is not None:
-            self.num_samples = self.imgs.shape[0]
+            self.num_samples = len(self.imgs)
         elif self.rays_o is not None:
-            self.num_samples = self.rays_o.shape[0]
+            self.num_samples = len(self.rays_o)
         else:
             self.num_samples = None
             #raise RuntimeError("Can't figure out num_samples.")
@@ -57,11 +57,15 @@ class BaseDataset(Dataset, ABC):
         self.perm = None
 
     @property
-    def img_h(self) -> int:
+    def img_h(self) -> Union[int, List[int]]:
+        if isinstance(self.intrinsics, list):
+            return [i.height for i in self.intrinsics]
         return self.intrinsics.height
 
     @property
-    def img_w(self) -> int:
+    def img_w(self) -> Union[int, List[int]]:
+        if isinstance(self.intrinsics, list):
+            return [i.height for i in self.intrinsics]
         return self.intrinsics.width
 
     def reset_iter(self):
