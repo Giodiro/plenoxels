@@ -1,3 +1,5 @@
+import logging as log
+
 import numpy as np
 import torch
 from typing import Optional, List, Tuple, Union
@@ -79,6 +81,11 @@ class PhotoTourismDataset(BaseDataset):
             intrinsics=intrinsics,
             imgs=all_images,
         )
+        log.info(f"PhotoTourismDataset contracted={self.is_contracted}, ndc={self.is_ndc}. "
+                 f"Loaded {self.split} set from {self.datadir}: "
+                 f"{len(self.poses)} images of sizes between {min(self.img_h)}x{min(self.img_w)} "
+                 f"and {max(self.img_h)}x{max(self.img_w)}"
+                 f"Images loaded: {self.imgs is not None}.")
 
     def __getitem__(self, index):
         out, index = super().__getitem__(index, return_idxs=True)
