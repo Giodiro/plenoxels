@@ -81,7 +81,7 @@ class LLFFDataset(BaseDataset):
         )
         log.info(f"LLFFDataset. {contraction=} {ndc=}. Loaded {split} set from {datadir}. "
                  f"{num_images} poses of shape {self.img_h}x{self.img_w}. "
-                 f"Images loaded: {imgs is not None}. Near-far: {self.near_fars}. "
+                 f"Images loaded: {imgs is not None}. Near-far[:3]: {self.near_fars[:3]}. "
                  f"Sampling without replacement={self.use_permutation}. {intrinsics}")
 
     def __getitem__(self, index):
