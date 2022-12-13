@@ -17,7 +17,7 @@ import tinycudann as tcnn
 from .base_decoder import BaseDecoder
 
 class LearnedBasisDecoder(BaseDecoder):
-    def __init__(self, feature_dim, net_width=256, net_layers=1, appearance_code_size=0):
+    def __init__(self, feature_dim, net_width=64, net_layers=1, appearance_code_size=0):
         super().__init__()
 
         self.feature_dim = feature_dim
