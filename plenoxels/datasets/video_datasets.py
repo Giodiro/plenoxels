@@ -134,8 +134,10 @@ class Video360Dataset(BaseDataset):
 
         # ISG/IST weights are computed on 4x subsampled data.
         weights_subsampled = int(4 / downsample)
-        scene_bbox = (torch.tensor(scene_bbox) or
-                      get_bbox(datadir, is_contracted=contraction, dset_type=dset_type))
+        if scene_bbox is not None:
+            scene_bbox = torch.tensor(scene_bbox)
+        else:
+            scene_bbox = get_bbox(datadir, is_contracted=contraction, dset_type=dset_type)
         super().__init__(
             datadir=datadir,
             split=split,
