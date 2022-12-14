@@ -46,6 +46,7 @@ class PhotoTourismDataset(BaseDataset):
             datadir=datadir, orientation_method=orientation_method, center_poses=center_poses,
             auto_scale_poses=auto_scale_poses, scale_factor=scale_factor, split=split)
         images, intrinsics = load_pt_images(intrinsics, file_names, downsample, split)
+        self.num_images = len(intrinsics)
 
         # Since all images are of different shapes, we cannot generate coordinates on the fly.
         # For the training set we pre-generate all rays_o, rays_d by computing them one at a time,
@@ -60,11 +61,12 @@ class PhotoTourismDataset(BaseDataset):
                 directions.append(_directions)
                 origins.append(_origins)
                 all_images.append(image.view(-1, 3))
-                camera_ids.append(torch.full((_directions.shape[0], ), fill_value=i, dtype=torch.float32))
+                camera_ids.append(torch.full((_directions.shape[0], ), fill_value=i, dtype=torch.int32))
             directions = torch.cat(directions)
             origins = torch.cat(origins)
             all_images = torch.cat(all_images)
             self.camera_ids = torch.cat(camera_ids)  # [tot_num_rays]
+            log.info(f"Generated all {directions.shape[0]} training rays.")
         else:
             all_images = images
             self.camera_ids = torch.arange(len(all_images), dtype=torch.int32)  # [num_images]
@@ -84,18 +86,15 @@ class PhotoTourismDataset(BaseDataset):
         log.info(f"PhotoTourismDataset contracted={self.is_contracted}, ndc={self.is_ndc}. "
                  f"Loaded {self.split} set from {self.datadir}: "
                  f"{len(self.poses)} images of sizes between {min(self.img_h)}x{min(self.img_w)} "
-                 f"and {max(self.img_h)}x{max(self.img_w)}"
+                 f"and {max(self.img_h)}x{max(self.img_w)}. "
                  f"Images loaded: {self.imgs is not None}.")
 
     def __getitem__(self, index):
         out, index = super().__getitem__(index, return_idxs=True)
-        out["bg_color"] = torch.ones(
-            (1, 3), dtype=out['rays_o'].dtype, device=out['rays_o'].device)
+        out["bg_color"] = torch.ones((1, 3), dtype=torch.float32)
         out["timestamps"] = self.camera_ids[index]
 
         if self.split != 'train':
-            out["timestamps"] = out["timestamps"].repeat(out["rays_o"].shape[0])
-
             # Generate rays
             img = out["imgs"]
             intrinsics = self.intrinsics[index]
@@ -112,6 +111,8 @@ class PhotoTourismDataset(BaseDataset):
             out["rays_o"] = ro
             out["rays_d"] = rd
             out["imgs"] = img.view(-1, 3)
+
+            out["timestamps"] = out["timestamps"].repeat(out["rays_o"].shape[0])
 
         out["near_fars"] = intersect_with_aabb(
             out["rays_o"], out["rays_d"], self.scene_bbox, near_plane=None)
@@ -139,9 +140,10 @@ def load_pt_images(
     downsample: float,
     split: str
 ):
-    scaled_intrinsics = [i.scale(1 / downsample) for i in intrinsics]
-    out_h = [i.height for i in scaled_intrinsics]
-    out_w = [i.width for i in scaled_intrinsics]
+    for i in intrinsics:
+        i.scale(1 / downsample)
+    out_h = [i.height for i in intrinsics]
+    out_w = [i.width for i in intrinsics]
     images = parallel_load_images(
         dset_type="phototourism",
         tqdm_title=f"Loading {split} data",
@@ -150,7 +152,7 @@ def load_pt_images(
         out_h=out_h,
         out_w=out_w,
     )
-    return images, scaled_intrinsics
+    return images, intrinsics
 
 
 def load_pt_metadata(
@@ -195,6 +197,7 @@ def load_pt_metadata(
     if auto_scale_poses:
         out_scale_factor /= float(torch.max(torch.abs(poses[:, :3, 3])))
     out_scale_factor *= scale_factor
+    log.info(f"Final scale factor = {out_scale_factor}")
 
     poses[:, :3, 3] *= out_scale_factor
 

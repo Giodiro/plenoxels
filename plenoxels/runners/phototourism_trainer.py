@@ -62,7 +62,7 @@ class PhototourismTrainer(BaseTrainer):
             rays_o = data["rays_o"]
             rays_d = data["rays_d"]
             timestamp = data["timestamps"]
-            near_far = data["near_fars"].to(self.device)
+            near_far = data["near_fars"]
             bg_color = data["bg_color"]
             if isinstance(bg_color, torch.Tensor):
                 bg_color = bg_color.to(self.device)
@@ -70,10 +70,11 @@ class PhototourismTrainer(BaseTrainer):
             for b in range(math.ceil(rays_o.shape[0] / batch_size)):
                 rays_o_b = rays_o[b * batch_size: (b + 1) * batch_size].to(self.device)
                 rays_d_b = rays_d[b * batch_size: (b + 1) * batch_size].to(self.device)
-                timestamps_d_b = timestamp[b * batch_size: (b + 1) * batch_size].to(self.device)
+                timestamps_b = timestamp[b * batch_size: (b + 1) * batch_size].to(self.device)
+                near_far_b = near_far[b * batch_size: (b + 1) * batch_size].to(self.device)
                 outputs = self.model(
-                    rays_o_b, rays_d_b, timestamps=timestamps_d_b, bg_color=bg_color,
-                    near_far=near_far)
+                    rays_o_b, rays_d_b, timestamps=timestamps_b, bg_color=bg_color,
+                    near_far=near_far_b)
                 for k, v in outputs.items():
                     if "rgb" in k or "depth" in k:
                         preds[k].append(v.cpu())
@@ -120,32 +121,32 @@ class PhototourismTrainer(BaseTrainer):
         # Reset randomness in train-dataset
         self.train_dataset.reset_iter()
 
-    @torch.no_grad()
     def validate(self):
         self.optimize_appearance_codes()
 
-        dataset = self.test_dataset
-        per_scene_metrics = defaultdict(list)
-        pred_frames, out_depths = [], []
-        pb = tqdm(total=len(dataset), desc=f"Test scene ({dataset.name})")
-        for img_idx, data in enumerate(dataset):
-            preds = self.eval_step(data)
-            out_metrics, out_img, out_depth = self.evaluate_metrics(
-                data["imgs"], preds, dset=dataset, img_idx=img_idx, name=None,
-                save_outputs=self.save_outputs)
-            pred_frames.append(out_img)
-            if out_depth is not None:
-                out_depths.append(out_depth)
-            for k, v in out_metrics.items():
-                per_scene_metrics[k].append(v)
-            pb.set_postfix_str(f"PSNR={out_metrics['psnr']:.2f}", refresh=False)
-            pb.update(1)
-        pb.close()
-        val_metrics = [
-            self.report_test_metrics(per_scene_metrics, extra_name=None),
-        ]
-        df = pd.DataFrame.from_records(val_metrics)
-        df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
+        with torch.no_grad():
+            dataset = self.test_dataset
+            per_scene_metrics = defaultdict(list)
+            pred_frames, out_depths = [], []
+            pb = tqdm(total=len(dataset), desc=f"Test scene ({dataset.name})")
+            for img_idx, data in enumerate(dataset):
+                preds = self.eval_step(data)
+                out_metrics, out_img, out_depth = self.evaluate_metrics(
+                    data["imgs"], preds, dset=dataset, img_idx=img_idx, name=None,
+                    save_outputs=self.save_outputs)
+                pred_frames.append(out_img)
+                if out_depth is not None:
+                    out_depths.append(out_depth)
+                for k, v in out_metrics.items():
+                    per_scene_metrics[k].append(v)
+                pb.set_postfix_str(f"PSNR={out_metrics['psnr']:.2f}", refresh=False)
+                pb.update(1)
+            pb.close()
+            val_metrics = [
+                self.report_test_metrics(per_scene_metrics, extra_name=None),
+            ]
+            df = pd.DataFrame.from_records(val_metrics)
+            df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
 
     def calc_metrics(self, preds: torch.Tensor, gt: torch.Tensor):
         """
@@ -182,6 +183,9 @@ class PhototourismTrainer(BaseTrainer):
             global_scale = dset.global_scale
         except AttributeError:
             global_scale = None
+        num_images = None
+        if self.train_dataset is not None:
+            num_images = self.train_dataset.num_images
         model = LowrankModel(
             grid_config=kwargs.pop("grid_config"),
             aabb=dset.scene_bbox,
@@ -190,6 +194,7 @@ class PhototourismTrainer(BaseTrainer):
             global_scale=global_scale,
             global_translation=global_translation,
             use_appearance_embedding=True,
+            num_images=num_images,
             **kwargs)
         log.info(f"Initialized {model.__class__} model with "
                  f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, "
@@ -227,7 +232,7 @@ class PhototourismTrainer(BaseTrainer):
 
         camera_id = torch.full((batch_size, ), fill_value=im_id, dtype=torch.int32, device=self.device)
 
-        app_optim = torch.optim.Adam(params=[self.model.appearance_coef], lr=self.extra_args['app_optim_lr'])
+        app_optim = torch.optim.Adam(params=self.model.field.test_appearance_embedding.parameters(), lr=self.extra_args['app_optim_lr'])
         lr_sched = torch.optim.lr_scheduler.StepLR(app_optim, step_size=2 * n_steps, gamma=0.1)
         for n in range(epochs):
             idx = torch.randperm(rays_o.shape[0])
@@ -259,14 +264,19 @@ class PhototourismTrainer(BaseTrainer):
         # 1. Initialize test appearance code to average code.
         if not hasattr(self.model.field, "test_appearance_embedding"):
             tst_embedding = torch.nn.Embedding(
-                num_test_imgs, self.model.field.appearance_embedding_dim)
-            tst_embedding.weight.copy_(
-                self.model.field.weight.mean(dim=0, keepdim=True).expand(num_test_imgs, -1)
-            )
+                num_test_imgs, self.model.field.appearance_embedding_dim
+            ).to(self.device)
+            with torch.autograd.no_grad():
+                tst_embedding.weight.copy_(
+                    self.model.field.appearance_embedding.weight
+                        .detach()
+                        .mean(dim=0, keepdim=True)
+                        .expand(num_test_imgs, -1)
+                )
             self.model.field.test_appearance_embedding = tst_embedding
 
         # 2. Setup parameter trainability
-        self.model.train()
+        self.model.eval()
         param_trainable = {}
         for pn, p in self.model.named_parameters():
             param_trainable[pn] = p.requires_grad

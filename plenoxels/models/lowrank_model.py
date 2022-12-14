@@ -44,6 +44,7 @@ class LowrankModel(nn.Module):
                  # appearance embedding (phototourism)
                  use_appearance_embedding: bool = False,
                  appearance_embedding_dim: int = 0,
+                 num_images: Optional[int] = None,
                  **kwargs,
                  ):
         super().__init__()
@@ -73,6 +74,7 @@ class LowrankModel(nn.Module):
             appearance_embedding_dim=appearance_embedding_dim,
             spatial_distortion=self.spatial_distortion,
             density_activation=self.density_act,
+            num_images=num_images,
         )
 
         # Initialize proposal-sampling nets

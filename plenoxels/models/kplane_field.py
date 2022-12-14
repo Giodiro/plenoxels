@@ -97,6 +97,7 @@ class KPlaneField(nn.Module):
         appearance_embedding_dim: int,
         spatial_distortion: Optional[SpatialDistortion],
         density_activation: Callable,
+        num_images: Optional[int],
     ) -> None:
         super().__init__()
 
@@ -112,11 +113,11 @@ class KPlaneField(nn.Module):
         self.grids = nn.ModuleList()
         self.feature_dim = 0
         for res in self.multiscale_res_multipliers:
-            config = self.grid_config[0]
             # initialize coordinate grid
-            config = config.copy()
-            config["resolution"] = [  # do not have multi resolution on time.
-               r * res for r in config["resolution"][:3]
+            config = self.grid_config[0].copy()
+            # Resolution fix: multi-res only on spatial planes
+            config["resolution"] = [
+                r * res for r in config["resolution"][:3]
             ] + config["resolution"][3:]
             gp = init_grid_param(
                 grid_nd=config["grid_dimensions"],
@@ -135,9 +136,10 @@ class KPlaneField(nn.Module):
         # 2. Init appearance code-related parameters
         self.use_average_appearance_embedding = True  # for test-time
         self.use_appearance_embedding = use_appearance_embedding
-        self.num_images = int(self.grid_config[0]["resolution"][-1])
+        self.num_images = num_images
         self.appearance_embedding = None
         if use_appearance_embedding:
+            assert self.num_images is not None
             self.appearance_embedding_dim = appearance_embedding_dim
             # this will initialize as normal_(0.0, 1.0)
             self.appearance_embedding = nn.Embedding(self.num_images, self.appearance_embedding_dim)
@@ -212,6 +214,11 @@ class KPlaneField(nn.Module):
                 pts: torch.Tensor,
                 directions: torch.Tensor,
                 timestamps: Optional[torch.Tensor] = None):
+        if self.use_appearance_embedding:
+            if timestamps is None:
+                raise AttributeError("timestamps (appearance-ids) are not provided.")
+            camera_indices = timestamps
+            timestamps = None
         density, rgb_features = self.get_density(pts, timestamps)
         n_rays, n_samples = pts.shape[:2]
 
@@ -222,23 +229,23 @@ class KPlaneField(nn.Module):
         color_features = [encoded_directions, rgb_features.view(-1, self.geo_feat_dim)]
 
         if self.use_appearance_embedding:
-            if timestamps is None:
-                raise AttributeError("timestamps (appearance-ids) are not provided.")
-            camera_indices = timestamps.squeeze()
             if self.training:
-                embedded_appearance = self.embedding_appearance(camera_indices)
+                embedded_appearance = self.appearance_embedding(camera_indices)
             else:
                 if hasattr(self, "test_appearance_embedding"):
-                    embedded_appearance = self.test_embedding_appearance(camera_indices)
+                    embedded_appearance = self.test_appearance_embedding(camera_indices)
                 elif self.use_average_appearance_embedding:
                     embedded_appearance = torch.ones(
                         (*directions.shape[:-1], self.appearance_embedding_dim), device=directions.device
-                    ) * self.embedding_appearance.mean(dim=0)
+                    ) * self.appearance_embedding.mean(dim=0)
                 else:
                     embedded_appearance = torch.zeros(
                         (*directions.shape[:-1], self.appearance_embedding_dim), device=directions.device
                     )
-            color_features.append(embedded_appearance.view(-1, self.appearance_embedding_dim))
+            # expand embedded_appearance from n_rays, dim to n_rays*n_samples, dim
+            ea_dim = embedded_appearance.shape[-1]
+            embedded_appearance = embedded_appearance.view(-1, 1, ea_dim).expand(n_rays, n_samples, -1).reshape(-1, ea_dim)
+            color_features.append(embedded_appearance)
 
         color_features = torch.cat(color_features, dim=-1)
         rgb = self.color_net(color_features).to(directions).view(n_rays, n_samples, 3)

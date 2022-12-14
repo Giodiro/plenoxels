@@ -1,8 +1,8 @@
 # configuration file to be used with `main.py` for normal (or multiscene) training
 # the configuration must be specified in a dictionary called `config`.
 config = {
-    "expname": "flame_salmon_ndc_ts1e-3_tspn1e-5_ptv2e-4_ptvpn2e-4_l1ap1e-4_l1appn1e-4_dl1e-3_largebb",
-    "logdir": "./logs/flame_salmon",
+    "expname": "trevi",
+    "logdir": "./logs",
     "device": "cuda:0",
 
     # Data settings
@@ -12,7 +12,7 @@ config = {
     "ndc": False,
     "scene_bbox": [[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]],
     "scale_factor": 3.0,
-    "orientation_method": "up",
+    "orientation_method": "none",
     "center_poses": True,
     "auto_scale_poses": True,
     "near_scaling": 0.9,  # unused
@@ -42,7 +42,7 @@ config = {
     # Training settings
     "train_fp16": True,
     "save_every": 10000,
-    "valid_every": 10000,
+    "valid_every": 1000,
     "save_outputs": True,
 
     # Raymarching settings
@@ -53,8 +53,8 @@ config = {
     "num_proposal_iterations": 2,
     "use_same_proposal_network": False,
     "proposal_net_args_list": [
-        {"resolution": [128, 128, 128], "num_input_coords": 4, "num_output_coords": 8},
-        {"resolution": [256, 256, 256], "num_input_coords": 4, "num_output_coords": 8},
+        {"resolution": [128, 128, 128], "num_input_coords": 3, "num_output_coords": 8},
+        {"resolution": [256, 256, 256], "num_input_coords": 3, "num_output_coords": 8},
     ],
 
     # Model settings
@@ -62,7 +62,7 @@ config = {
     "density_activation": "trunc_exp",
     "appearance_embedding_dim": 16,
     "grid_config": [{
-        "input_coordinate_dim": 4,
+        "input_coordinate_dim": 3,
         "output_coordinate_dim": 16,
         "grid_dimensions": 2,
         "resolution": [64, 64, 64],

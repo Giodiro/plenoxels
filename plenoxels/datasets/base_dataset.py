@@ -106,10 +106,11 @@ class BaseDataset(Dataset, ABC):
     def __getitem__(self, index, return_idxs: bool = False):
         if self.split == 'train':
             index = self.get_rand_ids(index)
-        out = {
-            "rays_o": self.rays_o[index],
-            "rays_d": self.rays_d[index],
-        }
+        out = {}
+        if self.rays_o is not None:
+            out["rays_o"] = self.rays_o[index]
+        if self.rays_d is not None:
+            out["rays_d"] = self.rays_d[index]
         if self.imgs is not None:
             out["imgs"] = self.imgs[index]
         else:
