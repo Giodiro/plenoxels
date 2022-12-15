@@ -11,9 +11,9 @@ config = {
     "contract": False,
     "ndc": False,
     "scene_bbox": [[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]],
-    "scale_factor": 3.0,
-    "orientation_method": "none",
-    "center_poses": True,
+    "scale_factor": 5.0,
+    "orientation_method": "up",
+    "center_poses": False,
     "auto_scale_poses": True,
     "near_scaling": 0.9,  # unused
     "ndc_far": 2.6,       # unused
