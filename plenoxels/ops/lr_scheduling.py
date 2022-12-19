@@ -1,19 +1,7 @@
 import math
-import os
-from typing import Tuple, Optional
 
-import imageio
-import matplotlib.pyplot as plt
-import numpy as np
 import torch
-import torch.utils.data
-from tqdm import tqdm
-
-__all__ = (
-    "get_step_schedule_with_warmup",
-    "get_cosine_schedule_with_warmup",
-    "init_dloader_random",
-)
+import torch.optim
 
 
 def get_cosine_schedule_with_warmup(
@@ -36,7 +24,6 @@ def get_cosine_schedule_with_warmup(
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda, last_epoch)
 
 
-# Based on MipNeRF360
 def get_log_linear_schedule_with_warmup(
     optimizer: torch.optim.Optimizer,
     num_warmup_steps: int,
@@ -72,9 +59,3 @@ def get_step_schedule_with_warmup(
             out *= gamma
         return out
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda, last_epoch)
-
-
-def init_dloader_random(worker_id):
-    seed = torch.utils.data.get_worker_info().seed
-    torch.manual_seed(seed)
-    np.random.seed(seed % (2 ** 32 - 1))

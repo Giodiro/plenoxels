@@ -14,12 +14,11 @@ from plenoxels.ema import EMA
 from plenoxels.my_tqdm import tqdm
 from plenoxels.ops.image.io import write_video_to_file
 from plenoxels.models.lowrank_model import LowrankModel
-from plenoxels.runners.base_trainer import BaseTrainer
+from plenoxels.runners.base_trainer import BaseTrainer, init_dloader_random
 from plenoxels.runners.regularization import (
     PlaneTV, TimeSmoothness, HistogramLoss,
     L1AppearancePlanes, DistortionLoss
 )
-from plenoxels.runners.utils import init_dloader_random
 
 
 class VideoTrainer(BaseTrainer):

@@ -12,12 +12,9 @@ import torch.utils.data
 from matplotlib.colors import LogNorm
 
 from plenoxels.ema import EMA
-from .base_trainer import BaseTrainer
+from .base_trainer import BaseTrainer, init_dloader_random
 from .regularization import (
     PlaneTV, HistogramLoss, L1ProposalNetwork, DepthTV, DistortionLoss,
-)
-from .utils import (
-    init_dloader_random
 )
 from ..datasets import SyntheticNerfDataset, LLFFDataset
 from ..models.lowrank_model import LowrankModel

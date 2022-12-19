@@ -5,15 +5,19 @@ from typing import Iterable, Optional, Union, Dict, Tuple, Sequence, MutableMapp
 
 import numpy as np
 import torch
-import wandb
+import torch.utils.data
 from torch.utils.tensorboard import SummaryWriter
+import wandb
 
 from plenoxels.ema import EMA
 from plenoxels.my_tqdm import tqdm
 from plenoxels.ops.image import metrics
 from plenoxels.ops.image.io import write_png
 from plenoxels.runners.regularization import Regularizer
-from plenoxels.runners.utils import get_cosine_schedule_with_warmup, get_step_schedule_with_warmup
+from plenoxels.ops.lr_scheduling import (
+    get_cosine_schedule_with_warmup,
+    get_step_schedule_with_warmup
+)
 
 
 class BaseTrainer(abc.ABC):
@@ -356,3 +360,9 @@ def losses_to_postfix(loss_dict: Dict[str, EMA], lr: Optional[float]) -> str:
     if lr is not None:
         pfix.append(f"lr={lr:.2e}")
     return "  ".join(pfix)
+
+
+def init_dloader_random(worker_id):
+    seed = torch.utils.data.get_worker_info().seed
+    torch.manual_seed(seed)
+    np.random.seed(seed % (2 ** 32 - 1))
