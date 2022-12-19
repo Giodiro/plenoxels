@@ -202,11 +202,15 @@ def load_pt_metadata(
 
     poses[:, :3, 3] *= out_scale_factor
 
+    if orientation_method == "up":
+        # Giac: this to get all camera origins outside [-1, 1] bounding box.
+        poses[..., 1, 3] -= 1.6
+
     # Split
     split_ids = get_pt_split_ids(datadir, split, image_filenames)
     poses = poses[split_ids]
-    intrinsics = [intrinsics[i] for i in split_ids]
-    image_filenames = [image_filenames[i] for i in split_ids]
+    intrinsics = [intrinsics[i] for i in range(len(split_ids)) if split_ids[i]]
+    image_filenames = [image_filenames[i] for i in range(len(split_ids)) if split_ids[i]]
     return poses, intrinsics, image_filenames
 
 
