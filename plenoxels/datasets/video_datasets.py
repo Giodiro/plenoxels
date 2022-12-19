@@ -394,7 +394,10 @@ def load_llffvideo_poses(datadir: str,
         split_ids = np.arange(1, poses.shape[0])
     else:
         split_ids = np.array([0])
-        # split_ids = np.array([1])  # Try evaluating on a train view
+    if 'coffee_martini' in datadir:
+        # https://github.com/fengres/mixvoxels/blob/0013e4ad63c80e5f14eb70383e2b073052d07fba/dataLoader/llff_video.py#L323
+        log.info(f"Deleting unsynchronized camera from coffee-martini video.")
+        split_ids = np.setdiff1d(split_ids, 12)
     poses = torch.from_numpy(poses[split_ids])
     near_fars = torch.from_numpy(near_fars[split_ids])
     videopaths = videopaths[split_ids].tolist()
