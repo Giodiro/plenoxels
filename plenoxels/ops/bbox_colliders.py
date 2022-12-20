@@ -34,5 +34,6 @@ def intersect_with_aabb(
     # clamp to near plane
     near_plane = near_plane if training else 0
     nears = torch.clamp(nears, min=near_plane)
+    fars = torch.maximum(fars, nears + 1e-6)
 
     return nears, fars

@@ -36,7 +36,10 @@ class Video360Dataset(BaseDataset):
                  max_tsteps: Optional[int] = None,
                  isg: bool = False,
                  contraction: bool = False,
-                 ndc: bool = False):
+                 ndc: bool = False,
+                 scene_bbox: Optional[List] = None,
+                 near_scaling: float = 0.9,
+                 ndc_far: float = 2.6):
         self.keyframes = keyframes
         self.max_cameras = max_cameras
         self.max_tsteps = max_tsteps
@@ -47,8 +50,8 @@ class Video360Dataset(BaseDataset):
         self.per_cam_near_fars = None
         self.global_translation = torch.tensor([0, 0, 0])
         self.global_scale = torch.tensor([1, 1, 1])
-        self.near_scaling = 0.9
-        self.ndc_far = 2.6
+        self.near_scaling = near_scaling
+        self.ndc_far = ndc_far
         self.median_imgs = None
         if contraction and ndc:
             raise ValueError("Options 'contraction' and 'ndc' are exclusive.")
@@ -57,6 +60,7 @@ class Video360Dataset(BaseDataset):
         else:
             dset_type = "llff"
 
+        # Note: timestamps are stored normalized between -1, 1.
         if dset_type == "llff":
             per_cam_poses, per_cam_near_fars, intrinsics, videopaths = load_llffvideo_poses(
                 datadir, downsample=self.downsample, split=split, near_scaling=self.near_scaling)
@@ -130,13 +134,17 @@ class Video360Dataset(BaseDataset):
 
         # ISG/IST weights are computed on 4x subsampled data.
         weights_subsampled = int(4 / downsample)
+        if scene_bbox is not None:
+            scene_bbox = torch.tensor(scene_bbox)
+        else:
+            scene_bbox = get_bbox(datadir, is_contracted=contraction, dset_type=dset_type)
         super().__init__(
             datadir=datadir,
             split=split,
             batch_size=batch_size,
             is_ndc=ndc,
             is_contracted=contraction,
-            scene_bbox=get_bbox(datadir, is_contracted=contraction, dset_type=dset_type),
+            scene_bbox=scene_bbox,
             rays_o=None,
             rays_d=None,
             intrinsics=intrinsics,
@@ -386,7 +394,10 @@ def load_llffvideo_poses(datadir: str,
         split_ids = np.arange(1, poses.shape[0])
     else:
         split_ids = np.array([0])
-        # split_ids = np.array([1])  # Try evaluating on a train view
+    if 'coffee_martini' in datadir:
+        # https://github.com/fengres/mixvoxels/blob/0013e4ad63c80e5f14eb70383e2b073052d07fba/dataLoader/llff_video.py#L323
+        log.info(f"Deleting unsynchronized camera from coffee-martini video.")
+        split_ids = np.setdiff1d(split_ids, 12)
     poses = torch.from_numpy(poses[split_ids])
     near_fars = torch.from_numpy(near_fars[split_ids])
     videopaths = videopaths[split_ids].tolist()

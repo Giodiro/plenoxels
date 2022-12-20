@@ -222,7 +222,7 @@ def generate_spiral_path(poses: np.ndarray,
 
     # Get radii for spiral path using 90th percentile of camera positions.
     positions = poses[:, :3, 3]
-    radii = np.percentile(np.abs(positions), 90, 0)
+    radii = np.percentile(np.abs(positions), 70, 0)
     radii = np.concatenate([radii, [1.]])
 
     # Generate poses for spiral path.

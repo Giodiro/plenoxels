@@ -233,9 +233,11 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
     tr_dset = Video360Dataset(
         data_dir, split='train', downsample=data_downsample,
         batch_size=batch_size,
-        max_cameras=kwargs.get('max_train_cameras'),
-        max_tsteps=kwargs.get('max_train_tsteps') if keyframes else None,
+        max_cameras=kwargs['max_train_cameras'],
+        max_tsteps=kwargs['max_train_tsteps'] if keyframes else None,
         isg=isg, keyframes=keyframes, contraction=kwargs['contract'], ndc=kwargs['ndc'],
+        near_scaling=float(kwargs['near_scaling']), ndc_far=float(kwargs['ndc_far']),
+        scene_bbox=kwargs['scene_bbox'],
     )
     if ist:
         tr_dset.switch_isg2ist()  # this should only happen in case we're reloading
@@ -253,9 +255,11 @@ def init_ts_data(data_dir, split, **kwargs):
         downsample = 2.0
     ts_dset = Video360Dataset(
         data_dir, split=split, downsample=downsample,
-        max_cameras=kwargs.get('max_test_cameras'),
-        max_tsteps=kwargs.get('max_test_tsteps'),
+        max_cameras=kwargs['max_test_cameras'],
+        max_tsteps=kwargs['max_test_tsteps'],
         contraction=kwargs['contract'], ndc=kwargs['ndc'],
+        near_scaling=float(kwargs['near_scaling']), ndc_far=float(kwargs['ndc_far']),
+        scene_bbox=kwargs['scene_bbox'],
     )
     return {"ts_dset": ts_dset}
 
