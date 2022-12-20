@@ -172,8 +172,6 @@ class LowrankModel(nn.Module):
         timestamps : [batch]
         near_far : [batch, 2]
         """
-        # Normalize rays_d
-        rays_d = rays_d / torch.linalg.norm(rays_d, dim=-1, keepdim=True)
         # Fix shape for near-far
         nears, fars = torch.split(near_far, [1, 1], dim=-1)
         if nears.shape[0] != rays_o.shape[0]:
@@ -185,7 +183,7 @@ class LowrankModel(nn.Module):
         # Note: proposal sampler mustn't use timestamps (=camera-IDs) with appearance-embedding,
         #       since the appearance embedding should not affect density. We still pass them in the
         #       call below, but they will not be used as long as density-field resolutions
-        #       will be 3D.
+        #       are be 3D.
         ray_samples, weights_list, ray_samples_list = self.proposal_sampler.generate_ray_samples(
             ray_bundle, timestamps=timestamps, density_fns=self.density_fns)
 

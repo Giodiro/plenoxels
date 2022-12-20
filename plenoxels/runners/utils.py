@@ -36,7 +36,7 @@ def initialize_model(runner: Union[Trainer, PhototourismTrainer, VideoTrainer], 
         is_contracted=dset.is_contracted,
         global_scale=global_scale,
         global_translation=global_translation,
-        use_appearance_embedding=True,
+        use_appearance_embedding=isinstance(runner, PhototourismTrainer),
         num_images=num_images,
         **kwargs)
     log.info(f"Initialized {model.__class__} model with "

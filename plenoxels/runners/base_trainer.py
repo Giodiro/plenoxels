@@ -42,7 +42,7 @@ class BaseTrainer(abc.ABC):
         self.device = device
         self.eval_batch_size = kwargs.get('eval_batch_size', 8129)
         self.extra_args = kwargs
-        self.timer = CudaTimer(enabled=True)
+        self.timer = CudaTimer(enabled=False)
 
         self.log_dir = os.path.join(logdir, expname)
         os.makedirs(self.log_dir, exist_ok=True)
