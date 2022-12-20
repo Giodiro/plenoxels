@@ -198,6 +198,5 @@ def load_llff_images(image_paths: List[str], intrinsics: Intrinsics, split: str)
         paths=image_paths,
         out_h=intrinsics.height,
         out_w=intrinsics.width,
-        resolution=(None, None),
     )
     return torch.stack(all_rgbs, 0)

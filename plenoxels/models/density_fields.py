@@ -19,13 +19,18 @@ class KPlaneDensityField(nn.Module):
                  num_input_coords,
                  num_output_coords,
                  density_activation: Callable,
-                 spatial_distortion: Optional[SpatialDistortion] = None):
+                 spatial_distortion: Optional[SpatialDistortion] = None,
+                 linear_decoder: bool = True):
         super().__init__()
         self.aabb = nn.Parameter(aabb, requires_grad=False)
         self.spatial_distortion = spatial_distortion
         self.hexplane = num_input_coords == 4
         self.feature_dim = num_output_coords
         self.density_activation = density_activation
+        self.linear_decoder = linear_decoder
+        activation = "ReLU"
+        if self.linear_decoder:
+            activation = "None"
 
         self.grids = init_grid_param(
             grid_nd=2, in_dim=num_input_coords, out_dim=num_output_coords, reso=resolution,
@@ -35,7 +40,7 @@ class KPlaneDensityField(nn.Module):
             n_output_dims=1,
             network_config={
                 "otype": "FullyFusedMLP",
-                "activation": "ReLU",
+                "activation": activation,
                 "output_activation": "None",
                 "n_neurons": 64,
                 "n_hidden_layers": 1,

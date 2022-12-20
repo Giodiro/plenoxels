@@ -1,4 +1,4 @@
-from typing import Tuple, Optional, Dict, Any, List, Sequence
+from typing import Tuple, Optional, Dict, Any, List
 import logging as log
 import os
 import resource
@@ -6,7 +6,6 @@ import resource
 import torch
 from torch.multiprocessing import Pool
 import torchvision.transforms
-import torchvision.transforms.functional as tf
 from PIL import Image
 import imageio.v3 as iio
 
@@ -40,17 +39,11 @@ def _load_llff_image(idx: int,
                      data_dir: str,
                      out_h: int,
                      out_w: int,
-                     resolution: Tuple[Optional[int], Optional[int]],
                      ) -> torch.Tensor:
     f_path = os.path.join(data_dir, paths[idx])
     img = Image.open(f_path).convert('RGB')
 
-    if resolution[0] is not None and resolution[1] is not None and \
-            (resolution[0] * 2 < out_h or resolution[1] * 2 < out_w):
-        img = img.resize((resolution[0] * 2, resolution[1] * 2), Image.LANCZOS)
-        img = img.resize((out_w, out_h), Image.LANCZOS)
-    else:
-        img = img.resize((out_w, out_h), Image.LANCZOS)
+    img = img.resize((out_w, out_h), Image.LANCZOS)
     img = pil2tensor(img)  # [C, H, W]
     img = img.permute(1, 2, 0)  # [H, W, C]
     return img
@@ -67,7 +60,6 @@ def _load_nerf_image_pose(idx: int,
                           out_h: Optional[int],
                           out_w: Optional[int],
                           downsample: float,
-                          resolution: Tuple[Optional[int], Optional[int]]
                           ) -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
     # Fix file-path
     f_path = os.path.join(data_dir, frames[idx]['file_path'])
@@ -84,12 +76,7 @@ def _load_nerf_image_pose(idx: int,
     # We only do the low-pass filtering if resolution * 2 is lower-res than out_h, out_w
     if out_h != out_w:
         log.warning("360 non-square")
-    if resolution[0] is not None and resolution[1] is not None and \
-            (resolution[0] * 2 < out_h or resolution[1] * 2 < out_w):
-        img = img.resize((resolution[0] * 2, resolution[1] * 2), Image.LANCZOS)
-        img = img.resize((out_w, out_h), Image.LANCZOS)
-    else:
-        img = img.resize((out_w, out_h), Image.LANCZOS)
+    img = img.resize((out_w, out_h), Image.LANCZOS)
     img = pil2tensor(img)  # [C, H, W]
     img = img.permute(1, 2, 0)  # [H, W, C]
 
@@ -124,7 +111,7 @@ def _load_video_1cam(idx: int,
             break
         # Frame is np.ndarray in uint8 dtype (H, W, C)
         imgs.append(
-            torch.from_numpy(frame)  #.to(torch.float32).div(255),
+            torch.from_numpy(frame)
         )
         timestamps.append(frame_idx)
     imgs = torch.stack(imgs, 0)
@@ -154,7 +141,7 @@ def parallel_load_images(tqdm_title,
     elif dset_type == 'video':
         fn = _parallel_loader_video
         # giac: Can increase to e.g. 10 if loading 4x subsampled images. Otherwise OOM.
-        max_threads = 4
+        max_threads = 8
     else:
         raise ValueError(dset_type)
     p = Pool(min(max_threads, num_images))

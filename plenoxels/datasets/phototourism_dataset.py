@@ -11,7 +11,8 @@ from plenoxels.datasets.base_dataset import BaseDataset
 from plenoxels.datasets.colmap_utils import read_images_binary, read_cameras_binary
 from plenoxels.datasets.data_loading import parallel_load_images
 from plenoxels.datasets.intrinsics import Intrinsics
-from plenoxels.datasets.ray_utils import gen_camera_dirs, ndc_rays_blender
+from plenoxels.datasets.ray_utils import gen_camera_dirs
+from plenoxels.ops.bbox_colliders import intersect_with_aabb
 
 
 class PhotoTourismDataset(BaseDataset):
@@ -119,7 +120,7 @@ class PhotoTourismDataset(BaseDataset):
             out["near_fars"] = torch.tensor([[0.0, self.ndc_far]]).repeat(out["rays_o"].shape[0], 1)
         else:
             out["near_fars"] = intersect_with_aabb(
-                out["rays_o"], out["rays_d"], self.scene_bbox, near_plane=None)
+                rays_o=out["rays_o"], rays_d=out["rays_d"], aabb=self.scene_bbox, near_plane=0.0, training=False)
         return out
 
 
@@ -316,42 +317,3 @@ def rotation_matrix(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         ]
     )
     return torch.eye(3) + skew_sym_mat + skew_sym_mat @ skew_sym_mat * ((1 - c) / (s**2 + 1e-8))
-
-
-def intersect_with_aabb(
-    rays_o: torch.Tensor, rays_d: torch.Tensor, aabb: torch.Tensor, near_plane: Optional[torch.Tensor],
-) -> torch.Tensor:
-    """Returns collection of valid rays within a specified near/far bounding box along with a mask
-    specifying which rays are valid
-    Args:
-        rays_o: (num_rays, 3) ray origins
-        rays_d: (num_rays, 3) ray directions
-        aabb: (2, 3) This is [min point (x,y,z), max point (x,y,z)]
-        near_plane
-    """
-    # avoid divide by zero
-    dir_fraction = 1.0 / (rays_d + 1e-6)
-
-    # x
-    t1 = (aabb[0, 0] - rays_o[:, 0:1]) * dir_fraction[:, 0:1]
-    t2 = (aabb[1, 0] - rays_o[:, 0:1]) * dir_fraction[:, 0:1]
-    # y
-    t3 = (aabb[0, 1] - rays_o[:, 1:2]) * dir_fraction[:, 1:2]
-    t4 = (aabb[1, 1] - rays_o[:, 1:2]) * dir_fraction[:, 1:2]
-    # z
-    t5 = (aabb[0, 2] - rays_o[:, 2:3]) * dir_fraction[:, 2:3]
-    t6 = (aabb[1, 2] - rays_o[:, 2:3]) * dir_fraction[:, 2:3]
-
-    nears = torch.max(
-        torch.cat([torch.minimum(t1, t2), torch.minimum(t3, t4), torch.minimum(t5, t6)], dim=1), dim=1
-    ).values
-    fars = torch.min(
-        torch.cat([torch.maximum(t1, t2), torch.maximum(t3, t4), torch.maximum(t5, t6)], dim=1), dim=1
-    ).values
-
-    # clamp to near plane
-    near_plane = near_plane or 0.0
-    nears = torch.clamp(nears, min=near_plane)
-    fars = torch.maximum(fars, nears + 1e-6)
-
-    return torch.stack((nears, fars), 1)

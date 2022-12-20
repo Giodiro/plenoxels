@@ -10,7 +10,6 @@ from .data_loading import parallel_load_images
 from .ray_utils import get_rays, get_ray_directions, generate_hemispherical_orbit
 from .intrinsics import Intrinsics
 from .base_dataset import BaseDataset
-from .patchloader import PatchLoader
 
 # y indexes from top to bottom so flip it
 # camera looks along negative z axis so flip that also
@@ -19,8 +18,6 @@ blender2opencv = torch.tensor([
 
 
 class SyntheticNerfDataset(BaseDataset):
-    patchloader: Optional[PatchLoader]
-
     def __init__(self,
                  datadir,
                  split: str,
@@ -153,7 +150,6 @@ def load_360_images(frames, datadir, split, downsample, resolution=(None, None))
         out_h=None,
         out_w=None,
         downsample=downsample,
-        resolution=resolution,
     )
     imgs, poses = zip(*img_poses)
     imgs = torch.stack(imgs, 0)  # [N, H, W, 3/4]
