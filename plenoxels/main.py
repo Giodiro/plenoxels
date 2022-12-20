@@ -23,6 +23,7 @@ import torch.utils.data
 from plenoxels.create_rendering import render_to_path
 from plenoxels.utils import parse_optfloat
 
+
 def setup_logging(log_level=logging.INFO):
     handlers = [logging.StreamHandler(sys.stdout)]
     logging.basicConfig(level=log_level,
@@ -62,6 +63,15 @@ def init_trainer(model_type: str, **kwargs):
     else:
         from plenoxels.runners import multiscene_trainer
         return multiscene_trainer.Trainer(**kwargs)
+
+
+def save_config(config, log_dir):
+    with open(os.path.join(log_dir, 'config.py'), 'wt') as out:
+        out.write('config = ' + pprint.pformat(config))
+
+    with open(os.path.join(log_dir, 'config.csv'), 'w') as f:
+        for key in config.keys():
+            f.write("%s\t%s\n" % (key,config[key]))
 
 
 def main():
@@ -107,15 +117,13 @@ def main():
         raise ValueError("render_only and validate_only are mutually exclusive.")
 
     pprint.pprint(config)
-    if not validate_only:
+    if validate_only or render_only:
+        log_dir = args.log_dir
+        assert log_dir is not None and os.path.isdir(log_dir)
+    else:
         log_dir = os.path.join(config['logdir'], config['expname'])
         os.makedirs(log_dir, exist_ok=True)
-        with open(os.path.join(log_dir, 'config.py'), 'wt') as out:
-            out.write('config = ' + pprint.pformat(config))
-
-        with open(os.path.join(log_dir, 'config.csv'), 'w') as f:
-            for key in config.keys():
-                f.write("%s\t%s\n"%(key,config[key]))
+        save_config(config, log_dir)
 
     data = load_data(model_type, validate_only=validate_only, render_only=render_only, **config)
     config.update(data)
@@ -125,10 +133,8 @@ def main():
         trainer.load_model(torch.load(checkpoint_path))
 
     if validate_only:
-        assert args.log_dir is not None and os.path.isdir(args.log_dir)
         trainer.validate()
     elif render_only:
-        assert args.log_dir is not None and os.path.isdir(args.log_dir)
         render_to_path(trainer, extra_name="")
     else:
         trainer.train()

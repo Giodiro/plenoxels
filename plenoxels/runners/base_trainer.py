@@ -10,14 +10,13 @@ import torch.utils.data
 from torch.utils.tensorboard import SummaryWriter
 import wandb
 
-from plenoxels.ema import EMA
-from plenoxels.my_tqdm import tqdm
-from plenoxels.ops.image import metrics
-from plenoxels.ops.image.io import write_png
-from plenoxels.runners.regularization import Regularizer
-from plenoxels.ops.lr_scheduling import (
-    get_cosine_schedule_with_warmup,
-    get_step_schedule_with_warmup
+from ..ema import EMA
+from ..my_tqdm import tqdm
+from ..ops.image import metrics
+from ..ops.image.io import write_png
+from ..runners.regularization import Regularizer
+from ..ops.lr_scheduling import (
+    get_cosine_schedule_with_warmup, get_step_schedule_with_warmup
 )
 
 
@@ -394,7 +393,7 @@ def losses_to_postfix(loss_dict: Dict[str, EMA], lr: Optional[float]) -> str:
     return "  ".join(pfix)
 
 
-def init_dloader_random(worker_id):
+def init_dloader_random(_):
     seed = torch.utils.data.get_worker_info().seed
     torch.manual_seed(seed)
     np.random.seed(seed % (2 ** 32 - 1))
