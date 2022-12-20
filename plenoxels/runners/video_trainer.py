@@ -4,20 +4,18 @@ import os
 from collections import defaultdict
 from typing import Dict, MutableMapping, Union, Any
 
-import numpy as np
 import pandas as pd
 import torch
 import torch.utils.data
 
-from plenoxels.datasets.video_datasets import Video360Dataset
-from plenoxels.ema import EMA
-from plenoxels.my_tqdm import tqdm
-from plenoxels.ops.image.io import write_video_to_file
-from plenoxels.models.lowrank_model import LowrankModel
-from plenoxels.runners.base_trainer import BaseTrainer, init_dloader_random
-from plenoxels.runners.regularization import (
-    PlaneTV, TimeSmoothness, HistogramLoss,
-    L1AppearancePlanes, DistortionLoss
+from ..datasets.video_datasets import Video360Dataset
+from ..ema import EMA
+from ..my_tqdm import tqdm
+from ..ops.image.io import write_video_to_file
+from ..models.lowrank_model import LowrankModel
+from .base_trainer import BaseTrainer, init_dloader_random
+from .regularization import (
+    PlaneTV, TimeSmoothness, HistogramLoss, L1AppearancePlanes, DistortionLoss
 )
 
 
@@ -84,35 +82,7 @@ class VideoTrainer(BaseTrainer):
         return {k: torch.cat(v, 0) for k, v in preds.items()}
 
     def train_step(self, data: Dict[str, Union[int, torch.Tensor]], **kwargs):
-        super().train_step(data, **kwargs)
-        data = self._move_data_to_device(data)
-
-        with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            fwd_out = self.model(
-                data['rays_o'], data['rays_d'], timestamps=data['timestamps'],
-                bg_color=data['bg_color'], near_far=data['near_fars'])
-            # Reconstruction loss
-            recon_loss = self.criterion(fwd_out['rgb'], data['imgs'])
-            # Regularization
-            loss = recon_loss
-            for r in self.regularizers:
-                reg_loss = r.regularize(self.model, model_out=fwd_out)
-                loss = loss + reg_loss
-        # Update weights
-        self.optimizer.zero_grad(set_to_none=True)
-        self.gscaler.scale(loss).backward()
-        self.gscaler.step(self.optimizer)
-        scale = self.gscaler.get_scale()
-        self.gscaler.update()
-
-        # Report on losses
-        if self.global_step % self.calc_metrics_every == 0:
-            with torch.no_grad():
-                recon_loss_val = recon_loss.item()
-                self.loss_info[f"mse"].update(recon_loss_val)
-                self.loss_info[f"psnr"].update(-10 * math.log10(recon_loss_val))
-                for r in self.regularizers:
-                    r.report(self.loss_info)
+        scale_ok = super().train_step(data, **kwargs)
 
         if self.global_step == self.isg_step:
             self.train_dataset.enable_isg()
@@ -121,7 +91,7 @@ class VideoTrainer(BaseTrainer):
             self.train_dataset.switch_isg2ist()
             raise StopIteration  # Whenever we change the dataset
 
-        return scale <= self.gscaler.get_scale()
+        return scale_ok
 
     def post_step(self, progress_bar):
         super().post_step(progress_bar)
@@ -184,27 +154,8 @@ class VideoTrainer(BaseTrainer):
         return loss_info
 
     def init_model(self, **kwargs) -> LowrankModel:
-        dset = self.test_dataset
-        try:
-            global_translation = dset.global_translation
-        except AttributeError:
-            global_translation = None
-        try:
-            global_scale = dset.global_scale
-        except AttributeError:
-            global_scale = None
-        model = LowrankModel(
-            grid_config=kwargs.pop("grid_config"),
-            aabb=dset.scene_bbox,
-            is_ndc=dset.is_ndc,
-            is_contracted=dset.is_contracted,
-            global_scale=global_scale,
-            global_translation=global_translation,
-            **kwargs)
-        log.info(f"Initialized {model.__class__} model with "
-                 f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, "
-                 f"using ndc {model.is_ndc} and contraction {model.is_contracted}.")
-        return model
+        from plenoxels.runners.utils import initialize_model
+        return initialize_model(self, **kwargs)
 
     def get_regularizers(self, **kwargs):
         return [
@@ -254,8 +205,7 @@ def init_ts_data(data_dir, split, **kwargs):
         downsample = 2.0
     ts_dset = Video360Dataset(
         data_dir, split=split, downsample=downsample,
-        max_cameras=kwargs['max_test_cameras'],
-        max_tsteps=kwargs['max_test_tsteps'],
+        max_cameras=kwargs['max_test_cameras'], max_tsteps=kwargs['max_test_tsteps'],
         contraction=kwargs['contract'], ndc=kwargs['ndc'],
         near_scaling=float(kwargs['near_scaling']), ndc_far=float(kwargs['ndc_far']),
         scene_bbox=kwargs['scene_bbox'],

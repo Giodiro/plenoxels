@@ -131,7 +131,7 @@ def parallel_load_images(tqdm_title,
                          dset_type: str,
                          num_images: int,
                          **kwargs) -> List[Any]:
-    max_threads = 4
+    max_threads = 10
     if dset_type == 'llff':
         fn = _parallel_loader_llff_image
     elif dset_type == 'synthetic':

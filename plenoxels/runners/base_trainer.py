@@ -1,5 +1,6 @@
 import abc
 import logging as log
+import math
 import os
 from typing import Iterable, Optional, Union, Dict, Tuple, Sequence, MutableMapping
 
@@ -63,10 +64,40 @@ class BaseTrainer(abc.ABC):
         self.model.eval()
         return None  # noqa
 
-    @abc.abstractmethod
     def train_step(self, data, **kwargs) -> bool:
         self.model.train()
-        return False
+        data = self._move_data_to_device(data)
+        if "timestamps" not in data:
+            data["timestamps"] = None
+
+        with torch.cuda.amp.autocast(enabled=self.train_fp16):
+            fwd_out = self.model(
+                data['rays_o'], data['rays_d'], bg_color=data['bg_color'],
+                near_far=data['near_fars'], timestamps=data['timestamps'])
+            # Reconstruction loss
+            recon_loss = self.criterion(fwd_out['rgb'], data['imgs'])
+            # Regularization
+            loss = recon_loss
+            for r in self.regularizers:
+                reg_loss = r.regularize(self.model, model_out=fwd_out)
+                loss = loss + reg_loss
+        # Update weights
+        self.optimizer.zero_grad(set_to_none=True)
+        self.gscaler.scale(loss).backward()
+        self.gscaler.step(self.optimizer)
+        scale = self.gscaler.get_scale()
+        self.gscaler.update()
+
+        # Report on losses
+        if self.global_step % self.calc_metrics_every == 0:
+            with torch.no_grad():
+                recon_loss_val = recon_loss.item()
+                self.loss_info[f"mse"].update(recon_loss_val)
+                self.loss_info[f"psnr"].update(-10 * math.log10(recon_loss_val))
+                for r in self.regularizers:
+                    r.report(self.loss_info)
+
+        return scale <= self.gscaler.get_scale()
 
     def post_step(self, progress_bar):
         self.model.step_after_iter(self.global_step)
@@ -149,7 +180,8 @@ class BaseTrainer(abc.ABC):
         err = self._normalize_01(err)
         return err.repeat(1, 1, 3)
 
-    def _normalize_01(self, t: torch.Tensor) -> torch.Tensor:
+    @staticmethod
+    def _normalize_01(t: torch.Tensor) -> torch.Tensor:
         return (t - t.min()) / t.max()
 
     def _normalize_depth(self, depth: torch.Tensor, img_h: int, img_w: int) -> torch.Tensor:
@@ -287,7 +319,7 @@ class BaseTrainer(abc.ABC):
         max_steps = self.num_steps
         scheduler_type = kwargs['scheduler_type']
         log.info(f"Initializing LR Scheduler of type {scheduler_type} with "
-                     f"{max_steps} maximum steps.")
+                 f"{max_steps} maximum steps.")
         if scheduler_type == "cosine":
             lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
                 self.optimizer,

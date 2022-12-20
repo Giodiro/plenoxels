@@ -6,45 +6,15 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION & AFFILIATES is strictly prohibited.
 
-import os
 import glob
-import warnings
+import os
 
-try:
-    import pyexr
-except ImportError:
-    pyexr = None
 import cv2
-import skimage
-import imageio
 from PIL import Image
 import logging as log
 import numpy as np
-import torch
 
 """ A module for reading / writing various image formats. """
-
-
-def write_exr(path, data):
-    """Writes an EXR image to some path.
-
-    Data is a dict of form { "default" = rgb_array, "depth" = depth_array }
-
-    Args:
-        path (str): Path to save the EXR
-        data (dict): Dictionary of EXR buffers.
-
-    Returns:
-        (void): Writes to path.
-    """
-    if pyexr is not None:
-        pyexr.write(path, data,
-                    channel_names={'normal': ['X', 'Y', 'Z'],
-                                   'x': ['X', 'Y', 'Z'],
-                                   'view': ['X', 'Y', 'Z']},
-                    precision=pyexr.HALF)
-    else:
-        warnings.warn("Will not save EXR output since pyexr is not available")
 
 
 def write_png(path, data):
@@ -80,7 +50,7 @@ def glob_imgs(path, exts=None):
 
 def write_video_to_file(file_name, frames):
     log.info(f"Saving video ({len(frames)} frames) to {file_name}")
-    # Photo tourisme the image sizes differs
+    # Photo tourism image sizes differ
     sizes = np.array([frame.shape[:2] for frame in frames])
     same_size_frames = np.unique(sizes, axis=0).shape[0] == 1
     if same_size_frames:
@@ -92,7 +62,7 @@ def write_video_to_file(file_name, frames):
         cv2.destroyAllWindows()
         video.release()
     else:
-        height = sizes[:,0].max()
+        height = sizes[:, 0].max()
         width = sizes[:, 1].max()
         video = cv2.VideoWriter(
             file_name, cv2.VideoWriter_fourcc(*'mp4v'), 5, (width, height))

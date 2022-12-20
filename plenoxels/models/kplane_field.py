@@ -156,7 +156,8 @@ class KPlaneField(nn.Module):
                 "degree": 4,
             },
         )
-        
+
+        # 3. Init decoder network
         if self.linear_decoder:
             # The NN learns a basis that is used instead of spherical harmonics
             # Input is an encoded view direction, output is weights for 
@@ -185,9 +186,7 @@ class KPlaneField(nn.Module):
                     "n_hidden_layers": 0,
                 },
             )
-
-        else: 
-            # 3. Init decoder network
+        else:
             self.geo_feat_dim = 15
             self.sigma_net = tcnn.Network(
                 n_input_dims=self.feature_dim,
@@ -253,6 +252,7 @@ class KPlaneField(nn.Module):
                 pts: torch.Tensor,
                 directions: torch.Tensor,
                 timestamps: Optional[torch.Tensor] = None):
+        camera_indices = None
         if self.use_appearance_embedding:
             if timestamps is None:
                 raise AttributeError("timestamps (appearance-ids) are not provided.")
@@ -295,6 +295,7 @@ class KPlaneField(nn.Module):
             basis_values = self.color_basis(encoded_directions)  # [batch, color_feature_len * 3]
             basis_values = basis_values.view(color_features.shape[0], 3, -1)  # [batch, 3, color_feature_len]
             rgb = torch.sum(color_features[:, None, :] * basis_values, dim=-1)  # [batch, 3]
+            rgb = rgb.to(directions)
             rgb = torch.sigmoid(rgb).view(n_rays, n_samples, 3)
         else:
             rgb = self.color_net(color_features).to(directions).view(n_rays, n_samples, 3)

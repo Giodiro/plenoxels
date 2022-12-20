@@ -1,58 +1,55 @@
-from typing import Tuple
+from typing import Tuple, Optional
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 
 from .intrinsics import Intrinsics
 
 __all__ = (
+    "create_meshgrid",
     "get_ray_directions",
-    "get_ray_directions_blender",
+    "stack_camera_dirs",
     "get_rays",
     "ndc_rays_blender",
     "center_poses",
     "generate_spiral_path",
     "generate_hemispherical_orbit",
-    "gen_camera_dirs",
+    "generate_spherical_poses",
     "normalize",
     "average_poses",
     "viewmatrix",
 )
 
 
-def create_meshgrid(height: int, width: int) -> Tuple[torch.Tensor, torch.Tensor]:
-    xs = torch.arange(width, dtype=torch.float32) + 0.5
-    ys = torch.arange(height, dtype=torch.float32) + 0.5
+def create_meshgrid(height: int,
+                    width: int,
+                    dev: str = 'cpu',
+                    add_half: bool = True,
+                    flat: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
+    xs = torch.arange(width, dtype=torch.float32, device=dev)
+    ys = torch.arange(height, dtype=torch.float32, device=dev)
+    if add_half:
+        xs += 0.5
+        ys += 0.5
     # generate grid by stacking coordinates
     yy, xx = torch.meshgrid([ys, xs], indexing="ij")  # both HxW
+    if flat:
+        return xx.flatten(), yy.flatten()
     return xx, yy
 
 
-def get_ray_directions(intrinsics: Intrinsics) -> torch.Tensor:
-    """
-    Get ray directions for all pixels in camera coordinate.
-    Reference: https://www.scratchapixel.com/lessons/3d-basic-rendering/
-               ray-tracing-generating-camera-rays/standard-coordinate-systems
-    Inputs:
-        height, width, focal: image height, width and focal length
-    Outputs:
-        directions: (height, width, 3), the direction of the rays in camera coordinate
-    """
-    xx, yy = create_meshgrid(intrinsics.height, intrinsics.width)
-
+def stack_camera_dirs(x: torch.Tensor, y: torch.Tensor, intrinsics: Intrinsics, opengl_camera: bool):
     # the direction here is without +0.5 pixel centering as calibration is not so accurate
     # see https://github.com/bmild/nerf/issues/24
-    directions = torch.stack([
-        (xx - intrinsics.center_x) / intrinsics.focal_x,
-        (yy - intrinsics.center_y) / intrinsics.focal_y,
-        torch.ones_like(xx)
+    return torch.stack([
+        (x - intrinsics.center_x) / intrinsics.focal_x,
+        (y - intrinsics.center_y) / intrinsics.focal_y
+        * (-1.0 if opengl_camera else 1.0),
+        torch.ones_like(x) * (-1.0 if opengl_camera else 1.0)
     ], -1)  # (H, W, 3)
 
-    return directions
 
-
-def get_ray_directions_blender(intrinsics: Intrinsics) -> torch.Tensor:
+def get_ray_directions(intrinsics: Intrinsics, opengl_camera: bool) -> torch.Tensor:
     """
     Get ray directions for all pixels in camera coordinate.
     Reference: https://www.scratchapixel.com/lessons/3d-basic-rendering/
@@ -64,36 +61,43 @@ def get_ray_directions_blender(intrinsics: Intrinsics) -> torch.Tensor:
     """
     xx, yy = create_meshgrid(intrinsics.height, intrinsics.width)
 
-    directions = torch.stack([
-        (xx - intrinsics.center_x) / intrinsics.focal_x,
-        -(yy - intrinsics.center_y) / intrinsics.focal_y,
-        -torch.ones_like(xx)
-    ], -1)  # (H, W, 3)
-
-    return directions
+    return stack_camera_dirs(xx, yy, intrinsics, opengl_camera)
 
 
-def get_rays(directions: torch.Tensor, c2w: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Get ray origin and normalized directions in world coordinate for all pixels in one image.
+def get_rays(directions: torch.Tensor,
+             c2w: torch.Tensor,
+             ndc: bool,
+             ndc_near: float = 1.0,
+             intrinsics: Optional[Intrinsics] = None,
+             normalize_rd: bool = True):
+    """Get ray origin and normalized directions in world coordinate for all pixels in one image.
     Reference: https://www.scratchapixel.com/lessons/3d-basic-rendering/
                ray-tracing-generating-camera-rays/standard-coordinate-systems
-    Inputs:
-        directions: (H, W, 3) precomputed ray directions in camera coordinate
-        c2w: (3, 4) transformation matrix from camera coordinate to world coordinate
-    Outputs:
-        rays_o: (H*W, 3), the origin of the rays in world coordinate
-        rays_d: (H*W, 3), the normalized direction of the rays in world coordinate
+
+    Args:
+        directions:
+        c2w:
+        ndc:
+        ndc_near:
+        intrinsics:
+        normalize_rd:
+
+    Returns:
+
     """
-    # Rotate ray directions from camera coordinate to the world coordinate
-    rays_d = directions @ c2w[:3, :3].T  # (H, W, 3)
-    # The origin of all rays is the camera origin in world coordinate
-    rays_o = c2w[:3, 3].expand(rays_d.shape)  # (H, W, 3)
+    directions = directions.view(-1, 3)  # [n_rays, 3]
+    if c2w.dim == 2:
+        c2w = c2w[None, ...]
 
-    rays_d = rays_d.view(-1, 3)
-    rays_o = rays_o.view(-1, 3)
-
-    return rays_o, rays_d
+    rd = (directions[:, None, :] * c2w[:, :3, :3]).sum(dim=-1)
+    ro = torch.broadcast_to(c2w[:, :3, 3], directions.shape)
+    if ndc:
+        assert intrinsics is not None, "intrinsics must not be None when NDC active."
+        ro, rd = ndc_rays_blender(
+            intrinsics=intrinsics, near=ndc_near, rays_o=ro, rays_d=rd)
+    if normalize_rd:
+        rd /= torch.linalg.norm(rd, dim=-1, keepdim=True)
+    return ro, rd
 
 
 def ndc_rays_blender(intrinsics: Intrinsics, near: float, rays_o: torch.Tensor,
@@ -256,21 +260,6 @@ def generate_hemispherical_orbit(poses: torch.Tensor, n_frames=120):
 
     render_poses = torch.stack(render_poses, dim=0)
     return render_poses
-
-
-def gen_camera_dirs(x: torch.Tensor, y: torch.Tensor, intrinsics: Intrinsics, opengl_camera: bool):
-    return F.pad(
-        torch.stack(
-            [
-                (x - intrinsics.center_x + 0.5) / intrinsics.focal_x,
-                (y - intrinsics.center_y + 0.5) / intrinsics.focal_y
-                * (-1.0 if opengl_camera else 1.0),
-            ],
-            dim=-1,
-        ),
-        (0, 1),
-        value=(-1.0 if opengl_camera else 1.0),
-    )  # [num_rays, 3]
 
 
 trans_t = lambda t: torch.Tensor([

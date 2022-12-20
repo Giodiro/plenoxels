@@ -1,21 +1,19 @@
-import logging as log
 import math
 import os
 from collections import defaultdict
 from typing import Dict, MutableMapping, Union, Sequence, Any
 
 import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
 import torch
 import torch.utils.data
 from matplotlib.colors import LogNorm
 
-from plenoxels.ema import EMA
 from .base_trainer import BaseTrainer, init_dloader_random
 from .regularization import (
     PlaneTV, HistogramLoss, L1ProposalNetwork, DepthTV, DistortionLoss,
 )
+from ..ema import EMA
 from ..datasets import SyntheticNerfDataset, LLFFDataset
 from ..models.lowrank_model import LowrankModel
 from ..my_tqdm import tqdm
@@ -83,37 +81,7 @@ class Trainer(BaseTrainer):
         return {k: torch.cat(v, 0) for k, v in preds.items()}
 
     def train_step(self, data: Dict[str, Union[int, torch.Tensor]], **kwargs):
-        super().train_step(data, **kwargs)
-        data = self._move_data_to_device(data)
-
-        with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            fwd_out = self.model(
-                data['rays_o'], data['rays_d'], bg_color=data['bg_color'],
-                near_far=data['near_fars'])
-            # Reconstruction loss
-            recon_loss = self.criterion(fwd_out['rgb'], data['imgs'])
-            # Regularization
-            loss = recon_loss
-            for r in self.regularizers:
-                reg_loss = r.regularize(self.model, model_out=fwd_out)
-                loss = loss + reg_loss
-        # Update weights
-        self.optimizer.zero_grad(set_to_none=True)
-        self.gscaler.scale(loss).backward()
-        self.gscaler.step(self.optimizer)
-        scale = self.gscaler.get_scale()
-        self.gscaler.update()
-
-        # Report on losses
-        if self.global_step % self.calc_metrics_every == 0:
-            with torch.no_grad():
-                recon_loss_val = recon_loss.item()
-                self.loss_info[f"mse"].update(recon_loss_val)
-                self.loss_info[f"psnr"].update(-10 * math.log10(recon_loss_val))
-                for r in self.regularizers:
-                    r.report(self.loss_info)
-
-        return scale <= self.gscaler.get_scale()
+        return super().train_step(data, **kwargs)
 
     def post_step(self, progress_bar):
         super().post_step(progress_bar)
@@ -155,28 +123,9 @@ class Trainer(BaseTrainer):
         loss_info = defaultdict(lambda: EMA(ema_weight))
         return loss_info
 
-    def init_model(self, **kwargs) -> torch.nn.Module:
-        dset = self.test_dataset
-        try:
-            global_translation = dset.global_translation
-        except AttributeError:
-            global_translation = None
-        try:
-            global_scale = dset.global_scale
-        except AttributeError:
-            global_scale = None
-        model = LowrankModel(
-            grid_config=kwargs.pop("grid_config"),
-            aabb=dset.scene_bbox,
-            is_ndc=self.is_ndc,
-            is_contracted=self.is_contracted,
-            global_translation=global_translation,
-            global_scale=global_scale,
-            **kwargs)
-        log.info(f"Initialized {model.__class__} model with "
-                 f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, "
-                 f"using ndc {model.is_ndc} and contraction {model.is_contracted}.")
-        return model
+    def init_model(self, **kwargs) -> LowrankModel:
+        from .utils import initialize_model
+        return initialize_model(self, **kwargs)
 
     def get_regularizers(self, **kwargs):
         return [
