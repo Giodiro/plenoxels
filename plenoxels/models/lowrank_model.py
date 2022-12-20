@@ -25,7 +25,8 @@ class LowrankModel(nn.Module):
                  # Model arguments
                  multiscale_res: Sequence[int],
                  density_activation: Optional[str] = 'trunc_exp',
-                 concat_features_across_scales: bool = True,
+                 concat_features_across_scales: bool = False,
+                 linear_decoder: bool = True,
                  # Spatial distortion
                  global_translation: Optional[torch.Tensor] = None,
                  global_scale: Optional[torch.Tensor] = None,
@@ -55,6 +56,7 @@ class LowrankModel(nn.Module):
         self.is_ndc = is_ndc
         self.is_contracted = is_contracted
         self.concat_features_across_scales = concat_features_across_scales
+        self.linear_decoder = linear_decoder
         self.density_act = init_density_activation(density_activation)
         self.timer = CudaTimer(enabled=False)
 
@@ -73,6 +75,7 @@ class LowrankModel(nn.Module):
             appearance_embedding_dim=appearance_embedding_dim,
             spatial_distortion=self.spatial_distortion,
             density_activation=self.density_act,
+            linear_decoder=self.linear_decoder,
         )
 
         # Initialize proposal-sampling nets
@@ -90,7 +93,7 @@ class LowrankModel(nn.Module):
             prop_net_args = self.proposal_net_args_list[0]
             network = KPlaneDensityField(
                 aabb, spatial_distortion=self.spatial_distortion,
-                density_activation=self.density_act, **prop_net_args)
+                density_activation=self.density_act, linear_decoder=self.linear_decoder, **prop_net_args)
             self.proposal_networks.append(network)
             self.density_fns.extend([network.get_density for _ in range(self.num_proposal_iterations)])
         else:
@@ -98,7 +101,7 @@ class LowrankModel(nn.Module):
                 prop_net_args = self.proposal_net_args_list[min(i, len(self.proposal_net_args_list) - 1)]
                 network = KPlaneDensityField(
                     aabb, spatial_distortion=self.spatial_distortion,
-                    density_activation=self.density_act, **prop_net_args,
+                    density_activation=self.density_act, linear_decoder=self.linear_decoder, **prop_net_args,
                 )
                 self.proposal_networks.append(network)
             self.density_fns.extend([network.get_density for network in self.proposal_networks])
