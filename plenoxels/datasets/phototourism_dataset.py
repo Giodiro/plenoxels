@@ -11,7 +11,7 @@ from plenoxels.datasets.base_dataset import BaseDataset
 from plenoxels.datasets.colmap_utils import read_images_binary, read_cameras_binary
 from plenoxels.datasets.data_loading import parallel_load_images
 from plenoxels.datasets.intrinsics import Intrinsics
-from plenoxels.datasets.ray_utils import gen_camera_dirs
+from plenoxels.datasets.ray_utils import get_rays, get_ray_directions
 from plenoxels.ops.bbox_colliders import intersect_with_aabb
 
 
@@ -125,19 +125,9 @@ class PhotoTourismDataset(BaseDataset):
 
 
 def pt_gen_rays(pose: torch.Tensor, intrinsics: Intrinsics, ndc: bool) -> Tuple[torch.Tensor, torch.Tensor]:
-    x, y = torch.meshgrid(
-        torch.arange(intrinsics.width, device="cpu"),
-        torch.arange(intrinsics.height, device="cpu"),
-        indexing="xy"
-    )
-    x, y = x.flatten(), y.flatten()
-    rays_d = gen_camera_dirs(x, y, intrinsics, True)  # (num_rays, 3)
-    rays_d = (rays_d[:, None, :] * pose[None, :3, :3]).sum(dim=-1)
-    rays_o = torch.broadcast_to(pose[None, :3, -1], rays_d.shape)
-    if ndc:
-        rays_o, rays_d = ndc_rays_blender(intrinsics, near=1.0, rays_o=rays_o, rays_d=rays_d)
-    rays_d /= torch.linalg.norm(rays_d, dim=-1, keepdim=True)
-
+    directions = get_ray_directions(intrinsics, opengl_camera=True, add_half=False)
+    rays_o, rays_d = get_rays(
+        directions, pose, ndc=ndc, ndc_near=1.0, intrinsics=intrinsics, normalize_rd=True)
     return rays_o, rays_d
 
 

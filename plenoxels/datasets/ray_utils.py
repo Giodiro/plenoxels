@@ -49,7 +49,7 @@ def stack_camera_dirs(x: torch.Tensor, y: torch.Tensor, intrinsics: Intrinsics, 
     ], -1)  # (H, W, 3)
 
 
-def get_ray_directions(intrinsics: Intrinsics, opengl_camera: bool) -> torch.Tensor:
+def get_ray_directions(intrinsics: Intrinsics, opengl_camera: bool, add_half: bool = True) -> torch.Tensor:
     """
     Get ray directions for all pixels in camera coordinate.
     Reference: https://www.scratchapixel.com/lessons/3d-basic-rendering/
@@ -59,7 +59,7 @@ def get_ray_directions(intrinsics: Intrinsics, opengl_camera: bool) -> torch.Ten
     Outputs:
         directions: (height, width, 3), the direction of the rays in camera coordinate
     """
-    xx, yy = create_meshgrid(intrinsics.height, intrinsics.width)
+    xx, yy = create_meshgrid(intrinsics.height, intrinsics.width, add_half=add_half)
 
     return stack_camera_dirs(xx, yy, intrinsics, opengl_camera)
 
