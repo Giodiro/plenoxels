@@ -1,11 +1,7 @@
 import torch.cuda
 
-import logging as log
-
 
 class CudaTimer:
-    # __slots__ = ("enabled", "start", "end", "name", )
-
     def __init__(self, enabled: bool = True):
         self.enabled = enabled
         self.start, self.end = None, None

@@ -10,6 +10,7 @@ import torch.utils.data
 from torch.utils.tensorboard import SummaryWriter
 import wandb
 
+from .timer import CudaTimer
 from ..ema import EMA
 from ..my_tqdm import tqdm
 from ..ops.image import metrics
@@ -41,6 +42,7 @@ class BaseTrainer(abc.ABC):
         self.device = device
         self.eval_batch_size = kwargs.get('eval_batch_size', 8129)
         self.extra_args = kwargs
+        self.timer = CudaTimer(enabled=True)
 
         self.log_dir = os.path.join(logdir, expname)
         os.makedirs(self.log_dir, exist_ok=True)
@@ -68,11 +70,13 @@ class BaseTrainer(abc.ABC):
         data = self._move_data_to_device(data)
         if "timestamps" not in data:
             data["timestamps"] = None
+        self.timer.check("move-to-device")
 
         with torch.cuda.amp.autocast(enabled=self.train_fp16):
             fwd_out = self.model(
                 data['rays_o'], data['rays_d'], bg_color=data['bg_color'],
                 near_far=data['near_fars'], timestamps=data['timestamps'])
+            self.timer.check("model-forward")
             # Reconstruction loss
             recon_loss = self.criterion(fwd_out['rgb'], data['imgs'])
             # Regularization
@@ -80,12 +84,15 @@ class BaseTrainer(abc.ABC):
             for r in self.regularizers:
                 reg_loss = r.regularize(self.model, model_out=fwd_out)
                 loss = loss + reg_loss
+            self.timer.check("regularizaion-forward")
         # Update weights
         self.optimizer.zero_grad(set_to_none=True)
         self.gscaler.scale(loss).backward()
+        self.timer.check("backward")
         self.gscaler.step(self.optimizer)
         scale = self.gscaler.get_scale()
         self.gscaler.update()
+        self.timer.check("scaler-step")
 
         # Report on losses
         if self.global_step % self.calc_metrics_every == 0:
@@ -105,6 +112,14 @@ class BaseTrainer(abc.ABC):
                 losses_to_postfix(self.loss_info, lr=self.lr), refresh=False)
             for loss_name, loss_val in self.loss_info.items():
                 self.writer.add_scalar(f"train/loss/{loss_name}", loss_val.value, self.global_step)
+                if self.timer.enabled:
+                    tsum = 0.
+                    tstr = "Timings: "
+                    for tname, tval in self.timer.timings.items():
+                        tstr += f"{tname}={tval:.1f}ms  "
+                        tsum += tval
+                    tstr += f"tot={tsum:.1f}ms"
+                    log.info(tstr)
         if self.log_wandb:
             num_items = len(self.loss_info)
             for i, (loss_name, loss_val) in enumerate(self.loss_info.items()):
@@ -131,10 +146,13 @@ class BaseTrainer(abc.ABC):
             self.pre_epoch()
             batch_iter = iter(self.train_data_loader)
             while self.global_step < self.num_steps:
+                self.timer.reset()
                 self.model.step_before_iter(self.global_step)
                 self.global_step += 1
+                self.timer.check("step-before-iter")
                 try:
                     data = next(batch_iter)
+                    self.timer.check("dloader-next")
                 except StopIteration:
                     self.pre_epoch()
                     batch_iter = iter(self.train_data_loader)
@@ -154,6 +172,7 @@ class BaseTrainer(abc.ABC):
                 for r in self.regularizers:
                     r.step(self.global_step)
                 self.post_step(progress_bar=pb)
+                self.timer.check("after-step")
         finally:
             pb.close()
             self.writer.close()
