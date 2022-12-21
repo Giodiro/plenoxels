@@ -65,7 +65,10 @@ def init_trainer(model_type: str, **kwargs):
         return multiscene_trainer.Trainer(**kwargs)
 
 
-def save_config(config, log_dir):
+def save_config(config):
+    log_dir = os.path.join(config['logdir'], config['expname'])
+    os.makedirs(log_dir, exist_ok=True)
+
     with open(os.path.join(log_dir, 'config.py'), 'wt') as out:
         out.write('config = ' + pprint.pformat(config))
 
@@ -118,12 +121,9 @@ def main():
 
     pprint.pprint(config)
     if validate_only or render_only:
-        log_dir = args.log_dir
-        assert log_dir is not None and os.path.isdir(log_dir)
+        assert args.log_dir is not None and os.path.isdir(args.log_dir)
     else:
-        log_dir = os.path.join(config['logdir'], config['expname'])
-        os.makedirs(log_dir, exist_ok=True)
-        save_config(config, log_dir)
+        save_config(config)
 
     data = load_data(model_type, validate_only=validate_only, render_only=render_only, **config)
     config.update(data)
