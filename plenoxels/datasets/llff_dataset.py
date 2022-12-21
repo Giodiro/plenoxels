@@ -163,12 +163,8 @@ def load_llff_poses(datadir: str,
         'Mismatch between number of images and number of poses! Please rerun COLMAP!'
 
     # Take training or test split
-    i_test = np.arange(0, poses.shape[0], hold_every)  # [np.argmin(dists)]
+    i_test = np.arange(0, poses.shape[0], hold_every)
     img_list = i_test if split != 'train' else list(set(np.arange(len(poses))) - set(i_test))
-    # If you want to visualize train results
-    # img_list = list(set(np.arange(len(poses))) - set(i_test))
-    # if split != 'train':
-    #     img_list = img_list[0:5]  # Test on some train images
     img_list = np.asarray(img_list)
 
     image_paths = [image_paths[i] for i in img_list]

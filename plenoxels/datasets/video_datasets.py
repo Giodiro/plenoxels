@@ -15,7 +15,7 @@ from .data_loading import parallel_load_images
 from .intrinsics import Intrinsics
 from .llff_dataset import load_llff_poses_helper
 from .ray_utils import (
-    generate_spherical_poses, create_meshgrid, stack_camera_dirs, get_rays
+    generate_spherical_poses, create_meshgrid, stack_camera_dirs, get_rays, generate_spiral_path
 )
 from .synthetic_nerf_dataset import (
     load_360_images, load_360_intrinsics,
@@ -64,19 +64,31 @@ class Video360Dataset(BaseDataset):
 
         # Note: timestamps are stored normalized between -1, 1.
         if dset_type == "llff":
-            per_cam_poses, per_cam_near_fars, intrinsics, videopaths = load_llffvideo_poses(
-                datadir, downsample=self.downsample, split=split, near_scaling=self.near_scaling)
-            if split == 'test':
-                keyframes = True
-            poses, imgs, timestamps, self.median_imgs = load_llffvideo_data(
-                videopaths=videopaths, cam_poses=per_cam_poses, intrinsics=intrinsics, split=split,
-                keyframes=keyframes, keyframes_take_each=30)
-            self.poses = poses.float()
-            if contraction:
-                self.per_cam_near_fars = per_cam_near_fars.float()
+            if split == "render":
+                assert ndc, "Unable to generate render poses without ndc: don't know near-far."
+                per_cam_poses, per_cam_near_fars, _, _ = load_llffvideo_poses(
+                    datadir, downsample=self.downsample, split='all', near_scaling=self.near_scaling)
+                render_poses = generate_spiral_path(
+                    per_cam_poses.numpy(), per_cam_near_fars.numpy(), n_frames=300,
+                    n_rots=2, zrate=0.5, dt=self.near_scaling)
+                self.poses = torch.from_numpy(render_poses).float()
+                self.per_cam_near_fars = torch.tensor([[0.0, self.ndc_far]])
+                timestamps = torch.arange(0, 300, len(self.poses))
+                imgs = None
             else:
-                self.per_cam_near_fars = torch.tensor(
-                    [[0.0, self.ndc_far]]).repeat(per_cam_near_fars.shape[0], 1)
+                per_cam_poses, per_cam_near_fars, intrinsics, videopaths = load_llffvideo_poses(
+                    datadir, downsample=self.downsample, split=split, near_scaling=self.near_scaling)
+                if split == 'test':
+                    keyframes = True
+                poses, imgs, timestamps, self.median_imgs = load_llffvideo_data(
+                    videopaths=videopaths, cam_poses=per_cam_poses, intrinsics=intrinsics,
+                    split=split, keyframes=keyframes, keyframes_take_each=30)
+                self.poses = poses.float()
+                if contraction:
+                    self.per_cam_near_fars = per_cam_near_fars.float()
+                else:
+                    self.per_cam_near_fars = torch.tensor(
+                        [[0.0, self.ndc_far]]).repeat(per_cam_near_fars.shape[0], 1)
             # These values are tuned for the salmon video
             self.global_translation = torch.tensor([0, 0, 2.])
             self.global_scale = torch.tensor([0.5, 0.6, 1])
@@ -384,8 +396,10 @@ def load_llffvideo_poses(datadir: str,
     # The first camera is reserved for testing, following https://github.com/facebookresearch/Neural_3D_Video/releases/tag/v1.0
     if split == 'train':
         split_ids = np.arange(1, poses.shape[0])
-    else:
+    elif split == 'test':
         split_ids = np.array([0])
+    else:
+        split_ids = np.arange(poses.shape[0])
     if 'coffee_martini' in datadir:
         # https://github.com/fengres/mixvoxels/blob/0013e4ad63c80e5f14eb70383e2b073052d07fba/dataLoader/llff_video.py#L323
         log.info(f"Deleting unsynchronized camera from coffee-martini video.")
