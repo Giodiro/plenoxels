@@ -1,7 +1,7 @@
 # configuration file to be used with `main.py` for normal (or multiscene) training
 # the configuration must be specified in a dictionary called `config`.
 config = {
-    "expname": "salmon_ndc_64featsnoconcat_colorbasisdepth4_bs16384_tvs8e-4_l1s2e-4",
+    "expname": "salmon_bestlinear",
     "logdir": "./logs/dynerf_linear_refactor1",
     "device": "cuda:0",
 
@@ -20,20 +20,23 @@ config = {
     "ist_step": 80000,
     "contract": False,
     "ndc": True,
+    "scene_bbox": [[-3.0, -1.67, -1.2], [3.0, 1.67, 1.2]],
+    "near_scaling": 0.9,
+    "ndc_far": 2.6,
 
     # Optimization settings
     "num_steps": 120_001,
-    "batch_size": 16384,
+    "batch_size": 4098,
     "num_batches_per_dset": 1,
     "scheduler_type": "warmup_cosine",
     "optim_type": "adam",
     "lr": 1e-2,
 
     # Regularization
-    "plane_tv_weight": 8e-4,
-    "plane_tv_weight_proposal_net": 8e-4,
-    "l1_appearance_planes": 2e-4,
-    "l1_appearance_planes_proposal_net": 2e-4,
+    "plane_tv_weight": 2e-4,
+    "plane_tv_weight_proposal_net": 2e-4,
+    "l1_appearance_planes": 1e-4,
+    "l1_appearance_planes_proposal_net": 1e-4,
     "time_smoothness_weight": 1e-3,
     "time_smoothness_weight_proposal_net": 1e-5,
     "histogram_loss_weight": 1.0,  # this should be set > 0 when using proposal sampling
