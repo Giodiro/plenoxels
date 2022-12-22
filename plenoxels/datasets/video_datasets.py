@@ -254,9 +254,10 @@ class Video360Dataset(BaseDataset):
                 image_id = image_id.repeat(self.weights_subsampled ** 2)
                 # Inverse of the process to get x, y from index. image_id stays the same.
                 index = x + y * w + image_id * h * w
+            x, y = x + 0.5, y + 0.5
         else:
             image_id = [index]
-            x, y = create_meshgrid(height=h, width=w, dev=dev, add_half=False, flat=True)
+            x, y = create_meshgrid(height=h, width=w, dev=dev, add_half=True, flat=True)
         out = {
             "timestamps": self.timestamps[index],      # (num_rays or 1, )
             "imgs": None,
@@ -271,22 +272,21 @@ class Video360Dataset(BaseDataset):
         if self.imgs is not None:
             out['imgs'] = (self.imgs[index] / 255.0).view(-1, self.imgs.shape[-1])
 
-        c2w = self.poses[image_id]                      # (num_rays, 3, 4)
+        c2w = self.poses[image_id]                                    # [num_rays or 1, 3, 4]
         camera_dirs = stack_camera_dirs(x, y, self.intrinsics, True)  # [num_rays, 3]
-        rays_o, rays_d = get_rays(camera_dirs, c2w, ndc=self.is_ndc, ndc_near=1.0,
-                                  intrinsics=self.intrinsics, normalize_rd=True)  # h*w, 3
-        out['rays_o'] = rays_o
-        out['rays_d'] = rays_d
+        out['rays_o'], out['rays_d'] = get_rays(
+            camera_dirs, c2w, ndc=self.is_ndc, ndc_near=1.0, intrinsics=self.intrinsics,
+            normalize_rd=True)                                        # [num_rays, 3]
 
         if self.split != 'train':
-            out['bg_color'] = torch.ones((1, 3), dtype=torch.float32, device=rays_o.device)
+            out['bg_color'] = torch.ones((1, 3), dtype=torch.float32, device=dev)
         else:
             imgs = out['imgs']
             if imgs.shape[-1] == 4:
-                bg_color = torch.rand((1, 3), dtype=torch.float32, device=rays_o.device)
+                bg_color = torch.rand((1, 3), dtype=torch.float32, device=dev)
                 imgs = imgs[:, :3] * imgs[:, 3:] + bg_color * (1.0 - imgs[:, 3:])
             else:
-                bg_color = torch.ones((1, 3), dtype=torch.float32, device=rays_o.device)
+                bg_color = torch.ones((1, 3), dtype=torch.float32, device=dev)
             out['imgs'] = imgs
             out['bg_color'] = bg_color
 

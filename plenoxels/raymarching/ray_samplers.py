@@ -33,7 +33,7 @@ class RaySamples:
         """
         return self.origins + self.directions * (self.starts + self.ends) / 2  # world space
 
-    def get_weights(self, densities: torch.Tensor) -> torch.Tensor:
+    def get_weights2(self, densities: torch.Tensor) -> torch.Tensor:
         densities = densities.squeeze(2)
         deltas = self.deltas.squeeze(2)
         delta_mask = deltas > 0
@@ -52,7 +52,7 @@ class RaySamples:
         weights = alphas * transmittance[:, :-1]
         return weights[..., None]
 
-    def get_weights2(self, densities: torch.Tensor) -> torch.Tensor:
+    def get_weights(self, densities: torch.Tensor) -> torch.Tensor:
         """Return weights based on predicted densities
         Args:
             densities: Predicted densities for samples along ray (..., num_samples, 1)

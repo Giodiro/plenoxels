@@ -41,5 +41,6 @@ def initialize_model(runner: Union[Trainer, PhototourismTrainer, VideoTrainer], 
         **kwargs)
     log.info(f"Initialized {model.__class__} model with "
              f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, "
-             f"using ndc {model.is_ndc} and contraction {model.is_contracted}.")
+             f"using ndc {model.is_ndc} and contraction {model.is_contracted}. "
+             f"Linear decoder: {model.linear_decoder}.")
     return model

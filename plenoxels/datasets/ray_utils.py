@@ -41,11 +41,13 @@ def create_meshgrid(height: int,
 def stack_camera_dirs(x: torch.Tensor, y: torch.Tensor, intrinsics: Intrinsics, opengl_camera: bool):
     # the direction here is without +0.5 pixel centering as calibration is not so accurate
     # see https://github.com/bmild/nerf/issues/24
+    x = x.float()
+    y = y.float()
     return torch.stack([
         (x - intrinsics.center_x) / intrinsics.focal_x,
         (y - intrinsics.center_y) / intrinsics.focal_y
         * (-1.0 if opengl_camera else 1.0),
-        torch.ones_like(x) * (-1.0 if opengl_camera else 1.0)
+        torch.full_like(x, fill_value=-1.0 if opengl_camera else 1.0)
     ], -1)  # (H, W, 3)
 
 
