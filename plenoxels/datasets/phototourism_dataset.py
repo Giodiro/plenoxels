@@ -11,7 +11,7 @@ from plenoxels.datasets.base_dataset import BaseDataset
 from plenoxels.datasets.colmap_utils import read_images_binary, read_cameras_binary
 from plenoxels.datasets.data_loading import parallel_load_images
 from plenoxels.datasets.intrinsics import Intrinsics
-from plenoxels.datasets.ray_utils import gen_camera_dirs
+from plenoxels.datasets.ray_utils import get_rays, get_ray_directions
 from plenoxels.ops.bbox_colliders import intersect_with_aabb
 
 
@@ -39,6 +39,7 @@ class PhotoTourismDataset(BaseDataset):
         self.center_poses = center_poses
         self.auto_scale_poses = auto_scale_poses
         self.scale_factor = scale_factor
+        self.ndc_far = ndc_far
 
         if scene_bbox is None:
             raise ValueError("Must specify scene_bbox")
@@ -58,7 +59,7 @@ class PhotoTourismDataset(BaseDataset):
         if split == 'train':
             directions, origins, all_images, camera_ids = [], [], [], []
             for i, (itr, pose, image) in enumerate(zip(intrinsics, self.poses, images)):
-                _origins, _directions = pt_gen_rays(pose, itr)
+                _origins, _directions = pt_gen_rays(pose, itr, ndc=ndc)
                 directions.append(_directions)
                 origins.append(_origins)
                 all_images.append(image.view(-1, 3))
@@ -101,7 +102,7 @@ class PhotoTourismDataset(BaseDataset):
             intrinsics = self.intrinsics[index]
             pose = self.poses[index]
             assert img.shape[0] == intrinsics.height and img.shape[1] == intrinsics.width
-            ro, rd = pt_gen_rays(pose, intrinsics)
+            ro, rd = pt_gen_rays(pose, intrinsics, ndc=self.is_ndc)
             # Split image in two parts
             img_h, img_w = intrinsics.height, intrinsics.width
             mid = img_w // 2
@@ -115,23 +116,18 @@ class PhotoTourismDataset(BaseDataset):
 
             out["timestamps"] = out["timestamps"].repeat(out["rays_o"].shape[0])
 
-        out["near_fars"] = intersect_with_aabb(
-            near_plane=0.0, rays_o=out["rays_o"], rays_d=out["rays_d"], aabb=self.scene_bbox, training=False)
+        if self.is_ndc:
+            out["near_fars"] = torch.tensor([[0.0, self.ndc_far]]).repeat(out["rays_o"].shape[0], 1)
+        else:
+            out["near_fars"] = intersect_with_aabb(
+                rays_o=out["rays_o"], rays_d=out["rays_d"], aabb=self.scene_bbox, near_plane=0.0, training=False)
         return out
 
 
-def pt_gen_rays(pose: torch.Tensor, intrinsics: Intrinsics) -> Tuple[torch.Tensor, torch.Tensor]:
-    x, y = torch.meshgrid(
-        torch.arange(intrinsics.width, device="cpu"),
-        torch.arange(intrinsics.height, device="cpu"),
-        indexing="xy"
-    )
-    x, y = x.flatten(), y.flatten()
-    rays_d = gen_camera_dirs(x, y, intrinsics, True)  # (num_rays, 3)
-    rays_d = (rays_d[:, None, :] * pose[None, :3, :3]).sum(dim=-1)
-    rays_d /= torch.linalg.norm(rays_d, dim=-1, keepdim=True)
-    rays_o = torch.broadcast_to(pose[None, :3, -1], rays_d.shape)
-
+def pt_gen_rays(pose: torch.Tensor, intrinsics: Intrinsics, ndc: bool) -> Tuple[torch.Tensor, torch.Tensor]:
+    directions = get_ray_directions(intrinsics, opengl_camera=True, add_half=False)
+    rays_o, rays_d = get_rays(
+        directions, pose, ndc=ndc, ndc_near=1.0, intrinsics=intrinsics, normalize_rd=True)
     return rays_o, rays_d
 
 
@@ -199,12 +195,7 @@ def load_pt_metadata(
         out_scale_factor /= float(torch.max(torch.abs(poses[:, :3, 3])))
     out_scale_factor *= scale_factor
     log.info(f"Final scale factor = {out_scale_factor}")
-
     poses[:, :3, 3] *= out_scale_factor
-
-    if orientation_method == "up":
-        # Giac: this to get all camera origins outside [-1, 1] bounding box.
-        poses[..., 1, 3] -= 1.6
 
     # Split
     split_ids = get_pt_split_ids(datadir, split, image_filenames)
@@ -271,6 +262,13 @@ def auto_orient_and_center_poses(
         up = up / torch.linalg.norm(up)
 
         rotation = rotation_matrix(up, torch.Tensor([0, 0, 1]))
+        transform = torch.cat([rotation, rotation @ -translation[..., None]], dim=-1)
+        oriented_poses = transform @ poses
+    elif method == "z":
+        zdir = torch.mean(poses[:, :3, 2], dim=0)
+        zdir = zdir / torch.linalg.norm(zdir)
+
+        rotation = rotation_matrix(zdir, torch.tensor([0., 0., 1.]))
         transform = torch.cat([rotation, rotation @ -translation[..., None]], dim=-1)
         oriented_poses = transform @ poses
     elif method == "none":

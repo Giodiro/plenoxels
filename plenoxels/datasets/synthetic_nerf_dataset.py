@@ -7,14 +7,9 @@ import numpy as np
 import torch
 
 from .data_loading import parallel_load_images
-from .ray_utils import get_rays, get_ray_directions, generate_hemispherical_orbit
+from .ray_utils import get_ray_directions, generate_hemispherical_orbit, get_rays
 from .intrinsics import Intrinsics
 from .base_dataset import BaseDataset
-
-# y indexes from top to bottom so flip it
-# camera looks along negative z axis so flip that also
-blender2opencv = torch.tensor([
-    [1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]], dtype=torch.float32)
 
 
 class SyntheticNerfDataset(BaseDataset):
@@ -23,16 +18,14 @@ class SyntheticNerfDataset(BaseDataset):
                  split: str,
                  batch_size: Optional[int] = None,
                  downsample: float = 1.0,
-                 resolution: Optional[int] = 512,
                  max_frames: Optional[int] = None):
         self.downsample = downsample
-        self.resolution = (resolution, resolution)
         self.max_frames = max_frames
         self.near_far = [2.0, 6.0]
 
         if split == 'render':
             frames, transform = load_360_frames(datadir, 'test', self.max_frames)
-            imgs, poses = load_360_images(frames, datadir, 'test', self.downsample, self.resolution)
+            imgs, poses = load_360_images(frames, datadir, 'test', self.downsample)
             render_poses = generate_hemispherical_orbit(poses, n_frames=120)
             self.poses = render_poses
             intrinsics = load_360_intrinsics(
@@ -41,12 +34,12 @@ class SyntheticNerfDataset(BaseDataset):
             imgs = None
         else:
             frames, transform = load_360_frames(datadir, 'test', self.max_frames)
-            imgs, poses = load_360_images(frames, datadir, 'test', self.downsample, self.resolution)
+            imgs, poses = load_360_images(frames, datadir, 'test', self.downsample)
             intrinsics = load_360_intrinsics(
                 transform, img_h=imgs[0].shape[0], img_w=imgs[0].shape[1],
                 downsample=self.downsample)
         rays_o, rays_d, imgs = create_360_rays(
-            imgs, poses, merge_all=split == 'train', intrinsics=intrinsics, is_blender_format=True)
+            imgs, poses, merge_all=split == 'train', intrinsics=intrinsics)
         super().__init__(
             datadir=datadir,
             split=split,
@@ -93,18 +86,13 @@ def create_360_rays(
               imgs: Optional[torch.Tensor],
               poses: torch.Tensor,
               merge_all: bool,
-              intrinsics: Intrinsics,
-              is_blender_format: bool = True) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    directions = get_ray_directions(intrinsics)  # [H, W, 3]
-    directions = directions / torch.norm(directions, dim=-1, keepdim=True)
+              intrinsics: Intrinsics) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    directions = get_ray_directions(intrinsics, opengl_camera=True)  # [H, W, 3]
     num_frames = poses.shape[0]
 
     all_rays_o, all_rays_d = [], []
     for i in range(num_frames):
-        pose_opencv = poses[i]
-        if is_blender_format:
-            pose_opencv = pose_opencv @ blender2opencv
-        rays_o, rays_d = get_rays(directions, pose_opencv)  # h*w, 3
+        rays_o, rays_d = get_rays(directions, poses[i], ndc=False, normalize_rd=True)  # h*w, 3
         all_rays_o.append(rays_o)
         all_rays_d.append(rays_d)
 
@@ -140,7 +128,7 @@ def load_360_frames(datadir, split, max_frames: int) -> Tuple[Any, Any]:
     return frames, meta
 
 
-def load_360_images(frames, datadir, split, downsample, resolution=(None, None)) -> Tuple[torch.Tensor, torch.Tensor]:
+def load_360_images(frames, datadir, split, downsample) -> Tuple[torch.Tensor, torch.Tensor]:
     img_poses = parallel_load_images(
         dset_type="synthetic",
         tqdm_title=f'Loading {split} data',

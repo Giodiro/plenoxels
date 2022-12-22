@@ -4,22 +4,19 @@ import os
 from collections import defaultdict
 from typing import Dict, MutableMapping, Union, Any
 
-import numpy as np
 import pandas as pd
 import torch
 import torch.utils.data
 
-from plenoxels.datasets.phototourism_dataset import PhotoTourismDataset
-from plenoxels.ema import EMA
-from plenoxels.models.lowrank_model import LowrankModel
-from plenoxels.my_tqdm import tqdm
-from plenoxels.ops.image import metrics
-from plenoxels.runners.base_trainer import BaseTrainer
-from plenoxels.runners.regularization import (
-    PlaneTV, TimeSmoothness, HistogramLoss,
-    L1AppearancePlanes, DistortionLoss
+from ..datasets.phototourism_dataset import PhotoTourismDataset
+from ..ema import EMA
+from ..models.lowrank_model import LowrankModel
+from ..my_tqdm import tqdm
+from ..ops.image import metrics
+from .base_trainer import BaseTrainer, init_dloader_random
+from .regularization import (
+    PlaneTV, TimeSmoothness, HistogramLoss, L1AppearancePlanes, DistortionLoss
 )
-from plenoxels.runners.utils import init_dloader_random
 
 
 class PhototourismTrainer(BaseTrainer):
@@ -81,72 +78,43 @@ class PhototourismTrainer(BaseTrainer):
         return {k: torch.cat(v, 0) for k, v in preds.items()}
 
     def train_step(self, data: Dict[str, Union[int, torch.Tensor]], **kwargs):
-        super().train_step(data, **kwargs)
-        data = self._move_data_to_device(data)
-
-        with torch.cuda.amp.autocast(enabled=self.train_fp16):
-            fwd_out = self.model(
-                data['rays_o'], data['rays_d'], timestamps=data['timestamps'],
-                bg_color=data['bg_color'], near_far=data['near_fars'])
-            # Reconstruction loss
-            recon_loss = self.criterion(fwd_out['rgb'], data['imgs'])
-            # Regularization
-            loss = recon_loss
-            for r in self.regularizers:
-                reg_loss = r.regularize(self.model, model_out=fwd_out)
-                loss = loss + reg_loss
-        # Update weights
-        self.optimizer.zero_grad(set_to_none=True)
-        self.gscaler.scale(loss).backward()
-        self.gscaler.step(self.optimizer)
-        scale = self.gscaler.get_scale()
-        self.gscaler.update()
-
-        # Report on losses
-        if self.global_step % self.calc_metrics_every == 0:
-            with torch.no_grad():
-                recon_loss_val = recon_loss.item()
-                self.loss_info[f"mse"].update(recon_loss_val)
-                self.loss_info[f"psnr"].update(-10 * math.log10(recon_loss_val))
-                for r in self.regularizers:
-                    r.report(self.loss_info)
-
-        return scale <= self.gscaler.get_scale()
+        return super().train_step(data, **kwargs)
 
     def post_step(self, progress_bar):
-        super().post_step(progress_bar)
+        return super().post_step(progress_bar)
 
     def pre_epoch(self):
         super().pre_epoch()
         # Reset randomness in train-dataset
         self.train_dataset.reset_iter()
 
+    @torch.no_grad()
     def validate(self):
-        self.optimize_appearance_codes()
+        with torch.autograd.enable_grad():
+            self.optimize_appearance_codes()
 
-        with torch.no_grad():
-            dataset = self.test_dataset
-            per_scene_metrics = defaultdict(list)
-            pred_frames, out_depths = [], []
-            pb = tqdm(total=len(dataset), desc=f"Test scene ({dataset.name})")
-            for img_idx, data in enumerate(dataset):
-                preds = self.eval_step(data)
-                out_metrics, out_img, out_depth = self.evaluate_metrics(
-                    data["imgs"], preds, dset=dataset, img_idx=img_idx, name=None,
-                    save_outputs=self.save_outputs)
-                pred_frames.append(out_img)
-                if out_depth is not None:
-                    out_depths.append(out_depth)
-                for k, v in out_metrics.items():
-                    per_scene_metrics[k].append(v)
-                pb.set_postfix_str(f"PSNR={out_metrics['psnr']:.2f}", refresh=False)
-                pb.update(1)
-            pb.close()
-            val_metrics = [
-                self.report_test_metrics(per_scene_metrics, extra_name=None),
-            ]
-            df = pd.DataFrame.from_records(val_metrics)
-            df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
+        dataset = self.test_dataset
+        per_scene_metrics = defaultdict(list)
+        pred_frames, out_depths = [], []
+        pb = tqdm(total=len(dataset), desc=f"Test scene ({dataset.name})")
+        for img_idx, data in enumerate(dataset):
+            preds = self.eval_step(data)
+            out_metrics, out_img, out_depth = self.evaluate_metrics(
+                data["imgs"], preds, dset=dataset, img_idx=img_idx, name=None,
+                save_outputs=self.save_outputs)
+            pred_frames.append(out_img)
+            if out_depth is not None:
+                out_depths.append(out_depth)
+            for k, v in out_metrics.items():
+                per_scene_metrics[k].append(v)
+            pb.set_postfix_str(f"PSNR={out_metrics['psnr']:.2f}", refresh=False)
+            pb.update(1)
+        pb.close()
+        val_metrics = [
+            self.report_test_metrics(per_scene_metrics, extra_name=None),
+        ]
+        df = pd.DataFrame.from_records(val_metrics)
+        df.to_csv(os.path.join(self.log_dir, f"test_metrics_step{self.global_step}.csv"))
 
     def calc_metrics(self, preds: torch.Tensor, gt: torch.Tensor):
         """
@@ -174,32 +142,8 @@ class PhototourismTrainer(BaseTrainer):
         return loss_info
 
     def init_model(self, **kwargs) -> LowrankModel:
-        dset = self.test_dataset
-        try:
-            global_translation = dset.global_translation
-        except AttributeError:
-            global_translation = None
-        try:
-            global_scale = dset.global_scale
-        except AttributeError:
-            global_scale = None
-        num_images = None
-        if self.train_dataset is not None:
-            num_images = self.train_dataset.num_images
-        model = LowrankModel(
-            grid_config=kwargs.pop("grid_config"),
-            aabb=dset.scene_bbox,
-            is_ndc=dset.is_ndc,
-            is_contracted=dset.is_contracted,
-            global_scale=global_scale,
-            global_translation=global_translation,
-            use_appearance_embedding=True,
-            num_images=num_images,
-            **kwargs)
-        log.info(f"Initialized {model.__class__} model with "
-                 f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, "
-                 f"using ndc {model.is_ndc} and contraction {model.is_contracted}.")
-        return model
+        from plenoxels.runners.utils import initialize_model
+        return initialize_model(self, **kwargs)
 
     def get_regularizers(self, **kwargs):
         return [

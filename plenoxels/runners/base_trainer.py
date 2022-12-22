@@ -1,19 +1,25 @@
 import abc
+import random
 import logging as log
+import math
 import os
 from typing import Iterable, Optional, Union, Dict, Tuple, Sequence, MutableMapping
 
 import numpy as np
 import torch
-import wandb
+import torch.utils.data
 from torch.utils.tensorboard import SummaryWriter
+import wandb
 
-from plenoxels.ema import EMA
-from plenoxels.my_tqdm import tqdm
-from plenoxels.ops.image import metrics
-from plenoxels.ops.image.io import write_png
-from plenoxels.runners.regularization import Regularizer
-from plenoxels.runners.utils import get_cosine_schedule_with_warmup, get_step_schedule_with_warmup
+from .timer import CudaTimer
+from ..ema import EMA
+from ..my_tqdm import tqdm
+from ..ops.image import metrics
+from ..ops.image.io import write_png
+from ..runners.regularization import Regularizer
+from ..ops.lr_scheduling import (
+    get_cosine_schedule_with_warmup, get_step_schedule_with_warmup
+)
 
 
 class BaseTrainer(abc.ABC):
@@ -37,6 +43,7 @@ class BaseTrainer(abc.ABC):
         self.device = device
         self.eval_batch_size = kwargs.get('eval_batch_size', 8129)
         self.extra_args = kwargs
+        self.timer = CudaTimer(enabled=False)
 
         self.log_dir = os.path.join(logdir, expname)
         os.makedirs(self.log_dir, exist_ok=True)
@@ -59,10 +66,45 @@ class BaseTrainer(abc.ABC):
         self.model.eval()
         return None  # noqa
 
-    @abc.abstractmethod
     def train_step(self, data, **kwargs) -> bool:
         self.model.train()
-        return False
+        data = self._move_data_to_device(data)
+        if "timestamps" not in data:
+            data["timestamps"] = None
+        self.timer.check("move-to-device")
+
+        with torch.cuda.amp.autocast(enabled=self.train_fp16):
+            fwd_out = self.model(
+                data['rays_o'], data['rays_d'], bg_color=data['bg_color'],
+                near_far=data['near_fars'], timestamps=data['timestamps'])
+            self.timer.check("model-forward")
+            # Reconstruction loss
+            recon_loss = self.criterion(fwd_out['rgb'], data['imgs'])
+            # Regularization
+            loss = recon_loss
+            for r in self.regularizers:
+                reg_loss = r.regularize(self.model, model_out=fwd_out)
+                loss = loss + reg_loss
+            self.timer.check("regularizaion-forward")
+        # Update weights
+        self.optimizer.zero_grad(set_to_none=True)
+        self.gscaler.scale(loss).backward()
+        self.timer.check("backward")
+        self.gscaler.step(self.optimizer)
+        scale = self.gscaler.get_scale()
+        self.gscaler.update()
+        self.timer.check("scaler-step")
+
+        # Report on losses
+        if self.global_step % self.calc_metrics_every == 0:
+            with torch.no_grad():
+                recon_loss_val = recon_loss.item()
+                self.loss_info[f"mse"].update(recon_loss_val)
+                self.loss_info[f"psnr"].update(-10 * math.log10(recon_loss_val))
+                for r in self.regularizers:
+                    r.report(self.loss_info)
+
+        return scale <= self.gscaler.get_scale()
 
     def post_step(self, progress_bar):
         self.model.step_after_iter(self.global_step)
@@ -71,6 +113,14 @@ class BaseTrainer(abc.ABC):
                 losses_to_postfix(self.loss_info, lr=self.lr), refresh=False)
             for loss_name, loss_val in self.loss_info.items():
                 self.writer.add_scalar(f"train/loss/{loss_name}", loss_val.value, self.global_step)
+                if self.timer.enabled:
+                    tsum = 0.
+                    tstr = "Timings: "
+                    for tname, tval in self.timer.timings.items():
+                        tstr += f"{tname}={tval:.1f}ms  "
+                        tsum += tval
+                    tstr += f"tot={tsum:.1f}ms"
+                    log.info(tstr)
         if self.log_wandb:
             num_items = len(self.loss_info)
             for i, (loss_name, loss_val) in enumerate(self.loss_info.items()):
@@ -97,10 +147,13 @@ class BaseTrainer(abc.ABC):
             self.pre_epoch()
             batch_iter = iter(self.train_data_loader)
             while self.global_step < self.num_steps:
+                self.timer.reset()
                 self.model.step_before_iter(self.global_step)
                 self.global_step += 1
+                self.timer.check("step-before-iter")
                 try:
                     data = next(batch_iter)
+                    self.timer.check("dloader-next")
                 except StopIteration:
                     self.pre_epoch()
                     batch_iter = iter(self.train_data_loader)
@@ -120,6 +173,7 @@ class BaseTrainer(abc.ABC):
                 for r in self.regularizers:
                     r.step(self.global_step)
                 self.post_step(progress_bar=pb)
+                self.timer.check("after-step")
         finally:
             pb.close()
             self.writer.close()
@@ -145,7 +199,8 @@ class BaseTrainer(abc.ABC):
         err = self._normalize_01(err)
         return err.repeat(1, 1, 3)
 
-    def _normalize_01(self, t: torch.Tensor) -> torch.Tensor:
+    @staticmethod
+    def _normalize_01(t: torch.Tensor) -> torch.Tensor:
         return (t - t.min()) / t.max()
 
     def _normalize_depth(self, depth: torch.Tensor, img_h: int, img_w: int) -> torch.Tensor:
@@ -283,7 +338,7 @@ class BaseTrainer(abc.ABC):
         max_steps = self.num_steps
         scheduler_type = kwargs['scheduler_type']
         log.info(f"Initializing LR Scheduler of type {scheduler_type} with "
-                     f"{max_steps} maximum steps.")
+                 f"{max_steps} maximum steps.")
         if scheduler_type == "cosine":
             lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
                 self.optimizer,
@@ -356,3 +411,11 @@ def losses_to_postfix(loss_dict: Dict[str, EMA], lr: Optional[float]) -> str:
     if lr is not None:
         pfix.append(f"lr={lr:.2e}")
     return "  ".join(pfix)
+
+
+def init_dloader_random(_):
+    seed = torch.initial_seed() % 2**32
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.manual_seed(seed)
+

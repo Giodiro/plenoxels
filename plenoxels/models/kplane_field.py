@@ -97,6 +97,7 @@ class KPlaneField(nn.Module):
         appearance_embedding_dim: int,
         spatial_distortion: Optional[SpatialDistortion],
         density_activation: Callable,
+        linear_decoder: bool,
         num_images: Optional[int],
     ) -> None:
         super().__init__()
@@ -108,6 +109,7 @@ class KPlaneField(nn.Module):
         self.multiscale_res_multipliers: List[int] = multiscale_res or [1]
         self.concat_features = concat_features_across_scales
         self.density_activation = density_activation
+        self.linear_decoder = linear_decoder
 
         # 1. Init planes
         self.grids = nn.ModuleList()
@@ -146,19 +148,7 @@ class KPlaneField(nn.Module):
         else:
             self.appearance_embedding_dim = 0
 
-        # 3. Init decoder network
-        self.geo_feat_dim = 15
-        self.sigma_net = tcnn.Network(
-            n_input_dims=self.feature_dim,
-            n_output_dims=self.geo_feat_dim + 1,
-            network_config={
-                "otype": "FullyFusedMLP",
-                "activation": "ReLU",
-                "output_activation": "None",
-                "n_neurons": 64,
-                "n_hidden_layers": 1,
-            },
-        )
+        # 3. Init decoder params
         self.direction_encoder = tcnn.Encoding(
             n_input_dims=3,
             encoding_config={
@@ -166,22 +156,65 @@ class KPlaneField(nn.Module):
                 "degree": 4,
             },
         )
-        self.in_dim_color = (
-                self.direction_encoder.n_output_dims
-                + self.geo_feat_dim
-                + self.appearance_embedding_dim
-        )
-        self.color_net = tcnn.Network(
-            n_input_dims=self.in_dim_color,
-            n_output_dims=3,
-            network_config={
-                "otype": "FullyFusedMLP",
-                "activation": "ReLU",
-                "output_activation": "Sigmoid",
-                "n_neurons": 64,
-                "n_hidden_layers": 2,
-            },
-        )
+
+        # 3. Init decoder network
+        if self.linear_decoder:
+            # The NN learns a basis that is used instead of spherical harmonics
+            # Input is an encoded view direction, output is weights for 
+            # combining the color features into RGB
+            # This architecture is based on instant-NGP
+            self.color_basis = tcnn.Network(
+                n_input_dims=self.direction_encoder.n_output_dims,
+                n_output_dims=3 * self.feature_dim,  # * (self.feature_dim - 1),  # The last feature is sigma (density)
+                network_config={
+                    "otype": "FullyFusedMLP",
+                    "activation": "ReLU",
+                    "output_activation": "None",
+                    "n_neurons": 128,
+                    "n_hidden_layers": 4,
+                },
+            )
+            # sigma_net just does a linear transformation on the features to get density
+            self.sigma_net = tcnn.Network(
+                n_input_dims=self.feature_dim,
+                n_output_dims=1,
+                network_config={
+                    "otype": "CutlassMLP",
+                    "activation": "None",
+                    "output_activation": "None",
+                    "n_neurons": 128,
+                    "n_hidden_layers": 0,
+                },
+            )
+        else:
+            self.geo_feat_dim = 15
+            self.sigma_net = tcnn.Network(
+                n_input_dims=self.feature_dim,
+                n_output_dims=self.geo_feat_dim + 1,
+                network_config={
+                    "otype": "FullyFusedMLP",
+                    "activation": "ReLU",
+                    "output_activation": "None",
+                    "n_neurons": 64,
+                    "n_hidden_layers": 1,
+                },
+            )
+            self.in_dim_color = (
+                    self.direction_encoder.n_output_dims
+                    + self.geo_feat_dim
+                    + self.appearance_embedding_dim
+            )
+            self.color_net = tcnn.Network(
+                n_input_dims=self.in_dim_color,
+                n_output_dims=3,
+                network_config={
+                    "otype": "FullyFusedMLP",
+                    "activation": "ReLU",
+                    "output_activation": "Sigmoid",
+                    "n_neurons": 64,
+                    "n_hidden_layers": 2,
+                },
+            )
 
     def get_density(self, pts: torch.Tensor, timestamps: Optional[torch.Tensor] = None):
         """Computes and returns the densities."""
@@ -201,32 +234,41 @@ class KPlaneField(nn.Module):
             pts, ms_grids=self.grids,  # noqa
             grid_dimensions=self.grid_config[0]["grid_dimensions"],
             concat_features=self.concat_features, num_levels=None)
-        features = self.sigma_net(features)
-        rgb_features, density_before_activation = torch.split(
-            features, [self.geo_feat_dim, 1], dim=-1)
-
+        if len(features) < 1:
+            features = torch.zeros((0, 1)).to(features.device)
+        if self.linear_decoder:
+            density_before_activation = self.sigma_net(features)  # [batch, 1]
+        else:
+            features = self.sigma_net(features)
+            features, density_before_activation = torch.split(
+                features, [self.geo_feat_dim, 1], dim=-1)
+        
         density = self.density_activation(
             density_before_activation.to(pts)
         ).view(n_rays, n_samples, 1)
-        return density, rgb_features
+        return density, features
 
     def forward(self,
                 pts: torch.Tensor,
                 directions: torch.Tensor,
                 timestamps: Optional[torch.Tensor] = None):
+        camera_indices = None
         if self.use_appearance_embedding:
             if timestamps is None:
                 raise AttributeError("timestamps (appearance-ids) are not provided.")
             camera_indices = timestamps
             timestamps = None
-        density, rgb_features = self.get_density(pts, timestamps)
+        density, features = self.get_density(pts, timestamps)
         n_rays, n_samples = pts.shape[:2]
 
         directions = get_normalized_directions(directions)
         directions = directions.view(-1, 1, 3).expand(pts.shape).reshape(-1, 3)
         encoded_directions = self.direction_encoder(directions)
 
-        color_features = [encoded_directions, rgb_features.view(-1, self.geo_feat_dim)]
+        if self.linear_decoder:
+            color_features = [features]
+        else:
+            color_features = [encoded_directions, features.view(-1, self.geo_feat_dim)]
 
         if self.use_appearance_embedding:
             if self.training:
@@ -248,6 +290,14 @@ class KPlaneField(nn.Module):
             color_features.append(embedded_appearance)
 
         color_features = torch.cat(color_features, dim=-1)
-        rgb = self.color_net(color_features).to(directions).view(n_rays, n_samples, 3)
-
+        
+        if self.linear_decoder:
+            basis_values = self.color_basis(encoded_directions)  # [batch, color_feature_len * 3]
+            basis_values = basis_values.view(color_features.shape[0], 3, -1)  # [batch, 3, color_feature_len]
+            rgb = torch.sum(color_features[:, None, :] * basis_values, dim=-1)  # [batch, 3]
+            rgb = rgb.to(directions)
+            rgb = torch.sigmoid(rgb).view(n_rays, n_samples, 3)
+        else:
+            rgb = self.color_net(color_features).to(directions).view(n_rays, n_samples, 3)
+        
         return {"rgb": rgb, "density": density}

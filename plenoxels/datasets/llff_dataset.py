@@ -8,7 +8,7 @@ import torch
 
 from .data_loading import parallel_load_images
 from .ray_utils import (
-    ndc_rays_blender, center_poses, gen_camera_dirs, generate_spiral_path
+    center_poses, generate_spiral_path, create_meshgrid, stack_camera_dirs, get_rays
 )
 from .intrinsics import Intrinsics
 from .base_dataset import BaseDataset
@@ -95,13 +95,7 @@ class LLFFDataset(BaseDataset):
             x = torch.remainder(index, h * w).remainder(w)
         else:
             image_id = [index]
-            x, y = torch.meshgrid(
-                torch.arange(w, device=dev),
-                torch.arange(h, device=dev),
-                indexing="xy",
-            )
-            x = x.flatten()
-            y = y.flatten()
+            x, y = create_meshgrid(height=h, width=w, dev=dev, add_half=False, flat=True)
         out = {"near_fars": self.near_fars[image_id, :].view(-1, 2)}
         if self.imgs is not None:
             out["imgs"] = self.imgs[index] / 255.0  # (num_rays, 3)   this converts to f32
@@ -109,16 +103,11 @@ class LLFFDataset(BaseDataset):
             out["imgs"] = None
 
         c2w = self.poses[image_id]       # (num_rays, 3, 4)
-        camera_dirs = gen_camera_dirs(
-            x, y, self.intrinsics, True)  # [num_rays, 3]
-        directions = (camera_dirs[:, None, :] * c2w[:, :3, :3]).sum(dim=-1)
-        origins = torch.broadcast_to(c2w[:, :3, -1], directions.shape)
-        if self.is_ndc:
-            origins, directions = ndc_rays_blender(
-                intrinsics=self.intrinsics, near=1.0, rays_o=origins, rays_d=directions)
-        directions /= torch.linalg.norm(directions, dim=-1, keepdim=True)
-        out["rays_o"] = origins.reshape(-1, 3)
-        out["rays_d"] = directions.reshape(-1, 3)
+        camera_dirs = stack_camera_dirs(x, y, self.intrinsics, True)  # [num_rays, 3]
+        rays_o, rays_d = get_rays(camera_dirs, c2w, ndc=self.is_ndc, ndc_near=1.0,
+                                  intrinsics=self.intrinsics, normalize_rd=True)  # h*w, 3
+        out["rays_o"] = rays_o
+        out["rays_d"] = rays_d
         out["bg_color"] = torch.tensor([[1.0, 1.0, 1.0]])
         return out
 
@@ -174,12 +163,8 @@ def load_llff_poses(datadir: str,
         'Mismatch between number of images and number of poses! Please rerun COLMAP!'
 
     # Take training or test split
-    i_test = np.arange(0, poses.shape[0], hold_every)  # [np.argmin(dists)]
+    i_test = np.arange(0, poses.shape[0], hold_every)
     img_list = i_test if split != 'train' else list(set(np.arange(len(poses))) - set(i_test))
-    # If you want to visualize train results
-    # img_list = list(set(np.arange(len(poses))) - set(i_test))
-    # if split != 'train':
-    #     img_list = img_list[0:5]  # Test on some train images
     img_list = np.asarray(img_list)
 
     image_paths = [image_paths[i] for i in img_list]
