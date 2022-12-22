@@ -242,9 +242,11 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
     if ist:
         tr_dset.switch_isg2ist()  # this should only happen in case we're reloading
 
+    g = torch.Generator()
+    g.manual_seed(0)
     tr_loader = torch.utils.data.DataLoader(
         tr_dset, batch_size=None, num_workers=4,  prefetch_factor=4, pin_memory=True,
-        worker_init_fn=init_dloader_random)
+        worker_init_fn=init_dloader_random, generator=g)
     return {"tr_loader": tr_loader, "tr_dset": tr_dset}
 
 

@@ -1,5 +1,6 @@
 import math
 import os
+import random
 from typing import Tuple, Optional
 
 import imageio
@@ -75,6 +76,6 @@ def get_step_schedule_with_warmup(
 
 
 def init_dloader_random(worker_id):
-    seed = torch.utils.data.get_worker_info().seed
-    torch.manual_seed(seed)
-    np.random.seed(seed % (2 ** 32 - 1))
+    seed = torch.initial_seed() % 2**32
+    np.random.seed(seed)
+    random.seed(seed)
