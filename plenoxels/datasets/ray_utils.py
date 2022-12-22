@@ -201,7 +201,8 @@ def generate_spiral_path(poses: np.ndarray,
                          n_frames=120,
                          n_rots=2,
                          zrate=.5,
-                         dt=0.75) -> np.ndarray:
+                         dt=0.75,
+                         percentile=70) -> np.ndarray:
     """Calculates a forward facing spiral path for rendering.
 
     From https://github.com/google-research/google-research/blob/342bfc150ef1155c5254c1e6bd0c912893273e8d/regnerf/internal/datasets.py
@@ -223,12 +224,12 @@ def generate_spiral_path(poses: np.ndarray,
 
     # Find a reasonable "focus depth" for this dataset as a weighted average
     # of near and far bounds in disparity space.
-    close_depth, inf_depth = np.min(near_fars) * 0.9, np.max(near_fars) * 5.0
+    close_depth, inf_depth = np.min(near_fars) * 1.0, np.max(near_fars) * 5.0
     focal = 1.0 / (((1.0 - dt) / close_depth + dt / inf_depth))
 
     # Get radii for spiral path using 90th percentile of camera positions.
     positions = poses[:, :3, 3]
-    radii = np.percentile(np.abs(positions), 70, 0)
+    radii = np.percentile(np.abs(positions), percentile, 0)
     radii = np.concatenate([radii, [1.]])
 
     # Generate poses for spiral path.

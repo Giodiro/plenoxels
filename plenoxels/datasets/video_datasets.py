@@ -70,10 +70,10 @@ class Video360Dataset(BaseDataset):
                     datadir, downsample=self.downsample, split='all', near_scaling=self.near_scaling)
                 render_poses = generate_spiral_path(
                     per_cam_poses.numpy(), per_cam_near_fars.numpy(), n_frames=300,
-                    n_rots=2, zrate=0.5, dt=self.near_scaling)
+                    n_rots=2, zrate=0.5, dt=self.near_scaling, percentile=60)
                 self.poses = torch.from_numpy(render_poses).float()
-                self.per_cam_near_fars = torch.tensor([[0.0, self.ndc_far]])
-                timestamps = torch.arange(0, 300, len(self.poses))
+                self.per_cam_near_fars = torch.tensor([[0.4, self.ndc_far]])
+                timestamps = torch.linspace(0, 299, len(self.poses))
                 imgs = None
             else:
                 per_cam_poses, per_cam_near_fars, intrinsics, videopaths = load_llffvideo_poses(
@@ -141,7 +141,7 @@ class Video360Dataset(BaseDataset):
             self.median_imgs = (self.median_imgs * 255).to(torch.uint8)
         if split == 'train':
             imgs = imgs.view(-1, imgs.shape[-1])
-        else:
+        elif imgs is not None:
             imgs = imgs.view(-1, intrinsics.height * intrinsics.width, imgs.shape[-1])
 
         # ISG/IST weights are computed on 4x subsampled data.

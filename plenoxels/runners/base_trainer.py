@@ -414,8 +414,7 @@ def losses_to_postfix(loss_dict: Dict[str, EMA], lr: Optional[float]) -> str:
 
 
 def init_dloader_random(_):
-    seed = torch.initial_seed() % 2**32
+    seed = torch.initial_seed() % 2**32  # worker-specific seed initialized by pytorch
     np.random.seed(seed)
     random.seed(seed)
-    torch.manual_seed(seed)
 
