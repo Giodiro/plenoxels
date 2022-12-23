@@ -4,6 +4,7 @@ import os
 from collections import defaultdict
 from typing import Dict, MutableMapping, Union, Any
 
+import numpy as np
 import pandas as pd
 import torch
 import torch.utils.data
@@ -133,14 +134,14 @@ class VideoTrainer(BaseTrainer):
                 )
         # Calculate JOD (on whole video)
         per_scene_metrics["JOD"], heatmap = metrics.jod(
-            torch.cat([f[:dataset.img_h, :, :] for f in pred_frames], dim=0),
-            torch.cat([f[dataset.img_h: 2*dataset.img_h, :, :] for f in pred_frames], dim=0),
+            np.stack([f[:dataset.img_h, :, :] for f in pred_frames], axis=0),
+            np.stack([f[dataset.img_h: 2*dataset.img_h, :, :] for f in pred_frames], axis=0),
             fps=30,
         )
         if heatmap is not None and self.save_video:
             write_video_to_file(
                 os.path.join(self.log_dir, f"jod_heatmap_step{self.global_step}.mp4"),
-                [f.squeeze().mul_(255).byte().numpy() for f in
+                [f.cpu().squeeze().mul_(255).byte().numpy() for f in
                  heatmap.squeeze().permute(1, 2, 3, 0).split(1)]
             )
         val_metrics = [

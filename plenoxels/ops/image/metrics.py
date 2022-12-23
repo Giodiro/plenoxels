@@ -83,7 +83,7 @@ def rgb_lpips(rgb, gts, net_name='alex', device='cpu'):
 
 def jod(rgb_video, gt_video, fps=30):
     import pyfvvdp
-    fv = pyfvvdp.fvvdp(display_name='standard_fhd', heatmap="true")
+    fv = pyfvvdp.fvvdp(display_name='standard_fhd', heatmap="threshold")
     # inputs are numpy(uint8)
     rgb_video = torch.from_numpy(rgb_video).float() / 255
     gt_video = torch.from_numpy(gt_video).float() / 255
