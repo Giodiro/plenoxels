@@ -11,6 +11,7 @@ import torch.utils.data
 from ..datasets.video_datasets import Video360Dataset
 from ..ema import EMA
 from ..my_tqdm import tqdm
+from ..ops.image import metrics
 from ..ops.image.io import write_video_to_file
 from ..models.lowrank_model import LowrankModel
 from .base_trainer import BaseTrainer, init_dloader_random
@@ -130,6 +131,18 @@ class VideoTrainer(BaseTrainer):
                     os.path.join(self.log_dir, f"step{self.global_step}-depth.mp4"),
                     out_depths
                 )
+        # Calculate JOD (on whole video)
+        per_scene_metrics["JOD"], heatmap = metrics.jod(
+            torch.cat([f[:dataset.img_h, :, :] for f in pred_frames], dim=0),
+            torch.cat([f[dataset.img_h: 2*dataset.img_h, :, :] for f in pred_frames], dim=0),
+            fps=30,
+        )
+        if heatmap is not None and self.save_video:
+            write_video_to_file(
+                os.path.join(self.log_dir, f"jod_heatmap_step{self.global_step}.mp4"),
+                [f.squeeze().mul_(255).byte().numpy() for f in
+                 heatmap.squeeze().permute(1, 2, 3, 0).split(1)]
+            )
         val_metrics = [
             self.report_test_metrics(per_scene_metrics, extra_name=None),
         ]
