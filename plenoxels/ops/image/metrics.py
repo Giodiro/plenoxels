@@ -1,10 +1,3 @@
-# Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
-#
-# NVIDIA CORPORATION & AFFILIATES and its licensors retain all intellectual property
-# and proprietary rights in and to this software, related documentation
-# and any modifications thereto.  Any use, reproduction, disclosure or
-# distribution of this software and related documentation without an express
-# license agreement from NVIDIA CORPORATION & AFFILIATES is strictly prohibited.
 import math
 
 import skimage.metrics
@@ -91,4 +84,3 @@ def jod(rgb_video, gt_video, fps=30):
         rgb_video, gt_video, dim_order="FHWC", frames_per_second=fps)
     heatmap = stats.get('heatmap', None)
     return q_jod.item(), heatmap
-

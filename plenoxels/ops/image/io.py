@@ -1,20 +1,13 @@
-# Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
-#
-# NVIDIA CORPORATION & AFFILIATES and its licensors retain all intellectual property
-# and proprietary rights in and to this software, related documentation
-# and any modifications thereto.  Any use, reproduction, disclosure or
-# distribution of this software and related documentation without an express
-# license agreement from NVIDIA CORPORATION & AFFILIATES is strictly prohibited.
-
 import glob
 import os
+from typing import List
 
 import cv2
+import torch
 from PIL import Image
 import logging as log
 import numpy as np
-
-""" A module for reading / writing various image formats. """
+import imageio.v3 as iio
 
 
 def write_png(path, data):
@@ -48,7 +41,7 @@ def glob_imgs(path, exts=None):
     return imgs
 
 
-def write_video_to_file(file_name, frames):
+def write_video_to_file(file_name, frames: List[np.ndarray]):
     log.info(f"Saving video ({len(frames)} frames) to {file_name}")
     # Photo tourism image sizes differ
     sizes = np.array([frame.shape[:2] for frame in frames])
@@ -73,3 +66,11 @@ def write_video_to_file(file_name, frames):
             video.write(image[:, :, ::-1])  # opencv uses BGR instead of RGB
         cv2.destroyAllWindows()
         video.release()
+
+
+def read_mp4(file_name: str) -> List[torch.Tensor]:
+    all_frames = iio.imread(
+        file_name, plugin='pyav', format='rgb24', constant_framerate=True, thread_count=2
+    )
+    out_frames = [torch.from_numpy(f) for f in all_frames]
+    return out_frames
