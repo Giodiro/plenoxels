@@ -48,8 +48,9 @@ def ssim(rgb, gts):
         rgb[..., :3].cpu().numpy(),
         gts[..., :3].cpu().numpy(),
         channel_axis=2,
-        data_range=1,
-        gaussian_weights=False)
+        gaussian_weights=True,
+        sigma=1.5,
+        use_sample_covariance=False)
 
 
 def msssim(rgb, gts):
