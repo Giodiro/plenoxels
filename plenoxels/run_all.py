@@ -1,8 +1,9 @@
 from plenoxels.main import load_data, init_trainer, save_config, setup_logging
 
+from typing import List, Dict, Any
 import os
 import pprint
-from typing import List, Dict, Any
+from copy import copy
 
 import numpy as np
 
@@ -25,22 +26,22 @@ def main():
     torch.manual_seed(seed)
 
     exp_type = "dynerf"
-    config: Dict[str, Any]
+    base_config: Dict[str, Any]
     datasets: List[str]
     datadir: str
     if exp_type == "dynerf":
         import plenoxels.configs.test_flamesalmon as dynerf_config
-        config = dynerf_config.config
+        base_config = dynerf_config.config
         datasets = DYNERF_DSETS
         datadir = DYNERF_DATADIR
     elif exp_type == "synthetic360":
         import plenoxels.configs.giac_learnablehash as static_config
-        config = static_config.config
+        base_config = static_config.config
         datasets = SYNTH360_DSETS
         datadir = SYNTH360_DATADIR
     elif exp_type == "llff":
         import plenoxels.configs.giac_learnablehash as llff_config
-        config = llff_config.config
+        base_config = llff_config.config
         datasets = LLFF_DSETS
         datadir = LLFF_DATADIR
     else:
@@ -49,6 +50,7 @@ def main():
     base_expname = config['expname']
 
     for dataset in datasets:
+        config = copy(base_config)
         config['data_dirs'][0] = os.path.join(datadir, dataset)
         config['expname'] = f'{dataset}_{base_expname}'
 
