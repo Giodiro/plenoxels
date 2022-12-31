@@ -43,7 +43,7 @@ class VideoTrainer(BaseTrainer):
         self.ist_step = ist_step
         self.isg_step = isg_step
         self.save_video = save_outputs
-        self.compute_jod = False
+        self.compute_jod = True
         super().__init__(
             train_data_loader=tr_loader,
             num_steps=num_steps,
@@ -135,17 +135,15 @@ class VideoTrainer(BaseTrainer):
                 )
         # Calculate JOD (on whole video)
         if self.compute_jod:
-            per_scene_metrics["JOD"], heatmap = metrics.jod(
-                np.stack([f[:dataset.img_h, :, :] for f in pred_frames], axis=0),
-                np.stack([f[dataset.img_h: 2*dataset.img_h, :, :] for f in pred_frames], axis=0),
-                fps=30,
+            per_scene_metrics["JOD"] = metrics.jod(
+                [f[:dataset.img_h, :, :] for f in pred_frames],
+                [f[dataset.img_h: 2*dataset.img_h, :, :] for f in pred_frames],
             )
-            if heatmap is not None and self.save_video:
-                write_video_to_file(
-                    os.path.join(self.log_dir, f"jod_heatmap_step{self.global_step}.mp4"),
-                    [f.cpu().squeeze().mul_(255).byte().numpy() for f in
-                     heatmap.squeeze().permute(1, 2, 3, 0).split(1)]
-                )
+            per_scene_metrics["FLIP"] = metrics.flip(
+                [f[:dataset.img_h, :, :] for f in pred_frames],
+                [f[dataset.img_h: 2*dataset.img_h, :, :] for f in pred_frames],
+            )
+
         val_metrics = [
             self.report_test_metrics(per_scene_metrics, extra_name=None),
         ]

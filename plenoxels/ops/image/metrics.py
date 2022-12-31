@@ -1,9 +1,16 @@
 import math
+import tempfile
+import subprocess
+import os
+import re
 
 import skimage.metrics
 import torch
 from torchmetrics import MultiScaleStructuralSimilarityIndexMeasure
 import lpips
+
+from .io import write_video_to_file, write_png
+
 
 ms_ssim = MultiScaleStructuralSimilarityIndexMeasure(data_range=1.0)
 
@@ -75,7 +82,7 @@ def rgb_lpips(rgb, gts, net_name='alex', device='cpu'):
     return __LPIPS__[net_name](gts, rgb, normalize=True).item()
 
 
-def jod(rgb_video, gt_video, fps=30):
+def legacy_jod(rgb_video, gt_video, fps=30):
     import pyfvvdp
     fv = pyfvvdp.fvvdp(display_name='standard_fhd', heatmap="threshold")
     # inputs are numpy(uint8)
@@ -85,3 +92,38 @@ def jod(rgb_video, gt_video, fps=30):
         rgb_video, gt_video, dim_order="FHWC", frames_per_second=fps)
     heatmap = stats.get('heatmap', None)
     return q_jod.item(), heatmap
+
+
+def jod(pred_frames, gt_frames):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        file_pred = os.path.join(tmpdir, "pred.mp4")
+        write_video_to_file(file_pred, pred_frames)
+        file_gt = os.path.join(tmpdir, "gt.mp4")
+        write_video_to_file(file_gt, gt_frames)
+        result = subprocess.check_output([
+            'fvvdp', '--test', file_pred, '--ref', file_gt, '--gpu', '0',
+            '--display', 'standard_fhd'])
+        result = float(result.decode().strip().split('=')[1])
+    return result
+
+
+def flip(pred_frames, gt_frames, interval=10):
+    def extract_from_result(text: str, prompt: str):
+        m = re.search(prompt, text)
+        return float(m.group(1))
+
+    all_results = []
+    with tempfile.TemporaryDirectory() as tmpdir:
+        pred_fname = os.path.join(tmpdir, "pred.png")
+        gt_fname = os.path.join(tmpdir, "gt.png")
+        for i in range(len(pred_frames)):
+            if (i % interval) != 0:
+                continue
+            write_png(pred_fname, pred_frames[i])
+            write_png(gt_fname, gt_frames[i])
+            result = subprocess.check_output(
+                ['python', 'plenoxels/ops/flip/flip.py', '--reference', gt_fname, '--test', pred_fname]
+            ).decode()
+            all_results.append(extract_from_result(result, r'Mean: (\d+\.\d+)'))
+    return sum(all_results) / len(all_results)
+
