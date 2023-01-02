@@ -30,7 +30,8 @@ def main():
     datasets: List[str]
     datadir: str
     if exp_type == "dynerf":
-        import plenoxels.configs.test_flamesalmon as dynerf_config
+        #import plenoxels.configs.test_flamesalmon as dynerf_config
+        import plenoxels.configs.dynerf_linear as dynerf_config
         base_config = dynerf_config.config
         datasets = DYNERF_DSETS
         datadir = DYNERF_DATADIR
@@ -47,7 +48,7 @@ def main():
     else:
         raise ValueError()
 
-    base_expname = config['expname']
+    base_expname = base_config['expname']
 
     for dataset in datasets:
         config = copy(base_config)
