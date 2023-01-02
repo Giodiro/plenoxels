@@ -1,4 +1,5 @@
 import abc
+import random
 import logging as log
 import math
 import os
@@ -415,6 +416,7 @@ def losses_to_postfix(loss_dict: Dict[str, EMA], lr: Optional[float]) -> str:
 
 
 def init_dloader_random(_):
-    seed = torch.utils.data.get_worker_info().seed
-    torch.manual_seed(seed)
-    np.random.seed(seed % (2 ** 32 - 1))
+    seed = torch.initial_seed() % 2**32  # worker-specific seed initialized by pytorch
+    np.random.seed(seed)
+    random.seed(seed)
+

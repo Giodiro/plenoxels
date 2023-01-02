@@ -44,3 +44,4 @@ def initialize_model(runner: Union[Trainer, PhototourismTrainer, VideoTrainer], 
              f"using ndc {model.is_ndc} and contraction {model.is_contracted}. "
              f"Linear decoder: {model.linear_decoder}.")
     return model
+
