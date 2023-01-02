@@ -39,7 +39,7 @@ def eval_flip(pred_frames: List[np.ndarray], gt_frames: List[np.ndarray], interv
                 continue
             write_png(pred_fname, pred_frames[i])
             write_png(gt_fname, gt_frames[i])
-            result = subprocess.check_output(['python', 'eval/flip.py', '--reference', gt_fname, '--test', pred_fname])
+            result = subprocess.check_output(['python', 'plenoxels/ops/flip/flip.py', '--reference', gt_fname, '--test', pred_fname])
             result = result.decode()
             all_results.append({
                 'Mean': extract_from_result(result, r'Mean: (\d+\.\d+)'),
@@ -66,7 +66,7 @@ def eval_metrics(video_path):
     psnrs, ssims, msssims, lpipss = [], [], [], []
     for pred, gt in zip(pred_frames, gt_frames):
         pred = torch.from_numpy(pred).float().div(255)
-        gt = torch.from_numpy(pred).float().div(255)
+        gt = torch.from_numpy(gt).float().div(255)
         psnrs.append(metrics.psnr(pred, gt))
         ssims.append(metrics.ssim(pred, gt))
         msssims.append(metrics.msssim(pred, gt))
@@ -79,6 +79,7 @@ def eval_metrics(video_path):
     flip = eval_flip(pred_frames=pred_frames, gt_frames=gt_frames, interval=10)
     jod = eval_jod(pred_frames=pred_frames, gt_frames=gt_frames)
 
+    print()
     print(f"Video at {video_path} metrics:")
     print(f"PSNR={psnr}")
     print(f"SSIM={ssim}")
@@ -86,7 +87,14 @@ def eval_metrics(video_path):
     print(f"Alex-LPIPS={lpips}")
     print(f"FLIP={flip}")
     print(f"JOD={jod}")
+    print()
+    print()
 
 
 if __name__ == "__main__":
-    eval_metrics("logs/flame_salmon/coffee_martini_ndc_f16_90k_ts1e-3_tspn1e-5_ptv2e-4_ptvpn2e-4_l1ap1e-4_l1appn1e-4_dl1e-3_v4bbox_150tdensity_150t-8d_coo+0.5/step90000.mp4")
+    #eval_metrics("logs/flame_salmon/coffee_martini_ndc_f16_90k_ts1e-3_tspn1e-5_ptv2e-4_ptvpn2e-4_l1ap1e-4_l1appn1e-4_dl1e-3_v4bbox_150tdensity_150t-8d_coo+0.5/step90000.mp4")
+    #eval_metrics("logs/flame_salmon/flame_steak_ndc_f16_90k_ts1e-3_tspn1e-5_ptv2e-4_ptvpn2e-4_l1ap1e-4_l1appn1e-4_dl1e-3_v4bbox_150tdensity_150t-8d_coo+0.5/step90000.mp4")
+    #eval_metrics("logs/flame_salmon/sear_steak_ndc_f16_90k_ts1e-3_tspn1e-5_ptv2e-4_ptvpn2e-4_l1ap1e-4_l1appn1e-4_dl1e-3_v4bbox_150tdensity_150t-8d_coo+0.5/step90000.mp4")
+    eval_metrics("logs/flame_salmon/cook_spinach_ndc_f16_90k_ts1e-3_tspn1e-5_ptv2e-4_ptvpn2e-4_l1ap1e-4_l1appn1e-4_dl1e-3_v4bbox_150tdensity_150t-8d_coo+0.5/step90000.mp4")
+    eval_metrics("logs/flame_salmon/cut_roasted_beef_ndc_f16_90k_ts1e-3_tspn1e-5_ptv2e-4_ptvpn2e-4_l1ap1e-4_l1appn1e-4_dl1e-3_v4bbox_150tdensity_150t-8d_coo+0.5_v2/step90000.mp4")
+    eval_metrics("logs/flame_salmon/flame_salmon_ndc_f16_90k_ts1e-3_tspn1e-5_ptv2e-4_ptvpn2e-4_l1ap1e-4_l1appn1e-4_dl1e-3_v4bbox_150tdensity_150t-8d_coo+0.5/step90000.mp4")

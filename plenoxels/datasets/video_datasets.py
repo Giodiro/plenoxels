@@ -79,7 +79,7 @@ class Video360Dataset(BaseDataset):
                 per_cam_poses, per_cam_near_fars, intrinsics, videopaths = load_llffvideo_poses(
                     datadir, downsample=self.downsample, split=split, near_scaling=self.near_scaling)
                 if split == 'test':
-                    keyframes = True
+                    keyframes = False
                 poses, imgs, timestamps, self.median_imgs = load_llffvideo_data(
                     videopaths=videopaths, cam_poses=per_cam_poses, intrinsics=intrinsics,
                     split=split, keyframes=keyframes, keyframes_take_each=30)
@@ -278,17 +278,16 @@ class Video360Dataset(BaseDataset):
             camera_dirs, c2w, ndc=self.is_ndc, ndc_near=1.0, intrinsics=self.intrinsics,
             normalize_rd=True)                                        # [num_rays, 3]
 
-        if self.split != 'train':
-            out['bg_color'] = torch.ones((1, 3), dtype=torch.float32, device=dev)
-        else:
-            imgs = out['imgs']
-            if imgs.shape[-1] == 4:
-                bg_color = torch.rand((1, 3), dtype=torch.float32, device=dev)
-                imgs = imgs[:, :3] * imgs[:, 3:] + bg_color * (1.0 - imgs[:, 3:])
-            else:
-                bg_color = torch.ones((1, 3), dtype=torch.float32, device=dev)
-            out['imgs'] = imgs
-            out['bg_color'] = bg_color
+        imgs = out['imgs']
+        # Decide BG color
+        bg_color = torch.ones((1, 3), dtype=torch.float32, device=dev)
+        if self.split == 'train' and imgs.shape[-1] == 4:
+            bg_color = torch.rand((1, 3), dtype=torch.float32, device=dev)
+        out['bg_color'] = bg_color
+        # Alpha compositing
+        if imgs.shape[-1] == 4:
+            imgs = imgs[:, :3] * imgs[:, 3:] + bg_color * (1.0 - imgs[:, 3:])
+        out['imgs'] = imgs
 
         return out
 
