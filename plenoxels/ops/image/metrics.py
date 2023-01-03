@@ -3,7 +3,9 @@ import tempfile
 import subprocess
 import os
 import re
+from typing import List
 
+import numpy as np
 import skimage.metrics
 import torch
 from torchmetrics import MultiScaleStructuralSimilarityIndexMeasure
@@ -82,19 +84,7 @@ def rgb_lpips(rgb, gts, net_name='alex', device='cpu'):
     return __LPIPS__[net_name](gts, rgb, normalize=True).item()
 
 
-def legacy_jod(rgb_video, gt_video, fps=30):
-    import pyfvvdp
-    fv = pyfvvdp.fvvdp(display_name='standard_fhd', heatmap="threshold")
-    # inputs are numpy(uint8)
-    rgb_video = torch.from_numpy(rgb_video).float() / 255
-    gt_video = torch.from_numpy(gt_video).float() / 255
-    q_jod, stats = fv.predict(
-        rgb_video, gt_video, dim_order="FHWC", frames_per_second=fps)
-    heatmap = stats.get('heatmap', None)
-    return q_jod.item(), heatmap
-
-
-def jod(pred_frames, gt_frames):
+def jod(pred_frames: List[np.ndarray], gt_frames: List[np.ndarray]) -> float:
     with tempfile.TemporaryDirectory() as tmpdir:
         file_pred = os.path.join(tmpdir, "pred.mp4")
         write_video_to_file(file_pred, pred_frames)
@@ -107,7 +97,7 @@ def jod(pred_frames, gt_frames):
     return result
 
 
-def flip(pred_frames, gt_frames, interval=10):
+def flip(pred_frames: List[np.ndarray], gt_frames: List[np.ndarray], interval: int = 10) -> float:
     def extract_from_result(text: str, prompt: str):
         m = re.search(prompt, text)
         return float(m.group(1))
@@ -126,4 +116,3 @@ def flip(pred_frames, gt_frames, interval=10):
             ).decode()
             all_results.append(extract_from_result(result, r'Mean: (\d+\.\d+)'))
     return sum(all_results) / len(all_results)
-

@@ -43,7 +43,8 @@ class VideoTrainer(BaseTrainer):
         self.ist_step = ist_step
         self.isg_step = isg_step
         self.save_video = save_outputs
-        self.compute_jod = True
+        # Switch to compute extra video metrics (FLIP, JOD)
+        self.compute_video_metrics = False
         super().__init__(
             train_data_loader=tr_loader,
             num_steps=num_steps,
@@ -134,7 +135,7 @@ class VideoTrainer(BaseTrainer):
                     out_depths
                 )
         # Calculate JOD (on whole video)
-        if self.compute_jod:
+        if self.compute_video_metrics:
             per_scene_metrics["JOD"] = metrics.jod(
                 [f[:dataset.img_h, :, :] for f in pred_frames],
                 [f[dataset.img_h: 2*dataset.img_h, :, :] for f in pred_frames],
