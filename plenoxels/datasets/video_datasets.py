@@ -228,7 +228,7 @@ class Video360Dataset(BaseDataset):
         dev = "cpu"
         if self.split == 'train':
             index = self.get_rand_ids(index)  # [batch_size // (weights_subsampled**2)]
-            if len(index) == self.batch_size:
+            if self.weights_subsampled == 1 or self.sampling_weights is None:
                 # Nothing special to do, either weights_subsampled = 1, or not using weights.
                 image_id = torch.div(index, h * w, rounding_mode='floor')
                 y = torch.remainder(index, h * w).div(w, rounding_mode='floor')
@@ -258,6 +258,7 @@ class Video360Dataset(BaseDataset):
         else:
             image_id = [index]
             x, y = create_meshgrid(height=h, width=w, dev=dev, add_half=True, flat=True)
+
         out = {
             "timestamps": self.timestamps[index],      # (num_rays or 1, )
             "imgs": None,
