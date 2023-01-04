@@ -214,10 +214,10 @@ class LowrankModel(nn.Module):
 
     def get_params(self, lr: float):
         model_params = self.field.get_params()
-        pn_params = [pn.get_params for pn in self.proposal_networks]
-        field_params = model_params["field"] + [pnp["field"] for pnp in pn_params]
-        nn_params = model_params["nn"] + [pnp["nn"] for pnp in pn_params]
-        other_params = model_params["other"] + [pnp["other"] for pnp in pn_params]
+        pn_params = [pn.get_params() for pn in self.proposal_networks]
+        field_params = model_params["field"] + [p for pnp in pn_params for p in pnp["field"]]
+        nn_params = model_params["nn"] + [p for pnp in pn_params for p in pnp["nn"]]
+        other_params = model_params["other"] + [p for pnp in pn_params for p in pnp["other"]]
         return [
             {"params": field_params, "lr": lr},
             {"params": nn_params, "lr": lr},

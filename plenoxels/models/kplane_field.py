@@ -160,12 +160,12 @@ class KPlaneField(nn.Module):
         # 3. Init decoder network
         if self.linear_decoder:
             # The NN learns a basis that is used instead of spherical harmonics
-            # Input is an encoded view direction, output is weights for 
+            # Input is an encoded view direction, output is weights for
             # combining the color features into RGB
             # This architecture is based on instant-NGP
             self.color_basis = tcnn.Network(
-                n_input_dims=self.direction_encoder.n_output_dims,
-                n_output_dims=3 * self.feature_dim,  # * (self.feature_dim - 1),  # The last feature is sigma (density)
+                n_input_dims=3,#self.direction_encoder.n_output_dims,
+                n_output_dims=3 * self.feature_dim,
                 network_config={
                     "otype": "FullyFusedMLP",
                     "activation": "ReLU",
@@ -242,7 +242,7 @@ class KPlaneField(nn.Module):
             features = self.sigma_net(features)
             features, density_before_activation = torch.split(
                 features, [self.geo_feat_dim, 1], dim=-1)
-        
+
         density = self.density_activation(
             density_before_activation.to(pts)
         ).view(n_rays, n_samples, 1)
@@ -261,9 +261,10 @@ class KPlaneField(nn.Module):
         density, features = self.get_density(pts, timestamps)
         n_rays, n_samples = pts.shape[:2]
 
-        directions = get_normalized_directions(directions)
         directions = directions.view(-1, 1, 3).expand(pts.shape).reshape(-1, 3)
-        encoded_directions = self.direction_encoder(directions)
+        if not self.linear_decoder:
+            directions = get_normalized_directions(directions)
+            encoded_directions = self.direction_encoder(directions)
 
         if self.linear_decoder:
             color_features = [features]
@@ -290,28 +291,28 @@ class KPlaneField(nn.Module):
             color_features.append(embedded_appearance)
 
         color_features = torch.cat(color_features, dim=-1)
-        
+
         if self.linear_decoder:
-            basis_values = self.color_basis(encoded_directions)  # [batch, color_feature_len * 3]
+            basis_values = self.color_basis(directions)  # [batch, color_feature_len * 3]
             basis_values = basis_values.view(color_features.shape[0], 3, -1)  # [batch, 3, color_feature_len]
             rgb = torch.sum(color_features[:, None, :] * basis_values, dim=-1)  # [batch, 3]
             rgb = rgb.to(directions)
             rgb = torch.sigmoid(rgb).view(n_rays, n_samples, 3)
         else:
             rgb = self.color_net(color_features).to(directions).view(n_rays, n_samples, 3)
-        
+
         return {"rgb": rgb, "density": density}
 
     def get_params(self):
-        field_params = {k: v for k, v in self.grids.named_parameters()}
+        field_params = {k: v for k, v in self.grids.named_parameters(prefix="grids")}
         nn_params = [
-            self.sigma_net.named_parameters(),
-            self.direction_encoder.named_parameters(),
+            self.sigma_net.named_parameters(prefix="sigma_net"),
+            self.direction_encoder.named_parameters(prefix="direction_encoder"),
         ]
         if self.linear_decoder:
-            nn_params.append(self.color_basis.named_parameters())
+            nn_params.append(self.color_basis.named_parameters(prefix="color_basis"))
         else:
-            nn_params.append(self.color_net.named_parameters())
+            nn_params.append(self.color_net.named_parameters(prefix="color_net"))
         nn_params = {k: v for plist in nn_params for k, v in plist}
         other_params = {k: v for k, v in self.named_parameters() if (
             k not in nn_params.keys() and k not in field_params.keys()
