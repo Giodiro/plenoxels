@@ -301,3 +301,23 @@ class KPlaneField(nn.Module):
             rgb = self.color_net(color_features).to(directions).view(n_rays, n_samples, 3)
         
         return {"rgb": rgb, "density": density}
+
+    def get_params(self):
+        field_params = {k: v for k, v in self.grids.named_parameters()}
+        nn_params = [
+            self.sigma_net.named_parameters(),
+            self.direction_encoder.named_parameters(),
+        ]
+        if self.linear_decoder:
+            nn_params.append(self.color_basis.named_parameters())
+        else:
+            nn_params.append(self.color_net.named_parameters())
+        nn_params = {k: v for plist in nn_params for k, v in plist}
+        other_params = {k: v for k, v in self.named_parameters() if (
+            k not in nn_params.keys() and k not in field_params.keys()
+        )}
+        return {
+            "nn": list(nn_params.values()),
+            "field": list(field_params.values()),
+            "other": list(other_params.values()),
+        }
