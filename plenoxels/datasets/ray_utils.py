@@ -88,9 +88,8 @@ def get_rays(directions: torch.Tensor,
 
     """
     directions = directions.view(-1, 3)  # [n_rays, 3]
-    if c2w.dim == 2:
+    if len(c2w.shape) == 2:
         c2w = c2w[None, ...]
-
     rd = (directions[:, None, :] * c2w[:, :3, :3]).sum(dim=-1)
     ro = torch.broadcast_to(c2w[:, :3, 3], directions.shape)
     if ndc:
