@@ -71,29 +71,34 @@ def eval_video_metrics(video_path):
     lpips = np.mean(lpipss)
 
     flip = metrics.flip(pred_frames=pred_frames, gt_frames=gt_frames, interval=10)
-    jod = metrics.jod(pred_frames=pred_frames, gt_frames=gt_frames)
+    # jod = metrics.jod(pred_frames=pred_frames, gt_frames=gt_frames)
 
     print()
     print(f"Video at {video_path} metrics:")
     print(f"PSNR = {psnr}")
     print(f"SSIM = {ssim}")
-    print(f"MS-SSIM = {msssim}")
-    print(f"Alex-LPIPS = {lpips}")
-    print(f"FLIP = {flip}")
-    print(f"JOD = {jod}")
+    # print(f"MS-SSIM = {msssim}")
+    # print(f"Alex-LPIPS = {lpips}")
+    # print(f"FLIP = {flip}")
+    # print(f"JOD = {jod}")
     print()
     print()
 
+dnerf_scenes = ['hellwarrior', 'mutant', 'hook', 'bouncingballs', 'lego', 'trex', 'standup', 'jumpingjacks']
+types = ['linear', 'mlp']
 
 if __name__ == "__main__":
-    eval_static_metrics("logs/flower_ndc_far2.6_ptv1e-4_propnetptv1e-4_cosine_lr2e-2_nearscale0.89_dl0.001")
-    eval_static_metrics("logs/room_ndc_far2.6_ptv1e-4_propnetptv1e-4_cosine_lr2e-2_nearscale0.89_dl0.001")
-    eval_static_metrics("logs/fern_ndc_far2.6_ptv1e-4_propnetptv1e-4_cosine_lr2e-2_nearscale0.89_dl0.001")
-    eval_static_metrics("logs/leaves_ndc_far2.6_ptv1e-4_propnetptv1e-4_cosine_lr2e-2_nearscale0.89_dl0.001")
-    eval_static_metrics("logs/fortress_ndc_far2.6_ptv1e-4_propnetptv1e-4_cosine_lr2e-2_nearscale0.89_dl0.001")
-    eval_static_metrics("logs/orchids_ndc_far2.6_ptv1e-4_propnetptv1e-4_cosine_lr2e-2_nearscale0.89_dl0.001")
-    eval_static_metrics("logs/trex_ndc_far2.6_ptv1e-4_propnetptv1e-4_cosine_lr2e-2_nearscale0.89_dl0.001")
-    eval_static_metrics("logs/horns_ndc_far2.6_ptv1e-4_propnetptv1e-4_cosine_lr2e-2_nearscale0.89_dl0.001")
+    for modeltype in types:
+        for scene in dnerf_scenes:
+            eval_video_metrics(f"logs/dnerf_{modeltype}_refactor1/{scene}_concat32_lr0.01_time0.1_tv0.0001_proptime0.001_proptv0.0001_distort0/step30000.mp4")
+    # eval_static_metrics("logs/flower_ndc_far2.6_ptv1e-4_propnetptv1e-4_cosine_lr2e-2_nearscale0.89_dl0.001")
+    # eval_static_metrics("logs/room_ndc_far2.6_ptv1e-4_propnetptv1e-4_cosine_lr2e-2_nearscale0.89_dl0.001")
+    # eval_static_metrics("logs/fern_ndc_far2.6_ptv1e-4_propnetptv1e-4_cosine_lr2e-2_nearscale0.89_dl0.001")
+    # eval_static_metrics("logs/leaves_ndc_far2.6_ptv1e-4_propnetptv1e-4_cosine_lr2e-2_nearscale0.89_dl0.001")
+    # eval_static_metrics("logs/fortress_ndc_far2.6_ptv1e-4_propnetptv1e-4_cosine_lr2e-2_nearscale0.89_dl0.001")
+    # eval_static_metrics("logs/orchids_ndc_far2.6_ptv1e-4_propnetptv1e-4_cosine_lr2e-2_nearscale0.89_dl0.001")
+    # eval_static_metrics("logs/trex_ndc_far2.6_ptv1e-4_propnetptv1e-4_cosine_lr2e-2_nearscale0.89_dl0.001")
+    # eval_static_metrics("logs/horns_ndc_far2.6_ptv1e-4_propnetptv1e-4_cosine_lr2e-2_nearscale0.89_dl0.001")
     #eval_metrics("logs/flame_salmon/coffee_martini_ndc_f16_90k_ts1e-3_tspn1e-5_ptv2e-4_ptvpn2e-4_l1ap1e-4_l1appn1e-4_dl1e-3_v4bbox_150tdensity_150t-8d_coo+0.5/step90000.mp4")
     #eval_metrics("logs/flame_salmon/flame_steak_ndc_f16_90k_ts1e-3_tspn1e-5_ptv2e-4_ptvpn2e-4_l1ap1e-4_l1appn1e-4_dl1e-3_v4bbox_150tdensity_150t-8d_coo+0.5/step90000.mp4")
     #eval_metrics("logs/flame_salmon/sear_steak_ndc_f16_90k_ts1e-3_tspn1e-5_ptv2e-4_ptvpn2e-4_l1ap1e-4_l1appn1e-4_dl1e-3_v4bbox_150tdensity_150t-8d_coo+0.5/step90000.mp4")
