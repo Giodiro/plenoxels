@@ -93,9 +93,11 @@ class LLFFDataset(BaseDataset):
             image_id = torch.div(index, h * w, rounding_mode='floor')
             y = torch.remainder(index, h * w).div(w, rounding_mode='floor')
             x = torch.remainder(index, h * w).remainder(w)
+            x = x + 0.5
+            y = y + 0.5
         else:
             image_id = [index]
-            x, y = create_meshgrid(height=h, width=w, dev=dev, add_half=False, flat=True)
+            x, y = create_meshgrid(height=h, width=w, dev=dev, add_half=True, flat=True)
         out = {"near_fars": self.near_fars[image_id, :].view(-1, 2)}
         if self.imgs is not None:
             out["imgs"] = self.imgs[index] / 255.0  # (num_rays, 3)   this converts to f32
