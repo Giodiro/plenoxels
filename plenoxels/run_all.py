@@ -11,7 +11,7 @@ import torch
 import torch.utils.data
 
 
-LLFF_DSETS = ["fern", "orchids", "trex", "room", "leaves", "fortress", "flower", "horns"]
+LLFF_DSETS = ["fortress", "fern", "orchids", "trex", "room", "leaves", "flower", "horns"]
 LLFF_DATADIR = "/data/DATASETS/LLFF"
 SYNTH360_DSETS = ["chair", "ficus", "drums", "hotdog", "lego", "materials", "mic", "ship"]
 SYNTH360_DATADIR = "/data/DATASETS/SyntheticNerf"
@@ -25,7 +25,7 @@ def main():
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    exp_type = "dynerf"
+    exp_type = "llff"
     base_config: Dict[str, Any]
     datasets: List[str]
     datadir: str
@@ -41,7 +41,7 @@ def main():
         datasets = SYNTH360_DSETS
         datadir = SYNTH360_DATADIR
     elif exp_type == "llff":
-        import plenoxels.configs.giac_learnablehash as llff_config
+        import plenoxels.configs.llff_linear as llff_config
         base_config = llff_config.config
         datasets = LLFF_DSETS
         datadir = LLFF_DATADIR
@@ -49,6 +49,10 @@ def main():
         raise ValueError()
 
     base_expname = base_config['expname']
+    if exp_type == "dynerf":
+        model_type = "video"
+    else:
+        model_type = "static"
 
     for dataset in datasets:
         config = copy(base_config)
@@ -57,9 +61,9 @@ def main():
 
         pprint.pprint(config)
         save_config(config)
-        data = load_data(model_type="video", validate_only=False, render_only=False, **config)
+        data = load_data(model_type=model_type, validate_only=False, render_only=False, **config)
         config.update(data)
-        trainer = init_trainer(model_type="video", **config)
+        trainer = init_trainer(model_type=model_type, **config)
         trainer.train()
 
 

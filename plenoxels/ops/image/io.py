@@ -1,9 +1,10 @@
 import glob
 import os
-from typing import List
+from typing import List, Optional
 
 import cv2
 import torch
+import torchvision.transforms.functional as TF
 from PIL import Image
 import logging as log
 import numpy as np
@@ -21,6 +22,17 @@ def write_png(path, data):
         (void): Writes to path.
     """
     Image.fromarray(data).save(path)
+
+
+def read_png(file_name: str, resize_h: Optional[int] = None, resize_w: Optional[int] = None) -> torch.Tensor:
+    """Reads a PNG image from path, potentially resizing it.
+    """
+    img = Image.open(file_name).convert('RGB')  # PIL outputs BGR by default
+    if resize_h is not None and resize_w is not None:
+        img.resize((resize_w, resize_h), Image.LANCZOS)
+    img = TF.to_tensor(img)  # TF converts to C, H, W
+    img = img.permute(1, 2, 0).contiguous()  # H, W, C
+    return img
 
 
 def glob_imgs(path, exts=None):
