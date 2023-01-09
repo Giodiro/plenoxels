@@ -179,7 +179,7 @@ class DepthTV(Regularizer):
         return tv
 
 
-class L1AppearancePlanes(Regularizer):
+class L1TimePlanes(Regularizer):
     def __init__(self, initial_value, what='field'):
         if what not in {'field', 'proposal_network'}:
             raise ValueError(f'what must be one of "field" or "proposal_network" '

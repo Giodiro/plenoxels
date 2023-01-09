@@ -3,8 +3,9 @@ config = {
  'logdir': './logs/realdynamic',
  'device': 'cuda:0',
 
+ # Run first for 1 step with data_downsample=4 to generate weights for ray importance sampling
  'data_downsample': 2,
- 'data_dirs': ['data/dynerf/cut_roasted_beef'],
+ 'data_dirs': ['/home/sfk/data/3DVideo/cut_roasted_beef'],
  'contract': False,
  'ndc': True,
  'ndc_far': 2.6,
@@ -25,8 +26,8 @@ config = {
  # Regularization
  'distortion_loss_weight': 0.001,
  'histogram_loss_weight': 1.0,
- 'l1_appearance_planes': 0.0001,
- 'l1_appearance_planes_proposal_net': 0.0001,
+ 'l1_time_planes': 0.0001,
+ 'l1_time_planes_proposal_net': 0.0001,
  'plane_tv_weight': 0.0001,
  'plane_tv_weight_proposal_net': 0.0001,
  'time_smoothness_weight': 0.001,

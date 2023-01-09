@@ -23,8 +23,8 @@ config = {
  # Regularization
  'distortion_loss_weight': 0.00,
  'histogram_loss_weight': 1.0,
- 'l1_appearance_planes': 0.0001,
- 'l1_appearance_planes_proposal_net': 0.0001,
+ 'l1_time_planes': 0.0001,
+ 'l1_time_planes_proposal_net': 0.0001,
  'plane_tv_weight': 0.0001,
  'plane_tv_weight_proposal_net': 0.0001,
  'time_smoothness_weight': 0.1,

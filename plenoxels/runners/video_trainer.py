@@ -17,7 +17,7 @@ from ..ops.image.io import write_video_to_file
 from ..models.lowrank_model import LowrankModel
 from .base_trainer import BaseTrainer, init_dloader_random
 from .regularization import (
-    PlaneTV, TimeSmoothness, HistogramLoss, L1AppearancePlanes, DistortionLoss
+    PlaneTV, TimeSmoothness, HistogramLoss, L1TimePlanes, DistortionLoss
 )
 
 
@@ -176,8 +176,8 @@ class VideoTrainer(BaseTrainer):
         return [
             PlaneTV(kwargs.get('plane_tv_weight', 0.0), what='field'),
             PlaneTV(kwargs.get('plane_tv_weight_proposal_net', 0.0), what='proposal_network'),
-            L1AppearancePlanes(kwargs.get('l1_appearance_planes', 0.0), what='field'),
-            L1AppearancePlanes(kwargs.get('l1_appearance_planes_proposal_net', 0.0), what='proposal_network'),
+            L1TimePlanes(kwargs.get('l1_time_planes', 0.0), what='field'),
+            L1TimePlanes(kwargs.get('l1_time_planes_proposal_net', 0.0), what='proposal_network'),
             TimeSmoothness(kwargs.get('time_smoothness_weight', 0.0), what='field'),
             TimeSmoothness(kwargs.get('time_smoothness_weight_proposal_net', 0.0), what='proposal_network'),
             HistogramLoss(kwargs.get('histogram_loss_weight', 0.0)),
@@ -198,10 +198,10 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
     tr_dset = Video360Dataset(
         data_dir, split='train', downsample=data_downsample,
         batch_size=batch_size,
-        max_cameras=kwargs['max_train_cameras'],
+        max_cameras=kwargs.get('max_train_cameras', None),
         max_tsteps=kwargs['max_train_tsteps'] if keyframes else None,
         isg=isg, keyframes=keyframes, contraction=kwargs['contract'], ndc=kwargs['ndc'],
-        near_scaling=float(kwargs['near_scaling']), ndc_far=float(kwargs['ndc_far']),
+        near_scaling=float(kwargs.get('near_scaling', 0)), ndc_far=float(kwargs.get('ndc_far', 0)),
         scene_bbox=kwargs['scene_bbox'],
     )
     if ist:
@@ -222,9 +222,9 @@ def init_ts_data(data_dir, split, **kwargs):
         downsample = 2.0
     ts_dset = Video360Dataset(
         data_dir, split=split, downsample=downsample,
-        max_cameras=kwargs['max_test_cameras'], max_tsteps=kwargs['max_test_tsteps'],
+        max_cameras=kwargs.get('max_test_cameras', None), max_tsteps=kwargs.get('max_test_tsteps', None),
         contraction=kwargs['contract'], ndc=kwargs['ndc'],
-        near_scaling=float(kwargs['near_scaling']), ndc_far=float(kwargs['ndc_far']),
+        near_scaling=float(kwargs.get('near_scaling', 0)), ndc_far=float(kwargs.get('ndc_far', 0)),
         scene_bbox=kwargs['scene_bbox'],
     )
     return {"ts_dset": ts_dset}

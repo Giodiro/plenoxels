@@ -15,7 +15,7 @@ from ..my_tqdm import tqdm
 from ..ops.image import metrics
 from .base_trainer import BaseTrainer, init_dloader_random
 from .regularization import (
-    PlaneTV, TimeSmoothness, HistogramLoss, L1AppearancePlanes, DistortionLoss
+    PlaneTV, TimeSmoothness, HistogramLoss, L1TimePlanes, DistortionLoss
 )
 
 
@@ -149,8 +149,8 @@ class PhototourismTrainer(BaseTrainer):
         return [
             PlaneTV(kwargs.get('plane_tv_weight', 0.0), what='field'),
             PlaneTV(kwargs.get('plane_tv_weight_proposal_net', 0.0), what='proposal_network'),
-            L1AppearancePlanes(kwargs.get('l1_appearance_planes', 0.0), what='field'),
-            L1AppearancePlanes(kwargs.get('l1_appearance_planes_proposal_net', 0.0), what='proposal_network'),
+            L1TimePlanes(kwargs.get('l1_time_planes', 0.0), what='field'),
+            L1TimePlanes(kwargs.get('l1_time_planes_proposal_net', 0.0), what='proposal_network'),
             TimeSmoothness(kwargs.get('time_smoothness_weight', 0.0), what='field'),
             TimeSmoothness(kwargs.get('time_smoothness_weight_proposal_net', 0.0), what='proposal_network'),
             HistogramLoss(kwargs.get('histogram_loss_weight', 0.0)),
