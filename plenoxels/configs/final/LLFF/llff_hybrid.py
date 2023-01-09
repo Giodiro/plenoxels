@@ -1,18 +1,14 @@
 # configuration file to be used with `main.py` for normal (or multiscene) training
 # the configuration must be specified in a dictionary called `config`.
 config = {
-    "expname": "ndc_far2.6_ptv1e-4_propnetptv1e-4_cosine_lr2e-2_nearscale0.89_dl0.001_linear1l",
-    "logdir": "./logs",
+    "expname": "fortress_hybrid",
+    "logdir": "./logs/staticreal",
     "device": "cuda:0",
 
     # Data settings
     "data_resolution": None,
     "data_downsample": 4,
-    #"data_dirs": ["/data/DATASETS/SyntheticNerf/ficus"],
-    "data_dirs": ["/data/DATASETS/LLFF/fortress"],
-    # Data settings for 360
-    "max_tr_frames": 100,
-    "max_ts_frames": 50,
+    "data_dirs": ["data/LLFF/fortress"],
     # Data settings for LLFF
     "hold_every": 8,
     "contract": False,
@@ -33,8 +29,7 @@ config = {
     "plane_tv_weight": 1e-4,
     "plane_tv_weight_proposal_net": 1e-4,
     "l1_proposal_net_weight": 0,
-    "histogram_loss_weight": 1.0,  # this should be set > 0 when using proposal sampling
-    "depth_tv_weight": 0,
+    "histogram_loss_weight": 1.0, 
     "distortion_loss_weight": 0.001,
 
     # Training settings
@@ -60,8 +55,7 @@ config = {
     "multiscale_res": [1, 2, 4, 8],
     "density_activation": "trunc_exp",
     "concat_features_across_scales": True,
-    "linear_decoder": True,
-    "linear_decoder_layers": 1,
+    "linear_decoder": False,
     "grid_config": [{
         "input_coordinate_dim": 3,
         "output_coordinate_dim": 16,

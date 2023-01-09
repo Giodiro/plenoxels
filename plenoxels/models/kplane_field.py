@@ -75,7 +75,7 @@ def interpolate_ms_features(pts: torch.Tensor,
             # compute product over planes
             interp_space = interp_space * interp_out_plane
 
-        # sum over scales
+        # combine over scales
         if concat_features:
             multi_scale_interp.append(interp_space)
         else:
