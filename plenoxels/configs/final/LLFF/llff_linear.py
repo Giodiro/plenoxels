@@ -61,6 +61,7 @@ config = {
     "density_activation": "trunc_exp",
     "concat_features_across_scales": True,
     "linear_decoder": True,
+    "linear_decoder_layers": 1,
     "grid_config": [{
         "input_coordinate_dim": 3,
         "output_coordinate_dim": 16,
