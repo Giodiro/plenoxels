@@ -5,7 +5,7 @@ config = {
 
  # Run first for 1 step with data_downsample=4 to generate weights for ray importance sampling
  'data_downsample': 2,
- 'data_dirs': ['/home/sfk/data/3DVideo/cut_roasted_beef'],
+ 'data_dirs': ['data/dynerf/cut_roasted_beef'],
  'contract': False,
  'ndc': True,
  'ndc_far': 2.6,
