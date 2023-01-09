@@ -4,7 +4,6 @@ config = {
     "device": "cuda:0",
 
     # Data settings
-    "data_resolution": None,
     "data_downsample": 4,
     "data_dirs": ["data/LLFF/fortress"],
     # Data settings for LLFF

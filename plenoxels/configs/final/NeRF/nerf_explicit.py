@@ -1,49 +1,55 @@
-config = {"batch_size": 4096,
- 'concat_features_across_scales': True,
- 'contract': False,
- 'data_dirs': ['data/nerf_synthetic/lego'],
- 'data_downsample': 1.0,
- 'density_activation': 'trunc_exp',
- 'device': 'cuda:0',
- 'distortion_loss_weight': 0.001,
+config = {
  'expname': 'lego_explicit',
- 'grid_config': [{'grid_dimensions': 2,
-                  'input_coordinate_dim': 3,
-                  'output_coordinate_dim': 32,
-                  'resolution': [64, 64, 64]}],
- 'histogram_loss_weight': 1.0,
- 'linear_decoder': True,
- 'linear_decoder_layers': 4,
  'logdir': './logs/syntheticstatic',
- 'lr': 0.01,
- 'max_test_cameras': None,
- 'max_test_tsteps': None,
- 'max_train_cameras': None,
- 'max_train_tsteps': None,
- 'multiscale_res': [1, 2, 4, 8],
+ 'device': 'cuda:0',
+
+ 'data_downsample': 1.0,
+ 'data_dirs': ['data/nerf_synthetic/lego'],
+ 'contract': False,
  'ndc': False,
- 'ndc_far': 0,
- 'near_scaling': 0,
- 'num_batches_per_dset': 1,
- 'num_proposal_iterations': 2,
- 'num_proposal_samples': [256, 128],
- 'num_samples': 48,
+
+ # Optimization settings
  'num_steps': 30001,
+ 'batch_size': 4096,
  'optim_type': 'adam',
+ 'scheduler_type': 'warmup_cosine',
+ 'lr': 0.01,
+
+ # Regularization
  'plane_tv_weight': 0.01,
  'plane_tv_weight_proposal_net': 0.0001,
- 'proposal_net_args_list': [{'num_input_coords': 3,
-                             'num_output_coords': 8,
-                             'resolution': [64, 64, 64]},
-                            {'num_input_coords': 3,
-                             'num_output_coords': 8,
-                             'resolution': [128, 128, 128]}],
+ 'histogram_loss_weight': 1.0,
+ 'distortion_loss_weight': 0.001,
+
+ # Training settings
  'save_every': 30000,
+ 'valid_every': 30000,
  'save_outputs': True,
- 'scheduler_type': 'warmup_cosine',
- 'single_jitter': False,
- 'time_smoothness_weight': 0,
- 'time_smoothness_weight_proposal_net': 0,
  'train_fp16': True,
+
+ # Raymarching settings
+ 'single_jitter': False,
+ 'num_samples': 48,
+ # proposal sampling
+ 'num_proposal_samples': [256, 128],
+ 'num_proposal_iterations': 2,
  'use_same_proposal_network': False,
- 'valid_every': 30000}
+ 'use_proposal_weight_anneal': True,
+ 'proposal_net_args_list': [
+   {'num_input_coords': 3, 'num_output_coords': 8, 'resolution': [64, 64, 64]},
+   {'num_input_coords': 3, 'num_output_coords': 8, 'resolution': [128, 128, 128]}
+ ],
+
+ # Model settings
+ 'multiscale_res': [1, 2, 4, 8],
+ 'density_activation': 'trunc_exp',
+ 'concat_features_across_scales': True,
+ 'linear_decoder': True,
+ 'linear_decoder_layers': 4,
+ 'grid_config': [{
+  'grid_dimensions': 2,
+  'input_coordinate_dim': 3,
+  'output_coordinate_dim': 32,
+  'resolution': [64, 64, 64]
+ }],
+}

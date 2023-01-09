@@ -6,7 +6,6 @@ config = {
     "device": "cuda:0",
 
     # Data settings
-    "data_resolution": None,
     "data_downsample": 4,
     "data_dirs": ["data/LLFF/fortress"],
     # Data settings for LLFF
@@ -20,7 +19,6 @@ config = {
     "num_steps": 40_001,
     "batch_size": 4096,
     "eval_batch_size": 4096,
-    "num_batches_per_dset": 1,
     "scheduler_type": "warmup_cosine",
     "optim_type": "adam",
     "lr": 2e-2,
