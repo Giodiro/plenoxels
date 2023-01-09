@@ -28,7 +28,6 @@ config = {
     "plane_tv_weight_proposal_net": 1e-4,
     "l1_proposal_net_weight": 0,
     "histogram_loss_weight": 1.0, 
-    "depth_tv_weight": 0,
     "distortion_loss_weight": 0.001,
 
     # Training settings
