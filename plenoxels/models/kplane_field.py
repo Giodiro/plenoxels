@@ -98,6 +98,7 @@ class KPlaneField(nn.Module):
         spatial_distortion: Optional[SpatialDistortion],
         density_activation: Callable,
         linear_decoder: bool,
+        linear_decoder_layers: Optional[int],
         num_images: Optional[int],
     ) -> None:
         super().__init__()
@@ -159,6 +160,7 @@ class KPlaneField(nn.Module):
 
         # 3. Init decoder network
         if self.linear_decoder:
+            assert linear_decoder_layers is not None
             # The NN learns a basis that is used instead of spherical harmonics
             # Input is an encoded view direction, output is weights for
             # combining the color features into RGB
@@ -171,7 +173,7 @@ class KPlaneField(nn.Module):
                     "activation": "ReLU",
                     "output_activation": "None",
                     "n_neurons": 128,
-                    "n_hidden_layers": 4,
+                    "n_hidden_layers": linear_decoder_layers,
                 },
             )
             # sigma_net just does a linear transformation on the features to get density

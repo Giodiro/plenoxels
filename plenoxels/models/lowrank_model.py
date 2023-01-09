@@ -27,6 +27,7 @@ class LowrankModel(nn.Module):
                  density_activation: Optional[str] = 'trunc_exp',
                  concat_features_across_scales: bool = False,
                  linear_decoder: bool = True,
+                 linear_decoder_layers: Optional[int] = 1,
                  # Spatial distortion
                  global_translation: Optional[torch.Tensor] = None,
                  global_scale: Optional[torch.Tensor] = None,
@@ -58,6 +59,7 @@ class LowrankModel(nn.Module):
         self.is_contracted = is_contracted
         self.concat_features_across_scales = concat_features_across_scales
         self.linear_decoder = linear_decoder
+        self.linear_decoder_layers = linear_decoder_layers
         self.density_act = init_density_activation(density_activation)
         self.timer = CudaTimer(enabled=False)
 
@@ -77,6 +79,7 @@ class LowrankModel(nn.Module):
             spatial_distortion=self.spatial_distortion,
             density_activation=self.density_act,
             linear_decoder=self.linear_decoder,
+            linear_decoder_layers=self.linear_decoder_layers,
             num_images=num_images,
         )
 
