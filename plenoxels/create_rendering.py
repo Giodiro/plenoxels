@@ -4,14 +4,11 @@ from typing import Union
 
 import torch
 
+from plenoxels.models.lowrank_model import LowrankModel
 from plenoxels.my_tqdm import tqdm
 from plenoxels.ops.image.io import write_video_to_file
 from plenoxels.runners.multiscene_trainer import Trainer
 from plenoxels.runners.video_trainer import VideoTrainer
-from plenoxels.raymarching.ray_samplers import (
-    UniformLinDispPiecewiseSampler, UniformSampler,
-    ProposalNetworkSampler, RayBundle, RaySamples
-)
 
 
 @torch.no_grad()
@@ -44,72 +41,76 @@ def render_to_path(trainer: Union[VideoTrainer, Trainer], extra_name: str = ""):
     write_video_to_file(out_fname, frames)
     log.info(f"Saved rendering path with {len(frames)} frames to {out_fname}")
 
+
 def normalize_for_disp(img):
     img = img - torch.min(img)
     img = img / torch.max(img)
     return img
 
+
 @torch.no_grad()
 def decompose_space_time(trainer: Trainer, extra_name: str = ""):
-    # store original parameters
-    parameters = []
-    for multires_grids in trainer.model.field.grids:
-        parameters.append([grid.data for grid in multires_grids])
-    # TODO: store density model params
-
+    chosen_cam_idx = 15
+    model: LowrankModel = trainer.model
     dataset = trainer.test_dataset
-    
-    frames = []
-    for img_idx, data in enumerate(dataset):
-        if img_idx == 15:
-            camdata = data
-    num_frames = img_idx + 1
-    pb = tqdm(total=num_frames, desc=f"Rendering scene with separate space and time components")
 
-    for img_idx, _ in enumerate(dataset):
-        camdata["timestamps"] = torch.Tensor([float(img_idx) / num_frames])
+    # Store original parameters from main field and proposal-network field
+    parameters = []
+    for multires_grids in model.field.grids:
+        parameters.append([grid.data for grid in multires_grids])
+    pn_parameters = []
+    for pn in model.proposal_networks:
+        pn_parameters.append([grid_plane.data for grid_plane in pn.grid])
+
+    camdata = None
+    for img_idx, data in enumerate(dataset):
+        if img_idx == chosen_cam_idx:
+            camdata = data
+            break
+    if camdata is None:
+        raise ValueError(f"Chosen cam index {chosen_cam_idx} invalid.")
+
+    num_frames = len(dataset)
+    frames = []
+    for img_idx in tqdm(range(num_frames), desc="Rendering scene with separate space and time components"):
+        # Linearly interpolated timestamp, normalized between -1, 1
+        camdata["timestamps"] = torch.Tensor([img_idx / num_frames]) * 2 - 1
 
         if isinstance(dataset.img_h, int):
             img_h, img_w = dataset.img_h, dataset.img_w
         else:
             img_h, img_w = dataset.img_h[img_idx], dataset.img_w[img_idx]
 
-        # Full model
-        for i in range(len(trainer.model.field.grids)):
-            # for plane_idx in [0, 1, 3]:  # space-grids on
-            #     trainer.model.field.grids[i][plane_idx].data = parameters[i][plane_idx]
-            for plane_idx in [2, 4, 5]:  # time-grids on
-                trainer.model.field.grids[i][plane_idx].data = parameters[i][plane_idx]
-        # TODO: do the same for the proposal models
-        # for density_model in trainer.model.proposal_networks:
-        #     for i in range(len(density_model.grids)):
-        #     # for plane_idx in [0, 1, 3]:  # space-grids on
-        #     #     trainer.model.field.grids[i][plane_idx].data = parameters[i][plane_idx]
-        #     for plane_idx in [2, 4, 5]:  # time-grids on
-        #         density_model.field.grids[i][plane_idx].data = parameters[i][plane_idx]
-        # trainer.model.density_fns.extend([network.get_density for network in self.proposal_networks])
-
+        # Full model: turn on time-planes
+        for i in range(len(model.field.grids)):
+            for plane_idx in [2, 4, 5]:
+                model.field.grids[i][plane_idx].data = parameters[i][plane_idx]
+        for i in range(len(model.proposal_networks)):
+            for plane_idx in [2, 4, 5]:
+                model.proposal_networks.grid[plane_idx].data = pn_parameters[i][plane_idx]
         preds = trainer.eval_step(camdata)
-        full = preds["rgb"].reshape(img_h, img_w, 3).cpu()
+        full_out = preds["rgb"].reshape(img_h, img_w, 3).cpu()
 
-        
-        # Model without time grids
-        for i in range(len(trainer.model.field.grids)):    
+        # Space-only model: turn off time-planes
+        for i in range(len(model.field.grids)):
             for plane_idx in [2, 4, 5]:  # time-grids off
-                trainer.model.field.grids[i][plane_idx].data = torch.ones_like(parameters[i][plane_idx])
-            # for plane_idx in [0, 1, 3]:  # space-grids on
-            #     trainer.model.field.grids[i][plane_idx].data = parameters[i][plane_idx]
-        # TODO: do the same for the proposal models
+                model.field.grids[i][plane_idx].data = torch.ones_like(parameters[i][plane_idx])
+        for i in range(len(model.proposal_networks)):
+            for plane_idx in [2, 4, 5]:
+                model.proposal_networks.grid[plane_idx].data = torch.ones_like(pn_parameters[i][plane_idx])
         preds = trainer.eval_step(camdata)
-        spatial = preds["rgb"].reshape(img_h, img_w, 3).cpu()
+        spatial_out = preds["rgb"].reshape(img_h, img_w, 3).cpu()
 
-        # Time
-        temporal = normalize_for_disp(full - spatial)
+        # Temporal model: full - space
+        temporal_out = normalize_for_disp(full_out - spatial_out)
 
-        frame = torch.cat([full, spatial, temporal], dim=1).clamp(0, 1).mul(255.0).byte().numpy()
-        frames.append(frame)
-        pb.update(1)
-    pb.close()
+        frames.append(
+            torch.cat([full_out, spatial_out, temporal_out], dim=1)
+                 .clamp(0, 1)
+                 .mul(255.0)
+                 .byte()
+                 .numpy()
+        )
 
     out_fname = os.path.join(trainer.log_dir, f"spacetime_{extra_name}.mp4")
     write_video_to_file(out_fname, frames)
