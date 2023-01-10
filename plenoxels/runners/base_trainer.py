@@ -315,14 +315,15 @@ class BaseTrainer(abc.ABC):
         log.info(f'Saving model checkpoint to: {model_fname}')
         torch.save(self.get_save_dict(), model_fname)
 
-    def load_model(self, checkpoint_data):
+    def load_model(self, checkpoint_data, training_needed: bool = True):
         self.model.load_state_dict(checkpoint_data["model"])
         log.info("=> Loaded model state from checkpoint")
 
-        self.optimizer.load_state_dict(checkpoint_data["optimizer"])
-        log.info("=> Loaded optimizer state from checkpoint")
+        if training_needed:
+            self.optimizer.load_state_dict(checkpoint_data["optimizer"])
+            log.info("=> Loaded optimizer state from checkpoint")
 
-        if self.scheduler is not None:
+        if training_needed and self.scheduler is not None:
             self.scheduler.load_state_dict(checkpoint_data['lr_scheduler'])
             log.info("=> Loaded scheduler state from checkpoint")
 

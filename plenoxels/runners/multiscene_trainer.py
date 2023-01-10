@@ -115,8 +115,8 @@ class Trainer(BaseTrainer):
         base_save_dict = super().get_save_dict()
         return base_save_dict
 
-    def load_model(self, checkpoint_data):
-        super().load_model(checkpoint_data)
+    def load_model(self, checkpoint_data, training_needed: bool = True):
+        super().load_model(checkpoint_data, training_needed)
 
     def init_epoch_info(self):
         ema_weight = 0.9  # higher places higher weight to new observations

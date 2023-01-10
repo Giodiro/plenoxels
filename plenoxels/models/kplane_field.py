@@ -226,7 +226,6 @@ class KPlaneField(nn.Module):
         else:
             pts = normalize_aabb(pts, self.aabb)
         n_rays, n_samples = pts.shape[:2]
-        # Normalize timestamps
         if timestamps is not None:
             timestamps = timestamps[:, None].expand(-1, n_samples)[..., None]  # [n_rays, n_samples, 1]
             pts = torch.cat((pts, timestamps), dim=-1)  # [n_rays, n_samples, 4]

@@ -155,8 +155,8 @@ class VideoTrainer(BaseTrainer):
         base_save_dict = super().get_save_dict()
         return base_save_dict
 
-    def load_model(self, checkpoint_data):
-        super().load_model(checkpoint_data)
+    def load_model(self, checkpoint_data, training_needed: bool = True):
+        super().load_model(checkpoint_data, training_needed)
         if self.train_dataset is not None:
             if -1 < self.isg_step < self.global_step < self.ist_step:
                 self.train_dataset.enable_isg()
