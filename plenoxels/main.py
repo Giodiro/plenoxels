@@ -20,7 +20,7 @@ print(f'gpu is {gpu}')
 
 import torch
 import torch.utils.data
-from plenoxels.create_rendering import render_to_path
+from plenoxels.create_rendering import render_to_path, decompose_space_time
 from plenoxels.utils import parse_optfloat
 
 
@@ -84,6 +84,7 @@ def main():
 
     p.add_argument('--render-only', action='store_true')
     p.add_argument('--validate-only', action='store_true')
+    p.add_argument('--spacetime-only', action='store_true')
     p.add_argument('--config-path', type=str, required=True)
     p.add_argument('--log-dir', type=str, default=None)
     p.add_argument('--seed', type=int, default=0)
@@ -116,8 +117,13 @@ def main():
         model_type = "static"
     validate_only = args.validate_only
     render_only = args.render_only
+    spacetime_only = args.spacetime_only
     if validate_only and render_only:
         raise ValueError("render_only and validate_only are mutually exclusive.")
+    if render_only and spacetime_only:
+        raise ValueError("render_only and spacetime_only are mutually exclusive.")
+    if validate_only and spacetime_only:
+        raise ValueError("validate_only and spacetime_only are mutually exclusive.")
 
     pprint.pprint(config)
     if validate_only or render_only:
@@ -125,7 +131,7 @@ def main():
     else:
         save_config(config)
 
-    data = load_data(model_type, validate_only=validate_only, render_only=render_only, **config)
+    data = load_data(model_type, validate_only=validate_only, render_only=render_only  or spacetime_only, **config)
     config.update(data)
     trainer = init_trainer(model_type, **config)
     if args.log_dir is not None:
@@ -136,6 +142,8 @@ def main():
         trainer.validate()
     elif render_only:
         render_to_path(trainer, extra_name="")
+    elif spacetime_only:
+        decompose_space_time(trainer, extra_name="")
     else:
         trainer.train()
 
