@@ -73,6 +73,18 @@ class PhotoTourismDataset(BaseDataset):
             all_images = images
             self.camera_ids = torch.arange(len(all_images), dtype=torch.int32)  # [num_images]
 
+        if 'trevi' in datadir:
+            self.global_translation = torch.tensor([0, 0, 0.])
+            self.global_scale = torch.tensor([1., 2., 1])
+        elif 'sacre' in datadir:
+            self.global_translation = torch.tensor([0, 0, -1])
+            self.global_scale = torch.tensor([5, 5, 3])
+        elif 'brandenburg' in datadir:
+            self.global_translation = torch.tensor([0, 0, -1])
+            self.global_scale = torch.tensor([5, 5, 3])
+        else:
+            raise NotImplementedError()
+
         super().__init__(
             datadir=datadir,
             split=split,
@@ -119,8 +131,9 @@ class PhotoTourismDataset(BaseDataset):
         if self.is_ndc:
             out["near_fars"] = torch.tensor([[0.0, self.ndc_far]]).repeat(out["rays_o"].shape[0], 1)
         else:
-            out["near_fars"] = intersect_with_aabb(
-                rays_o=out["rays_o"], rays_d=out["rays_d"], aabb=self.scene_bbox, near_plane=0.0, training=False)
+            out["near_fars"] = torch.stack(intersect_with_aabb(
+                rays_o=out["rays_o"], rays_d=out["rays_d"], aabb=self.scene_bbox, near_plane=0.0, training=False), 1)
+            out["near_fars"] *= torch.tensor([1., 9.])  # random expansion
         return out
 
 
