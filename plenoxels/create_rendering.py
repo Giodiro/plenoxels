@@ -60,17 +60,16 @@ def decompose_space_time(trainer: Trainer, extra_name: str = ""):
         parameters.append([grid.data for grid in multires_grids])
     pn_parameters = []
     for pn in model.proposal_networks:
-        pn_parameters.append([grid_plane.data for grid_plane in pn.grid])
+        pn_parameters.append([grid_plane.data for grid_plane in pn.grids])
 
     camdata = None
     for img_idx, data in enumerate(dataset):
         if img_idx == chosen_cam_idx:
             camdata = data
-            break
     if camdata is None:
-        raise ValueError(f"Chosen cam index {chosen_cam_idx} invalid.")
+        raise ValueError(f"Cam idx {chosen_cam_idx} invalid.")
 
-    num_frames = len(dataset)
+    num_frames = img_idx + 1
     frames = []
     for img_idx in tqdm(range(num_frames), desc="Rendering scene with separate space and time components"):
         # Linearly interpolated timestamp, normalized between -1, 1
@@ -87,7 +86,7 @@ def decompose_space_time(trainer: Trainer, extra_name: str = ""):
                 model.field.grids[i][plane_idx].data = parameters[i][plane_idx]
         for i in range(len(model.proposal_networks)):
             for plane_idx in [2, 4, 5]:
-                model.proposal_networks.grid[plane_idx].data = pn_parameters[i][plane_idx]
+                model.proposal_networks[i].grids[plane_idx].data = pn_parameters[i][plane_idx]
         preds = trainer.eval_step(camdata)
         full_out = preds["rgb"].reshape(img_h, img_w, 3).cpu()
 
@@ -97,7 +96,7 @@ def decompose_space_time(trainer: Trainer, extra_name: str = ""):
                 model.field.grids[i][plane_idx].data = torch.ones_like(parameters[i][plane_idx])
         for i in range(len(model.proposal_networks)):
             for plane_idx in [2, 4, 5]:
-                model.proposal_networks.grid[plane_idx].data = torch.ones_like(pn_parameters[i][plane_idx])
+                model.proposal_networks[i].grids[plane_idx].data = torch.ones_like(pn_parameters[i][plane_idx])
         preds = trainer.eval_step(camdata)
         spatial_out = preds["rgb"].reshape(img_h, img_w, 3).cpu()
 
