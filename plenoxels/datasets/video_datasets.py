@@ -98,9 +98,14 @@ class Video360Dataset(BaseDataset):
             assert not contraction, "Synthetic video dataset does not work with contraction."
             assert not ndc, "Synthetic video dataset does not work with NDC."
             if split == 'render':
+                num_tsteps = 120
+                dnerf_durations = {'hellwarrior': 100, 'mutant': 150, 'hook': 100, 'bouncingballs': 150, 'lego': 50, 'trex': 200, 'standup': 150, 'jumpingjacks': 200}
+                for scene in dnerf_durations.keys():
+                    if 'dnerf' in datadir and scene in datadir:
+                        num_tsteps = dnerf_durations[scene]
                 render_poses = torch.stack([
                     generate_spherical_poses(angle, -30.0, 4.0)
-                    for angle in np.linspace(-180, 180, 40 + 1)[:-1]
+                    for angle in np.linspace(-180, 180, num_tsteps + 1)[:-1]
                 ], 0)
                 imgs = None
                 self.poses = render_poses
@@ -286,7 +291,7 @@ class Video360Dataset(BaseDataset):
             bg_color = torch.rand((1, 3), dtype=torch.float32, device=dev)
         out['bg_color'] = bg_color
         # Alpha compositing
-        if imgs.shape[-1] == 4:
+        if imgs is not None and imgs.shape[-1] == 4:
             imgs = imgs[:, :3] * imgs[:, 3:] + bg_color * (1.0 - imgs[:, 3:])
         out['imgs'] = imgs
 
