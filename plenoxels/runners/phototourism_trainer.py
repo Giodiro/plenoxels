@@ -177,7 +177,9 @@ class PhototourismTrainer(BaseTrainer):
         camera_id = torch.full((batch_size, ), fill_value=im_id, dtype=torch.int32, device=self.device)
 
         app_optim = torch.optim.Adam(params=self.model.field.test_appearance_embedding.parameters(), lr=self.extra_args['app_optim_lr'])
-        lr_sched = torch.optim.lr_scheduler.StepLR(app_optim, step_size=2 * n_steps, gamma=0.1)
+        lr_sched = torch.optim.lr_scheduler.StepLR(app_optim, step_size=3 * n_steps, gamma=0.1)
+        lowest_loss, lowest_loss_count = 100_000_000, 0
+        grad_scaler = torch.cuda.amp.GradScaler(enabled=self.train_fp16)
         for n in range(epochs):
             idx = torch.randperm(rays_o.shape[0])
             for b in range(n_steps):
@@ -188,18 +190,28 @@ class PhototourismTrainer(BaseTrainer):
                 near_far_b = near_far[batch_ids].to(self.device)
                 camera_id_b = camera_id[:len(batch_ids)]
 
-                fwd_out = self.model(
-                    rays_o_b, rays_d_b, timestamps=camera_id_b, bg_color=bg_color,
-                    near_far=near_far_b)
-                recon_loss = self.criterion(fwd_out['rgb'], imgs_b)
-                recon_loss.backward()
-                app_optim.step()
+                with torch.cuda.amp.autocast(enabled=self.train_fp16):
+                    fwd_out = self.model(
+                        rays_o_b, rays_d_b, timestamps=camera_id_b, bg_color=bg_color,
+                        near_far=near_far_b)
+                    recon_loss = self.criterion(fwd_out['rgb'], imgs_b)
                 app_optim.zero_grad(set_to_none=True)
+                grad_scaler.scale(recon_loss).backward()
+                grad_scaler.step(app_optim)
+                grad_scaler.update()
+                lr_sched.step()
 
                 self.writer.add_scalar(
                     f"appearance_loss_{self.global_step}/recon_loss_{im_id}", recon_loss.item(),
                     b + n * n_steps)
-                lr_sched.step()
+
+                if recon_loss.item() < lowest_loss:
+                    lowest_loss = recon_loss.item()
+                    count = 0
+                count += 1
+            # 1 epoch without improvement -> stop
+            if count > 1 * n_steps:
+                break
 
     def optimize_appearance_codes(self):
         dset = self.test_dataset

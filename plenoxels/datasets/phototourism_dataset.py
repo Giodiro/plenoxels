@@ -133,7 +133,7 @@ class PhotoTourismDataset(BaseDataset):
         else:
             out["near_fars"] = torch.stack(intersect_with_aabb(
                 rays_o=out["rays_o"], rays_d=out["rays_d"], aabb=self.scene_bbox, near_plane=0.0, training=False), 1)
-            out["near_fars"] *= torch.tensor([1., 9.])  # random expansion
+            out["near_fars"] *= torch.tensor([0.8, 1.5])  # random expansion
         return out
 
 
