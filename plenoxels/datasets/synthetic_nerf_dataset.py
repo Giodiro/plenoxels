@@ -63,9 +63,13 @@ class SyntheticNerfDataset(BaseDataset):
         if self.split == 'train':
             bg_color = torch.rand((1, 3), dtype=pixels.dtype, device=pixels.device)
         else:
-            bg_color = torch.ones((1, 3), dtype=pixels.dtype, device=pixels.device)
+            if pixels is None:
+                bg_color = torch.ones((1, 3), dtype=torch.float32, device='cuda:0')
+            else:
+                bg_color = torch.ones((1, 3), dtype=pixels.dtype, device=pixels.device)
         # Alpha compositing
-        pixels = pixels[:, :3] * pixels[:, 3:] + bg_color * (1.0 - pixels[:, 3:])
+        if pixels is not None:
+            pixels = pixels[:, :3] * pixels[:, 3:] + bg_color * (1.0 - pixels[:, 3:])
         out["imgs"] = pixels
         out["bg_color"] = bg_color
         out["near_fars"] = torch.tensor([[2.0, 6.0]])
