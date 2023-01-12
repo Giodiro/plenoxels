@@ -1,16 +1,16 @@
 # configuration file to be used with `main.py` for normal (or multiscene) training
 # the configuration must be specified in a dictionary called `config`.
 config = {
-    "expname": "normal_sf6_lr1e-2_applr1e-2_ptv1e-4_ptvpn1e-4_dl0_24appemb",
+    "expname": "contract_sf6_lr1e-2_applr1e-2_ptv1e-4_ptvpn1e-4_dl0_24appemb",
     "logdir": "./logs/trevi",
     "device": "cuda:0",
 
     # Data settings
     "data_downsample": 1,
     "data_dirs": ["/data/DATASETS/phototourism/trevi-fountain"],
-    "contract": False,
+    "contract": True,
     "ndc": False,
-    "scene_bbox": [[-2.0, -1.0, -2.0], [2.0, 1.0, 2.0]],
+    "scene_bbox": [[-2.0, -2.0, -2.0], [2.0, 2.0, 2.0]],
     "scale_factor": 6.,
     "orientation_method": "none",
     "center_poses": False,
@@ -34,8 +34,7 @@ config = {
     # "l1_appearance_planes": 1e-4,
     # "l1_appearance_planes_proposal_net": 1e-4,
     "histogram_loss_weight": 1.0,  # this should be set > 0 when using proposal sampling
-    "depth_tv_weight": 0,
-    "distortion_loss_weight": 0,
+    "distortion_loss_weight": 1e-4,
 
     # Training settings
     "train_fp16": True,
