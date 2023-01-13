@@ -8,7 +8,7 @@ import pandas as pd
 import torch
 import torch.utils.data
 
-from ..datasets.phototourism_dataset import PhotoTourismDataset, PhotoTourismDataset2
+from ..datasets.phototourism_dataset import PhotoTourismDataset2
 from ..ema import EMA
 from ..models.lowrank_model import LowrankModel
 from ..my_tqdm import tqdm
@@ -207,10 +207,10 @@ class PhototourismTrainer(BaseTrainer):
 
                 if recon_loss.item() < lowest_loss:
                     lowest_loss = recon_loss.item()
-                    count = 0
-                count += 1
+                    lowest_loss_count = 0
+                lowest_loss_count += 1
             # 1 epoch without improvement -> stop
-            if count > 1 * n_steps:
+            if lowest_loss_count > 1 * n_steps:
                 break
 
     def optimize_appearance_codes(self):
@@ -256,11 +256,9 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
     batch_size = kwargs['batch_size']
     log.info(f"Loading PhotoTourismDataset with downsample={data_downsample}")
     tr_dset = PhotoTourismDataset2(
-        data_dir, split='train', downsample=1, batch_size=batch_size,
-        contraction=kwargs['contract'], ndc=kwargs['ndc'], scale_factor=kwargs['scale_factor'],
-        scene_bbox=kwargs['scene_bbox'], near_scaling=kwargs['near_scaling'],
-        ndc_far=kwargs['ndc_far'], orientation_method=kwargs['orientation_method'],
-        center_poses=kwargs['center_poses'], auto_scale_poses=kwargs['auto_scale_poses'],
+        data_dir, split='train', batch_size=batch_size,
+        contraction=kwargs['contract'], ndc=kwargs['ndc'],
+        scene_bbox=kwargs['scene_bbox']
     )
     tr_loader = torch.utils.data.DataLoader(
         tr_dset, batch_size=None, num_workers=4,  prefetch_factor=4, pin_memory=True,
@@ -270,11 +268,9 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
 
 def init_ts_data(data_dir, split, **kwargs):
     ts_dset = PhotoTourismDataset2(
-        data_dir, split=split, downsample=1, batch_size=None,
-        contraction=kwargs['contract'], ndc=kwargs['ndc'], scale_factor=kwargs['scale_factor'],
-        scene_bbox=kwargs['scene_bbox'], near_scaling=kwargs['near_scaling'],
-        ndc_far=kwargs['ndc_far'], orientation_method=kwargs['orientation_method'],
-        center_poses=kwargs['center_poses'], auto_scale_poses=kwargs['auto_scale_poses'],
+        data_dir, split=split, batch_size=None,
+        contraction=kwargs['contract'], ndc=kwargs['ndc'],
+        scene_bbox=kwargs['scene_bbox'],
     )
     return {"ts_dset": ts_dset}
 

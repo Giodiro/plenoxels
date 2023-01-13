@@ -1,18 +1,16 @@
+import glob
 import logging as log
+import os
+from pathlib import Path
+from typing import Optional, List
 
 import numpy as np
-import torch
-from typing import Optional, List, Tuple, Union
-import os
-import glob
 import pandas as pd
+import torch
 
 from plenoxels.datasets.base_dataset import BaseDataset
-from plenoxels.datasets.colmap_utils import read_images_binary, read_cameras_binary
-from plenoxels.datasets.data_loading import parallel_load_images
 from plenoxels.datasets.intrinsics import Intrinsics
-from plenoxels.datasets.ray_utils import get_rays, get_ray_directions
-from plenoxels.ops.bbox_colliders import intersect_with_aabb
+from plenoxels.ops.image.io import read_png
 
 
 class PhotoTourismDataset2(BaseDataset):
@@ -20,25 +18,29 @@ class PhotoTourismDataset2(BaseDataset):
                  datadir: str,
                  split: str,
                  batch_size: Optional[int] = None,
-                 downsample: float = 1.0,
-                 scale_factor: float = 3.0,
                  contraction: bool = False,
                  ndc: bool = False,
                  scene_bbox: Optional[List] = None,
-                 near_scaling: float = 0.9,
-                 ndc_far: float = 2.6,
-                 orientation_method: str = "up",
-                 center_poses: bool = True,
-                 auto_scale_poses: bool = True):
-        # TODO: remove params and assert against not implemented stuff (e.g. ndc)
+                 downsample: float = 1.0):
         # TODO: handle render split
-        pt_data = torch.load(os.path.join(datadir, f"cache_{split}.pt"))
+        if ndc:
+            raise NotImplementedError("PhotoTourism only handles contraction and standard.")
+        if downsample != 1.0:
+            raise NotImplementedError("PhotoTourism does not handle image downsampling.")
+        if not os.path.isdir(datadir):
+            raise ValueError(f"Directory {datadir} does not exist.")
+        pt_data_file = os.path.join(datadir, f"cache_{split}.pt")
+        if not os.path.isfile(pt_data_file):
+            # Populate cache
+            cache_data(datadir=datadir, split=split, out_fname=os.path.basename(pt_data_file))
+        pt_data = torch.load(pt_data_file)
+
         intrinsics = [
             Intrinsics(width=img.shape[1],
                        height=img.shape[0],
                        center_x=img.shape[1] / 2,
                        center_y=img.shape[0] / 2,
-                       focal_y=0,  # focals are unused
+                       focal_y=0,  # focals are unused, we reuse intrinsics from Matt's files.
                        focal_x=0)
             for img in pt_data["images"]
         ]
@@ -100,6 +102,11 @@ class PhotoTourismDataset2(BaseDataset):
                  f"{self.num_images} images of sizes between {min(self.img_h)}x{min(self.img_w)} "
                  f"and {max(self.img_h)}x{max(self.img_w)}. "
                  f"Images loaded: {self.imgs is not None}.")
+        if self.is_contracted:
+            log.info(f"Contraction parameters: global_translation={self.global_translation}, "
+                     f"global_scale={self.global_scale}")
+        else:
+            log.info(f"Bounding box: {self.scene_bbox}")
 
     def __getitem__(self, index):
         out, index = super().__getitem__(index, return_idxs=True)
@@ -125,308 +132,91 @@ class PhotoTourismDataset2(BaseDataset):
         return out
 
 
-class PhotoTourismDataset(BaseDataset):
-    """This version uses normalized device coordinates, as in LLFF, for forward-facing videos
+def get_rays_tourism(H, W, kinv, pose):
     """
-    len_time: int
-    timestamps: Optional[torch.Tensor]
+    phototourism camera intrinsics are defined by H, W and kinv.
+    Args:
+        H: image height
+        W: image width
+        kinv (3, 3): inverse of camera intrinsic
+        pose (4, 4): camera extrinsic
+    Returns:
+        rays_o (H, W, 3): ray origins
+        rays_d (H, W, 3): ray directions
+    """
+    yy, xx = torch.meshgrid(torch.arange(0., H, device=kinv.device),
+                            torch.arange(0., W, device=kinv.device),
+                            indexing='ij')
+    pixco = torch.stack([xx, yy, torch.ones_like(xx)], dim=-1)
 
-    def __init__(self,
-                 datadir: str,
-                 split: str,
-                 batch_size: Optional[int] = None,
-                 downsample: float = 1.0,
-                 scale_factor: float = 3.0,
-                 contraction: bool = False,
-                 ndc: bool = False,
-                 scene_bbox: Optional[List] = None,
-                 near_scaling: float = 0.9,
-                 ndc_far: float = 2.6,
-                 orientation_method: str = "up",
-                 center_poses: bool = True,
-                 auto_scale_poses: bool = True):
-        self.orientation_method = orientation_method
-        self.center_poses = center_poses
-        self.auto_scale_poses = auto_scale_poses
-        self.scale_factor = scale_factor
-        self.ndc_far = ndc_far
+    directions = torch.matmul(pixco, kinv.T)  # (H, W, 3)
 
-        if scene_bbox is None:
-            raise ValueError("Must specify scene_bbox")
-        scene_bbox = torch.tensor(scene_bbox)
-        self.poses, intrinsics, file_names = load_pt_metadata(
-            datadir=datadir, orientation_method=orientation_method, center_poses=center_poses,
-            auto_scale_poses=auto_scale_poses, scale_factor=scale_factor, split=split)
-        images, intrinsics = load_pt_images(intrinsics, file_names, downsample, split)
-        self.num_images = len(intrinsics)
+    rays_d = torch.matmul(directions, pose[:3, :3].T)
+    rays_d = rays_d / torch.norm(rays_d, dim=-1, keepdim=True)  # (H, W, 3)
 
-        # Since all images are of different shapes, we cannot generate coordinates on the fly.
-        # For the training set we pre-generate all rays_o, rays_d by computing them one at a time,
-        # and then concatenating. For the test dataset this is not necessary since images are
-        # accessed one at a time.
-        directions, origins, self.camera_ids = None, None, None
-        all_images: Union[torch.Tensor, List[torch.Tensor]]
-        if split == 'train':
-            directions, origins, all_images, camera_ids = [], [], [], []
-            for i, (itr, pose, image) in enumerate(zip(intrinsics, self.poses, images)):
-                _origins, _directions = pt_gen_rays(pose, itr, ndc=ndc)
-                directions.append(_directions)
-                origins.append(_origins)
-                all_images.append(image.view(-1, 3))
-                camera_ids.append(torch.full((_directions.shape[0], ), fill_value=i, dtype=torch.int32))
-            directions = torch.cat(directions)
-            origins = torch.cat(origins)
-            all_images = torch.cat(all_images)
-            self.camera_ids = torch.cat(camera_ids)  # [tot_num_rays]
-            log.info(f"Generated all {directions.shape[0]} training rays.")
-        else:
-            all_images = images
-            self.camera_ids = torch.arange(len(all_images), dtype=torch.int32)  # [num_images]
+    rays_o = pose[:3, -1].expand_as(rays_d)  # (H, W, 3)
 
-        if 'trevi' in datadir:
-            self.global_translation = torch.tensor([0, 0, 0.])
-            self.global_scale = torch.tensor([1., 2., 1])
-        elif 'sacre' in datadir:
-            self.global_translation = torch.tensor([0, 0, -1])
-            self.global_scale = torch.tensor([5, 5, 3])
-        elif 'brandenburg' in datadir:
-            self.global_translation = torch.tensor([0, 0, -1])
-            self.global_scale = torch.tensor([5, 5, 3])
-        else:
-            raise NotImplementedError()
-
-        super().__init__(
-            datadir=datadir,
-            split=split,
-            batch_size=batch_size,
-            is_ndc=ndc,
-            is_contracted=contraction,
-            scene_bbox=scene_bbox,
-            rays_o=origins,
-            rays_d=directions,
-            intrinsics=intrinsics,
-            imgs=all_images,
-        )
-        log.info(f"PhotoTourismDataset contracted={self.is_contracted}, ndc={self.is_ndc}. "
-                 f"Loaded {self.split} set from {self.datadir}: "
-                 f"{len(self.poses)} images of sizes between {min(self.img_h)}x{min(self.img_w)} "
-                 f"and {max(self.img_h)}x{max(self.img_w)}. "
-                 f"Images loaded: {self.imgs is not None}.")
-
-    def __getitem__(self, index):
-        out, index = super().__getitem__(index, return_idxs=True)
-        out["bg_color"] = torch.ones((1, 3), dtype=torch.float32)
-        out["timestamps"] = self.camera_ids[index]
-
-        if self.split != 'train':
-            # Generate rays
-            img = out["imgs"]
-            intrinsics = self.intrinsics[index]
-            pose = self.poses[index]
-            assert img.shape[0] == intrinsics.height and img.shape[1] == intrinsics.width
-            ro, rd = pt_gen_rays(pose, intrinsics, ndc=self.is_ndc)
-            # Split image in two parts
-            img_h, img_w = intrinsics.height, intrinsics.width
-            mid = img_w // 2
-
-            out["imgs_left"] = img[:, :mid, :].reshape(-1, 3)
-            out["rays_o_left"] = ro.view(img_h, img_w, 3)[:, :mid, :].reshape(-1, 3)
-            out["rays_d_left"] = rd.view(img_h, img_w, 3)[:, :mid, :].reshape(-1, 3)
-            out["rays_o"] = ro
-            out["rays_d"] = rd
-            out["imgs"] = img.view(-1, 3)
-
-            out["timestamps"] = out["timestamps"].repeat(out["rays_o"].shape[0])
-
-        if self.is_ndc:
-            out["near_fars"] = torch.tensor([[0.0, self.ndc_far]]).repeat(out["rays_o"].shape[0], 1)
-        else:
-            out["near_fars"] = torch.stack(intersect_with_aabb(
-                rays_o=out["rays_o"], rays_d=out["rays_d"], aabb=self.scene_bbox, near_plane=0.0, training=False), 1)
-            out["near_fars"] *= torch.tensor([0.8, 1.5])  # random expansion
-        return out
-
-
-def pt_gen_rays(pose: torch.Tensor, intrinsics: Intrinsics, ndc: bool) -> Tuple[torch.Tensor, torch.Tensor]:
-    directions = get_ray_directions(intrinsics, opengl_camera=True, add_half=False)
-    rays_o, rays_d = get_rays(
-        directions, pose, ndc=ndc, ndc_near=1.0, intrinsics=intrinsics, normalize_rd=True)
     return rays_o, rays_d
 
 
-def load_pt_images(
-    intrinsics: List[Intrinsics],
-    file_names: List[str],
-    downsample: float,
-    split: str
-):
-    for i in intrinsics:
-        i.scale(1 / downsample)
-    out_h = [i.height for i in intrinsics]
-    out_w = [i.width for i in intrinsics]
-    images = parallel_load_images(
-        dset_type="phototourism",
-        tqdm_title=f"Loading {split} data",
-        num_images=len(file_names),
-        paths=file_names,
-        out_h=out_h,
-        out_w=out_w,
-    )
-    return images, intrinsics
-
-
-def load_pt_metadata(
-    datadir: str,
-    orientation_method: str,
-    center_poses: bool,
-    auto_scale_poses: bool,
-    scale_factor: float,
-    split: str,
-) -> Tuple[torch.Tensor, List[Intrinsics], List[str]]:
-    cams = read_cameras_binary(os.path.join(datadir, "dense/sparse/cameras.bin"))
-    imgs = read_images_binary(os.path.join(datadir, "dense/sparse/images.bin"))
-
-    poses = []
-    intrinsics = []
-    image_filenames = []
-
-    for _id, cam in cams.items():
-        img = imgs[_id]
-
-        assert cam.model == "PINHOLE", "Only pinhole (perspective) camera model is supported at the moment"
-
-        pose = torch.cat([torch.tensor(img.qvec2rotmat()), torch.tensor(img.tvec.reshape(3, 1))], dim=1)
-        pose = torch.cat([pose, torch.tensor([[0.0, 0.0, 0.0, 1.0]])], dim=0)
-        poses.append(torch.linalg.inv(pose))
-        intrinsics.append(Intrinsics(
-            focal_x=cam.params[0], focal_y=cam.params[1],
-            center_x=cam.params[2], center_y=cam.params[3],
-            width=cam.params[2] * 2, height=cam.params[3] * 2))
-
-        image_filenames.append(os.path.join(datadir, "dense/images", img.name))
-
-    poses = torch.stack(poses).float()
-    poses[..., 1:3] *= -1
-
-    poses, transform_matrix = auto_orient_and_center_poses(
-        poses, method=orientation_method, center_poses=center_poses
-    )
-
-    # Scale poses
-    out_scale_factor = 1.0
-    if auto_scale_poses:
-        out_scale_factor /= float(torch.max(torch.abs(poses[:, :3, 3])))
-    out_scale_factor *= scale_factor
-    log.info(f"Final scale factor = {out_scale_factor}")
-    poses[:, :3, 3] *= out_scale_factor
-
-    # Split
-    split_ids = get_pt_split_ids(datadir, split, image_filenames)
-    poses = poses[split_ids]
-    intrinsics = [intrinsics[i] for i in range(len(split_ids)) if split_ids[i]]
-    image_filenames = [image_filenames[i] for i in range(len(split_ids)) if split_ids[i]]
-    return poses, intrinsics, image_filenames
-
-
-def get_pt_split_ids(datadir: str, split: str, image_filenames: List[str]):
+def cache_data(datadir: str, split: str, out_fname: str):
+    log.info(f"Preparing cached rays for dataset at {datadir} - {split=}.")
     # read all files in the tsv first (split to train and test later)
     tsv = glob.glob(os.path.join(datadir, '*.tsv'))[0]
-    files_df = pd.read_csv(tsv, sep='\t')
-    files_df = files_df[~files_df['id'].isnull()]  # remove data without id
-    files_df.reset_index(inplace=True, drop=True)
-    split_files_df = files_df[files_df['split'] == split]
+    files = pd.read_csv(tsv, sep='\t')
+    files = files[~files['id'].isnull()]  # remove data without id
+    files.reset_index(inplace=True, drop=True)
 
-    base_names = [os.path.basename(fp) for fp in image_filenames]
+    scale = 0.05
+    files = files[files["split"] == split]
 
-    split_ids = torch.from_numpy(np.in1d(base_names, split_files_df['filename']))
-    return split_ids
+    imagepaths = sorted((Path(datadir) / "dense" / "images").glob("*.jpg"))
+    imkey = np.array([os.path.basename(im) for im in imagepaths])
+    idx = np.in1d(imkey, files["filename"])
 
+    imagepaths = np.array(imagepaths)[idx]
+    try:
+        poses = np.load(str(Path(datadir) / "c2w_mats.npy"))[idx]
+        kinvs = np.load(str(Path(datadir) / "kinv_mats.npy"))[idx]
+        bounds = np.load(str(Path(datadir) / "bds.npy"))[idx]
+        res = np.load(str(Path(datadir) / "res_mats.npy"))[idx]
+    except FileNotFoundError as e:
+        error_msg = (
+            f"One of the needed Phototourism files does not exist ({e.filename}). "
+            f"They can be downloaded from "
+            f"https://drive.google.com/drive/folders/1SVHKRQXiRb98q4KHVEbj8eoWxjNS2QLW"
+        )
+        log.error(error_msg)
+        raise e
+    img_w = res[:, 0]
+    img_h = res[:, 1]
+    size = int(np.sum(img_w * img_h))
+    log.info(f"Loading dataset from {datadir}. Num images={len(imagepaths)}. Total rays={size}.")
 
-def auto_orient_and_center_poses(
-    poses: torch.Tensor, method: str = "up", center_poses: bool = True
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Orients and centers the poses. We provide two methods for orientation: pca and up.
-    pca: Orient the poses so that the principal component of the points is aligned with the axes.
-        This method works well when all of the cameras are in the same plane.
-    up: Orient the poses so that the average up vector is aligned with the z axis.
-        This method works well when images are not at arbitrary angles.
-    Args:
-        poses: The poses to orient.
-        method: The method to use for orientation.
-        center_poses: If True, the poses are centered around the origin.
-    Returns:
-        Tuple of the oriented poses and the transform matrix.
-    """
+    all_images, all_rays_o, all_rays_d, all_bounds, all_camera_ids = [], [], [], [], []
+    for idx, impath in enumerate(imagepaths):
+        image = read_png(impath)
 
-    translation = poses[..., :3, 3]
+        pose = torch.from_numpy(poses[idx]).float()
+        pose[:3, 3:4] *= scale
+        kinv = torch.from_numpy(kinvs[idx]).float()
+        bound = torch.from_numpy(bounds[idx]).float()
+        bound = bound * torch.tensor([0.9, 1.2]) * scale
 
-    mean_translation = torch.mean(translation, dim=0)
-    translation_diff = translation - mean_translation
+        rays_o, rays_d = get_rays_tourism(image.shape[0], image.shape[1], kinv, pose)
 
-    if center_poses:
-        translation = mean_translation
-    else:
-        translation = torch.zeros_like(mean_translation)
+        camera_id = torch.tensor(idx)
 
-    if method == "pca":
-        _, eigvec = torch.linalg.eigh(translation_diff.T @ translation_diff)
-        eigvec = torch.flip(eigvec, dims=(-1,))
+        all_images.append(image.mul(255).to(torch.uint8))
+        all_rays_o.append(rays_o)
+        all_rays_d.append(rays_d)
+        all_bounds.append(bound)
+        all_camera_ids.append(camera_id)
 
-        if torch.linalg.det(eigvec) < 0:
-            eigvec[:, 2] = -eigvec[:, 2]
-
-        transform = torch.cat([eigvec, eigvec @ -translation[..., None]], dim=-1)
-        oriented_poses = transform @ poses
-
-        if oriented_poses.mean(axis=0)[2, 1] < 0:
-            oriented_poses[:, 1:3] = -1 * oriented_poses[:, 1:3]
-    elif method == "up":
-        up = torch.mean(poses[:, :3, 1], dim=0)
-        up = up / torch.linalg.norm(up)
-
-        rotation = rotation_matrix(up, torch.Tensor([0, 0, 1]))
-        transform = torch.cat([rotation, rotation @ -translation[..., None]], dim=-1)
-        oriented_poses = transform @ poses
-    elif method == "z":
-        zdir = torch.mean(poses[:, :3, 2], dim=0)
-        zdir = zdir / torch.linalg.norm(zdir)
-
-        rotation = rotation_matrix(zdir, torch.tensor([0., 0., 1.]))
-        transform = torch.cat([rotation, rotation @ -translation[..., None]], dim=-1)
-        oriented_poses = transform @ poses
-    elif method == "none":
-        transform = torch.eye(4)
-        transform[:3, 3] = -translation
-        transform = transform[:3, :]
-        oriented_poses = transform @ poses
-    else:
-        raise ValueError("orientation method can be 'pca', 'up', 'none'")
-
-    return oriented_poses, transform
-
-
-def rotation_matrix(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    """Compute the rotation matrix that rotates vector a to vector b.
-    Args:
-        a: The vector to rotate.
-        b: The vector to rotate to.
-    Returns:
-        The rotation matrix.
-    """
-    a = a / torch.linalg.norm(a)
-    b = b / torch.linalg.norm(b)
-    v = torch.cross(a, b)
-    c = torch.dot(a, b)
-    # If vectors are exactly opposite, we add a little noise to one of them
-    if c < -1 + 1e-8:
-        eps = (torch.rand(3) - 0.5) * 0.01
-        return rotation_matrix(a + eps, b)
-    s = torch.linalg.norm(v)
-    skew_sym_mat = torch.Tensor(
-        [
-            [0, -v[2], v[1]],
-            [v[2], 0, -v[0]],
-            [-v[1], v[0], 0],
-        ]
-    )
-    return torch.eye(3) + skew_sym_mat + skew_sym_mat @ skew_sym_mat * ((1 - c) / (s**2 + 1e-8))
+    torch.save({
+        "images": all_images,
+        "rays_o": all_rays_o,
+        "rays_d": all_rays_d,
+        "bounds": all_bounds,
+        "camera_ids": all_camera_ids,
+    }, os.path.join(datadir, out_fname))
