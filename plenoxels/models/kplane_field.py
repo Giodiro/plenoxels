@@ -166,7 +166,7 @@ class KPlaneField(nn.Module):
             # combining the color features into RGB
             # This architecture is based on instant-NGP
             self.color_basis = tcnn.Network(
-                n_input_dims=3,#self.direction_encoder.n_output_dims,
+                n_input_dims=3 + self.appearance_embedding_dim,#self.direction_encoder.n_output_dims,
                 n_output_dims=3 * self.feature_dim,
                 network_config={
                     "otype": "FullyFusedMLP",
@@ -289,12 +289,16 @@ class KPlaneField(nn.Module):
             # expand embedded_appearance from n_rays, dim to n_rays*n_samples, dim
             ea_dim = embedded_appearance.shape[-1]
             embedded_appearance = embedded_appearance.view(-1, 1, ea_dim).expand(n_rays, n_samples, -1).reshape(-1, ea_dim)
-            color_features.append(embedded_appearance)
+            if not self.linear_decoder:
+                color_features.append(embedded_appearance)
 
         color_features = torch.cat(color_features, dim=-1)
 
         if self.linear_decoder:
-            basis_values = self.color_basis(directions)  # [batch, color_feature_len * 3]
+            if self.use_appearance_embedding:
+                basis_values = self.color_basis(torch.cat([directions, embedded_appearance], dim=-1))
+            else:
+                basis_values = self.color_basis(directions)  # [batch, color_feature_len * 3]
             basis_values = basis_values.view(color_features.shape[0], 3, -1)  # [batch, 3, color_feature_len]
             rgb = torch.sum(color_features[:, None, :] * basis_values, dim=-1)  # [batch, 3]
             rgb = rgb.to(directions)

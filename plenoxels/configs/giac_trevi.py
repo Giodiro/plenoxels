@@ -1,19 +1,19 @@
 # configuration file to be used with `main.py` for normal (or multiscene) training
 # the configuration must be specified in a dictionary called `config`.
 config = {
-    "expname": "contract_sf2_lr1e-2_applr5e-2_ptv1e-4_ptvpn1e-4_dl0",
+    "expname": "contract_sf6_lr1e-2_applr1e-2_ptv1e-4_ptvpn1e-4_dl0_24appemb",
     "logdir": "./logs/trevi",
     "device": "cuda:0",
 
     # Data settings
     "data_downsample": 1,
     "data_dirs": ["/data/DATASETS/phototourism/trevi-fountain"],
-    "contract": False,
+    "contract": True,
     "ndc": False,
-    "scene_bbox": [[-2.0, -1.0, -2.0], [2.0, 1.0, 2.0]],
+    "scene_bbox": [[-2.0, -2.0, -2.0], [2.0, 2.0, 2.0]],
     "scale_factor": 6.,
     "orientation_method": "none",
-    "center_poses": True,
+    "center_poses": False,
     "auto_scale_poses": True,
     "near_scaling": 0.9,  # unused
     "ndc_far": 2.6,       # unused
@@ -25,8 +25,8 @@ config = {
     "optim_type": "adam",
     "lr": 1e-2,
     # test latent code optimization
-    "app_optim_n_epochs": 5,
-    "app_optim_lr": 1e-1,
+    "app_optim_n_epochs": 10,
+    "app_optim_lr": 1e-2,
 
     # Regularization
     "plane_tv_weight": 1e-4,
@@ -34,7 +34,6 @@ config = {
     # "l1_appearance_planes": 1e-4,
     # "l1_appearance_planes_proposal_net": 1e-4,
     "histogram_loss_weight": 1.0,  # this should be set > 0 when using proposal sampling
-    "depth_tv_weight": 0,
     "distortion_loss_weight": 1e-4,
 
     # Training settings
@@ -51,8 +50,8 @@ config = {
     "num_proposal_iterations": 2,
     "use_same_proposal_network": False,
     "proposal_net_args_list": [
-        {"resolution": [64, 64, 64], "num_input_coords": 3, "num_output_coords": 8},
         {"resolution": [128, 128, 128], "num_input_coords": 3, "num_output_coords": 8},
+        {"resolution": [256, 256, 256], "num_input_coords": 3, "num_output_coords": 8},
     ],
 
     # Model settings
