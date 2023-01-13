@@ -8,17 +8,6 @@ import torch
 
 from plenoxels.ops.image.io import read_png
 
-NUM_TRAIN_IMAGES = {
-    "sacre": 1179,
-    "trevi": 1689,
-    "brandenburg": 763
-}
-NUM_TEST_IMAGES = {
-    "sacre": 21,
-    "trevi": 19,
-    "brandenburg": 10
-}
-
 
 def get_rays_tourism(H, W, kinv, pose):
     """
@@ -33,7 +22,8 @@ def get_rays_tourism(H, W, kinv, pose):
         rays_d (H, W, 3): ray directions
     """
     yy, xx = torch.meshgrid(torch.arange(0., H, device=kinv.device),
-                            torch.arange(0., W, device=kinv.device))
+                            torch.arange(0., W, device=kinv.device),
+                            indexing='ij')
     pixco = torch.stack([xx, yy, torch.ones_like(xx)], dim=-1)
 
     directions = torch.matmul(pixco, kinv.T)  # (H, W, 3)
@@ -87,8 +77,6 @@ def prepare(datadir, split):
         rays_o, rays_d = get_rays_tourism(image.shape[0], image.shape[1], kinv, pose)
 
         camera_id = torch.tensor(idx)
-        if split == "test":
-            camera_id += NUM_TRAIN_IMAGES[dset_name]
 
         all_images.append(image.mul(255).to(torch.uint8))
         all_rays_o.append(rays_o)
@@ -106,6 +94,6 @@ def prepare(datadir, split):
 
 
 if __name__ == "__main__":
-    datadir = "/data/DATASETS/phototourism/sacre"
+    datadir = "/data/DATASETS/phototourism/sacre_coeur"
     for split in ["train", "test"]:
         prepare(datadir, split)

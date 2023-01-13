@@ -43,9 +43,6 @@ class PhotoTourismDataset2(BaseDataset):
             for img in pt_data["images"]
         ]
         if split == 'train':
-            images = pt_data["images"].view(-1, 3)
-            rays_o = pt_data["rays_o"].view(-1, 3)
-            rays_d = pt_data["rays_d"].view(-1, 3)
             near_fars = torch.cat([
                 pt_data["bounds"][i].expand(intrinsics[i].width * intrinsics[i].height, 2)
                 for i in range(len(intrinsics))
@@ -54,6 +51,9 @@ class PhotoTourismDataset2(BaseDataset):
                 pt_data["camera_ids"][i].expand(intrinsics[i].width * intrinsics[i].height, 1)
                 for i in range(len(intrinsics))
             ])
+            images = torch.cat([img.view(-1, 3) for img in pt_data["images"]], 0)
+            rays_o = torch.cat([ro.view(-1, 3) for ro in pt_data["rays_o"]], 0)
+            rays_d = torch.cat([rd.view(-1, 3) for rd in pt_data["rays_d"]], 0)
         elif split == 'test':
             images = pt_data["images"]
             rays_o = pt_data["rays_o"]
@@ -97,7 +97,7 @@ class PhotoTourismDataset2(BaseDataset):
         )
         log.info(f"PhotoTourismDataset contracted={self.is_contracted}, ndc={self.is_ndc}. "
                  f"Loaded {self.split} set from {self.datadir}: "
-                 f"{len(self.poses)} images of sizes between {min(self.img_h)}x{min(self.img_w)} "
+                 f"{self.num_images} images of sizes between {min(self.img_h)}x{min(self.img_w)} "
                  f"and {max(self.img_h)}x{max(self.img_w)}. "
                  f"Images loaded: {self.imgs is not None}.")
 
@@ -120,8 +120,8 @@ class PhotoTourismDataset2(BaseDataset):
                 out["imgs"] = out["imgs"].view(-1, 3)
             out["rays_o"] = out["rays_o"].reshape(-1, 3)
             out["rays_d"] = out["rays_d"].reshape(-1, 3)
-            out["timestamps"] = out["timestamps"].repeat(out["rays_o"].shape[0])
-            out["near_fars"] = out["near_fars"].repeat(out["rays_o"].shape[0])
+            out["timestamps"] = out["timestamps"].expand(out["rays_o"].shape[0], 1)
+            out["near_fars"] = out["near_fars"].expand(out["rays_o"].shape[0], 2)
         return out
 
 
