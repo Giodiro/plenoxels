@@ -8,7 +8,7 @@ import pandas as pd
 import torch
 import torch.utils.data
 
-from ..datasets.phototourism_dataset import PhotoTourismDataset
+from ..datasets.phototourism_dataset import PhotoTourismDataset, PhotoTourismDataset2
 from ..ema import EMA
 from ..models.lowrank_model import LowrankModel
 from ..my_tqdm import tqdm
@@ -255,7 +255,7 @@ class PhototourismTrainer(BaseTrainer):
 def init_tr_data(data_downsample, data_dir, **kwargs):
     batch_size = kwargs['batch_size']
     log.info(f"Loading PhotoTourismDataset with downsample={data_downsample}")
-    tr_dset = PhotoTourismDataset(
+    tr_dset = PhotoTourismDataset2(
         data_dir, split='train', downsample=1, batch_size=batch_size,
         contraction=kwargs['contract'], ndc=kwargs['ndc'], scale_factor=kwargs['scale_factor'],
         scene_bbox=kwargs['scene_bbox'], near_scaling=kwargs['near_scaling'],
@@ -269,7 +269,7 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
 
 
 def init_ts_data(data_dir, split, **kwargs):
-    ts_dset = PhotoTourismDataset(
+    ts_dset = PhotoTourismDataset2(
         data_dir, split=split, downsample=1, batch_size=None,
         contraction=kwargs['contract'], ndc=kwargs['ndc'], scale_factor=kwargs['scale_factor'],
         scene_bbox=kwargs['scene_bbox'], near_scaling=kwargs['near_scaling'],

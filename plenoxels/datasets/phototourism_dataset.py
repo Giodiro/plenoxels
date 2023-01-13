@@ -15,6 +15,116 @@ from plenoxels.datasets.ray_utils import get_rays, get_ray_directions
 from plenoxels.ops.bbox_colliders import intersect_with_aabb
 
 
+class PhotoTourismDataset2(BaseDataset):
+    def __init__(self,
+                 datadir: str,
+                 split: str,
+                 batch_size: Optional[int] = None,
+                 downsample: float = 1.0,
+                 scale_factor: float = 3.0,
+                 contraction: bool = False,
+                 ndc: bool = False,
+                 scene_bbox: Optional[List] = None,
+                 near_scaling: float = 0.9,
+                 ndc_far: float = 2.6,
+                 orientation_method: str = "up",
+                 center_poses: bool = True,
+                 auto_scale_poses: bool = True):
+        # TODO: remove params and assert against not implemented stuff (e.g. ndc)
+        # TODO: handle render split
+        pt_data = torch.load(os.path.join(datadir, f"cache_{split}.pt"))
+        intrinsics = [
+            Intrinsics(width=img.shape[1],
+                       height=img.shape[0],
+                       center_x=img.shape[1] / 2,
+                       center_y=img.shape[0] / 2,
+                       focal_y=0,  # focals are unused
+                       focal_x=0)
+            for img in pt_data["images"]
+        ]
+        if split == 'train':
+            images = pt_data["images"].view(-1, 3)
+            rays_o = pt_data["rays_o"].view(-1, 3)
+            rays_d = pt_data["rays_d"].view(-1, 3)
+            near_fars = torch.cat([
+                pt_data["bounds"][i].expand(intrinsics[i].width * intrinsics[i].height, 2)
+                for i in range(len(intrinsics))
+            ], dim=0)
+            camera_ids = torch.cat([
+                pt_data["camera_ids"][i].expand(intrinsics[i].width * intrinsics[i].height, 1)
+                for i in range(len(intrinsics))
+            ])
+        elif split == 'test':
+            images = pt_data["images"]
+            rays_o = pt_data["rays_o"]
+            rays_d = pt_data["rays_d"]
+            near_fars = pt_data["bounds"]
+            camera_ids = pt_data["camera_ids"]
+        else:
+            raise NotImplementedError(split)
+
+        self.num_images = len(intrinsics)
+        self.camera_ids = camera_ids
+        self.near_fars = near_fars
+
+        if 'trevi' in datadir:
+            self.global_translation = torch.tensor([0, 0, 0.])
+            self.global_scale = torch.tensor([1., 2., 1])
+        elif 'sacre' in datadir:
+            self.global_translation = torch.tensor([0, 0, -1])
+            self.global_scale = torch.tensor([5, 5, 3])
+        elif 'brandenburg' in datadir:
+            self.global_translation = torch.tensor([0, 0, -1])
+            self.global_scale = torch.tensor([5, 5, 3])
+        else:
+            raise NotImplementedError()
+
+        if scene_bbox is None:
+            raise ValueError("Must specify scene_bbox")
+        scene_bbox = torch.tensor(scene_bbox)
+
+        super().__init__(
+            datadir=datadir,
+            split=split,
+            batch_size=batch_size,
+            is_ndc=ndc,
+            is_contracted=contraction,
+            scene_bbox=scene_bbox,
+            rays_o=rays_o,
+            rays_d=rays_d,
+            intrinsics=intrinsics,
+            imgs=images,
+        )
+        log.info(f"PhotoTourismDataset contracted={self.is_contracted}, ndc={self.is_ndc}. "
+                 f"Loaded {self.split} set from {self.datadir}: "
+                 f"{len(self.poses)} images of sizes between {min(self.img_h)}x{min(self.img_w)} "
+                 f"and {max(self.img_h)}x{max(self.img_w)}. "
+                 f"Images loaded: {self.imgs is not None}.")
+
+    def __getitem__(self, index):
+        out, index = super().__getitem__(index, return_idxs=True)
+        out["bg_color"] = torch.ones((1, 3), dtype=torch.float32)
+        out["timestamps"] = self.camera_ids[index]
+        out["near_fars"] = self.near_fars[index]
+        if self.imgs is not None:
+            out["imgs"] = out["imgs"] / 255.0  # this converts to f32
+
+        if self.split != 'train':  # gen left-image and reshape correctly
+            intrinsics = self.intrinsics[index]
+            img_h, img_w = intrinsics.height, intrinsics.width
+            mid = img_w // 2
+            if self.imgs is not None:
+                out["imgs_left"] = out["imgs"][:, :mid, :].reshape(-1, 3)
+                out["rays_o_left"] = out["rays_o"].view(img_h, img_w, 3)[:, :mid, :].reshape(-1, 3)
+                out["rays_d_left"] = out["rays_d"].view(img_h, img_w, 3)[:, :mid, :].reshape(-1, 3)
+                out["imgs"] = out["imgs"].view(-1, 3)
+            out["rays_o"] = out["rays_o"].reshape(-1, 3)
+            out["rays_d"] = out["rays_d"].reshape(-1, 3)
+            out["timestamps"] = out["timestamps"].repeat(out["rays_o"].shape[0])
+            out["near_fars"] = out["near_fars"].repeat(out["rays_o"].shape[0])
+        return out
+
+
 class PhotoTourismDataset(BaseDataset):
     """This version uses normalized device coordinates, as in LLFF, for forward-facing videos
     """
