@@ -124,12 +124,12 @@ def ndc_rays_blender(intrinsics: Intrinsics, near: float, rays_o: torch.Tensor,
     return rays_o, rays_d
 
 
-def normalize(v):
+def normalize(v: np.ndarray) -> np.ndarray:
     """Normalize a vector."""
     return v / np.linalg.norm(v)
 
 
-def average_poses(poses):
+def average_poses(poses: np.ndarray) -> np.ndarray:
     """
     Calculate the average pose, which is then used to center all poses
     using @center_poses. Its computation is as follows:

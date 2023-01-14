@@ -1,8 +1,9 @@
 import glob
 import logging as log
 import os
+from enum import Enum
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -10,7 +11,24 @@ import torch
 
 from plenoxels.datasets.base_dataset import BaseDataset
 from plenoxels.datasets.intrinsics import Intrinsics
+from plenoxels.datasets.ray_utils import average_poses
 from plenoxels.ops.image.io import read_png
+
+
+class PhototourismScenes(Enum):
+    TREVI = "trevi"
+    BRANDENBURG = "brandenburg"
+    SACRE = "sacre"
+
+    @staticmethod
+    def get_scene_from_datadir(datadir: str) -> 'PhototourismScenes':
+        if "sacre" in datadir:
+            return PhototourismScenes.SACRE
+        if "trevi" in datadir:
+            return PhototourismScenes.TREVI
+        if "brandenburg" in datadir:
+            return PhototourismScenes.BRANDENBURG
+        raise NotImplementedError(datadir)
 
 
 class PhotoTourismDataset2(BaseDataset):
@@ -22,60 +40,70 @@ class PhotoTourismDataset2(BaseDataset):
                  ndc: bool = False,
                  scene_bbox: Optional[List] = None,
                  downsample: float = 1.0):
-        # TODO: handle render split
         if ndc:
             raise NotImplementedError("PhotoTourism only handles contraction and standard.")
         if downsample != 1.0:
             raise NotImplementedError("PhotoTourism does not handle image downsampling.")
         if not os.path.isdir(datadir):
             raise ValueError(f"Directory {datadir} does not exist.")
-        pt_data_file = os.path.join(datadir, f"cache_{split}.pt")
-        if not os.path.isfile(pt_data_file):
-            # Populate cache
-            cache_data(datadir=datadir, split=split, out_fname=os.path.basename(pt_data_file))
-        pt_data = torch.load(pt_data_file)
 
-        intrinsics = [
-            Intrinsics(width=img.shape[1],
-                       height=img.shape[0],
-                       center_x=img.shape[1] / 2,
-                       center_y=img.shape[0] / 2,
-                       focal_y=0,  # focals are unused, we reuse intrinsics from Matt's files.
-                       focal_x=0)
-            for img in pt_data["images"]
-        ]
-        if split == 'train':
-            near_fars = torch.cat([
-                pt_data["bounds"][i].expand(intrinsics[i].width * intrinsics[i].height, 2)
-                for i in range(len(intrinsics))
-            ], dim=0)
-            camera_ids = torch.cat([
-                pt_data["camera_ids"][i].expand(intrinsics[i].width * intrinsics[i].height, 1)
-                for i in range(len(intrinsics))
-            ])
-            images = torch.cat([img.view(-1, 3) for img in pt_data["images"]], 0)
-            rays_o = torch.cat([ro.view(-1, 3) for ro in pt_data["rays_o"]], 0)
-            rays_d = torch.cat([rd.view(-1, 3) for rd in pt_data["rays_d"]], 0)
-        elif split == 'test':
-            images = pt_data["images"]
-            rays_o = pt_data["rays_o"]
-            rays_d = pt_data["rays_d"]
-            near_fars = pt_data["bounds"]
-            camera_ids = pt_data["camera_ids"]
+        if split == 'train' or split == 'test':
+            pt_data_file = os.path.join(datadir, f"cache_{split}.pt")
+            if not os.path.isfile(pt_data_file):
+                # Populate cache
+                cache_data(datadir=datadir, split=split, out_fname=os.path.basename(pt_data_file))
+            pt_data = torch.load(pt_data_file)
+
+            intrinsics = [
+                Intrinsics(width=img.shape[1], height=img.shape[0],
+                           center_x=img.shape[1] / 2, center_y=img.shape[0] / 2,
+                           # focals are unused, we reuse intrinsics from Matt's files.
+                           focal_y=0, focal_x=0)
+                for img in pt_data["images"]
+            ]
+            if split == 'train':
+                near_fars = torch.cat([
+                    pt_data["bounds"][i].expand(intrinsics[i].width * intrinsics[i].height, 2)
+                    for i in range(len(intrinsics))
+                ], dim=0)
+                camera_ids = torch.cat([
+                    pt_data["camera_ids"][i].expand(intrinsics[i].width * intrinsics[i].height, 1)
+                    for i in range(len(intrinsics))
+                ])
+                images = torch.cat([img.view(-1, 3) for img in pt_data["images"]], 0)
+                rays_o = torch.cat([ro.view(-1, 3) for ro in pt_data["rays_o"]], 0)
+                rays_d = torch.cat([rd.view(-1, 3) for rd in pt_data["rays_d"]], 0)
+            elif split == 'test':
+                images = pt_data["images"]
+                rays_o = pt_data["rays_o"]
+                rays_d = pt_data["rays_d"]
+                near_fars = pt_data["bounds"]
+                camera_ids = pt_data["camera_ids"]
+        elif split == 'render':
+            n_frames, frame_size = 120, 800
+            rays_o, rays_d, camera_ids, near_fars = pt_render_poses(
+                datadir, n_frames=n_frames, frame_h=frame_size, frame_w=frame_size)
+            images = None
+            intrinsics = [
+                Intrinsics(width=frame_size, height=frame_size, focal_x=0, focal_y=0,
+                           center_x=frame_size / 2, center_y=frame_size / 2)
+                for _ in range(n_frames)
+            ]
         else:
             raise NotImplementedError(split)
 
         self.num_images = len(intrinsics)
-        self.camera_ids = camera_ids
-        self.near_fars = near_fars
+        self.camera_ids = camera_ids  # noqa
+        self.near_fars = near_fars  # noqa
 
-        if 'trevi' in datadir:
+        scene = PhototourismScenes.get_scene_from_datadir(datadir)
+        if scene == PhototourismScenes.TREVI:
             self.global_translation = torch.tensor([0, 0, 0.])
             self.global_scale = torch.tensor([1., 2., 1])
-        elif 'sacre' in datadir:
+        elif scene == PhototourismScenes.SACRE:
             self.global_translation = torch.tensor([0, 0, -1])
             self.global_scale = torch.tensor([5, 5, 3])
-        elif 'brandenburg' in datadir:
+        elif scene == PhototourismScenes.BRANDENBURG:
             self.global_translation = torch.tensor([0, 0, -1])
             self.global_scale = torch.tensor([5, 5, 3])
         else:
@@ -92,10 +120,10 @@ class PhotoTourismDataset2(BaseDataset):
             is_ndc=ndc,
             is_contracted=contraction,
             scene_bbox=scene_bbox,
-            rays_o=rays_o,
-            rays_d=rays_d,
+            rays_o=rays_o,  # noqa
+            rays_d=rays_d,  # noqa
             intrinsics=intrinsics,
-            imgs=images,
+            imgs=images,  # noqa
         )
         log.info(f"PhotoTourismDataset contracted={self.is_contracted}, ndc={self.is_ndc}. "
                  f"Loaded {self.split} set from {self.datadir}: "
@@ -159,22 +187,7 @@ def get_rays_tourism(H, W, kinv, pose):
     return rays_o, rays_d
 
 
-def cache_data(datadir: str, split: str, out_fname: str):
-    log.info(f"Preparing cached rays for dataset at {datadir} - {split=}.")
-    # read all files in the tsv first (split to train and test later)
-    tsv = glob.glob(os.path.join(datadir, '*.tsv'))[0]
-    files = pd.read_csv(tsv, sep='\t')
-    files = files[~files['id'].isnull()]  # remove data without id
-    files.reset_index(inplace=True, drop=True)
-
-    scale = 0.05
-    files = files[files["split"] == split]
-
-    imagepaths = sorted((Path(datadir) / "dense" / "images").glob("*.jpg"))
-    imkey = np.array([os.path.basename(im) for im in imagepaths])
-    idx = np.in1d(imkey, files["filename"])
-
-    imagepaths = np.array(imagepaths)[idx]
+def load_camera_metadata(datadir: str, idx) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     try:
         poses = np.load(str(Path(datadir) / "c2w_mats.npy"))[idx]
         kinvs = np.load(str(Path(datadir) / "kinv_mats.npy"))[idx]
@@ -188,6 +201,31 @@ def cache_data(datadir: str, split: str, out_fname: str):
         )
         log.error(error_msg)
         raise e
+    return poses, kinvs, bounds, res
+
+
+def get_ids_for_split(datadir, split):
+    # read all files in the tsv first (split to train and test later)
+    tsv = glob.glob(os.path.join(datadir, '*.tsv'))[0]
+    files = pd.read_csv(tsv, sep='\t')
+    files = files[~files['id'].isnull()]  # remove data without id
+    files.reset_index(inplace=True, drop=True)
+    files = files[files["split"] == split]
+
+    imagepaths = sorted((Path(datadir) / "dense" / "images").glob("*.jpg"))
+    imkey = np.array([os.path.basename(im) for im in imagepaths])
+    idx = np.in1d(imkey, files["filename"])
+    return idx, imagepaths
+
+
+def cache_data(datadir: str, split: str, out_fname: str):
+    log.info(f"Preparing cached rays for dataset at {datadir} - {split=}.")
+    scale = 0.05
+
+    idx, imagepaths = get_ids_for_split(datadir, split)
+
+    imagepaths = np.array(imagepaths)[idx]
+    poses, kinvs, bounds, res = load_camera_metadata(datadir, idx)
     img_w = res[:, 0]
     img_h = res[:, 1]
     size = int(np.sum(img_w * img_h))
@@ -220,3 +258,90 @@ def cache_data(datadir: str, split: str, out_fname: str):
         "bounds": all_bounds,
         "camera_ids": all_camera_ids,
     }, os.path.join(datadir, out_fname))
+
+
+def pt_spiral_path(
+        scene: PhototourismScenes,
+        poses: torch.Tensor,
+        n_frames=120,
+        n_rots=1,
+        zrate=.5) -> torch.Tensor:
+    if poses.shape[1] > 3:
+        poses = poses[:, :3, :]
+    c2w = torch.from_numpy(average_poses(poses.numpy()))  # [3, 4]
+
+    # Generate poses for spiral path.
+    render_poses = []
+    for theta in np.linspace(0., 2. * np.pi * n_rots, n_frames, endpoint=False):
+        rotation = c2w[:3, :3]
+        if scene == PhototourismScenes.SACRE:
+            translation = c2w[:, 3:4] + torch.tensor([[
+                -0.04 + 0.01 * np.cos(theta),
+                -0.01 * np.sin(theta),
+                0.05 + 0.001 * np.sin(theta * zrate)
+            ]]).T
+        elif scene == PhototourismScenes.BRANDENBURG:
+            translation = c2w[:, 3:4] + torch.tensor([[
+                0.1 * np.cos(theta),
+                -0.05 - 0.01 * np.sin(theta),
+                -0.2 + 0.2 * np.sin(theta * zrate)
+            ]]).T
+        elif scene == PhototourismScenes.TREVI:
+            translation = c2w[:, 3:4] + torch.tensor([[
+                0.05 + 0.1 * np.cos(theta),
+                -0.1 - 0.01 * np.sin(theta),
+                0.02 + 0.1 * np.sin(theta * zrate)
+            ]]).T
+        else:
+            raise NotImplementedError(scene)
+        pose = torch.cat([rotation, translation], dim=1)
+        render_poses.append(pose)
+    return torch.stack(render_poses, dim=0)
+
+
+def pt_render_poses(datadir: str, n_frames: int, frame_h: int = 800, frame_w: int = 800):
+    scene = PhototourismScenes.get_scene_from_datadir(datadir)
+    idx, _ = get_ids_for_split(datadir, split='train')
+    train_poses, kinvs, bounds, res = load_camera_metadata(datadir, idx)
+
+    # Just pick one camera intrinsic
+    kinv = torch.from_numpy(kinvs[0]).to(torch.float32)
+
+    bounds = torch.from_numpy(bounds).float()
+    train_poses = torch.from_numpy(train_poses).float()
+
+    r_poses = pt_spiral_path(scene, train_poses, n_frames=n_frames)
+
+    all_rays_o, all_rays_d, camera_ids, near_fars = [], [], [], []
+    for pose_id, pose in enumerate(r_poses):
+        rays_o, rays_d = get_rays_tourism(frame_h, frame_w, kinv, pose)
+        all_rays_o.append(rays_o)
+        all_rays_d.append(rays_d)
+
+        # camera-IDs. They are floats interpolating between 2 appearance embeddings.
+        if scene == PhototourismScenes.BRANDENBURG or scene == PhototourismScenes.TREVI:
+            camera_ids.append(
+                torch.tensor(100 + pose_id / r_poses.shape[0]).repeat(rays_o.shape[0]))
+        elif scene == PhototourismScenes.SACRE:
+            camera_ids.append(
+                torch.tensor(13 + pose_id / r_poses.shape[0]).repeat(rays_o.shape[0]))
+
+        # Find the closest cam TODO: This is the crappiest way to calculate distance between cameras!
+        closest_cam_idx = torch.linalg.norm(
+            train_poses.view(train_poses.shape[0], -1) - pose.view(-1), dim=1
+        ).argmin()
+
+        # For brandenburg and trevi
+        if scene == PhototourismScenes.BRANDENBURG or scene == PhototourismScenes.TREVI:
+            near_fars.append((
+                bounds[closest_cam_idx] + torch.tensor([0.05, 0.0])
+            ).repeat(rays_o.shape[0], 1))
+        elif scene == PhototourismScenes.SACRE:
+            near_fars.append((
+                bounds[closest_cam_idx] + torch.tensor([0.07, 0.0])
+            ).repeat(rays_o.shape[0], 1))
+    all_rays_o = torch.cat(all_rays_o, dim=0)
+    all_rays_d = torch.cat(all_rays_d, dim=0)
+    camera_ids = torch.cat(camera_ids, dim=0).view(-1, 1)
+    near_fars = torch.cat(near_fars, dim=0)
+    return all_rays_o, all_rays_d, camera_ids, near_fars

@@ -273,7 +273,15 @@ class KPlaneField(nn.Module):
             color_features = [encoded_directions, features.view(-1, self.geo_feat_dim)]
 
         if self.use_appearance_embedding:
-            if self.training:
+            if camera_indices.dtype == torch.float32:
+                # Interpolate between two embeddings. Currently they need to be contiguous in
+                # index space, but this is an artificial limitation.
+                emb_fn = self.appearance_embedding
+                camera_indices_floor = torch.floor(camera_indices)
+                emb1 = emb_fn(camera_indices_floor.long())
+                emb2 = emb_fn(torch.ceil(camera_indices).long())
+                embedded_appearance = torch.lerp(emb1, emb2, camera_indices_floor - camera_indices)
+            elif self.training:
                 embedded_appearance = self.appearance_embedding(camera_indices)
             else:
                 if hasattr(self, "test_appearance_embedding"):
@@ -286,6 +294,7 @@ class KPlaneField(nn.Module):
                     embedded_appearance = torch.zeros(
                         (*directions.shape[:-1], self.appearance_embedding_dim), device=directions.device
                     )
+
             # expand embedded_appearance from n_rays, dim to n_rays*n_samples, dim
             ea_dim = embedded_appearance.shape[-1]
             embedded_appearance = embedded_appearance.view(-1, 1, ea_dim).expand(n_rays, n_samples, -1).reshape(-1, ea_dim)
