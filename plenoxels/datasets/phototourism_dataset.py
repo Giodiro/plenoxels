@@ -31,7 +31,7 @@ class PhototourismScenes(Enum):
         raise NotImplementedError(datadir)
 
 
-class PhotoTourismDataset2(BaseDataset):
+class PhotoTourismDataset(BaseDataset):
     def __init__(self,
                  datadir: str,
                  split: str,
@@ -39,11 +39,15 @@ class PhotoTourismDataset2(BaseDataset):
                  contraction: bool = False,
                  ndc: bool = False,
                  scene_bbox: Optional[List] = None,
+                 global_translation: List[float] = None,
+                 global_scale: List[float] = None,
                  downsample: float = 1.0):
         if ndc:
             raise NotImplementedError("PhotoTourism only handles contraction and standard.")
         if downsample != 1.0:
             raise NotImplementedError("PhotoTourism does not handle image downsampling.")
+        if (global_scale is None or global_translation is None) and contraction:
+            raise ValueError("scale and translation must be specified when contraction is used.")
         if not os.path.isdir(datadir):
             raise ValueError(f"Directory {datadir} does not exist.")
 
@@ -96,18 +100,10 @@ class PhotoTourismDataset2(BaseDataset):
         self.camera_ids = camera_ids  # noqa
         self.near_fars = near_fars  # noqa
 
-        scene = PhototourismScenes.get_scene_from_datadir(datadir)
-        if scene == PhototourismScenes.TREVI:
-            self.global_translation = torch.tensor([0, 0, 0.])
-            self.global_scale = torch.tensor([1., 2., 1])
-        elif scene == PhototourismScenes.SACRE:
-            self.global_translation = torch.tensor([0, 0, -1])
-            self.global_scale = torch.tensor([5, 5, 3])
-        elif scene == PhototourismScenes.BRANDENBURG:
-            self.global_translation = torch.tensor([0, 0, -1])
-            self.global_scale = torch.tensor([5, 5, 3])
-        else:
-            raise NotImplementedError()
+        self.global_scale, self.global_translation = None, None
+        if contraction:
+            self.global_translation = torch.as_tensor(global_translation).float()
+            self.global_scale = torch.as_tensor(global_scale).float()
 
         if scene_bbox is None:
             raise ValueError("Must specify scene_bbox")

@@ -8,7 +8,7 @@ import pandas as pd
 import torch
 import torch.utils.data
 
-from ..datasets.phototourism_dataset import PhotoTourismDataset2
+from ..datasets.phototourism_dataset import PhotoTourismDataset
 from ..ema import EMA
 from ..models.lowrank_model import LowrankModel
 from ..my_tqdm import tqdm
@@ -255,10 +255,11 @@ class PhototourismTrainer(BaseTrainer):
 def init_tr_data(data_downsample, data_dir, **kwargs):
     batch_size = kwargs['batch_size']
     log.info(f"Loading PhotoTourismDataset with downsample={data_downsample}")
-    tr_dset = PhotoTourismDataset2(
+    tr_dset = PhotoTourismDataset(
         data_dir, split='train', batch_size=batch_size,
         contraction=kwargs['contract'], ndc=kwargs['ndc'],
-        scene_bbox=kwargs['scene_bbox']
+        scene_bbox=kwargs['scene_bbox'], global_scale=kwargs.get('global_scale', None),
+        global_translation=kwargs.get('global_translation', None),
     )
     tr_loader = torch.utils.data.DataLoader(
         tr_dset, batch_size=None, num_workers=4,  prefetch_factor=4, pin_memory=True,
@@ -267,10 +268,11 @@ def init_tr_data(data_downsample, data_dir, **kwargs):
 
 
 def init_ts_data(data_dir, split, **kwargs):
-    ts_dset = PhotoTourismDataset2(
+    ts_dset = PhotoTourismDataset(
         data_dir, split=split, batch_size=None,
         contraction=kwargs['contract'], ndc=kwargs['ndc'],
-        scene_bbox=kwargs['scene_bbox'],
+        scene_bbox=kwargs['scene_bbox'], global_scale=kwargs.get('global_scale', None),
+        global_translation=kwargs.get('global_translation', None),
     )
     return {"ts_dset": ts_dset}
 
