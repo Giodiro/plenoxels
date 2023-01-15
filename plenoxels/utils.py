@@ -1,5 +1,6 @@
 from typing import Optional
 
+
 def parse_optfloat(val, default_val=None) -> Optional[float]:
     if val == "None" or val is None:
         return default_val
