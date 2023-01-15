@@ -1,4 +1,3 @@
-jax
 tqdm
 torch
 pillow
@@ -8,4 +7,9 @@ lpips
 imageio
 torchmetrics
 scikit-image
-tinycudann
+git+https://github.com/NVlabs/tiny-cuda-nn/#subdirectory=bindings/torch
+matplotlib
+tensorboard
+wandb
+numpy
+imageio[pyav]
