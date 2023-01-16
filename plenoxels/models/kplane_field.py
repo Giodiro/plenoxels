@@ -279,8 +279,10 @@ class KPlaneField(nn.Module):
                 emb_fn = self.appearance_embedding
                 camera_indices_floor = torch.floor(camera_indices)
                 emb1 = emb_fn(camera_indices_floor.long())
+                emb1 = emb1.view(emb1.shape[0], emb1.shape[2])
                 emb2 = emb_fn(torch.ceil(camera_indices).long())
-                embedded_appearance = torch.lerp(emb1, emb2, camera_indices_floor - camera_indices)
+                emb2 = emb2.view(emb2.shape[0], emb2.shape[2])
+                embedded_appearance = torch.lerp(emb1, emb2, camera_indices - camera_indices_floor)
             elif self.training:
                 embedded_appearance = self.appearance_embedding(camera_indices)
             else:

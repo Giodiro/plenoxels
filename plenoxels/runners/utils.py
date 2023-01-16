@@ -35,6 +35,11 @@ def initialize_model(runner: Union[Trainer, PhototourismTrainer, VideoTrainer], 
             num_images = runner.train_dataset.num_images
         except AttributeError:
             num_images = None
+    else:
+        try:
+            num_images = runner.test_dataset.num_images
+        except AttributeError:
+            num_images = None
     model = LowrankModel(
         grid_config=extra_args.pop("grid_config"),
         aabb=dset.scene_bbox,

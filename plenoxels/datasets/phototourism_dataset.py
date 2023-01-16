@@ -96,7 +96,7 @@ class PhotoTourismDataset(BaseDataset):
         else:
             raise NotImplementedError(split)
 
-        self.num_images = len(intrinsics)
+        self.num_images = 1689 # ugly hack: num_images needs to be the number of training images!#len(intrinsics)
         self.camera_ids = camera_ids  # noqa
         self.near_fars = near_fars  # noqa
 
@@ -123,7 +123,7 @@ class PhotoTourismDataset(BaseDataset):
         )
         log.info(f"PhotoTourismDataset contracted={self.is_contracted}, ndc={self.is_ndc}. "
                  f"Loaded {self.split} set from {self.datadir}: "
-                 f"{self.num_images} images of sizes between {min(self.img_h)}x{min(self.img_w)} "
+                 f"{len(intrinsics)} images of sizes between {min(self.img_h)}x{min(self.img_w)} "
                  f"and {max(self.img_h)}x{max(self.img_w)}. "
                  f"Images loaded: {self.imgs is not None}.")
         if self.is_contracted:
@@ -214,6 +214,13 @@ def get_ids_for_split(datadir, split):
     return idx, imagepaths
 
 
+def scale_cam_metadata(poses: np.ndarray, kinvs: np.ndarray, bounds: np.ndarray, scale: float = 0.05):
+    poses[:, :3, 3:4] *= scale
+    bounds = bounds * scale * np.array([0.9, 1.2])
+
+    return poses, kinvs, bounds
+
+
 def cache_data(datadir: str, split: str, out_fname: str):
     log.info(f"Preparing cached rays for dataset at {datadir} - {split=}.")
     scale = 0.05
@@ -222,6 +229,7 @@ def cache_data(datadir: str, split: str, out_fname: str):
 
     imagepaths = np.array(imagepaths)[idx]
     poses, kinvs, bounds, res = load_camera_metadata(datadir, idx)
+    poses, kinvs, bounds = scale_cam_metadata(poses, kinvs, bounds, scale=scale)
     img_w = res[:, 0]
     img_h = res[:, 1]
     size = int(np.sum(img_w * img_h))
@@ -232,10 +240,8 @@ def cache_data(datadir: str, split: str, out_fname: str):
         image = read_png(impath)
 
         pose = torch.from_numpy(poses[idx]).float()
-        pose[:3, 3:4] *= scale
         kinv = torch.from_numpy(kinvs[idx]).float()
         bound = torch.from_numpy(bounds[idx]).float()
-        bound = bound * torch.tensor([0.9, 1.2]) * scale
 
         rays_o, rays_d = get_rays_tourism(image.shape[0], image.shape[1], kinv, pose)
 
@@ -299,9 +305,10 @@ def pt_render_poses(datadir: str, n_frames: int, frame_h: int = 800, frame_w: in
     scene = PhototourismScenes.get_scene_from_datadir(datadir)
     idx, _ = get_ids_for_split(datadir, split='train')
     train_poses, kinvs, bounds, res = load_camera_metadata(datadir, idx)
+    train_poses, kinvs, bounds = scale_cam_metadata(train_poses, kinvs, bounds, scale=0.05)
 
     # Just pick one camera intrinsic
-    kinv = torch.from_numpy(kinvs[0]).to(torch.float32)
+    kinv = torch.from_numpy(kinvs[2]).to(torch.float32)
 
     bounds = torch.from_numpy(bounds).float()
     train_poses = torch.from_numpy(train_poses).float()
@@ -310,21 +317,24 @@ def pt_render_poses(datadir: str, n_frames: int, frame_h: int = 800, frame_w: in
 
     all_rays_o, all_rays_d, camera_ids, near_fars = [], [], [], []
     for pose_id, pose in enumerate(r_poses):
+        pose = pose.float()
         rays_o, rays_d = get_rays_tourism(frame_h, frame_w, kinv, pose)
+        rays_o = rays_o.view(-1, 3)
+        rays_d = rays_d.view(-1, 3)
         all_rays_o.append(rays_o)
         all_rays_d.append(rays_d)
 
         # camera-IDs. They are floats interpolating between 2 appearance embeddings.
         if scene == PhototourismScenes.BRANDENBURG or scene == PhototourismScenes.TREVI:
             camera_ids.append(
-                torch.tensor(100 + pose_id / r_poses.shape[0]).repeat(rays_o.shape[0]))
+                torch.tensor(300 + pose_id / r_poses.shape[0]).repeat(rays_o.shape[0]))
         elif scene == PhototourismScenes.SACRE:
             camera_ids.append(
                 torch.tensor(13 + pose_id / r_poses.shape[0]).repeat(rays_o.shape[0]))
 
         # Find the closest cam TODO: This is the crappiest way to calculate distance between cameras!
         closest_cam_idx = torch.linalg.norm(
-            train_poses.view(train_poses.shape[0], -1) - pose.view(-1), dim=1
+            train_poses[:, :3, :].view(train_poses.shape[0], -1)  - pose.view(-1), dim=1
         ).argmin()
 
         # For brandenburg and trevi
@@ -334,10 +344,10 @@ def pt_render_poses(datadir: str, n_frames: int, frame_h: int = 800, frame_w: in
             ).repeat(rays_o.shape[0], 1))
         elif scene == PhototourismScenes.SACRE:
             near_fars.append((
-                bounds[closest_cam_idx] + torch.tensor([0.07, 0.0])
+                torch.tensor([0.5, 10.0])#bounds[closest_cam_idx] + torch.tensor([0.07, 0.0])
             ).repeat(rays_o.shape[0], 1))
-    all_rays_o = torch.cat(all_rays_o, dim=0)
-    all_rays_d = torch.cat(all_rays_d, dim=0)
-    camera_ids = torch.cat(camera_ids, dim=0).view(-1, 1)
-    near_fars = torch.cat(near_fars, dim=0)
+    all_rays_o = torch.stack(all_rays_o, dim=0)
+    all_rays_d = torch.stack(all_rays_d, dim=0)
+    camera_ids = torch.stack(camera_ids, dim=0).view(-1)
+    near_fars = torch.stack(near_fars, dim=0)
     return all_rays_o, all_rays_d, camera_ids, near_fars

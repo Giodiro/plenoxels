@@ -316,7 +316,7 @@ class BaseTrainer(abc.ABC):
         torch.save(self.get_save_dict(), model_fname)
 
     def load_model(self, checkpoint_data, training_needed: bool = True):
-        self.model.load_state_dict(checkpoint_data["model"])
+        self.model.load_state_dict(checkpoint_data["model"], strict=False)
         log.info("=> Loaded model state from checkpoint")
 
         if training_needed:

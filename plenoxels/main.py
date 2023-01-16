@@ -131,7 +131,7 @@ def main():
     else:
         save_config(config)
 
-    data = load_data(model_type, validate_only=validate_only, render_only=render_only  or spacetime_only, **config)
+    data = load_data(model_type, validate_only=validate_only, render_only=render_only or spacetime_only, **config)
     config.update(data)
     trainer = init_trainer(model_type, **config)
     if args.log_dir is not None:
