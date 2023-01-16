@@ -28,8 +28,8 @@ config = {
  'histogram_loss_weight': 1.0,
  'l1_time_planes': 0.0001,
  'l1_time_planes_proposal_net': 0.0001,
- 'plane_tv_weight': 0.0001,
- 'plane_tv_weight_proposal_net': 0.0001,
+ 'plane_tv_weight': 0.0002,
+ 'plane_tv_weight_proposal_net': 0.0002,
  'time_smoothness_weight': 0.001,
  'time_smoothness_weight_proposal_net': 1e-05,
 
@@ -59,7 +59,7 @@ config = {
  'grid_config': [{
   'grid_dimensions': 2,
   'input_coordinate_dim': 4,
-  'output_coordinate_dim': 32,
+  'output_coordinate_dim': 16,
   'resolution': [64, 64, 64, 150]
  }],
 }
