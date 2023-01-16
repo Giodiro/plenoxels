@@ -342,10 +342,10 @@ def pt_render_poses(datadir: str, n_frames: int, frame_h: int = 800, frame_w: in
         # camera-IDs. They are floats interpolating between 2 appearance embeddings.
         if scene == PhototourismScenes.BRANDENBURG or scene == PhototourismScenes.TREVI:
             camera_ids.append(
-                torch.tensor(300 + pose_id / r_poses.shape[0]).repeat(rays_o.shape[0]))
+                torch.tensor(300 + pose_id / r_poses.shape[0]))
         elif scene == PhototourismScenes.SACRE:
             camera_ids.append(
-                torch.tensor(13 + pose_id / r_poses.shape[0]).repeat(rays_o.shape[0]))
+                torch.tensor(13 + pose_id / r_poses.shape[0]))
 
         # Find the closest cam TODO: This is the crappiest way to calculate distance between cameras!
         closest_cam_idx = torch.linalg.norm(
@@ -356,11 +356,11 @@ def pt_render_poses(datadir: str, n_frames: int, frame_h: int = 800, frame_w: in
         if scene == PhototourismScenes.BRANDENBURG or scene == PhototourismScenes.TREVI:
             near_fars.append((
                 bounds[closest_cam_idx] + torch.tensor([0.05, 0.0])
-            ).repeat(rays_o.shape[0], 1))
+            ))
         elif scene == PhototourismScenes.SACRE:
             near_fars.append((
-                torch.tensor([0.5, 10.0])#bounds[closest_cam_idx] + torch.tensor([0.07, 0.0])
-            ).repeat(rays_o.shape[0], 1))
+                bounds[closest_cam_idx] + torch.tensor([0.07, 0.0])
+            ))
     all_rays_o = torch.stack(all_rays_o, dim=0)
     all_rays_d = torch.stack(all_rays_d, dim=0)
     camera_ids = torch.stack(camera_ids, dim=0).view(-1)
