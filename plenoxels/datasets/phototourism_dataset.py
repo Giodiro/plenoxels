@@ -96,7 +96,10 @@ class PhotoTourismDataset(BaseDataset):
         else:
             raise NotImplementedError(split)
 
-        self.num_images = 1689 # ugly hack: num_images needs to be the number of training images!#len(intrinsics)
+        # ugly hack: num_images needs to be the number of training images. This is needed to
+        # initialize the appearance embedding tensor to the correct size even if we're just
+        # reloading a previous model.
+        self.num_images = self.get_num_train_images(datadir)
         self.camera_ids = camera_ids  # noqa
         self.near_fars = near_fars  # noqa
 
@@ -154,6 +157,18 @@ class PhotoTourismDataset(BaseDataset):
             out["timestamps"] = out["timestamps"].expand(out["rays_o"].shape[0], 1)
             out["near_fars"] = out["near_fars"].expand(out["rays_o"].shape[0], 2)
         return out
+
+    @staticmethod
+    def get_num_train_images(datadir) -> int:
+        scene = PhototourismScenes.get_scene_from_datadir(datadir)
+        if scene == PhototourismScenes.TREVI:
+            return 1689
+        elif scene == PhototourismScenes.BRANDENBURG:
+            return 763
+        elif scene == PhototourismScenes.SACRE:
+            return 830
+        else:
+            raise ValueError(scene)
 
 
 def get_rays_tourism(H, W, kinv, pose):
