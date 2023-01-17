@@ -84,7 +84,7 @@ class PhotoTourismDataset(BaseDataset):
                 near_fars = pt_data["bounds"]
                 camera_ids = pt_data["camera_ids"]
         elif split == 'render':
-            n_frames, frame_size = 120, 800
+            n_frames, frame_size = 150, 800
             rays_o, rays_d, camera_ids, near_fars = pt_render_poses(
                 datadir, n_frames=n_frames, frame_h=frame_size, frame_w=frame_size)
             images = None
@@ -305,9 +305,9 @@ def pt_spiral_path(
             ]]).T
         elif scene == PhototourismScenes.TREVI:
             translation = c2w[:, 3:4] + torch.tensor([[
-                0.05 + 0.1 * np.cos(theta),
-                -0.1 - 0.01 * np.sin(theta),
-                0.02 + 0.1 * np.sin(theta * zrate)
+                -0.05 + 0.2 * np.cos(theta),
+                -0.07 - 0.07 * np.sin(theta),
+                0.02 + 0.05 * np.sin(theta * zrate)
             ]]).T
         else:
             raise NotImplementedError(scene)
@@ -322,13 +322,14 @@ def pt_render_poses(datadir: str, n_frames: int, frame_h: int = 800, frame_w: in
     train_poses, kinvs, bounds, res = load_camera_metadata(datadir, idx)
     train_poses, kinvs, bounds = scale_cam_metadata(train_poses, kinvs, bounds, scale=0.05)
 
-    # Just pick one camera intrinsic
-    kinv = torch.from_numpy(kinvs[2]).to(torch.float32)
+    # build camera intrinsic from appropriate focal distance and cx, cy. Good for trevi
+    k = np.array([[780.0, 0, -frame_w / 2], [0, -780, -frame_h / 2], [0, 0, -1]])
+    kinv = torch.from_numpy(np.linalg.inv(k)).to(torch.float32)
 
     bounds = torch.from_numpy(bounds).float()
     train_poses = torch.from_numpy(train_poses).float()
 
-    r_poses = pt_spiral_path(scene, train_poses, n_frames=n_frames)
+    r_poses = pt_spiral_path(scene, train_poses, n_frames=n_frames, zrate=0.7, n_rots=1.0)
 
     all_rays_o, all_rays_d, camera_ids, near_fars = [], [], [], []
     for pose_id, pose in enumerate(r_poses):
@@ -339,15 +340,7 @@ def pt_render_poses(datadir: str, n_frames: int, frame_h: int = 800, frame_w: in
         all_rays_o.append(rays_o)
         all_rays_d.append(rays_d)
 
-        # camera-IDs. They are floats interpolating between 2 appearance embeddings.
-        if scene == PhototourismScenes.BRANDENBURG or scene == PhototourismScenes.TREVI:
-            camera_ids.append(
-                torch.tensor(300 + pose_id / r_poses.shape[0]))
-        elif scene == PhototourismScenes.SACRE:
-            camera_ids.append(
-                torch.tensor(13 + pose_id / r_poses.shape[0]))
-
-        # Find the closest cam TODO: This is the crappiest way to calculate distance between cameras!
+        # Find the closest cam
         closest_cam_idx = torch.linalg.norm(
             train_poses[:, :3, :].view(train_poses.shape[0], -1)  - pose.view(-1), dim=1
         ).argmin()
@@ -355,14 +348,18 @@ def pt_render_poses(datadir: str, n_frames: int, frame_h: int = 800, frame_w: in
         # For brandenburg and trevi
         if scene == PhototourismScenes.BRANDENBURG or scene == PhototourismScenes.TREVI:
             near_fars.append((
-                bounds[closest_cam_idx] + torch.tensor([0.05, 0.0])
+                bounds[closest_cam_idx] + torch.tensor([0.09, 0.0])
             ))
         elif scene == PhototourismScenes.SACRE:
             near_fars.append((
                 bounds[closest_cam_idx] + torch.tensor([0.07, 0.0])
             ))
+    # camera-IDs. They are floats interpolating between 2 appearance embeddings.
+    camera_ids = torch.cat((
+        torch.linspace(0, 1, n_frames // 2),
+        torch.linspace(1, 0, n_frames - (n_frames // 2))
+    ))
     all_rays_o = torch.stack(all_rays_o, dim=0)
     all_rays_d = torch.stack(all_rays_d, dim=0)
-    camera_ids = torch.stack(camera_ids, dim=0).view(-1)
     near_fars = torch.stack(near_fars, dim=0)
     return all_rays_o, all_rays_d, camera_ids, near_fars

@@ -274,15 +274,14 @@ class KPlaneField(nn.Module):
 
         if self.use_appearance_embedding:
             if camera_indices.dtype == torch.float32:
-                # Interpolate between two embeddings. Currently they need to be contiguous in
-                # index space, but this is an artificial limitation.
+                # Interpolate between two embeddings. Currently they are hardcoded below.
+                emb1_idx, emb2_idx = 100, 121
                 emb_fn = self.appearance_embedding
-                camera_indices_floor = torch.floor(camera_indices)
-                emb1 = emb_fn(camera_indices_floor.long())
+                emb1 = emb_fn(torch.full_like(camera_indices, emb1_idx, dtype=torch.long))
                 emb1 = emb1.view(emb1.shape[0], emb1.shape[2])
-                emb2 = emb_fn(torch.ceil(camera_indices).long())
+                emb2 = emb_fn(torch.full_like(camera_indices, emb2_idx, dtype=torch.long))
                 emb2 = emb2.view(emb2.shape[0], emb2.shape[2])
-                embedded_appearance = torch.lerp(emb1, emb2, camera_indices - camera_indices_floor)
+                embedded_appearance = torch.lerp(emb1, emb2, camera_indices)
             elif self.training:
                 embedded_appearance = self.appearance_embedding(camera_indices)
             else:
