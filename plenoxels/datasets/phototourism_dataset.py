@@ -282,7 +282,7 @@ def pt_spiral_path(
         scene: PhototourismScenes,
         poses: torch.Tensor,
         n_frames=120,
-        n_rots=1,
+        n_rots: float = 1.0,
         zrate=.5) -> torch.Tensor:
     if poses.shape[1] > 3:
         poses = poses[:, :3, :]
@@ -334,7 +334,7 @@ def pt_render_poses(datadir: str, n_frames: int, frame_h: int = 800, frame_w: in
     bounds = torch.from_numpy(bounds).float()
     train_poses = torch.from_numpy(train_poses).float()
 
-    r_poses = pt_spiral_path(scene, train_poses, n_frames=n_frames, zrate=1, n_rots=1.0)
+    r_poses = pt_spiral_path(scene, train_poses, n_frames=n_frames, zrate=1, n_rots=1)
 
     all_rays_o, all_rays_d, camera_ids, near_fars = [], [], [], []
     for pose_id, pose in enumerate(r_poses):
@@ -347,7 +347,7 @@ def pt_render_poses(datadir: str, n_frames: int, frame_h: int = 800, frame_w: in
 
         # Find the closest cam
         closest_cam_idx = torch.linalg.norm(
-            train_poses[:, :3, :].view(train_poses.shape[0], -1)  - pose.view(-1), dim=1
+            train_poses[:, :3, :].view(train_poses.shape[0], -1) - pose.view(-1), dim=1
         ).argmin()
 
         # For brandenburg and trevi
@@ -362,7 +362,7 @@ def pt_render_poses(datadir: str, n_frames: int, frame_h: int = 800, frame_w: in
     # camera-IDs. They are floats interpolating between 2 appearance embeddings.
     x = torch.linspace(-1, 1, len(r_poses))
     s = 0.3
-    camera_ids = 1/(s * math.sqrt(2 * torch.pi)) * torch.exp( - (x)**2 / (2 * s**2))
+    camera_ids = 1/(s * math.sqrt(2 * torch.pi)) * torch.exp(- (x)**2 / (2 * s**2))
     camera_ids = (camera_ids - camera_ids.min()) / camera_ids.max()
     all_rays_o = torch.stack(all_rays_o, dim=0)
     all_rays_d = torch.stack(all_rays_d, dim=0)

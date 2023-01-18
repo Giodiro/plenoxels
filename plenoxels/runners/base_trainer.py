@@ -3,23 +3,27 @@ import random
 import logging as log
 import math
 import os
+from copy import copy
 from typing import Iterable, Optional, Union, Dict, Tuple, Sequence, MutableMapping
 
 import numpy as np
 import torch
 import torch.utils.data
 from torch.utils.tensorboard import SummaryWriter
-import wandb
 
-from .timer import CudaTimer
-from ..ema import EMA
-from ..my_tqdm import tqdm
-from ..ops.image import metrics
-from ..ops.image.io import write_png
-from ..runners.regularization import Regularizer
-from ..ops.lr_scheduling import (
+from plenoxels.utils.timer import CudaTimer
+from plenoxels.utils.ema import EMA
+from plenoxels.models.lowrank_model import LowrankModel
+from plenoxels.utils.my_tqdm import tqdm
+from plenoxels.ops.image import metrics
+from plenoxels.ops.image.io import write_png
+from plenoxels.runners.regularization import Regularizer
+from plenoxels.ops.lr_scheduling import (
     get_cosine_schedule_with_warmup, get_step_schedule_with_warmup
 )
+from .static_trainer import StaticTrainer
+from .phototourism_trainer import PhototourismTrainer
+from .video_trainer import VideoTrainer
 
 
 class BaseTrainer(abc.ABC):
@@ -121,11 +125,6 @@ class BaseTrainer(abc.ABC):
                         tsum += tval
                     tstr += f"tot={tsum:.1f}ms"
                     log.info(tstr)
-        if self.log_wandb:
-            num_items = len(self.loss_info)
-            for i, (loss_name, loss_val) in enumerate(self.loss_info.items()):
-                wandb.log({f'train/loss/{loss_name}': loss_val.value},
-                          step=self.global_step, commit=i >= num_items - 1)
         progress_bar.update(1)
         if self.valid_every > -1 and self.global_step % self.valid_every == 0:
             print()
@@ -228,7 +227,7 @@ class BaseTrainer(abc.ABC):
                          dset,
                          img_idx: int,
                          name: Optional[str] = None,
-                         save_outputs: bool = True) -> Tuple[dict, torch.Tensor, torch.Tensor]:
+                         save_outputs: bool = True) -> Tuple[dict, np.ndarray, Optional[np.ndarray]]:
         if isinstance(dset.img_h, int):
             img_h, img_w = dset.img_h, dset.img_w
         else:
@@ -265,21 +264,22 @@ class BaseTrainer(abc.ABC):
             out_img = torch.cat((out_img, gt), dim=0)
             out_img = torch.cat((out_img, self._normalize_err(preds_rgb, gt)), dim=0)
 
-        out_img = (out_img * 255.0).byte().numpy()
+        out_img_np: np.ndarray = (out_img * 255.0).byte().numpy()
+        out_depth_np: Optional[np.ndarray] = None
         if out_depth is not None:
             out_depth = self._normalize_01(out_depth)
-            out_depth = (out_depth * 255.0).repeat(1, 1, 3).byte().numpy()
+            out_depth_np = (out_depth * 255.0).repeat(1, 1, 3).byte().numpy()
 
         if save_outputs:
             out_name = f"step{self.global_step}-{img_idx}"
             if name is not None and name != "":
                 out_name += "-" + name
-            write_png(os.path.join(self.log_dir, out_name + ".png"), out_img)
+            write_png(os.path.join(self.log_dir, out_name + ".png"), out_img_np)
             if out_depth is not None:
                 depth_name = out_name + "-depth"
-                write_png(os.path.join(self.log_dir, depth_name + ".png"), out_depth)
+                write_png(os.path.join(self.log_dir, depth_name + ".png"), out_depth_np)
 
-        return summary, out_img, out_depth
+        return summary, out_img_np, out_depth
 
     @abc.abstractmethod
     def validate(self):
@@ -295,9 +295,6 @@ class BaseTrainer(abc.ABC):
             scene_metrics_agg[ak] = np.mean(np.asarray(scene_metrics[k])).item()
             log_text += f" | {k}: {scene_metrics_agg[ak]:.4f}"
             self.writer.add_scalar(f"test/{ak}", scene_metrics_agg[ak], self.global_step)
-
-        if self.extra_args.get('wandb', False):
-            wandb.log(scene_metrics_agg, step=self.global_step)
 
         log.info(log_text)
         return scene_metrics_agg
@@ -400,14 +397,6 @@ class BaseTrainer(abc.ABC):
     def calc_metrics_every(self):
         return 1
 
-    @property
-    def log_wandb(self):
-        return (
-            self.extra_args.get('wandb', False) and
-            self.global_step > 0 and
-            self.global_step % 50 == 0
-        )
-
 
 def losses_to_postfix(loss_dict: Dict[str, EMA], lr: Optional[float]) -> str:
     pfix = [f"{lname}={lval}" for lname, lval in loss_dict.items()]
@@ -421,3 +410,57 @@ def init_dloader_random(_):
     np.random.seed(seed)
     random.seed(seed)
 
+
+def initialize_model(
+        runner: Union[StaticTrainer, PhototourismTrainer, VideoTrainer],
+        **kwargs) -> LowrankModel:
+    """Initialize a `LowrankModel` according to the **kwargs parameters.
+
+    Args:
+        runner: The runner object which will hold the model.
+                Needed here to fetch dataset parameters.
+        **kwargs: Extra parameters to pass to the model
+
+    Returns:
+        Initialized LowrankModel.
+    """
+    extra_args = copy(kwargs)
+    extra_args.pop('global_scale', None)
+    extra_args.pop('global_translation', None)
+
+    dset = runner.test_dataset
+    try:
+        global_translation = dset.global_translation
+    except AttributeError:
+        global_translation = None
+    try:
+        global_scale = dset.global_scale
+    except AttributeError:
+        global_scale = None
+
+    num_images = None
+    if runner.train_dataset is not None:
+        try:
+            num_images = runner.train_dataset.num_images
+        except AttributeError:
+            num_images = None
+    else:
+        try:
+            num_images = runner.test_dataset.num_images
+        except AttributeError:
+            num_images = None
+    model = LowrankModel(
+        grid_config=extra_args.pop("grid_config"),
+        aabb=dset.scene_bbox,
+        is_ndc=dset.is_ndc,
+        is_contracted=dset.is_contracted,
+        global_scale=global_scale,
+        global_translation=global_translation,
+        use_appearance_embedding=isinstance(runner, PhototourismTrainer),
+        num_images=num_images,
+        **extra_args)
+    log.info(f"Initialized {model.__class__} model with "
+             f"{sum(np.prod(p.shape) for p in model.parameters()):,} parameters, "
+             f"using ndc {model.is_ndc} and contraction {model.is_contracted}. "
+             f"Linear decoder: {model.linear_decoder}.")
+    return model

@@ -1,37 +1,35 @@
-# Plenoxels: Radiance Fields without Neural Networks
-Alex Yu\*, Sara Fridovich-Keil\*, Matthew Tancik, Qinhong Chen, Benjamin Recht, Angjoo Kanazawa
+# K-Planes for Radiance Fields in Space, Time, and Appearance
 
-UC Berkeley
+Where we develop an extensible and explicit radiance field model which can be used for static, dynamic, and variable appearance datasets.
 
-Website and video: <https://alexyu.net/plenoxels>
-
-arXiv: <https://arxiv.org/abs/2112.05131>
-
-**Note:** This JAX implementation is intended to be high-level and user-serviceable, but is much slower (roughly 1 hour per epoch) than the CUDA implementation <https://github.com/sxyu/svox2> (roughly 1 minute per epoch), and there is not perfect feature alignment between the two versions. This JAX version can likely be sped up significantly, and we may push performance improvements and extra features in the future. Currently, this version only supports bounded scenes and trains using SGD without regularization.
+> __K-Planes for Radiance Fields in Space, Time, and Appearance__  
+> [Sara Fridovich-Keil](https://people.eecs.berkeley.edu/~sfk/), [Giacomo Meanti](https://www.iit.it/web/iit-mit-usa/people-details/-/people/giacomo-meanti), [Frederik Rahbæk Warburg](https://frederikwarburg.github.io/), [Benjamin Recht](https://people.eecs.berkeley.edu/~brecht/), [Angjoo Kanazawa](https://people.eecs.berkeley.edu/~kanazawa/)
+> _arXiv ..._  
+> __[Project page]()&nbsp;/ [Paper]()&nbsp;/ [BibTeX]()__
 
 
 
-Citation:
+## Setup
+
+We recommend setup with a conda environment, using the packages provided in `requirements.txt`.
+
+## Training
+
+### Synthetic NeRF
+
+### ...
+
+## License and Citation
+
 ```
-@misc{yu2021plenoxels,
-      title={Plenoxels: Radiance Fields without Neural Networks}, 
-      author={{Alex Yu and Sara Fridovich-Keil} and Matthew Tancik and Qinhong Chen and Benjamin Recht and Angjoo Kanazawa},
-      year={2021},
+@misc{sfk_kplanes_2023,
+      title={K-Planes for Radiance Fields in Space, Time, and Appearance}, 
+      author={Sara Fridovich-Keil and Giacomo Meanti and Frederik Rahbæk Warburg and Benjamin Recht and Angjoo Kanazawa},
+      year={2023},
       eprint={2112.05131},
       archivePrefix={arXiv},
       primaryClass={cs.CV}
 }
 ```
-## Setup
 
-We recommend setup with a conda environment, using the packages provided in `requirements.txt`.
-
-## Downloading data
-
-Currently, this implementation only supports NeRF-Blender, which is available at:
-
-<https://drive.google.com/drive/folders/128yBriW1IG_3NJ5Rp7APSTZsJqdJdfc1>
-
-## Voxel Optimization (aka Training)
-
-The training file is `plenoptimize.py`; its flags specify many options to control the optimization (scene, resolution, training duration, when to prune and subdivide voxels, where the training data is, where to save rendered images and model checkpoints, etc.). You can also set the frequency of evaluation, which will compute the validation PSNR and render validation images (comparing the reconstruction to the ground truth).
+This work is made available under the BSD 3-clause license. Click [here](LICENSE) to view a copy of the license.

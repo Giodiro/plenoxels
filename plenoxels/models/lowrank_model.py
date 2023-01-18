@@ -6,13 +6,13 @@ import torch.nn as nn
 
 from plenoxels.models.density_fields import KPlaneDensityField
 from plenoxels.models.kplane_field import KPlaneField
-from plenoxels.models.utils import init_density_activation
+from plenoxels.ops.activations import init_density_activation
 from plenoxels.raymarching.ray_samplers import (
     UniformLinDispPiecewiseSampler, UniformSampler,
     ProposalNetworkSampler, RayBundle, RaySamples
 )
 from plenoxels.raymarching.spatial_distortions import SceneContraction, SpatialDistortion
-from plenoxels.runners.timer import CudaTimer
+from plenoxels.utils.timer import CudaTimer
 
 
 class LowrankModel(nn.Module):
@@ -155,12 +155,9 @@ class LowrankModel(nn.Module):
 
     @staticmethod
     def render_depth(weights: torch.Tensor, ray_samples: RaySamples, rays_d: torch.Tensor):
-        eps = 1e-10
         steps = (ray_samples.starts + ray_samples.ends) / 2
         one_minus_transmittance = torch.sum(weights, dim=-2)
         depth = torch.sum(weights * steps, dim=-2) + one_minus_transmittance * rays_d[..., -1:]
-        #depth = torch.sum(weights * steps, dim=-2) / (torch.sum(weights, -2) + eps)
-        #depth = torch.clip(depth, steps.min(), steps.max())
         return depth
 
     @staticmethod

@@ -2,20 +2,19 @@ import logging as log
 import math
 import os
 from collections import defaultdict
-from typing import Dict, MutableMapping, Union, Any
+from typing import Dict, MutableMapping, Union, Any, List
 
-import numpy as np
 import pandas as pd
 import torch
 import torch.utils.data
 
-from ..datasets.video_datasets import Video360Dataset
-from ..ema import EMA
-from ..my_tqdm import tqdm
-from ..ops.image import metrics
-from ..ops.image.io import write_video_to_file
-from ..models.lowrank_model import LowrankModel
-from .base_trainer import BaseTrainer, init_dloader_random
+from plenoxels.datasets.video_datasets import Video360Dataset
+from plenoxels.utils.ema import EMA
+from plenoxels.utils.my_tqdm import tqdm
+from plenoxels.ops.image import metrics
+from plenoxels.ops.image.io import write_video_to_file
+from plenoxels.models.lowrank_model import LowrankModel
+from .base_trainer import BaseTrainer, init_dloader_random, initialize_model
 from .regularization import (
     PlaneTV, TimeSmoothness, HistogramLoss, L1TimePlanes, DistortionLoss
 )
@@ -108,7 +107,7 @@ class VideoTrainer(BaseTrainer):
     @torch.no_grad()
     def validate(self):
         dataset = self.test_dataset
-        per_scene_metrics = defaultdict(list)
+        per_scene_metrics: Dict[str, Union[float, List]] = defaultdict(list)
         pred_frames, out_depths = [], []
         pb = tqdm(total=len(dataset), desc=f"Test scene ({dataset.name})")
         for img_idx, data in enumerate(dataset):
@@ -169,7 +168,6 @@ class VideoTrainer(BaseTrainer):
         return loss_info
 
     def init_model(self, **kwargs) -> LowrankModel:
-        from plenoxels.runners.utils import initialize_model
         return initialize_model(self, **kwargs)
 
     def get_regularizers(self, **kwargs):

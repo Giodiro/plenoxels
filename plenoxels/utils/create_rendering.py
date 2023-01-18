@@ -1,3 +1,4 @@
+"""Entry point for simple renderings, given a trainer and some poses."""
 import os
 import logging as log
 from typing import Union
@@ -5,14 +6,19 @@ from typing import Union
 import torch
 
 from plenoxels.models.lowrank_model import LowrankModel
-from plenoxels.my_tqdm import tqdm
+from plenoxels.utils.my_tqdm import tqdm
 from plenoxels.ops.image.io import write_video_to_file
 from plenoxels.runners.multiscene_trainer import Trainer
 from plenoxels.runners.video_trainer import VideoTrainer
 
 
 @torch.no_grad()
-def render_to_path(trainer: Union[VideoTrainer, Trainer], extra_name: str = ""):
+def render_to_path(trainer: Union[VideoTrainer, Trainer], extra_name: str = "") -> None:
+    """Render all poses in the `test_dataset`, saving them to file
+    Args:
+        trainer: The trainer object which is used for rendering
+        extra_name: String to append to the saved file-name
+    """
     dataset = trainer.test_dataset
 
     pb = tqdm(total=100, desc=f"Rendering scene")
@@ -49,7 +55,17 @@ def normalize_for_disp(img):
 
 
 @torch.no_grad()
-def decompose_space_time(trainer: Trainer, extra_name: str = ""):
+def decompose_space_time(trainer: Trainer, extra_name: str = "") -> None:
+    """Render space-time decomposition videos for poses in the `test_dataset`.
+
+    The space-only part of the decomposition is obtained by setting the time-planes to 1.
+    The time-only part is obtained by simple subtraction of the space-only part from the full
+    rendering.
+
+    Args:
+        trainer: The trainer object which is used for rendering
+        extra_name: String to append to the saved file-name
+    """
     chosen_cam_idx = 15
     model: LowrankModel = trainer.model
     dataset = trainer.test_dataset

@@ -9,7 +9,7 @@ import torchvision.transforms
 from PIL import Image
 import imageio.v3 as iio
 
-from ..my_tqdm import tqdm
+from plenoxels.utils.my_tqdm import tqdm
 
 pil2tensor = torchvision.transforms.ToTensor()
 # increase ulimit -n (number of open files) otherwise parallel loading might fail

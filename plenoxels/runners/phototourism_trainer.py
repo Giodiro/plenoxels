@@ -8,12 +8,12 @@ import pandas as pd
 import torch
 import torch.utils.data
 
-from ..datasets.phototourism_dataset import PhotoTourismDataset
-from ..ema import EMA
-from ..models.lowrank_model import LowrankModel
-from ..my_tqdm import tqdm
-from ..ops.image import metrics
-from .base_trainer import BaseTrainer, init_dloader_random
+from plenoxels.datasets.phototourism_dataset import PhotoTourismDataset
+from plenoxels.utils.ema import EMA
+from plenoxels.models.lowrank_model import LowrankModel
+from plenoxels.utils.my_tqdm import tqdm
+from plenoxels.ops.image import metrics
+from .base_trainer import BaseTrainer, init_dloader_random, initialize_model
 from .regularization import (
     PlaneTV, TimeSmoothness, HistogramLoss, L1TimePlanes, DistortionLoss
 )
@@ -142,7 +142,6 @@ class PhototourismTrainer(BaseTrainer):
         return loss_info
 
     def init_model(self, **kwargs) -> LowrankModel:
-        from plenoxels.runners.utils import initialize_model
         return initialize_model(self, **kwargs)
 
     def get_regularizers(self, **kwargs):
@@ -214,6 +213,12 @@ class PhototourismTrainer(BaseTrainer):
                 break
 
     def optimize_appearance_codes(self):
+        """Optimize the appearance embedding of all test poses.
+
+        At test time, since the correct embedding for a test pose is unknown, half of the test
+        ground-truth image is used to optimize the appearance embedding corresponding to that test
+        image. Evaluation is then performed on the other half of the image.
+        """
         dset = self.test_dataset
         num_test_imgs = len(dset)
 

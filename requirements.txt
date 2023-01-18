@@ -1,5 +1,6 @@
 tqdm
 torch
+torchvision
 pillow
 opencv-python
 pandas
@@ -10,6 +11,5 @@ scikit-image
 git+https://github.com/NVlabs/tiny-cuda-nn/#subdirectory=bindings/torch
 matplotlib
 tensorboard
-wandb
 numpy
 imageio[pyav]

@@ -3,24 +3,22 @@ import os
 from collections import defaultdict
 from typing import Dict, MutableMapping, Union, Sequence, Any
 
-import matplotlib.pyplot as plt
 import pandas as pd
 import torch
 import torch.utils.data
-from matplotlib.colors import LogNorm
 
-from .base_trainer import BaseTrainer, init_dloader_random
+from plenoxels.datasets import SyntheticNerfDataset, LLFFDataset
+from plenoxels.models.lowrank_model import LowrankModel
+from plenoxels.utils.ema import EMA
+from plenoxels.utils.my_tqdm import tqdm
+from plenoxels.utils.parse_args import parse_optint
+from .base_trainer import BaseTrainer, init_dloader_random, initialize_model
 from .regularization import (
     PlaneTV, HistogramLoss, L1ProposalNetwork, DepthTV, DistortionLoss,
 )
-from ..ema import EMA
-from ..datasets import SyntheticNerfDataset, LLFFDataset
-from ..models.lowrank_model import LowrankModel
-from ..my_tqdm import tqdm
-from ..utils import parse_optint
 
 
-class Trainer(BaseTrainer):
+class StaticTrainer(BaseTrainer):
     def __init__(self,
                  tr_loader: torch.utils.data.DataLoader,
                  ts_dset: torch.utils.data.TensorDataset,
@@ -124,7 +122,6 @@ class Trainer(BaseTrainer):
         return loss_info
 
     def init_model(self, **kwargs) -> LowrankModel:
-        from .utils import initialize_model
         return initialize_model(self, **kwargs)
 
     def get_regularizers(self, **kwargs):
@@ -214,99 +211,3 @@ def load_data(data_downsample, data_dirs, validate_only, render_only, **kwargs):
     test_split = 'render' if render_only else 'test'
     od.update(init_ts_data(data_dirs, split=test_split, **kwargs))
     return od
-
-
-@torch.no_grad()
-def visualize_planes_withF(model, save_dir: str, name: str):
-    MAX_RANK = 3
-    rank = model.config[0]["rank"]
-    used_rank = min(model.config[0]["rank"], MAX_RANK)
-    dim = model.config[0]["output_coordinate_dim"]
-
-    # For each plane get the n-d coordinates and plot the density
-    # corresponding to those coordinates in F.
-    if hasattr(model, 'scene_grids'):  # LowrankLearnableHash
-        multi_scale_grids = model.scene_grids[0]
-    elif hasattr(model, 'grids'):  # LowrankVideo
-        multi_scale_grids = model.grids
-    else:
-        raise RuntimeError(f"Cannot find grids in model {model}.")
-
-    for scale_id, grids in enumerate(multi_scale_grids):
-        if hasattr(model, 'scene_grids'):
-            grids = grids[0]
-        n_planes = len(grids)
-        fig, ax = plt.subplots(ncols=used_rank, nrows=n_planes, figsize=(3 * used_rank, 3 * n_planes))
-        for plane_idx, grid in enumerate(grids):
-            _, c, h, w = grid.data.shape
-            grid = grid.data.view(dim, rank, h, w)
-            for r in range(used_rank):
-                grid_r = grid[:, r, ...].view(dim, -1).transpose(0, 1)  # h*w, dim
-                multi_scale_interp = (grid_r - model.pt_min) / (model.pt_max - model.pt_min)
-                multi_scale_interp = multi_scale_interp * 2 - 1
-                from plenoxels.models.utils import grid_sample_wrapper
-                out = grid_sample_wrapper(model.features, multi_scale_interp).view(h, w, -1)
-                density = model.density_act(
-                    out[..., -1].cpu()
-                ).numpy()
-                im = ax[plane_idx, r].imshow(density, norm=LogNorm(vmin=1e-6, vmax=density.max()))
-                ax[plane_idx, r].axis("off")
-                plt.colorbar(im, ax=ax[plane_idx, r], aspect=20, fraction=0.04)
-        fig.tight_layout()
-        plt.savefig(os.path.join(save_dir, f"{name}-planes-scale-{scale_id}.png"))
-        plt.cla()
-        plt.clf()
-        plt.close()
-
-
-@torch.no_grad()
-def visualize_planes(model, save_dir: str, name: str):
-    rank = model.config[0]["rank"]
-    dim = model.feature_dim
-    if hasattr(model, 'scene_grids'):  # LowrankLearnableHash
-        multi_scale_grids = model.scene_grids[0]
-    elif hasattr(model, 'grids'):  # LowrankVideo
-        multi_scale_grids = model.grids
-    else:
-        raise RuntimeError(f"Cannot find grids in model {model}.")
-
-    for scale_id, grids in enumerate(multi_scale_grids):
-        if hasattr(model, 'scene_grids'):
-            grids = grids[0]
-        n_planes = len(grids)
-        fig, ax = plt.subplots(nrows=n_planes, ncols=2*rank, figsize=(3*2*rank, 3*n_planes))
-        for plane_idx, grid in enumerate(grids):
-            _, c, h, w = grid.data.shape
-
-            grid = grid.data.view(dim, rank, h, w)
-            for r in range(rank):
-                features = grid[:, r, :, :].view(dim, h*w).transpose(0, 1)
-
-                density = (
-                    model.density_act(
-                        model.decoder.compute_density(
-                            features=features, rays_d=None)
-                    ).view(h, w)
-                     .cpu()
-                     .float()
-                     .nan_to_num(posinf=99.0, neginf=-99.0)
-                     .clamp_min(1e-6)
-                ).numpy()
-
-                im = ax[plane_idx, r].imshow(density, norm=LogNorm(vmin=1e-6, vmax=density.max()))
-                ax[plane_idx, r].axis("off")
-                plt.colorbar(im, ax=ax[plane_idx, r], aspect=20, fraction=0.04)
-
-                rays_d = torch.ones((h*w, 3), device=grid.device)
-                rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
-                # color = (
-                #         torch.sigmoid(model.decoder.compute_color(features, rays_d))
-                # ).view(h, w, 3).cpu().float().numpy()
-                # ax[plane_idx, r+rank].imshow(color)
-                # ax[plane_idx, r+rank].axis("off")
-
-        fig.tight_layout()
-        plt.savefig(os.path.join(save_dir, f"{name}-planes-scale-{scale_id}.png"))
-        plt.cla()
-        plt.clf()
-        plt.close()

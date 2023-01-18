@@ -1,3 +1,4 @@
+"""Accurate timer for CUDA code"""
 import torch.cuda
 
 

@@ -89,7 +89,6 @@ def read_cameras_binary(path_to_model_file):
     return cameras
 
 
-
 def read_images_text(path):
     """
     see: src/base/reconstruction.cc
@@ -123,7 +122,6 @@ def read_images_text(path):
                     point3D_ids=point3D_ids,
                 )
     return images
-
 
 
 def read_images_binary(path_to_model_file):
@@ -160,7 +158,6 @@ def read_images_binary(path_to_model_file):
                 point3D_ids=point3D_ids,
             )
     return images
-
 
 
 def qvec2rotmat(qvec):

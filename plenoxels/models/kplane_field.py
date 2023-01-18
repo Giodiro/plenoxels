@@ -4,11 +4,9 @@ from typing import Optional, Union, List, Dict, Sequence, Iterable, Collection, 
 
 import torch
 import torch.nn as nn
-from torch.nn.parameter import Parameter
-
-from plenoxels.models.utils import grid_sample_wrapper
 import tinycudann as tcnn
 
+from plenoxels.ops.interpolation import grid_sample_wrapper
 from plenoxels.raymarching.spatial_distortions import SpatialDistortion
 
 
@@ -103,7 +101,7 @@ class KPlaneField(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.aabb = Parameter(aabb, requires_grad=False)
+        self.aabb = nn.Parameter(aabb, requires_grad=False)
         self.spatial_distortion = spatial_distortion
         self.grid_config = grid_config
 

@@ -67,7 +67,7 @@ def ssim(rgb, gts):
         return scipy.signal.convolve2d(z, f, mode='valid')
 
     filt_fn = lambda z: np.stack([
-        convolve2d(convolve2d(z[...,i], filt[:, None]), filt[None, :])
+        convolve2d(convolve2d(z[..., i], filt[:, None]), filt[None, :])
         for i in range(z.shape[-1])], -1)
     mu0 = filt_fn(rgb)
     mu1 = filt_fn(gts)
@@ -89,8 +89,7 @@ def ssim(rgb, gts):
     numer = (2 * mu01 + c1) * (2 * sigma01 + c2)
     denom = (mu00 + mu11 + c1) * (sigma00 + sigma11 + c2)
     ssim_map = numer / denom
-    ssim = np.mean(ssim_map)
-    return ssim
+    return np.mean(ssim_map)
 
 
 def ssim_old(rgb, gts):

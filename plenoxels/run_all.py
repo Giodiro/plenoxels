@@ -30,18 +30,17 @@ def main():
     datasets: List[str]
     datadir: str
     if exp_type == "dynerf":
-        #import plenoxels.configs.test_flamesalmon as dynerf_config
-        import plenoxels.configs.dynerf_linear as dynerf_config
+        import plenoxels.configs.final.DyNeRF.dynerf_hybrid as dynerf_config
         base_config = dynerf_config.config
         datasets = DYNERF_DSETS
         datadir = DYNERF_DATADIR
     elif exp_type == "synthetic360":
-        import plenoxels.configs.giac_learnablehash as static_config
+        import plenoxels.configs.final.NeRF.nerf_hybrid as static_config
         base_config = static_config.config
         datasets = SYNTH360_DSETS
         datadir = SYNTH360_DATADIR
     elif exp_type == "llff":
-        import plenoxels.configs.llff_linear as llff_config
+        import plenoxels.configs.final.LLFF.llff_hybrid as llff_config
         base_config = llff_config.config
         datasets = LLFF_DSETS
         datadir = LLFF_DATADIR

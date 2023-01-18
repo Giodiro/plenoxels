@@ -20,8 +20,8 @@ print(f'gpu is {gpu}')
 
 import torch
 import torch.utils.data
-from plenoxels.create_rendering import render_to_path, decompose_space_time
-from plenoxels.utils import parse_optfloat
+from plenoxels.utils.create_rendering import render_to_path, decompose_space_time
+from plenoxels.utils.parse_args import parse_optfloat
 
 
 def setup_logging(log_level=logging.INFO):
@@ -47,8 +47,8 @@ def load_data(model_type: str, data_downsample, data_dirs, validate_only: bool, 
             render_only=render_only, **kwargs
         )
     else:
-        from plenoxels.runners import multiscene_trainer
-        return multiscene_trainer.load_data(
+        from plenoxels.runners import static_trainer
+        return static_trainer.load_data(
             data_downsample, data_dirs, validate_only=validate_only,
             render_only=render_only, **kwargs)
 
@@ -61,8 +61,8 @@ def init_trainer(model_type: str, **kwargs):
         from plenoxels.runners import phototourism_trainer
         return phototourism_trainer.PhototourismTrainer(**kwargs)
     else:
-        from plenoxels.runners import multiscene_trainer
-        return multiscene_trainer.Trainer(**kwargs)
+        from plenoxels.runners import static_trainer
+        return static_trainer.StaticTrainer(**kwargs)
 
 
 def save_config(config):
@@ -74,7 +74,7 @@ def save_config(config):
 
     with open(os.path.join(log_dir, 'config.csv'), 'w') as f:
         for key in config.keys():
-            f.write("%s\t%s\n" % (key,config[key]))
+            f.write("%s\t%s\n" % (key, config[key]))
 
 
 def main():
