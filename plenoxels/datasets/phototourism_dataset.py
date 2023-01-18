@@ -1,4 +1,5 @@
 import glob
+import math
 import logging as log
 import os
 from enum import Enum
@@ -291,17 +292,21 @@ def pt_spiral_path(
     render_poses = []
     for theta in np.linspace(0., 2. * np.pi * n_rots, n_frames, endpoint=False):
         rotation = c2w[:3, :3]
+        # the additive translation vectors have 3 components (x, y, z axes)
+        # each with an additive part - which defines a global shift of all poses
+        # and a multiplicative part which changes the amplitude of movement
+        # of the poses.
         if scene == PhototourismScenes.SACRE:
             translation = c2w[:, 3:4] + torch.tensor([[
-                -0.04 + 0.01 * np.cos(theta),
-                -0.01 * np.sin(theta),
-                0.05 + 0.001 * np.sin(theta * zrate)
+                0.01 + 0.03 * np.cos(theta),
+                -0.007 * np.sin(theta),
+                0.06 + 0.03 * np.sin(theta * zrate)
             ]]).T
         elif scene == PhototourismScenes.BRANDENBURG:
             translation = c2w[:, 3:4] + torch.tensor([[
-                0.1 * np.cos(theta),
-                -0.05 - 0.01 * np.sin(theta),
-                -0.2 + 0.2 * np.sin(theta * zrate)
+                0.08 * np.cos(theta),
+                -0.07 - 0.01 * np.sin(theta),
+                -0.0 + 0.1 * np.sin(theta * zrate)
             ]]).T
         elif scene == PhototourismScenes.TREVI:
             translation = c2w[:, 3:4] + torch.tensor([[
@@ -329,7 +334,7 @@ def pt_render_poses(datadir: str, n_frames: int, frame_h: int = 800, frame_w: in
     bounds = torch.from_numpy(bounds).float()
     train_poses = torch.from_numpy(train_poses).float()
 
-    r_poses = pt_spiral_path(scene, train_poses, n_frames=n_frames, zrate=0.7, n_rots=1.0)
+    r_poses = pt_spiral_path(scene, train_poses, n_frames=n_frames, zrate=1, n_rots=1.0)
 
     all_rays_o, all_rays_d, camera_ids, near_fars = [], [], [], []
     for pose_id, pose in enumerate(r_poses):
@@ -348,17 +353,17 @@ def pt_render_poses(datadir: str, n_frames: int, frame_h: int = 800, frame_w: in
         # For brandenburg and trevi
         if scene == PhototourismScenes.BRANDENBURG or scene == PhototourismScenes.TREVI:
             near_fars.append((
-                bounds[closest_cam_idx] + torch.tensor([0.09, 0.0])
+                bounds[closest_cam_idx] + torch.tensor([0.01, 0.0])
             ))
         elif scene == PhototourismScenes.SACRE:
             near_fars.append((
-                bounds[closest_cam_idx] + torch.tensor([0.07, 0.0])
+                bounds[closest_cam_idx] + torch.tensor([0.05, 0.0])
             ))
     # camera-IDs. They are floats interpolating between 2 appearance embeddings.
-    camera_ids = torch.cat((
-        torch.linspace(0, 1, n_frames // 2),
-        torch.linspace(1, 0, n_frames - (n_frames // 2))
-    ))
+    x = torch.linspace(-1, 1, len(r_poses))
+    s = 0.3
+    camera_ids = 1/(s * math.sqrt(2 * torch.pi)) * torch.exp( - (x)**2 / (2 * s**2))
+    camera_ids = (camera_ids - camera_ids.min()) / camera_ids.max()
     all_rays_o = torch.stack(all_rays_o, dim=0)
     all_rays_d = torch.stack(all_rays_d, dim=0)
     near_fars = torch.stack(near_fars, dim=0)

@@ -275,7 +275,8 @@ class KPlaneField(nn.Module):
         if self.use_appearance_embedding:
             if camera_indices.dtype == torch.float32:
                 # Interpolate between two embeddings. Currently they are hardcoded below.
-                emb1_idx, emb2_idx = 100, 121
+                #emb1_idx, emb2_idx = 100, 121  # trevi
+                emb1_idx, emb2_idx = 11, 142  # sacre
                 emb_fn = self.appearance_embedding
                 emb1 = emb_fn(torch.full_like(camera_indices, emb1_idx, dtype=torch.long))
                 emb1 = emb1.view(emb1.shape[0], emb1.shape[2])
