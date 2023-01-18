@@ -17,7 +17,7 @@ config = {
  'scene_bbox': [[-3.0, -1.8, -1.2], [3.0, 1.8, 1.2]],
 
  # Optimization settings
- 'num_steps': 120001,
+ 'num_steps': 90001,
  'batch_size': 4096,
  'scheduler_type': 'warmup_cosine',
  'optim_type': 'adam',
