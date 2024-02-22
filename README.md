@@ -1,3 +1,5 @@
+Note: this repo was actually used to develop K-Planes; the official repo for K-Planes is https://github.com/sarafridov/K-Planes
+
 # Plenoxels: Radiance Fields without Neural Networks
 Alex Yu\*, Sara Fridovich-Keil\*, Matthew Tancik, Qinhong Chen, Benjamin Recht, Angjoo Kanazawa
 
